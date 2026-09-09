@@ -12,11 +12,11 @@ import android.view.*;
 import androidx.core.app.NotificationCompat;
 import java.util.List;
 
-/** Persistent fooView-style floating icon service with independent environment/visibility reasons. */
+/** Persistent floating icon service with separated gesture/action/environment/Circle layers. */
 public class FloatService extends Service implements android.content.SharedPreferences.OnSharedPreferenceChangeListener {
     public static final String ACT_START="com.yagay.floatlens.START", ACT_STOP="com.yagay.floatlens.STOP", ACT_SHOW="com.yagay.floatlens.SHOW";
     private static volatile FloatService instance;
-    private WindowManager wm; private FloatSettings fs;
+    private WindowManager wm; private FloatSettings fs; private CircleStateMachine circleState;
     private FloatIconView primary,secondary; private WindowManager.LayoutParams primaryLp,secondaryLp;
     private GestureTrailOverlay trail; private BroadcastReceiver screenReceiver;
     private EdgeWakeView wakeLeft,wakeRight; private WindowManager.LayoutParams wakeLeftLp,wakeRightLp;
@@ -28,7 +28,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
 
     @Override public void onCreate(){super.onCreate();
         DiagnosticLog.init(this);
-        DiagnosticLog.sessionHeader(this);instance=this;fs=new FloatSettings(this);fs.prefs().registerOnSharedPreferenceChangeListener(this);wm=(WindowManager)getSystemService(WINDOW_SERVICE);trail=new GestureTrailOverlay(this);createChannel();Notification n=buildNotification();if(Build.VERSION.SDK_INT>=34)startForeground(27,n,ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);else startForeground(27,n);registerScreenReceiver();}
+        DiagnosticLog.sessionHeader(this);instance=this;fs=new FloatSettings(this);circleState=new CircleStateMachine(this);fs.prefs().registerOnSharedPreferenceChangeListener(this);wm=(WindowManager)getSystemService(WINDOW_SERVICE);trail=new GestureTrailOverlay(this);createChannel();Notification n=buildNotification();if(Build.VERSION.SDK_INT>=34)startForeground(27,n,ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);else startForeground(27,n);registerScreenReceiver();}
     @Override public int onStartCommand(Intent i,int flags,int id){if(i!=null&&ACT_STOP.equals(i.getAction())){stopSelf();return START_NOT_STICKY;}if(i!=null&&ACT_SHOW.equals(i.getAction()))manualHidden=false;show();return START_STICKY;}
     private void show(){if(!Settings.canDrawOverlays(this))return;if(primary==null)addPrimary();syncSecondary();recomputeVisibility();}
 
@@ -39,11 +39,27 @@ public class FloatService extends Service implements android.content.SharedPrefe
         @Override public void onDragStart(){restoreFully(lp);safeUpdate(mirrored?secondary:primary,lp);}
         @Override public void onMove(int dx,int dy){lp.x+=dx;lp.y+=dy;clamp(lp,false);safeUpdate(mirrored?secondary:primary,lp);if(!mirrored&&secondary!=null&&secondaryLp!=null){secondaryLp.y=lp.y;clamp(secondaryLp,false);safeUpdate(secondary,secondaryLp);}}
         @Override public void onRelease(boolean moved){if(moved&&fs.snap())snap(lp,mirrored?secondary:primary);else{edgeHide(lp);safeUpdate(mirrored?secondary:primary,lp);}if(!mirrored){persistPosition();if(secondary!=null&&secondaryLp!=null)syncMirrorPosition();}}
-        @Override public void onAction(String a){lastActionX=lp.x+lp.width/2f;lastActionY=lp.y+lp.height/2f;ActionExecutor.execute(FloatService.this,a);}
+        @Override public void onGestureDecision(GestureDecision d){lastActionX=lp.x+lp.width/2f;lastActionY=lp.y+lp.height/2f;dispatchGesture(d);}
+        @Override public void onAction(String a){lastActionX=lp.x+lp.width/2f;lastActionY=lp.y+lp.height/2f;DiagnosticLog.i(FloatService.this,"ACTION_LAYER","direct action="+a);ActionExecutor.execute(FloatService.this,a);}
         @Override public void onGestureStart(float x,float y){if(fs.track())trail.begin(x,y);}
         @Override public void onGestureMove(float x,float y){if(fs.track())trail.add(x,y);}
         @Override public void onGestureEnd(List<GesturePointSample> points){trail.end();}
     });}
+
+    private void dispatchGesture(GestureDecision d){
+        if(d==null||d.isNone())return;
+        if(d.code()==GestureCode.ENTER_CIRCLE)circleState.enter();
+        if(d.code()==GestureCode.RECOGNIZE)circleState.recognizeStarted();
+        String action=GestureActionMapper.actionFor(fs,d);
+        DiagnosticLog.i(this,"GESTURE_LAYER","code="+d.code()+" label="+GestureCode.label(d.code())+" longTier="+d.longTier()+" -> action="+action);
+        if(!ActionId.NONE.equals(action))ActionExecutor.execute(this,action);
+    }
+
+    public void onCircleCaptureStarted(){if(circleState!=null)circleState.captureStarted();}
+    public void onCircleRecognizeStarted(){if(circleState!=null)circleState.recognizeStarted();}
+    public void onOcrResults(int candidates){if(circleState!=null)circleState.resultsReady(candidates);}
+    public void onCircleFinished(String reason){if(circleState!=null)circleState.finish(reason);}
+    public CircleStateMachine.State circleState(){return circleState==null?CircleStateMachine.State.IDLE:circleState.state();}
 
     private void syncMirrorPosition(){if(primaryLp==null||secondaryLp==null||secondary==null)return;int[] wh=displaySize();secondaryLp.x=isLeft(primaryLp,wh[0])?wh[0]-secondaryLp.width:0;secondaryLp.y=primaryLp.y;edgeHide(secondaryLp);safeUpdate(secondary,secondaryLp);}
     private WindowManager.LayoutParams makeLp(int px){WindowManager.LayoutParams lp=new WindowManager.LayoutParams(px,px,WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE|WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS|WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,PixelFormat.TRANSLUCENT);lp.gravity=Gravity.TOP|Gravity.START;return lp;}
@@ -51,7 +67,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private boolean isLeft(WindowManager.LayoutParams lp,int sw){return lp.x+lp.width/2<sw/2;}
     private void clamp(WindowManager.LayoutParams lp,boolean allowHidden){int[] wh=displaySize();int hidden=allowHidden?Math.round(lp.width*fs.hiddenPercent()/100f):0;lp.x=Math.max(-hidden,Math.min(lp.x,wh[0]-lp.width+hidden));lp.y=Math.max(0,Math.min(lp.y,wh[1]-lp.height));}
     private void snap(WindowManager.LayoutParams lp,View v){int[] wh=displaySize();lp.x=isLeft(lp,wh[0])?0:wh[0]-lp.width;clamp(lp,false);safeUpdate(v,lp);edgeHide(lp);safeUpdate(v,lp);}
-    private void edgeHide(WindowManager.LayoutParams lp){int hp=fs.hiddenPercent();if(hp<=0)return;int[] wh=displaySize();boolean left=isLeft(lp,wh[0]);int hidden=Math.round(lp.width*hp/100f);lp.x=left?-hidden:wh[0]-lp.width+hidden;clamp(lp,true);}
+    private void edgeHide(WindowManager.LayoutParams lp){int hp=fs.hiddenPercent();if(hp<=0)return;int[] wh=displaySize();boolean left=isLeft(lp,wh[0]);int hidden=Math.round(lp.width*hp/100f);lp.x=left?-hidden:wh[0]-lp.width+hidden;clamp(lp,true);DiagnosticLog.i(this,"EDGE","side="+(left?"L":"R")+" visiblePct="+fs.showPercentage()+" hiddenPx="+hidden+" x="+lp.x);}
     private void restoreFully(WindowManager.LayoutParams lp){int[] wh=displaySize();lp.x=isLeft(lp,wh[0])?0:wh[0]-lp.width;clamp(lp,false);}
     private void persistPosition(){if(primaryLp==null)return;DiagnosticLog.i(this,"POSITION","persist x="+primaryLp.x+" y="+primaryLp.y+" side="+(isLeft(primaryLp,displaySize()[0])?"L":"R")+" landscape="+fs.isLandscape());int[] wh=displaySize();fs.saveSide(isLeft(primaryLp,wh[0]));fs.prefs().edit().putInt(fs.posXKey(),primaryLp.x).putInt(fs.posYKey(),primaryLp.y).apply();}
 
@@ -64,7 +80,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private void restoreImeY(){if(imeRestoreY==null||primaryLp==null)return;primaryLp.y=imeRestoreY;clamp(primaryLp,true);safeUpdate(primary,primaryLp);if(secondaryLp!=null){secondaryLp.y=primaryLp.y;clamp(secondaryLp,true);safeUpdate(secondary,secondaryLp);}imeRestoreY=null;}
     private void updateLockVisibility(){KeyguardManager km=(KeyguardManager)getSystemService(KEYGUARD_SERVICE);lockHidden=km!=null&&km.isKeyguardLocked()&&!fs.showOnLock();recomputeVisibility();}
 
-    private void recomputeVisibility(){boolean visible=!(manualHidden||screenshotHidden||appHidden||lockHidden||fullscreenHidden);DiagnosticLog.i(this,"VISIBILITY","visible="+visible+" manual="+manualHidden+" shot="+screenshotHidden+" app="+appHidden+" lock="+lockHidden+" full="+fullscreenHidden);int v=visible?View.VISIBLE:View.INVISIBLE;if(primary!=null)primary.setVisibility(v);if(secondary!=null)secondary.setVisibility(v);if(!visible)trail.end();syncWakeViews();updateNotification();}
+    private void recomputeVisibility(){boolean visible=!(manualHidden||screenshotHidden||appHidden||lockHidden||fullscreenHidden);DiagnosticLog.i(this,"VISIBILITY","visible="+visible+" manual="+manualHidden+" shot="+screenshotHidden+" app="+appHidden+" lock="+lockHidden+" full="+fullscreenHidden+" ime="+imeVisible+" notif="+notificationExpanded+" status="+statusBarVisible);int v=visible?View.VISIBLE:View.INVISIBLE;if(primary!=null)primary.setVisibility(v);if(secondary!=null)secondary.setVisibility(v);if(!visible)trail.end();syncWakeViews();updateNotification();}
     private void syncWakeViews(){boolean need=manualHidden&&fs.prefs().getBoolean(FloatSettings.K_HIDE_MAIN_SWIPE,true)&&!screenshotHidden&&!lockHidden; if(need)addWakeViews();else removeWakeViews();}
     private void addWakeViews(){if(wakeLeft!=null)return;int width=dp(18);wakeLeft=new EdgeWakeView(this,true,()->setManualHidden(false));wakeRight=new EdgeWakeView(this,false,()->setManualHidden(false));wakeLeftLp=wakeLp(width,Gravity.LEFT);wakeRightLp=wakeLp(width,Gravity.RIGHT);try{wm.addView(wakeLeft,wakeLeftLp);wm.addView(wakeRight,wakeRightLp);}catch(Throwable t){removeWakeViews();}}
     private WindowManager.LayoutParams wakeLp(int width,int side){WindowManager.LayoutParams lp=new WindowManager.LayoutParams(width,WindowManager.LayoutParams.MATCH_PARENT,WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE|WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,PixelFormat.TRANSLUCENT);lp.gravity=Gravity.TOP|side;return lp;}
@@ -78,9 +94,9 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private void registerScreenReceiver(){screenReceiver=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){updateLockVisibility();}};IntentFilter f=new IntentFilter();f.addAction(Intent.ACTION_SCREEN_OFF);f.addAction(Intent.ACTION_SCREEN_ON);f.addAction(Intent.ACTION_USER_PRESENT);if(Build.VERSION.SDK_INT>=33)registerReceiver(screenReceiver,f,Context.RECEIVER_NOT_EXPORTED);else registerReceiver(screenReceiver,f);}
     private void removeIcons(){trail.end();removeWakeViews();if(primary!=null)try{wm.removeView(primary);}catch(Throwable ignored){}if(secondary!=null)try{wm.removeView(secondary);}catch(Throwable ignored){}primary=secondary=null;primaryLp=secondaryLp=null;}
     private void safeUpdate(View v,WindowManager.LayoutParams lp){if(v==null)return;try{wm.updateViewLayout(v,lp);}catch(Throwable ignored){}}
-    @Override public void onDestroy(){persistPosition();removeIcons();try{fs.prefs().unregisterOnSharedPreferenceChangeListener(this);}catch(Throwable ignored){}if(screenReceiver!=null)try{unregisterReceiver(screenReceiver);}catch(Throwable ignored){}if(instance==this)instance=null;super.onDestroy();}
+    @Override public void onDestroy(){persistPosition();if(circleState!=null)circleState.finish("service_destroy");removeIcons();try{fs.prefs().unregisterOnSharedPreferenceChangeListener(this);}catch(Throwable ignored){}if(screenReceiver!=null)try{unregisterReceiver(screenReceiver);}catch(Throwable ignored){}if(instance==this)instance=null;super.onDestroy();}
     @Override public IBinder onBind(Intent i){return null;}
-    private Notification buildNotification(){Intent stop=new Intent(this,FloatService.class).setAction(ACT_STOP),show=new Intent(this,FloatService.class).setAction(ACT_SHOW);PendingIntent stopPi=PendingIntent.getService(this,1,stop,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE),showPi=PendingIntent.getService(this,3,show,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE),openPi=PendingIntent.getActivity(this,2,new Intent(this,MainActivity.class),PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);String state=manualHidden?"图标已手动隐藏":lockHidden?"锁屏隐藏":fullscreenHidden?"全屏应用隐藏":appHidden?"当前应用按规则隐藏":notificationExpanded?"通知栏已展开":"点击进入设置";NotificationCompat.Builder b=new NotificationCompat.Builder(this,"floatlens").setSmallIcon(android.R.drawable.ic_menu_search).setContentTitle("FloatLens 悬浮图标已运行").setContentText(state).setContentIntent(openPi).setOngoing(true);if(manualHidden)b.addAction(0,"显示图标",showPi);b.addAction(0,"停止",stopPi);return b.build();}
+    private Notification buildNotification(){Intent stop=new Intent(this,FloatService.class).setAction(ACT_STOP),show=new Intent(this,FloatService.class).setAction(ACT_SHOW);PendingIntent stopPi=PendingIntent.getService(this,1,stop,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE),showPi=PendingIntent.getService(this,3,show,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE),openPi=PendingIntent.getActivity(this,2,new Intent(this,MainActivity.class),PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);String state=manualHidden?"图标已手动隐藏":lockHidden?"锁屏隐藏":fullscreenHidden?"全屏应用隐藏":appHidden?"当前应用按规则隐藏":circleState!=null&&circleState.active()?"Circle: "+circleState.state():notificationExpanded?"通知栏已展开":"点击进入设置";NotificationCompat.Builder b=new NotificationCompat.Builder(this,"floatlens").setSmallIcon(android.R.drawable.ic_menu_search).setContentTitle("FloatLens 悬浮图标已运行").setContentText(state).setContentIntent(openPi).setOngoing(true);if(manualHidden)b.addAction(0,"显示图标",showPi);b.addAction(0,"停止",stopPi);return b.build();}
     private void updateNotification(){try{((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(27,buildNotification());}catch(Throwable ignored){}}
     private void createChannel(){NotificationManager n=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);n.createNotificationChannel(new NotificationChannel("floatlens","FloatLens 悬浮服务",NotificationManager.IMPORTANCE_LOW));}
     private int dp(int v){return Math.round(v*getResources().getDisplayMetrics().density);}
