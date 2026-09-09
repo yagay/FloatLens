@@ -7,7 +7,7 @@ import java.util.Locale;
 /** Runtime-only summarizer for fooView FV touch sessions. */
 final class FvSessionTracker {
     private static final Object LOCK = new Object();
-    private static final String BUILD = "2.2.4-tracker-2";
+    private static final String BUILD = "2.2.5-tracker-1";
     private static Session current;
     private static long seq;
     private static boolean buildLogged;
@@ -35,7 +35,7 @@ final class FvSessionTracker {
                 current.cancelled = a == MotionEvent.ACTION_CANCEL;
                 current.upAt = e.getEventTime();
                 final long id = current.id;
-                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> flushIf(id), 180);
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> flushIf(id), 220);
             }
         }
     }
@@ -72,14 +72,14 @@ final class FvSessionTracker {
 
     static String label(int code) {
         return switch (code) {
-            case 0 -> "CIRCLE_TRACE_RELEASE_CLEANUP_CONFIRMED";
+            case 0 -> "CIRCLE_RELEASE_FINISH_CONFIRMED";
             case 1 -> "SIDE_SHORT_CONFIRMED";
             case 2 -> "SIDE_LONG_CONFIRMED";
             case 4 -> "UP_CONFIRMED";
-            case 9 -> "CLICK_CONFIRMED";
+            case 9 -> "TAP_DISPATCH_CONFIRMED";
             case 10 -> "DOWN_CONFIRMED";
-            case 16 -> "LONG_HOLD_RELEASE_WITH_CIRCLE_ACTIVE_CONFIRMED";
-            case 30 -> "OCR_CAPTURE_TRIGGER_CONFIRMED";
+            case 16 -> "ENTER_CIRCLE_MODE_CONFIRMED";
+            case 30 -> "GESTURE_RECOGNIZE_PATH_CONFIRMED";
             case 6 -> "UNKNOWN_6";
             default -> "UNKNOWN_" + code;
         };
