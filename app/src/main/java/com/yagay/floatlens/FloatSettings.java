@@ -91,7 +91,6 @@ public final class FloatSettings {
         if (!p.contains(K_KEEP_IN_SCREENSHOT) && p.contains("setting_screenshot_keep_float_icon")) {
             p.edit().putBoolean(K_KEEP_IN_SCREENSHOT, p.getBoolean("setting_screenshot_keep_float_icon", false)).apply();
         }
-        // Early FloatLens builds stored this as boolean. FV 1.6.4 actually uses an int mode.
         Object old = p.getAll().get(K_HIDE_FULLSCREEN);
         if (old instanceof Boolean b) p.edit().putInt(K_HIDE_FULLSCREEN, b ? 2 : 0).apply();
     }
@@ -101,7 +100,8 @@ public final class FloatSettings {
     public int showPercentage() { return clamp(p.getInt(K_SHOW_PERCENT, 72), 10, 100); }
     public int hiddenPercent() { return 100 - showPercentage(); }
     public int longPressMs() { return clamp(p.getInt(K_LONG_PRESS, 300), 100, 1500); }
-    public int doubleTapMs() { return clamp(p.getInt(K_DOUBLE_TAP, 300), 120, 800); }
+    /** FV 1.6.4 onCreate reads icon_db_click_detect_time with a 200 ms default. */
+    public int doubleTapMs() { return clamp(p.getInt(K_DOUBLE_TAP, 200), 120, 800); }
     public int tapMaxMs() { return clamp(p.getInt(K_TAP_MAX_MS, 150), 80, 400); }
     public int downShortDistance() { return clamp(p.getInt(K_DOWN_SHORT_DISTANCE, 200), 30, 900); }
     public int sideShortDistance() { return clamp(p.getInt(K_SIDE_SHORT_DISTANCE, 320), 30, 1200); }
@@ -127,7 +127,6 @@ public final class FloatSettings {
     public boolean imeAvoid() { return p.getBoolean(K_IME_AVOID, true); }
     public boolean defaultHideByApp() { return p.getBoolean(K_GLOBAL_DEFAULT_HIDE, false); }
     public boolean hideWithoutNotify() { return p.getBoolean(K_HIDE_ICON_NO_NOTIFY, false); }
-    /** FV 1.6.4 uses an int preference here. 0=off; non-zero selects a fullscreen hide mode. */
     public int fullscreenHideMode() {
         Object raw = p.getAll().get(K_HIDE_FULLSCREEN);
         if (raw instanceof Number n) return clamp(n.intValue(), 0, 3);
