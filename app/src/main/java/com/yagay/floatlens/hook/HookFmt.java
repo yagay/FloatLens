@@ -15,9 +15,17 @@ final class HookFmt {
         if(o instanceof WindowManager.LayoutParams p)return "LP{x="+p.x+" y="+p.y+" w="+p.width+" h="+p.height+" type="+p.type+" flags=0x"+Integer.toHexString(p.flags)+" grav="+p.gravity+" alpha="+p.alpha+"}";
         if(o instanceof View v)return v.getClass().getName()+"{"+v.getWidth()+"x"+v.getHeight()+" xy="+f(v.getX())+","+f(v.getY())+" vis="+v.getVisibility()+"}";
         if(o instanceof Rect r)return r.toShortString();
-        Class<?> c=o.getClass(); if(c.isArray())return c.getComponentType().getSimpleName()+"["+Array.getLength(o)+"]";
+        if(o instanceof Collection<?> c)return collection(c);
+        Class<?> c=o.getClass(); if(c.isArray())return array(o,c);
         if(o instanceof Number||o instanceof Boolean||o instanceof CharSequence||o instanceof Enum<?>)return String.valueOf(o);
+        String pred=prediction(o); if(pred!=null)return pred;
         return c.getName()+"@"+Integer.toHexString(System.identityHashCode(o));
+    }
+    private static String collection(Collection<?> c){StringBuilder b=new StringBuilder(c.getClass().getSimpleName()).append('[');int i=0;for(Object x:c){if(i>0)b.append(',');if(i>=8){b.append("…+").append(c.size()-i);break;}b.append(value(x));i++;}return b.append(']').toString();}
+    private static String array(Object o,Class<?> c){int n=Array.getLength(o);StringBuilder b=new StringBuilder(c.getComponentType().getSimpleName()).append('[');for(int i=0;i<Math.min(n,8);i++){if(i>0)b.append(',');b.append(value(Array.get(o,i)));}if(n>8)b.append(",…+").append(n-8);return b.append(']').toString();}
+    private static String prediction(Object o){
+        if(!"android.gesture.Prediction".equals(o.getClass().getName()))return null;
+        try{Field n=o.getClass().getField("name"),s=o.getClass().getField("score");return "Prediction{name="+n.get(o)+" score="+s.get(o)+"}";}catch(Throwable t){return "Prediction@"+Integer.toHexString(System.identityHashCode(o));}
     }
     static String member(Member m){return m.getDeclaringClass().getName()+"#"+m.getName();}
     static String stack(int max){StackTraceElement[] st=Thread.currentThread().getStackTrace();StringBuilder b=new StringBuilder();int n=0;for(StackTraceElement e:st){String c=e.getClassName();if(c.startsWith("com.yagay.floatlens.hook")||c.startsWith("java.lang.Thread"))continue;if(c.startsWith("com.fooview")||c.startsWith("android.")){if(n++>0)b.append(" <- ");b.append(c).append('.').append(e.getMethodName()).append(':').append(e.getLineNumber());if(n>=max)break;}}return b.toString();}
