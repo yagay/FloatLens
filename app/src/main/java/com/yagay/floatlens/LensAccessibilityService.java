@@ -19,17 +19,26 @@ public class LensAccessibilityService extends AccessibilityService {
     private static volatile LensAccessibilityService s;
     private volatile EnvironmentState env = new EnvironmentState("", false, 0, true, false, false);
 
-    @Override protected void onServiceConnected(){ s=this; publishEnvironment(); }
+    @Override protected void onServiceConnected(){
+        super.onServiceConnected();
+        s=this;
+        try { publishEnvironment(); }
+        catch (Throwable t) { DiagnosticLog.i(this,"ACCESSIBILITY","publish on connect failed="+t); }
+    }
     @Override public void onDestroy(){ if(s==this)s=null; super.onDestroy(); }
 
     @Override public void onAccessibilityEvent(AccessibilityEvent e) {
-        String top = env.topPackage();
-        if (e != null && e.getPackageName() != null) {
-            String pkg=e.getPackageName().toString();
-            if (!pkg.equals(getPackageName()) && !pkg.equals("com.android.systemui")) top=pkg;
+        try {
+            String top = env.topPackage();
+            if (e != null && e.getPackageName() != null) {
+                String pkg=e.getPackageName().toString();
+                if (!pkg.equals(getPackageName()) && !pkg.equals("com.android.systemui")) top=pkg;
+            }
+            env = inspect(top);
+            publishEnvironment();
+        } catch (Throwable t) {
+            DiagnosticLog.i(this,"ACCESSIBILITY","event failed="+t);
         }
-        env = inspect(top);
-        publishEnvironment();
     }
 
     private EnvironmentState inspect(String top) {
