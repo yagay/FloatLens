@@ -1,20 +1,22 @@
 package com.yagay.floatlens.hook;
 
-import android.os.SystemClock;
 import android.view.MotionEvent;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * Runtime-only summarizer for fooView FV touch sessions.
- * Confirmed codes are based on captured fooView 1.6.4 runtime traces.
- */
+/** Runtime-only summarizer for fooView FV touch sessions. */
 final class FvSessionTracker {
     private static final Object LOCK = new Object();
+    private static final String BUILD = "2.2.4-tracker-1";
     private static Session current;
     private static long seq;
+    private static boolean buildLogged;
 
     static void onTouch(List<?> args) {
+        if (!buildLogged) {
+            buildLogged = true;
+            HookLogTransport.log("TRACKER_BUILD", "build=" + BUILD);
+        }
         MotionEvent e = null;
         for (Object o : args) if (o instanceof MotionEvent m) { e = m; break; }
         if (e == null) return;
@@ -22,6 +24,8 @@ final class FvSessionTracker {
             int a = e.getActionMasked();
             if (a == MotionEvent.ACTION_DOWN) {
                 current = new Session(++seq, e);
+                HookLogTransport.log("SESSION_START", String.format(Locale.US,
+                        "id=%d raw=%.1f,%.1f t=%d", current.id, current.downX, current.downY, current.downAt));
                 return;
             }
             if (current == null) return;
@@ -30,7 +34,6 @@ final class FvSessionTracker {
                 current.ended = true;
                 current.cancelled = a == MotionEvent.ACTION_CANCEL;
                 current.upAt = e.getEventTime();
-                // Wait briefly for c3.b(code)/Y1(code), which normally follow ACTION_UP.
                 final long id = current.id;
                 new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> flushIf(id), 180);
             }
@@ -39,6 +42,7 @@ final class FvSessionTracker {
 
     static void onCode(int code, String source) {
         synchronized (LOCK) {
+            HookLogTransport.log("FV_CODE", "source=" + source + " code=" + code + " label=" + label(code));
             if (current == null) return;
             if ("b".equals(source)) current.bCode = code;
             if ("Y1".equals(source)) current.y1Code = code;
@@ -68,14 +72,15 @@ final class FvSessionTracker {
 
     static String label(int code) {
         return switch (code) {
+            case 0 -> "CIRCLE_RELEASE_COMPLETE_CONFIRMED";
             case 1 -> "SIDE_SHORT_CONFIRMED";
             case 2 -> "SIDE_LONG_CONFIRMED";
             case 4 -> "UP_CONFIRMED";
             case 9 -> "CLICK_CONFIRMED";
             case 10 -> "DOWN_CONFIRMED";
+            case 16 -> "LONG_PRESS_CIRCLE_START_CONFIRMED";
             case 30 -> "RECOGNIZE_PATH_CONFIRMED";
             case 6 -> "UNKNOWN_6";
-            case 16 -> "UNKNOWN_16";
             default -> "UNKNOWN_" + code;
         };
     }
