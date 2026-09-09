@@ -3,6 +3,7 @@ package com.yagay.floatlens;
 import android.content.ContentValues;
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.Rect;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
@@ -21,6 +22,39 @@ public final class ScreenshotController {
         getBitmap(c, b -> { if (region) RegionOverlay.show(c, b, false); else save(c, b); });
     }
     public static void captureForOcr(Context c) { getBitmap(c, b -> RegionOverlay.show(c, b, true)); }
+
+    /** OCR only the Accessibility View rectangle. */
+    public static void captureBoundsForOcr(Context c, Rect screenBounds) {
+        if(screenBounds==null||screenBounds.isEmpty()){captureForOcr(c);return;}
+        Context app=c.getApplicationContext();
+        FloatSettings fs=new FloatSettings(app);
+        FloatService service=FloatService.get();
+        boolean hideIcon=!fs.keepInScreenshot()&&service!=null;
+        if(hideIcon)service.setScreenshotHidden(true);
+        new Handler(Looper.getMainLooper()).postDelayed(() -> captureNow(app,fs,raw -> {
+            try{
+                WindowManager wm=(WindowManager)app.getSystemService(Context.WINDOW_SERVICE);
+                Rect display=wm.getCurrentWindowMetrics().getBounds();
+                float sx=raw.getWidth()/(float)Math.max(1,display.width());
+                float sy=raw.getHeight()/(float)Math.max(1,display.height());
+                int left=Math.max(0,Math.min(raw.getWidth()-1,Math.round((screenBounds.left-display.left)*sx)));
+                int top=Math.max(0,Math.min(raw.getHeight()-1,Math.round((screenBounds.top-display.top)*sy)));
+                int right=Math.max(left+1,Math.min(raw.getWidth(),Math.round((screenBounds.right-display.left)*sx)));
+                int bottom=Math.max(top+1,Math.min(raw.getHeight(),Math.round((screenBounds.bottom-display.top)*sy)));
+                Bitmap crop=Bitmap.createBitmap(raw,left,top,right-left,bottom-top);
+                restoreIcon(service,hideIcon);
+                FloatService f=FloatService.get();if(f!=null)f.onCircleRecognizeStarted();
+                OcrEngine.recognize(app,crop);
+            }catch(Throwable t){
+                restoreIcon(service,hideIcon);
+                Toast.makeText(app,"View OCR 失败，改用自由圈选",Toast.LENGTH_SHORT).show();
+                captureForOcr(app);
+            }
+        }, t -> {
+            restoreIcon(service,hideIcon);
+            Toast.makeText(app,"截图失败: "+safeMessage(t),Toast.LENGTH_LONG).show();
+        }),hideIcon?100L:0L);
+    }
 
     private static void getBitmap(Context c, Consumer<Bitmap> ok) {
         Context app = c.getApplicationContext();
