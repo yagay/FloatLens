@@ -1,0 +1,11 @@
+package com.yagay.floatlens;
+import android.content.Context; import android.graphics.*; import android.view.*;
+final class GestureTrailOverlay {
+ private final Context c; private final WindowManager wm; private final TrailView view; private boolean attached;
+ GestureTrailOverlay(Context c){this.c=c;wm=(WindowManager)c.getSystemService(Context.WINDOW_SERVICE);view=new TrailView(c);}
+ void begin(float x,float y){ensureAttached();view.reload();view.begin(x,y);} void add(float x,float y){if(attached)view.add(x,y);} void end(){if(!attached)return;try{wm.removeView(view);}catch(Throwable ignored){}attached=false;}
+ private void ensureAttached(){if(attached)return;WindowManager.LayoutParams lp=new WindowManager.LayoutParams(-1,-1,WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE|WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE|WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN|WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,PixelFormat.TRANSLUCENT);lp.gravity=Gravity.TOP|Gravity.START;wm.addView(view,lp);attached=true;}
+ private static final class TrailView extends View { final Paint p=new Paint(Paint.ANTI_ALIAS_FLAG); final Path path=new Path(); FloatSettings fs; TrailView(Context c){super(c);reload();}
+  void reload(){fs=new FloatSettings(getContext());p.setStyle(Paint.Style.STROKE);p.setStrokeJoin(Paint.Join.ROUND);p.setStrokeWidth(fs.lineWidthDp()*getResources().getDisplayMetrics().density);p.setAlpha(Math.round(255*fs.lineAlpha()/100f));p.setStrokeCap(fs.lineStyle()==1?Paint.Cap.SQUARE:Paint.Cap.ROUND); try{String[] cs=fs.lineColors().split("[,; ]+"); int c1=Color.parseColor(cs[0]); p.setColor(c1); if(fs.lineGradient()&&cs.length>1){int c2=Color.parseColor(cs[1]); p.setShader(new LinearGradient(0,0,getResources().getDisplayMetrics().widthPixels,getResources().getDisplayMetrics().heightPixels,c1,c2,Shader.TileMode.CLAMP));}else p.setShader(null);}catch(Throwable t){p.setShader(null);p.setColor(Color.WHITE);} }
+  void begin(float x,float y){path.reset();path.moveTo(x,y);invalidate();} void add(float x,float y){path.lineTo(x,y);invalidate();} @Override protected void onDraw(Canvas c){super.onDraw(c);c.drawPath(path,p);} }
+}
