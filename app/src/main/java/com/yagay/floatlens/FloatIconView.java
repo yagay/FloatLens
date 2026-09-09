@@ -17,7 +17,7 @@ import android.view.View;
 import java.util.List;
 import java.util.ArrayList;
 
-/** Floating icon touch engine. Recognition is intentionally separated from action execution. */
+/** Floating icon touch engine. The icon follows MOVE immediately; recognition stays separate. */
 public class FloatIconView extends View {
     public interface Callback {
         void onDragStart();
@@ -41,6 +41,7 @@ public class FloatIconView extends View {
     private Drawable customDrawable;
     private final ArrayList<Drawable> slideDrawables = new ArrayList<>();
     private int slideIndex;
+    private boolean followStarted;
     private final Runnable slideRunnable = new Runnable() { public void run() { if (fs.style()==4 && slideDrawables.size()>1) { slideIndex=(slideIndex+1)%slideDrawables.size(); invalidate(); handler.postDelayed(this, fs.slideIntervalMs()); } } };
 
     public FloatIconView(Context c, Callback cb) {
@@ -106,18 +107,14 @@ public class FloatIconView extends View {
         switch (action) {
             case MotionEvent.ACTION_DOWN -> {
                 cancelLongPress();
+                followStarted=false;
                 session.begin(rx, ry, now);
                 DiagnosticLog.i(getContext(), "STATE", "DOWN begin="+Math.round(rx)+","+Math.round(ry));
                 invalidate();
                 longPressRunnable = () -> {
-                    float tolerance = longPressDragTolerancePx();
-                    if (!session.multiTouch
-                            && session.phase != GestureSession.Phase.ICON_DRAG
-                            && session.phase != GestureSession.Phase.FINISHING
-                            && session.phase != GestureSession.Phase.IDLE
-                            && session.distance() <= tolerance) {
+                    if (!session.multiTouch && session.phase == GestureSession.Phase.DOWN && session.distance() < gestureSlopPx()) {
                         session.longPressReady = true;
-                        DiagnosticLog.i(getContext(), "STATE", "longPressReady afterMs="+fs.longPressMs()+" distance="+Math.round(session.distance())+" tolerance="+Math.round(tolerance)+" phase="+session.phase);
+                        DiagnosticLog.i(getContext(), "STATE", "longPressReady afterMs="+fs.longPressMs()+" distance="+Math.round(session.distance()));
                         invalidate();
                         if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
                     }
@@ -126,43 +123,30 @@ public class FloatIconView extends View {
                 return true;
             }
             case MotionEvent.ACTION_MOVE -> {
+                GesturePointSample prev = session.points.isEmpty() ? null : session.points.get(session.points.size()-1);
                 session.add(rx, ry, now);
                 if (session.multiTouch) return true;
-                float dist = session.distance();
-                float slop = gestureSlopPx();
-                float holdTolerance = longPressDragTolerancePx();
 
-                // Long-hold drag wins over gesture recognition. Small natural finger drift is tolerated
-                // while the long-press timer is arming, so users don't need to hold perfectly still.
-                if (session.longPressReady && fs.longPressDragEnabled()) {
-                    if (session.phase != GestureSession.Phase.ICON_DRAG) {
-                        session.phase = GestureSession.Phase.ICON_DRAG;
-                        DiagnosticLog.i(getContext(), "STATE", "phase=ICON_DRAG distance="+Math.round(dist)+" slop="+Math.round(slop)+" holdTolerance="+Math.round(holdTolerance));
-                        cb.onGestureEnd(session.snapshot());
-                        cb.onDragStart();
-                    }
-                    if (session.points.size() >= 2) {
-                        GesturePointSample prev = session.points.get(session.points.size() - 2);
-                        int dx = Math.round(rx - prev.x());
-                        int dy = Math.round(ry - prev.y());
-                        if (dx != 0 || dy != 0) cb.onMove(dx, dy);
-                    }
-                    session.moved = true;
-                    return true;
+                int stepDx=prev==null?0:Math.round(rx-prev.x());
+                int stepDy=prev==null?0:Math.round(ry-prev.y());
+                float dist=session.distance();
+                float slop=gestureSlopPx();
+
+                // FV-style behaviour: the floating icon visually follows the finger immediately.
+                if ((stepDx!=0||stepDy!=0) && dist>=dp(1.5f)) {
+                    if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","followStarted immediate distance="+Math.round(dist));}
+                    cb.onMove(stepDx,stepDy);
+                    session.moved=true;
                 }
 
-                if (session.phase == GestureSession.Phase.DOWN && dist >= slop) {
-                    // If long-press dragging is enabled, keep the long-press timer alive through a
-                    // moderate amount of finger drift. A clearly intentional swipe still becomes a gesture.
-                    if (!fs.longPressDragEnabled() || dist > holdTolerance) {
-                        cancelLongPress();
-                        session.phase = GestureSession.Phase.GESTURE;
-                        DiagnosticLog.i(getContext(), "STATE", "phase=GESTURE distance="+Math.round(dist)+" slop="+Math.round(slop)+" holdTolerance="+Math.round(holdTolerance));
-                        session.moved = true;
-                        cb.onGestureStart(session.downX, session.downY);
-                    }
+                // Long press only means a stationary hold. Once the user really moves, it is a gesture/follow path.
+                if(session.phase==GestureSession.Phase.DOWN && dist>=slop){
+                    cancelLongPress();
+                    session.phase=GestureSession.Phase.GESTURE;
+                    cb.onGestureStart(session.downX,session.downY);
+                    DiagnosticLog.i(getContext(),"STATE","phase=GESTURE immediateFollow=true distance="+Math.round(dist)+" slop="+Math.round(slop));
                 }
-                if (session.phase == GestureSession.Phase.GESTURE) cb.onGestureMove(rx, ry);
+                if(session.phase==GestureSession.Phase.GESTURE)cb.onGestureMove(rx,ry);
                 return true;
             }
             case MotionEvent.ACTION_UP -> {
@@ -182,20 +166,18 @@ public class FloatIconView extends View {
 
     private void finish(long now, boolean cancelled) {
         GestureSession.Phase ended = session.phase;
-        DiagnosticLog.i(getContext(), "FINISH", "ended="+ended+" cancelled="+cancelled+" duration="+session.duration(now)+" distance="+Math.round(session.distance())+" points="+session.points.size()+" multi="+session.multiTouch+" longReady="+session.longPressReady);
+        DiagnosticLog.i(getContext(), "FINISH", "ended="+ended+" cancelled="+cancelled+" duration="+session.duration(now)+" distance="+Math.round(session.distance())+" points="+session.points.size()+" multi="+session.multiTouch+" longReady="+session.longPressReady+" followed="+followStarted);
         session.phase = GestureSession.Phase.FINISHING;
         cb.onGestureEnd(session.snapshot());
         if (session.multiTouch || cancelled) {
-            cb.onRelease(ended == GestureSession.Phase.ICON_DRAG);
-            session.reset(); invalidate(); return;
+            cb.onRelease(followStarted);
+            resetSession(); return;
         }
 
-        if (ended == GestureSession.Phase.ICON_DRAG) {
-            cb.onRelease(true);
-        } else if (ended == GestureSession.Phase.GESTURE) {
-            cb.onRelease(false);
+        if (ended == GestureSession.Phase.GESTURE) {
             GestureDecision d = GestureClassifier.classify(session, fs, getResources().getDisplayMetrics().density);
             DiagnosticLog.i(getContext(), "GESTURE", "decision="+d+" track="+trackSummary());
+            cb.onRelease(followStarted);
             if (!d.isNone()) {
                 if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.GESTURE_END);
                 cb.onGestureDecision(d);
@@ -203,15 +185,16 @@ public class FloatIconView extends View {
         } else if (session.longPressReady) {
             cb.onRelease(false);
             GestureDecision d=new GestureDecision(GestureCode.ENTER_CIRCLE,false,0f,0f);
-            DiagnosticLog.i(getContext(), "GESTURE", "decision="+d+" source=long_hold");
+            DiagnosticLog.i(getContext(), "GESTURE", "decision="+d+" source=stationary_long_hold");
             cb.onGestureDecision(d);
         } else {
-            cb.onRelease(false);
-            if (session.duration(now) <= fs.tapMaxMs() && session.distance() < gestureSlopPx()) handleTap(now);
+            cb.onRelease(followStarted);
+            if (!followStarted && session.duration(now) <= fs.tapMaxMs() && session.distance() < gestureSlopPx()) handleTap(now);
         }
-        session.reset();
-        invalidate();
+        resetSession();
     }
+
+    private void resetSession(){followStarted=false;session.reset();invalidate();}
 
     private void handleTap(long now) {
         if (lastTapAt != 0 && now - lastTapAt <= fs.doubleTapMs()) {
@@ -242,7 +225,6 @@ public class FloatIconView extends View {
     }
 
     private float gestureSlopPx() { return dp(fs.gestureStartDistance()); }
-    private float longPressDragTolerancePx() { return Math.max(gestureSlopPx() * 2f, dp(24f)); }
     @Override public void cancelLongPress() {
         super.cancelLongPress();
         if (longPressRunnable != null) handler.removeCallbacks(longPressRunnable);
