@@ -15,6 +15,7 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQ_EXPORT_LOG = 701;
     private static final int REQ_EXPORT_INSPECTOR = 702;
     private TextView inspectorStatus;
+    private boolean statusLoadedOnce;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -80,8 +81,8 @@ public class MainActivity extends AppCompatActivity {
 
         inspectorStatus = new TextView(this);
         inspectorStatus.setPadding(0, dp(18), 0, dp(12));
+        inspectorStatus.setText("FV Hook 自检：点击刷新");
         root.addView(inspectorStatus);
-        refreshInspectorStatus();
 
         Button selfTest = button("刷新 FV Hook 自检");
         selfTest.setOnClickListener(v -> { sendInspectorCommand("selftest"); inspectorStatus.postDelayed(this::refreshInspectorStatus, 700); });
@@ -101,7 +102,7 @@ public class MainActivity extends AppCompatActivity {
 
         Button exportInspector = button("导出 FV Runtime Inspector ZIP");
         exportInspector.setOnClickListener(v -> {
-            if(InspectorLog.read(this).isBlank()){Toast.makeText(this,"暂无 Hook 日志。请先在 LSPosed 启用 FloatLens，并把作用域设为 fooView，然后强制停止并重新打开 fooView。",Toast.LENGTH_LONG).show();return;}
+            if(!InspectorLog.hasAny(this)){Toast.makeText(this,"暂无 Hook 日志。请先在 LSPosed 启用 FloatLens，并把作用域设为 fooView，然后强制停止并重新打开 fooView。",Toast.LENGTH_LONG).show();return;}
             Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/zip").putExtra(Intent.EXTRA_TITLE,"FloatLens-FV-runtime-inspector.zip");
             startActivityForResult(i,REQ_EXPORT_INSPECTOR);
         });
@@ -118,7 +119,10 @@ public class MainActivity extends AppCompatActivity {
         setContentView(sv);
     }
 
-    @Override protected void onResume(){super.onResume();refreshInspectorStatus();}
+    @Override protected void onResume(){
+        super.onResume();
+        if(!statusLoadedOnce){statusLoadedOnce=true;inspectorStatus.post(this::refreshInspectorStatus);}
+    }
 
     private void refreshInspectorStatus(){if(inspectorStatus!=null)inspectorStatus.setText(InspectorLog.selfTestStatus(this));}
 
