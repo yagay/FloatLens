@@ -91,6 +91,9 @@ public final class FloatSettings {
         if (!p.contains(K_KEEP_IN_SCREENSHOT) && p.contains("setting_screenshot_keep_float_icon")) {
             p.edit().putBoolean(K_KEEP_IN_SCREENSHOT, p.getBoolean("setting_screenshot_keep_float_icon", false)).apply();
         }
+        // Early FloatLens builds stored this as boolean. FV 1.6.4 actually uses an int mode.
+        Object old = p.getAll().get(K_HIDE_FULLSCREEN);
+        if (old instanceof Boolean b) p.edit().putInt(K_HIDE_FULLSCREEN, b ? 2 : 0).apply();
     }
 
     public float alpha() { return clamp(p.getInt(K_ALPHA, 62), 10, 100) / 100f; }
@@ -124,7 +127,14 @@ public final class FloatSettings {
     public boolean imeAvoid() { return p.getBoolean(K_IME_AVOID, true); }
     public boolean defaultHideByApp() { return p.getBoolean(K_GLOBAL_DEFAULT_HIDE, false); }
     public boolean hideWithoutNotify() { return p.getBoolean(K_HIDE_ICON_NO_NOTIFY, false); }
-    public boolean hideWhenFullscreen() { return p.getBoolean(K_HIDE_FULLSCREEN, false); }
+    /** FV 1.6.4 uses an int preference here. 0=off; non-zero selects a fullscreen hide mode. */
+    public int fullscreenHideMode() {
+        Object raw = p.getAll().get(K_HIDE_FULLSCREEN);
+        if (raw instanceof Number n) return clamp(n.intValue(), 0, 3);
+        if (raw instanceof Boolean b) return b ? 2 : 0;
+        return 0;
+    }
+    public boolean hideWhenFullscreen() { return fullscreenHideMode() != 0; }
     public boolean clickScreenUnderIcon() { return p.getBoolean(K_CLICK_UNDER, false); }
     public int lineAlpha() { return clamp(p.getInt(K_LINE_ALPHA, 80), 10, 100); }
     public int lineWidthDp() { return clamp(p.getInt(K_LINE_WIDTH, 6), 1, 24); }
