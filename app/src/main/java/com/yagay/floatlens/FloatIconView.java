@@ -14,11 +14,10 @@ import android.os.SystemClock;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.WindowManager;
 import java.util.List;
 import java.util.ArrayList;
 
-/** Floating icon touch engine. The icon follows MOVE immediately and live-recognizes Views underneath. */
+/** Floating icon touch engine. Raw MotionEvents are forwarded into a dedicated FV-style selection engine. */
 public class FloatIconView extends View {
     public interface Callback {
         void onDragStart();
@@ -43,8 +42,8 @@ public class FloatIconView extends View {
     private final ArrayList<Drawable> slideDrawables = new ArrayList<>();
     private int slideIndex;
     private boolean followStarted;
-    private boolean hoverConsumed;
-    private ViewHoverOverlay hover;
+    private boolean selectionConsumed;
+    private ViewSelectionEngine selectionEngine;
     private final Runnable slideRunnable = new Runnable() { public void run() { if (fs.style()==4 && slideDrawables.size()>1) { slideIndex=(slideIndex+1)%slideDrawables.size(); invalidate(); handler.postDelayed(this, fs.slideIntervalMs()); } } };
 
     public FloatIconView(Context c, Callback cb) {
@@ -59,7 +58,7 @@ public class FloatIconView extends View {
     }
 
     public void refreshSettings() { fs = new FloatSettings(getContext()); loadCustomIcon(); invalidate(); }
-    @Override protected void onDetachedFromWindow() { if(hover!=null)hover.cancel(); handler.removeCallbacks(slideRunnable); handler.removeCallbacksAndMessages(null); super.onDetachedFromWindow(); }
+    @Override protected void onDetachedFromWindow() { if(selectionEngine!=null)selectionEngine.cancel(); handler.removeCallbacks(slideRunnable); handler.removeCallbacksAndMessages(null); super.onDetachedFromWindow(); }
 
     private void loadCustomIcon() {
         handler.removeCallbacks(slideRunnable); customDrawable = null; slideDrawables.clear(); slideIndex=0;
@@ -99,9 +98,8 @@ public class FloatIconView extends View {
 
         if (action == MotionEvent.ACTION_POINTER_DOWN) {
             session.multiTouch = true;
-            DiagnosticLog.i(getContext(), "STATE", "multiTouch=true pointerDown count="+e.getPointerCount());
             cancelLongPress();
-            if(hover!=null)hover.cancel();
+            if(selectionEngine!=null)selectionEngine.cancel();
             cb.onGestureEnd(session.snapshot());
             invalidate();
             return true;
@@ -111,16 +109,16 @@ public class FloatIconView extends View {
         switch (action) {
             case MotionEvent.ACTION_DOWN -> {
                 cancelLongPress();
-                if(hover!=null)hover.cancel();
-                hover=null; hoverConsumed=false; followStarted=false;
+                if(selectionEngine!=null)selectionEngine.cancel();
+                selectionEngine=new ViewSelectionEngine(getContext());
+                selectionConsumed=false; followStarted=false;
                 session.begin(rx, ry, now);
-                DiagnosticLog.i(getContext(), "STATE", "DOWN begin="+Math.round(rx)+","+Math.round(ry));
+                if(selectionEngine.available())selectionEngine.dispatchTouchEvent(e);
+                DiagnosticLog.i(getContext(), "STATE", "DOWN begin="+Math.round(rx)+","+Math.round(ry)+" selection="+selectionEngine.available());
                 invalidate();
                 longPressRunnable = () -> {
                     if (!session.multiTouch && session.phase == GestureSession.Phase.DOWN && session.distance() < gestureSlopPx()) {
                         session.longPressReady = true;
-                        DiagnosticLog.i(getContext(), "STATE", "longPressReady afterMs="+fs.longPressMs()+" distance="+Math.round(session.distance()));
-                        invalidate();
                         if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
                     }
                 };
@@ -137,18 +135,10 @@ public class FloatIconView extends View {
                 float dist=session.distance();
                 float slop=gestureSlopPx();
 
-                // FV-style behaviour: icon follows the pointer immediately, while a transparent
-                // non-touchable overlay continuously recognizes the Accessibility View underneath.
                 if ((stepDx!=0||stepDy!=0) && dist>=dp(1.5f)) {
-                    if(!followStarted){
-                        followStarted=true;
-                        cb.onDragStart();
-                        hover=new ViewHoverOverlay(getContext());
-                        if(hover.available())hover.begin();
-                        DiagnosticLog.i(getContext(),"STATE","followStarted immediate + viewHover distance="+Math.round(dist));
-                    }
+                    if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","followStarted immediate distance="+Math.round(dist));}
                     cb.onMove(stepDx,stepDy);
-                    if(hover!=null&&hover.available())hover.update(rx,ry);
+                    if(selectionEngine!=null&&selectionEngine.available())selectionEngine.dispatchTouchEvent(e);
                     session.moved=true;
                 }
 
@@ -156,7 +146,6 @@ public class FloatIconView extends View {
                     cancelLongPress();
                     session.phase=GestureSession.Phase.GESTURE;
                     cb.onGestureStart(session.downX,session.downY);
-                    DiagnosticLog.i(getContext(),"STATE","phase=GESTURE immediateFollow=true distance="+Math.round(dist)+" slop="+Math.round(slop));
                 }
                 if(session.phase==GestureSession.Phase.GESTURE)cb.onGestureMove(rx,ry);
                 return true;
@@ -164,14 +153,14 @@ public class FloatIconView extends View {
             case MotionEvent.ACTION_UP -> {
                 cancelLongPress();
                 session.add(rx, ry, now);
-                hoverConsumed = finishHover(rx, false);
+                selectionConsumed=selectionEngine!=null&&selectionEngine.finish(e);
                 finish(now, false);
                 return true;
             }
             case MotionEvent.ACTION_CANCEL -> {
                 cancelLongPress();
-                if(hover!=null)hover.cancel();
-                hoverConsumed=false;
+                if(selectionEngine!=null)selectionEngine.cancel();
+                selectionConsumed=false;
                 finish(now, true);
                 return true;
             }
@@ -179,28 +168,9 @@ public class FloatIconView extends View {
         return true;
     }
 
-    private boolean finishHover(float rawX, boolean forceCancel) {
-        if(hover==null)return false;
-        if(forceCancel){hover.cancel();return false;}
-        boolean interior = isInteriorX(rawX);
-        boolean consume = interior && hover.hasCandidate();
-        boolean result = hover.finish(consume);
-        DiagnosticLog.i(getContext(),"VIEW_HOVER","release interior="+interior+" hadCandidate="+consume+" consumed="+result);
-        return result;
-    }
-
-    private boolean isInteriorX(float rawX) {
-        try {
-            WindowManager wm=(WindowManager)getContext().getSystemService(Context.WINDOW_SERVICE);
-            int width=wm.getCurrentWindowMetrics().getBounds().width();
-            float edge=Math.max(dp(56),getWidth()*0.9f);
-            return rawX>edge && rawX<width-edge;
-        } catch(Throwable t){return true;}
-    }
-
     private void finish(long now, boolean cancelled) {
         GestureSession.Phase ended = session.phase;
-        DiagnosticLog.i(getContext(), "FINISH", "ended="+ended+" cancelled="+cancelled+" duration="+session.duration(now)+" distance="+Math.round(session.distance())+" points="+session.points.size()+" multi="+session.multiTouch+" longReady="+session.longPressReady+" followed="+followStarted+" hoverConsumed="+hoverConsumed);
+        DiagnosticLog.i(getContext(), "FINISH", "ended="+ended+" cancelled="+cancelled+" duration="+session.duration(now)+" distance="+Math.round(session.distance())+" points="+session.points.size()+" multi="+session.multiTouch+" longReady="+session.longPressReady+" followed="+followStarted+" selectionConsumed="+selectionConsumed);
         session.phase = GestureSession.Phase.FINISHING;
         cb.onGestureEnd(session.snapshot());
         if (session.multiTouch || cancelled) {
@@ -210,31 +180,25 @@ public class FloatIconView extends View {
 
         if (ended == GestureSession.Phase.GESTURE) {
             GestureDecision d = GestureClassifier.classify(session, fs, getResources().getDisplayMetrics().density);
-            DiagnosticLog.i(getContext(), "GESTURE", "decision="+d+" track="+trackSummary());
             cb.onRelease(followStarted);
-            if (!hoverConsumed && !d.isNone()) {
+            if (!selectionConsumed && !d.isNone()) {
                 if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.GESTURE_END);
                 cb.onGestureDecision(d);
             }
         } else if (session.longPressReady) {
             cb.onRelease(false);
-            if(!hoverConsumed){
-                GestureDecision d=new GestureDecision(GestureCode.ENTER_CIRCLE,false,0f,0f);
-                DiagnosticLog.i(getContext(), "GESTURE", "decision="+d+" source=stationary_long_hold");
-                cb.onGestureDecision(d);
-            }
+            if(!selectionConsumed)cb.onGestureDecision(new GestureDecision(GestureCode.ENTER_CIRCLE,false,0f,0f));
         } else {
             cb.onRelease(followStarted);
-            if (!hoverConsumed && !followStarted && session.duration(now) <= fs.tapMaxMs() && session.distance() < gestureSlopPx()) handleTap(now);
+            if (!selectionConsumed && !followStarted && session.duration(now) <= fs.tapMaxMs() && session.distance() < gestureSlopPx()) handleTap(now);
         }
         resetSession();
     }
 
-    private void resetSession(){hover=null;hoverConsumed=false;followStarted=false;session.reset();invalidate();}
+    private void resetSession(){selectionEngine=null;selectionConsumed=false;followStarted=false;session.reset();invalidate();}
 
     private void handleTap(long now) {
         if (lastTapAt != 0 && now - lastTapAt <= fs.doubleTapMs()) {
-            DiagnosticLog.i(getContext(), "TAP", "doubleTap gap="+(now-lastTapAt)+" window="+fs.doubleTapMs());
             lastTapAt = 0;
             if (singleTapRunnable != null) handler.removeCallbacks(singleTapRunnable);
             singleTapRunnable = null;
@@ -242,7 +206,6 @@ public class FloatIconView extends View {
             cb.onAction(fs.action(FloatSettings.K_ACTION_DOUBLE, ActionId.SCREENSHOT));
             return;
         }
-        DiagnosticLog.i(getContext(), "TAP", "tapCode="+GestureCode.TAP+" waitWindow="+fs.doubleTapMs());
         lastTapAt = now;
         singleTapRunnable = () -> {
             if (lastTapAt == now) {
@@ -252,12 +215,6 @@ public class FloatIconView extends View {
             singleTapRunnable = null;
         };
         handler.postDelayed(singleTapRunnable, fs.doubleTapMs());
-    }
-
-    private String trackSummary() {
-        if (session.points.isEmpty()) return "empty";
-        GesturePointSample a=session.points.get(0), b=session.points.get(session.points.size()-1);
-        return "n="+session.points.size()+" start="+Math.round(a.x())+","+Math.round(a.y())+" end="+Math.round(b.x())+","+Math.round(b.y())+" dur="+(b.timeMs()-a.timeMs());
     }
 
     private float gestureSlopPx() { return dp(fs.gestureStartDistance()); }
