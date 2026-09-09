@@ -1,6 +1,7 @@
 package com.yagay.floatlens;
 
 import android.content.Context;
+import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -9,13 +10,20 @@ import android.view.MotionEvent;
 /**
  * Clean-room equivalent of FV's m2/g selection activation path.
  *
- * Confirmed from FooViewService$c3.onTouch disassembly:
+ * Confirmed from FooViewService$c3.onTouch and m2/g + m2/p/q/r:
  * - icon movement itself is handled before this path;
  * - while m2/g is not shown, per-frame |dx|/|dy| are compared with literal 40;
  * - a fast frame (>=40 px on either axis) cancels pending O0 activation;
  * - otherwise movement more than ~3dp from c3.i/j removes/reposts O0;
- * - normal O0 delay is 400 ms (1000 ms is a special secondary-pointer state);
- * - once m2/g is shown, subsequent MotionEvents are routed to it until release/cancel.
+ * - normal O0 delay is 400 ms (1000 ms only in a special secondary-pointer state);
+ * - G() shows the selection container and calls its Capture/OCR handler d();
+ * - Accessibility results are then fed into that handler through setAccessiblityResult -> f()/g();
+ * - once m2/g is shown, subsequent MotionEvents are routed to it until UP/CANCEL;
+ * - on release the handler e() is called and the container is hidden.
+ *
+ * FloatLens mirrors that user-visible pipeline with Accessibility View text first and OCR on that
+ * View's bounds as fallback. Candidate existence never activates the container; only the delayed
+ * FV-style state transition does.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, ARMING, ACTIVE }
@@ -34,6 +42,7 @@ public final class ViewSelectionEngine {
     private float armX = Float.NaN, armY = Float.NaN;
     private float previousX = Float.NaN, previousY = Float.NaN;
     private float pointerX = Float.NaN, pointerY = Float.NaN;
+    private float minX, minY, maxX, maxY;
     private long downAt;
     private boolean moved;
 
@@ -57,12 +66,14 @@ public final class ViewSelectionEngine {
             downAt=SystemClock.uptimeMillis();
             pointerX=previousX=armX=x;
             pointerY=previousY=armY=y;
+            minX=maxX=x; minY=maxY=y;
             DiagnosticLog.i(context,"FV_SELECT","DOWN x="+Math.round(x)+" y="+Math.round(y));
             return;
         }
 
         if(action==MotionEvent.ACTION_MOVE){
             moved=true;
+            minX=Math.min(minX,x); minY=Math.min(minY,y); maxX=Math.max(maxX,x); maxY=Math.max(maxY,y);
             if(state==State.ACTIVE){
                 if(overlay!=null)overlay.update(x,y);
                 previousX=x;previousY=y;
@@ -73,7 +84,7 @@ public final class ViewSelectionEngine {
             float frameDy=Float.isNaN(previousY)?0f:Math.abs(y-previousY);
             previousX=x;previousY=y;
 
-            // FV literals: if current-vs-previous X or Y is >= 40, pending O0 is removed.
+            // Literal FV gate: current-vs-previous X or Y >= 40px cancels pending O0.
             if(frameDx>=FV_FAST_FRAME_PX || frameDy>=FV_FAST_FRAME_PX){
                 if(state==State.ARMING){
                     handler.removeCallbacks(activateRunnable);
@@ -107,16 +118,32 @@ public final class ViewSelectionEngine {
             overlay.begin();
             if(!Float.isNaN(pointerX)&&!Float.isNaN(pointerY))overlay.update(pointerX,pointerY);
         }
-        DiagnosticLog.i(context,"FV_SELECT","ACTIVE after="+(SystemClock.uptimeMillis()-downAt)+"ms x="+Math.round(pointerX)+" y="+Math.round(pointerY));
+        DiagnosticLog.i(context,"FV_SELECT","ACTIVE after="+(SystemClock.uptimeMillis()-downAt)+"ms x="+Math.round(pointerX)+" y="+Math.round(pointerY)+" captureHandler=start");
     }
 
-    /** True only if the FV-style selection container was actually ACTIVE at release. */
+    /**
+     * True only if the FV-style selection container was actually ACTIVE at release. An active
+     * selection owns this UP exactly like m2/g; it resolves Accessibility text first and performs
+     * View-bounds OCR when the selected node has no exposed text.
+     */
     public boolean finish(MotionEvent up){
         boolean wasActive=state==State.ACTIVE;
         boolean hadCandidate=overlay!=null&&overlay.hasCandidate();
         handler.removeCallbacks(activateRunnable);
-        if(overlay!=null)overlay.finish(false);
-        DiagnosticLog.i(context,"FV_SELECT","UP active="+wasActive+" candidate="+hadCandidate);
+        boolean producedResult=false;
+        if(overlay!=null)producedResult=overlay.finish(wasActive);
+
+        // FV capture handlers can still OCR a selection when Accessibility provides no useful node.
+        // Use the dragged selection bounds as the clean-room fallback rather than opening another UI.
+        if(wasActive&&!producedResult&&!hadCandidate){
+            Rect r=selectionBounds();
+            if(r.width()>=Math.round(dp(8))&&r.height()>=Math.round(dp(8))){
+                ScreenshotController.captureBoundsForOcr(context,r);
+                producedResult=true;
+                DiagnosticLog.i(context,"FV_SELECT","fallback bounds OCR="+r);
+            }
+        }
+        DiagnosticLog.i(context,"FV_SELECT","UP active="+wasActive+" candidate="+hadCandidate+" result="+producedResult);
         resetInternal(false);
         return wasActive;
     }
@@ -129,12 +156,19 @@ public final class ViewSelectionEngine {
         resetInternal(false);
     }
 
+    private Rect selectionBounds(){
+        int l=Math.round(Math.min(minX,maxX)),t=Math.round(Math.min(minY,maxY));
+        int r=Math.round(Math.max(minX,maxX)),b=Math.round(Math.max(minY,maxY));
+        return new Rect(l,t,r,b);
+    }
+
     private void resetInternal(boolean closeOverlay){
         handler.removeCallbacks(activateRunnable);
         if(closeOverlay&&overlay!=null)overlay.cancel();
         overlay=null;
         state=State.IDLE;
         armX=armY=previousX=previousY=pointerX=pointerY=Float.NaN;
+        minX=minY=maxX=maxY=0f;
         downAt=0L;
         moved=false;
     }
