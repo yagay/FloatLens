@@ -246,7 +246,8 @@ public class FloatIconView extends View {
     }
 
     private float gestureSlopPx() { return dp(fs.gestureStartDistance()); }
-    private void cancelLongPress() {
+    @Override public void cancelLongPress() {
+        super.cancelLongPress();
         if (longPressRunnable != null) handler.removeCallbacks(longPressRunnable);
         longPressRunnable = null;
     }
