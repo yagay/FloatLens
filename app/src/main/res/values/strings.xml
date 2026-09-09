@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">FloatLens</string>
+    <string name="accessibility_desc">FloatLens uses Accessibility only for system gestures and screen capture actions explicitly triggered by the user.</string>
+    <string name="app_description">FloatLens floating OCR tool and fooView FV runtime inspector.</string>
+</resources>
