@@ -11,7 +11,8 @@ public class SettingsActivity extends AppCompatActivity {
     private FloatSettings fs;
     private EditText hidePackagesEdit;
     private final String[] ids = {ActionId.NONE, ActionId.BACK, ActionId.HOME, ActionId.RECENTS,
-            ActionId.SCREENSHOT, ActionId.REGION_SCREENSHOT, ActionId.OCR, ActionId.NOTIFICATIONS, ActionId.CLICK_UNDER, ActionId.HIDE};
+            ActionId.SCREENSHOT, ActionId.REGION_SCREENSHOT, ActionId.OCR, ActionId.AI_SCREEN,
+            ActionId.NOTIFICATIONS, ActionId.CLICK_UNDER, ActionId.HIDE};
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -33,7 +34,7 @@ public class SettingsActivity extends AppCompatActivity {
         check(root, "左右两侧同时显示 / float_on_both_side", FloatSettings.K_BOTH_SIDE, fs.bothSide());
         check(root, "锁屏仍显示 / icon_show_lock_screen", FloatSettings.K_SHOW_ON_LOCK, fs.showOnLock());
         check(root, "自动吸边", FloatSettings.K_SNAP, fs.snap());
-        check(root, "全屏应用自动隐藏 / hide_icon_when_full_screen", FloatSettings.K_HIDE_FULLSCREEN, fs.hideWhenFullscreen());
+        fullscreenModeCheck(root);
         check(root, "隐藏后允许从屏幕边缘滑入唤回 / hide_main_icon_swipe_gesture", FloatSettings.K_HIDE_MAIN_SWIPE, fs.prefs().getBoolean(FloatSettings.K_HIDE_MAIN_SWIPE, true));
         check(root, "单击时点击悬浮图标下方屏幕 / action_click_screen_under_icon", FloatSettings.K_CLICK_UNDER, fs.clickScreenUnderIcon());
 
@@ -65,17 +66,18 @@ public class SettingsActivity extends AppCompatActivity {
 
         title(root, "环境与显示");
         check(root, "键盘出现时避让悬浮图标", FloatSettings.K_IME_AVOID, fs.imeAvoid());
-        check(root, "Quick Move 兼容键 / quickMoveIcon（原版触发语义仍待设备校准）", FloatSettings.K_QUICK_MOVE, fs.quickMoveEnabled());
+        check(root, "Quick Move / 智能屏幕入口启用", FloatSettings.K_QUICK_MOVE, fs.quickMoveEnabled());
         check(root, "FV 诊断日志（用于和 fooView 真机行为校准）", FloatSettings.K_DIAGNOSTIC, fs.diagnosticLogging());
         TextView pkgLabel = new TextView(this); pkgLabel.setText("按应用隐藏（包名，逗号/空格/换行分隔）"); root.addView(pkgLabel);
         hidePackagesEdit = new EditText(this); hidePackagesEdit.setText(fs.prefs().getString(FloatSettings.K_HIDE_PACKAGES, "")); hidePackagesEdit.setHint("例如 com.example.game com.example.bank"); root.addView(hidePackagesEdit);
         hidePackagesEdit.setOnFocusChangeListener((v, hasFocus) -> { if (!hasFocus) saveHidePackages(); });
 
-        title(root, "操作映射");
+        title(root, "操作映射（识别层与动作层分离）");
         Map<String, String> map = new LinkedHashMap<>();
         map.put("单击 / action_click", FloatSettings.K_ACTION_CLICK);
         map.put("双击 / action_db_click", FloatSettings.K_ACTION_DOUBLE);
-        map.put("长按 / action_long_press", FloatSettings.K_ACTION_LONG);
+        map.put("长按进入 Circle / action_long_press", FloatSettings.K_ACTION_LONG);
+        map.put("圈选识别 / action_recognize", FloatSettings.K_ACTION_RECOGNIZE);
         map.put("上滑 / gesture_up", FloatSettings.K_ACTION_UP);
         map.put("下滑-短 / gesture_down_short", FloatSettings.K_ACTION_DOWN_SHORT);
         map.put("下滑-长 / gesture_down_long", FloatSettings.K_ACTION_DOWN_LONG);
@@ -84,16 +86,13 @@ public class SettingsActivity extends AppCompatActivity {
         for (var e : map.entrySet()) spinner(root, e.getKey(), e.getValue(), defaultFor(e.getValue()));
 
         TextView note = new TextView(this);
-        note.setText("设置会实时同步。现在使用真实的‘图标可见比例’模型；隐藏动作只隐藏图标而不停止服务，可从通知栏恢复。触摸会保存完整轨迹，多指会隔离点击/长按，短按和双击使用独立时间窗口。");
+        note.setText("2.4.0 起，触摸轨迹先分类为 GestureCode，再映射到 ActionId。长按、圈选、OCR 结果使用独立 Circle 状态机；智能屏幕也是独立 action，不再和普通滑动动作混在一起。");
         note.setPadding(0, dp(28), 0, 0);
         root.addView(note);
         setContentView(sv);
     }
 
-    @Override protected void onPause() {
-        saveHidePackages();
-        super.onPause();
-    }
+    @Override protected void onPause() { saveHidePackages(); super.onPause(); }
 
     private void saveHidePackages() {
         if (hidePackagesEdit != null && fs != null) fs.prefs().edit().putString(FloatSettings.K_HIDE_PACKAGES, hidePackagesEdit.getText().toString()).apply();
@@ -101,7 +100,7 @@ public class SettingsActivity extends AppCompatActivity {
 
     private String defaultFor(String k) {
         if (k.equals(FloatSettings.K_ACTION_DOUBLE)) return ActionId.SCREENSHOT;
-        if (k.equals(FloatSettings.K_ACTION_LONG)) return ActionId.OCR;
+        if (k.equals(FloatSettings.K_ACTION_LONG) || k.equals(FloatSettings.K_ACTION_RECOGNIZE)) return ActionId.OCR;
         if (k.equals(FloatSettings.K_ACTION_UP)) return ActionId.RECENTS;
         if (k.equals(FloatSettings.K_ACTION_DOWN_SHORT)) return ActionId.NOTIFICATIONS;
         if (k.equals(FloatSettings.K_ACTION_SIDE_SHORT)) return ActionId.BACK;
@@ -112,6 +111,10 @@ public class SettingsActivity extends AppCompatActivity {
     private void check(LinearLayout r, String label, String key, boolean def) {
         CheckBox c = new CheckBox(this); c.setText(label); c.setChecked(def);
         c.setOnCheckedChangeListener((b, v) -> fs.prefs().edit().putBoolean(key, v).apply()); r.addView(c);
+    }
+    private void fullscreenModeCheck(LinearLayout r) {
+        CheckBox c=new CheckBox(this); c.setText("全屏应用自动隐藏 / hide_icon_when_full_screen（Int模式）"); c.setChecked(fs.fullscreenHideMode()!=0);
+        c.setOnCheckedChangeListener((b,v)->fs.prefs().edit().putInt(FloatSettings.K_HIDE_FULLSCREEN,v?2:0).apply()); r.addView(c);
     }
     private void seek(LinearLayout r, String label, String key, int min, int max, int cur, String suffix) {
         TextView t = new TextView(this); t.setText(label + ": " + cur + suffix); r.addView(t);
