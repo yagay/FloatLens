@@ -19,7 +19,7 @@ public final class FvRuntimeModule extends XposedModule {
 
     @Override public void onPackageLoaded(XposedModuleInterface.PackageLoadedParam p){
         if(!TARGET.equals(p.getPackageName()))return;
-        HookLogTransport.log("SELFTEST","target_loaded=true package="+p.getPackageName()+" module=2.2.5");
+        HookLogTransport.log("SELFTEST","target_loaded=true package="+p.getPackageName()+" module=2.2.6");
         install(p.getDefaultClassLoader());
     }
 
@@ -27,6 +27,7 @@ public final class FvRuntimeModule extends XposedModule {
         n+=hookApplicationAttach(cl);
         n+=hookNamed(cl,"com.fooview.android.fooview.fvprocess.FooViewService$c3",new String[]{"onTouch","b"},"TOUCH",true);
         n+=hookNamed(cl,"com.fooview.android.fooview.fvprocess.FooViewService",new String[]{"Y1","y3","R4","q4","h0","i3","k3","l3","onCreate","onStartCommand","onDestroy","onConfigurationChanged"},"SERVICE",true);
+        n+=hookL3Downstream(cl);
         n+=hookNamed(cl,"com.fooview.android.fooview.fvprocess.FloatIconView",new String[]{"c0","T"},"POSITION",true);
         n+=hookNamed(cl,"com.fooview.android.gesture.GesturePanel",new String[]{"dispatchTouchEvent","onTouchEvent","onTouch","clear","reset"},"GESTURE",false);
         n+=hookAllExisting(cl,"com.fooview.android.gesture.FVCandidateAdapter","CANDIDATE",false);
@@ -39,7 +40,7 @@ public final class FvRuntimeModule extends XposedModule {
         n+=hookPreferences(cl);
         n+=hookWindowManager(cl);
         n+=hookKnownRunnables(cl);
-        HookLogTransport.log("INSTALL","hooks="+n+" module=2.2.5");
+        HookLogTransport.log("INSTALL","hooks="+n+" module=2.2.6");
         emitSelfTest(cl);
         log(Log.INFO,TAG,"installed hooks="+n);
     }
@@ -64,11 +65,12 @@ public final class FvRuntimeModule extends XposedModule {
     private static boolean hasMethod(Class<?> c,String n){for(Method m:c.getDeclaredMethods())if(m.getName().equals(n))return true;return false;}
 
     private int hookApplicationAttach(ClassLoader cl){
-        try{Method m=android.app.Application.class.getDeclaredMethod("attach",Context.class);m.setAccessible(true);String key=m.toGenericString();if(!hooked.add(key))return 0;hook(m).intercept(chain->{Object r=chain.proceed();try{Object a=chain.getThisObject();Object base=chain.getArg(0);Context c=a instanceof Context?(Context)a:(base instanceof Context?(Context)base:null);if(c!=null){HookLogTransport.init(c);registerCommand(c);HookLogTransport.log("SESSION","FV Runtime Inspector 2.2.5 api=102 sdk="+Build.VERSION.SDK_INT+" target="+TARGET);}}catch(Throwable t){HookLogTransport.log("INIT_ERR",String.valueOf(t));}return r;});return 1;}catch(Throwable t){HookLogTransport.log("HOOK_ERR","Application.attach "+t);return 0;}
+        try{Method m=android.app.Application.class.getDeclaredMethod("attach",Context.class);m.setAccessible(true);String key=m.toGenericString();if(!hooked.add(key))return 0;hook(m).intercept(chain->{Object r=chain.proceed();try{Object a=chain.getThisObject();Object base=chain.getArg(0);Context c=a instanceof Context?(Context)a:(base instanceof Context?(Context)base:null);if(c!=null){HookLogTransport.init(c);registerCommand(c);HookLogTransport.log("SESSION","FV Runtime Inspector 2.2.6 api=102 sdk="+Build.VERSION.SDK_INT+" target="+TARGET);}}catch(Throwable t){HookLogTransport.log("INIT_ERR",String.valueOf(t));}return r;});return 1;}catch(Throwable t){HookLogTransport.log("HOOK_ERR","Application.attach "+t);return 0;}
     }
 
     private int hookNamed(ClassLoader cl,String cn,String[] names,String cat,boolean snapshot){Class<?> c=find(cl,cn);if(c==null){HookLogTransport.log("MISS","class "+cn);return 0;}Set<String> ns=new HashSet<>(Arrays.asList(names));int n=0;for(Method m:c.getDeclaredMethods())if(ns.contains(m.getName()))n+=hookMethod(m,cat,snapshot);return n;}
     private int hookAllExisting(ClassLoader cl,String cn,String cat,boolean snapshot){Class<?> c=find(cl,cn);if(c==null)return 0;int n=0;for(Method m:c.getDeclaredMethods()){if(m.isSynthetic()||m.getName().equals("toString")||m.getName().equals("hashCode"))continue;n+=hookMethod(m,cat,snapshot);}return n;}
+
     private int hookMethod(Method m,String cat,boolean snapshot){String key=m.toGenericString();if(!hooked.add(key))return 0;try{m.setAccessible(true);hook(m).intercept(chain->{
         boolean enabled=enabled(cat); if(!enabled)return chain.proceed();
         List<?> args=chain.getArgs();
@@ -76,6 +78,7 @@ public final class FvRuntimeModule extends XposedModule {
         if(dc.endsWith("FooViewService$c3") && mn.equals("onTouch")) FvSessionTracker.onTouch(args);
         if(dc.endsWith("FooViewService$c3") && mn.equals("b")) {Integer code=firstInt(args); if(code!=null)FvSessionTracker.onCode(code,"b");}
         if(dc.endsWith("FooViewService") && mn.equals("Y1")) {Integer code=firstInt(args); if(code!=null)FvSessionTracker.onCode(code,"Y1");}
+        if(dc.endsWith("FooViewService") && (mn.equals("i3")||mn.equals("k3")||mn.equals("l3"))) FvSessionTracker.onActionLayer(mn,args);
         if(cat.equals("TOUCH") && args.stream().anyMatch(x->x instanceof MotionEvent e && e.getActionMasked()==MotionEvent.ACTION_MOVE)){long now=android.os.SystemClock.uptimeMillis();if(now-lastMoveLog<16)return chain.proceed();lastMoveLog=now;}
         Object th=chain.getThisObject();Map<String,String> before=snapshot&&FvInspectorConfig.objectDiff?ObjectSnapshot.take(th):Map.of();long st=android.os.SystemClock.elapsedRealtimeNanos();
         HookLogTransport.log(cat,"ENTER "+HookFmt.member(m)+" args="+HookFmt.args(args)+" stack="+HookFmt.stack(6));
@@ -83,6 +86,27 @@ public final class FvRuntimeModule extends XposedModule {
         long us=(android.os.SystemClock.elapsedRealtimeNanos()-st)/1000;String diff=snapshot&&FvInspectorConfig.objectDiff?" diff="+ObjectSnapshot.diff(before,ObjectSnapshot.take(th)):"";
         HookLogTransport.log(cat,"EXIT "+HookFmt.member(m)+" result="+HookFmt.value(result)+" us="+us+diff);return result;
     });HookLogTransport.log("SELFTEST","hooked="+HookFmt.member(m));return 1;}catch(Throwable t){HookLogTransport.log("HOOK_ERR",key+" :: "+t);return 0;}}
+
+    private int hookL3Downstream(ClassLoader cl){
+        Class<?> c=find(cl,"com.fooview.android.fooview.fvprocess.FooViewService");if(c==null)return 0;int n=0;
+        for(Method m:c.getDeclaredMethods()){
+            if(m.isSynthetic())continue;
+            String mn=m.getName();
+            if(mn.equals("i3")||mn.equals("k3")||mn.equals("l3")||mn.equals("Y1"))continue;
+            String key="l3downstream:"+m.toGenericString();if(!hooked.add(key))continue;
+            try{m.setAccessible(true);hook(m).intercept(chain->{
+                if(calledFromL3())FvSessionTracker.onDownstream(m.getDeclaringClass().getSimpleName(),m.getName(),chain.getArgs());
+                return chain.proceed();
+            });n++;}catch(Throwable t){HookLogTransport.log("HOOK_ERR","l3downstream "+m.toGenericString()+" :: "+t);}
+        }
+        return n;
+    }
+
+    private static boolean calledFromL3(){
+        StackTraceElement[] st=Thread.currentThread().getStackTrace();
+        for(StackTraceElement e:st)if(e.getClassName().equals("com.fooview.android.fooview.fvprocess.FooViewService")&&e.getMethodName().equals("l3"))return true;
+        return false;
+    }
 
     private static Integer firstInt(List<?> args){for(Object o:args)if(o instanceof Integer i)return i;return null;}
     private int hookPreferences(ClassLoader cl){if(!FvInspectorConfig.preferences)return 0;int n=0;try{Class<?> c=Class.forName("android.app.SharedPreferencesImpl");for(Method m:c.getDeclaredMethods()){String x=m.getName();if(x.equals("getInt")||x.equals("getLong")||x.equals("getFloat")||x.equals("getBoolean")||x.equals("getString")||x.equals("contains"))n+=hookMethod(m,"PREF",false);}}catch(Throwable t){HookLogTransport.log("HOOK_ERR","prefs "+t);}try{Class<?> c=Class.forName("android.app.SharedPreferencesImpl$EditorImpl");for(Method m:c.getDeclaredMethods())if(m.getName().startsWith("put")||m.getName().equals("remove")||m.getName().equals("clear")||m.getName().equals("apply")||m.getName().equals("commit"))n+=hookMethod(m,"PREF_WRITE",false);}catch(Throwable t){HookLogTransport.log("HOOK_ERR","editor "+t);}return n;}
