@@ -63,48 +63,78 @@ public class LensAccessibilityService extends AccessibilityService {
         return new EnvironmentState(top==null?"":top, ime, imeTop, status, shade, fullscreen);
     }
 
-    /** Returns the smallest useful accessibility view under the supplied screen coordinate. */
+    /**
+     * FV-style hit testing. Static analysis of FooAccessibilityService.X() shows the important
+     * order: visible-to-user -> bounds contains(x,y) -> recurse children first -> accept the
+     * current node according to interaction/node semantics. We keep text-leaf fallback for
+     * extraction, but do not use the previous "smallest area wins" heuristic.
+     */
     public ViewNodeCandidate findViewAt(float x, float y) {
         try {
             List<AccessibilityWindowInfo> windows=getWindows();
-            CandidateHolder best=new CandidateHolder();
-            if(windows!=null){
-                for(int i=windows.size()-1;i>=0;i--){
-                    AccessibilityWindowInfo w=windows.get(i);
-                    if(w==null)continue;
-                    AccessibilityNodeInfo root=null;
-                    try{root=w.getRoot();}catch(Throwable ignored){}
-                    if(root==null)continue;
-                    String pkg="";
-                    try{if(root.getPackageName()!=null)pkg=root.getPackageName().toString();}catch(Throwable ignored){}
-                    if(getPackageName().equals(pkg))continue;
-                    scanNode(root,x,y,0,best,new int[]{0});
-                }
+            if(windows==null)return null;
+            int px=Math.round(x), py=Math.round(y);
+            for(int i=windows.size()-1;i>=0;i--){
+                AccessibilityWindowInfo w=windows.get(i);
+                if(w==null)continue;
+                AccessibilityNodeInfo root=null;
+                try{root=w.getRoot();}catch(Throwable ignored){}
+                if(root==null)continue;
+                String pkg="";
+                try{if(root.getPackageName()!=null)pkg=root.getPackageName().toString();}catch(Throwable ignored){}
+                if(getPackageName().equals(pkg))continue;
+                NodeMatch m=findChildFirst(root,px,py,0,new int[]{0});
+                if(m!=null&&m.node!=null)return snapshot(m.node);
             }
-            if(best.node==null)return null;
-            return snapshot(best.node);
+            return null;
         } catch(Throwable t){
             DiagnosticLog.i(this,"VIEW_PICK","findViewAt failed="+t);
             return null;
         }
     }
 
-    private static final class CandidateHolder { AccessibilityNodeInfo node; long area=Long.MAX_VALUE; int depth=-1; }
+    private static final class NodeMatch {
+        AccessibilityNodeInfo node;
+        int priority;
+        int depth;
+        NodeMatch(AccessibilityNodeInfo n,int p,int d){node=n;priority=p;depth=d;}
+    }
 
-    private void scanNode(AccessibilityNodeInfo n,float x,float y,int depth,CandidateHolder best,int[] count){
-        if(n==null||count[0]++>500||depth>35)return;
+    private NodeMatch findChildFirst(AccessibilityNodeInfo n,int x,int y,int depth,int[] count){
+        if(n==null||count[0]++>600||depth>40)return null;
+        try{if(!n.isVisibleToUser())return null;}catch(Throwable ignored){}
         Rect r=new Rect();
-        try{n.getBoundsInScreen(r);}catch(Throwable ignored){return;}
-        if(r.isEmpty()||!r.contains(Math.round(x),Math.round(y)))return;
-        long area=Math.max(1L,(long)r.width()*r.height());
-        boolean useful=hasOwnText(n)||n.isClickable()||n.isEditable()||n.getChildCount()==0;
-        if(useful&&(area<best.area||(area==best.area&&depth>best.depth))){best.node=n;best.area=area;best.depth=depth;}
-        int children=Math.min(n.getChildCount(),80);
-        for(int i=0;i<children;i++){
+        try{n.getBoundsInScreen(r);}catch(Throwable t){return null;}
+        if(r.isEmpty()||!r.contains(x,y))return null;
+
+        NodeMatch bestChild=null;
+        int childCount=Math.min(n.getChildCount(),100);
+        // Reverse traversal better matches top-most visual children in many Android hierarchies.
+        for(int i=childCount-1;i>=0;i--){
             AccessibilityNodeInfo c=null;
             try{c=n.getChild(i);}catch(Throwable ignored){}
-            if(c!=null)scanNode(c,x,y,depth+1,best,count);
+            if(c==null)continue;
+            NodeMatch hit=findChildFirst(c,x,y,depth+1,count);
+            if(hit!=null){
+                if(bestChild==null||hit.priority>bestChild.priority||(hit.priority==bestChild.priority&&hit.depth>bestChild.depth))bestChild=hit;
+                if(hit.priority>=3)return hit;
+            }
         }
+        if(bestChild!=null&&bestChild.priority>=2)return bestChild;
+
+        int p=nodePriority(n);
+        if(p>0)return new NodeMatch(n,p,depth);
+        return bestChild;
+    }
+
+    /** Priority mirrors FV's preference for actionable nodes, with text as extraction fallback. */
+    private int nodePriority(AccessibilityNodeInfo n){
+        try{
+            if(n.isClickable()||n.isLongClickable()||n.isEditable())return 3;
+            if(hasOwnText(n))return 2;
+            if(n.getChildCount()==0)return 1;
+        }catch(Throwable ignored){}
+        return 0;
     }
 
     private boolean hasOwnText(AccessibilityNodeInfo n){
@@ -123,12 +153,13 @@ public class LensAccessibilityService extends AccessibilityService {
         return new ViewNodeCandidate(r,text.toString().trim(),cls,id,n.isClickable(),n.isEditable());
     }
 
+    /** FV S0() snapshots bounds/text/class/clickability/collection metadata; this is our text subset. */
     private void appendNodeText(AccessibilityNodeInfo n,StringBuilder out,int depth,int[] count){
-        if(n==null||count[0]++>150||depth>12)return;
+        if(n==null||count[0]++>180||depth>12)return;
         appendUnique(out,n.getText());
         appendUnique(out,n.getContentDescription());
         try{appendUnique(out,n.getHintText());}catch(Throwable ignored){}
-        int children=Math.min(n.getChildCount(),50);
+        int children=Math.min(n.getChildCount(),60);
         for(int i=0;i<children;i++){
             AccessibilityNodeInfo c=null; try{c=n.getChild(i);}catch(Throwable ignored){}
             if(c!=null)appendNodeText(c,out,depth+1,count);
