@@ -14,6 +14,8 @@ import androidx.core.content.ContextCompat;
 public class MainActivity extends AppCompatActivity {
     private static final int REQ_EXPORT_LOG = 701;
     private static final int REQ_EXPORT_INSPECTOR = 702;
+    private TextView inspectorStatus;
+
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         ScrollView sv = new ScrollView(this);
@@ -75,6 +77,16 @@ public class MainActivity extends AppCompatActivity {
         Button clearLog = button("清空 FV 诊断日志");
         clearLog.setOnClickListener(v -> { DiagnosticLog.clear(this); Toast.makeText(this,"诊断日志已清空",Toast.LENGTH_SHORT).show(); });
         root.addView(clearLog);
+
+        inspectorStatus = new TextView(this);
+        inspectorStatus.setPadding(0, dp(18), 0, dp(12));
+        root.addView(inspectorStatus);
+        refreshInspectorStatus();
+
+        Button selfTest = button("刷新 FV Hook 自检");
+        selfTest.setOnClickListener(v -> { sendInspectorCommand("selftest"); inspectorStatus.postDelayed(this::refreshInspectorStatus, 700); });
+        root.addView(selfTest);
+
         Button inspectorOn = button("FV Runtime Inspector：全部记录开启");
         inspectorOn.setOnClickListener(v -> sendInspectorCommand("all_on"));
         root.addView(inspectorOn);
@@ -96,7 +108,7 @@ public class MainActivity extends AppCompatActivity {
         root.addView(exportInspector);
 
         Button clearInspector = button("清空 FV Runtime Inspector 日志");
-        clearInspector.setOnClickListener(v -> { InspectorLog.clear(this); Toast.makeText(this,"Runtime Inspector 日志已清空",Toast.LENGTH_SHORT).show(); });
+        clearInspector.setOnClickListener(v -> { InspectorLog.clear(this); refreshInspectorStatus(); Toast.makeText(this,"Runtime Inspector 日志已清空",Toast.LENGTH_SHORT).show(); });
         root.addView(clearInspector);
 
         TextView status = new TextView(this);
@@ -105,6 +117,10 @@ public class MainActivity extends AppCompatActivity {
         root.addView(status);
         setContentView(sv);
     }
+
+    @Override protected void onResume(){super.onResume();refreshInspectorStatus();}
+
+    private void refreshInspectorStatus(){if(inspectorStatus!=null)inspectorStatus.setText(InspectorLog.selfTestStatus(this));}
 
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){
         super.onActivityResult(requestCode,resultCode,data);
@@ -124,8 +140,6 @@ public class MainActivity extends AppCompatActivity {
         catch(Throwable t){Toast.makeText(this,"发送失败: "+t.getMessage(),Toast.LENGTH_LONG).show();}
     }
 
-    private Button button(String s) {
-        Button b = new Button(this); b.setText(s); b.setAllCaps(false); b.setPadding(dp(10), dp(12), dp(10), dp(12)); return b;
-    }
+    private Button button(String s) {Button b = new Button(this); b.setText(s); b.setAllCaps(false); b.setPadding(dp(10), dp(12), dp(10), dp(12)); return b;}
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 }
