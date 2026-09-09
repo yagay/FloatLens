@@ -15,7 +15,7 @@ public final class ActionExecutor {
             case ActionId.NOTIFICATIONS -> global(c,s,AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS);
             case ActionId.SCREENSHOT -> ScreenshotController.capture(c,false);
             case ActionId.REGION_SCREENSHOT -> ScreenshotController.capture(c,true);
-            case ActionId.OCR -> ScreenshotController.captureForOcr(c);
+            case ActionId.OCR -> ViewSelectionOverlay.show(c);
             case ActionId.AI_SCREEN -> AiScreenController.show(c);
             case ActionId.CLICK_UNDER -> { FloatService f=FloatService.get(); if(f!=null) f.clickScreenUnderIcon(); }
             case ActionId.HIDE -> {
