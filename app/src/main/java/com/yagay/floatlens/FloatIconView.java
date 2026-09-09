@@ -17,12 +17,13 @@ import android.view.View;
 import java.util.List;
 import java.util.ArrayList;
 
-/** Floating icon touch engine with independent gesture and icon-drag states. */
+/** Floating icon touch engine. Recognition is intentionally separated from action execution. */
 public class FloatIconView extends View {
     public interface Callback {
         void onDragStart();
         void onMove(int dx, int dy);
         void onRelease(boolean dragged);
+        void onGestureDecision(GestureDecision decision);
         void onAction(String action);
         void onGestureStart(float rawX, float rawY);
         void onGestureMove(float rawX, float rawY);
@@ -54,7 +55,7 @@ public class FloatIconView extends View {
     }
 
     public void refreshSettings() { fs = new FloatSettings(getContext()); loadCustomIcon(); invalidate(); }
-    @Override protected void onDetachedFromWindow() { handler.removeCallbacks(slideRunnable); super.onDetachedFromWindow(); }
+    @Override protected void onDetachedFromWindow() { handler.removeCallbacks(slideRunnable); handler.removeCallbacksAndMessages(null); super.onDetachedFromWindow(); }
 
     private void loadCustomIcon() {
         handler.removeCallbacks(slideRunnable); customDrawable = null; slideDrawables.clear(); slideIndex=0;
@@ -170,8 +171,7 @@ public class FloatIconView extends View {
         session.phase = GestureSession.Phase.FINISHING;
         cb.onGestureEnd(session.snapshot());
         if (session.multiTouch || cancelled) {
-            if (ended == GestureSession.Phase.ICON_DRAG) cb.onRelease(true);
-            else cb.onRelease(false);
+            cb.onRelease(ended == GestureSession.Phase.ICON_DRAG);
             session.reset(); invalidate(); return;
         }
 
@@ -179,15 +179,17 @@ public class FloatIconView extends View {
             cb.onRelease(true);
         } else if (ended == GestureSession.Phase.GESTURE) {
             cb.onRelease(false);
-            String a = classifyTrack();
-            DiagnosticLog.i(getContext(), "GESTURE", "classified="+a+" track="+trackSummary());
-            if (!ActionId.NONE.equals(a)) {
+            GestureDecision d = GestureClassifier.classify(session, fs, getResources().getDisplayMetrics().density);
+            DiagnosticLog.i(getContext(), "GESTURE", "decision="+d+" track="+trackSummary());
+            if (!d.isNone()) {
                 if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.GESTURE_END);
-                cb.onAction(a);
+                cb.onGestureDecision(d);
             }
         } else if (session.longPressReady) {
             cb.onRelease(false);
-            String la=fs.action(FloatSettings.K_ACTION_LONG, ActionId.OCR); DiagnosticLog.i(getContext(), "ACTION", "longPress -> "+la); cb.onAction(la);
+            GestureDecision d=new GestureDecision(GestureCode.ENTER_CIRCLE,false,0f,0f);
+            DiagnosticLog.i(getContext(), "GESTURE", "decision="+d+" source=long_hold");
+            cb.onGestureDecision(d);
         } else {
             cb.onRelease(false);
             if (session.duration(now) <= fs.tapMaxMs() && session.distance() < gestureSlopPx()) handleTap(now);
@@ -206,12 +208,12 @@ public class FloatIconView extends View {
             cb.onAction(fs.action(FloatSettings.K_ACTION_DOUBLE, ActionId.SCREENSHOT));
             return;
         }
-        DiagnosticLog.i(getContext(), "TAP", "firstTap waitWindow="+fs.doubleTapMs());
+        DiagnosticLog.i(getContext(), "TAP", "tapCode="+GestureCode.TAP+" waitWindow="+fs.doubleTapMs());
         lastTapAt = now;
         singleTapRunnable = () -> {
             if (lastTapAt == now) {
                 lastTapAt = 0;
-                String ca=fs.clickScreenUnderIcon() ? ActionId.CLICK_UNDER : fs.action(FloatSettings.K_ACTION_CLICK, ActionId.NONE); DiagnosticLog.i(getContext(), "ACTION", "singleTap -> "+ca); cb.onAction(ca);
+                cb.onGestureDecision(new GestureDecision(GestureCode.TAP,false,0f,0f));
             }
             singleTapRunnable = null;
         };
@@ -222,27 +224,6 @@ public class FloatIconView extends View {
         if (session.points.isEmpty()) return "empty";
         GesturePointSample a=session.points.get(0), b=session.points.get(session.points.size()-1);
         return "n="+session.points.size()+" start="+Math.round(a.x())+","+Math.round(a.y())+" end="+Math.round(b.x())+","+Math.round(b.y())+" dur="+(b.timeMs()-a.timeMs());
-    }
-
-    private String classifyTrack() {
-        float minX = session.downX, maxX = session.downX, minY = session.downY, maxY = session.downY;
-        for (GesturePointSample p : session.points) {
-            minX = Math.min(minX, p.x()); maxX = Math.max(maxX, p.x());
-            minY = Math.min(minY, p.y()); maxY = Math.max(maxY, p.y());
-        }
-        float dx = session.dx(), dy = session.dy();
-        float ax = Math.max(Math.abs(dx), maxX - minX);
-        float ay = Math.max(Math.abs(dy), maxY - minY);
-        if (Math.hypot(dx, dy) < gestureSlopPx() && Math.max(ax, ay) < gestureSlopPx()) return ActionId.NONE;
-        if (ay > ax * fs.verticalBias()) {
-            if (dy < 0) return fs.action(FloatSettings.K_ACTION_UP, ActionId.RECENTS);
-            boolean longGesture = ay >= fs.downShortDistancePx(getResources().getDisplayMetrics().density);
-            return fs.action(longGesture ? FloatSettings.K_ACTION_DOWN_LONG : FloatSettings.K_ACTION_DOWN_SHORT,
-                    longGesture ? ActionId.NONE : ActionId.NOTIFICATIONS);
-        }
-        boolean longGesture = ax >= fs.sideShortDistancePx(getResources().getDisplayMetrics().density);
-        return fs.action(longGesture ? FloatSettings.K_ACTION_SIDE_LONG : FloatSettings.K_ACTION_SIDE_SHORT,
-                longGesture ? ActionId.NONE : ActionId.BACK);
     }
 
     private float gestureSlopPx() { return dp(fs.gestureStartDistance()); }
