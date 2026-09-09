@@ -16,6 +16,7 @@ public final class ActionExecutor {
             case ActionId.SCREENSHOT -> ScreenshotController.capture(c,false);
             case ActionId.REGION_SCREENSHOT -> ScreenshotController.capture(c,true);
             case ActionId.OCR -> ScreenshotController.captureForOcr(c);
+            case ActionId.AI_SCREEN -> AiScreenController.show(c);
             case ActionId.CLICK_UNDER -> { FloatService f=FloatService.get(); if(f!=null) f.clickScreenUnderIcon(); }
             case ActionId.HIDE -> {
                 FloatService f = FloatService.get();
