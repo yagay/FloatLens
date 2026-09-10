@@ -5,31 +5,27 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
-import android.graphics.Rect;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 
 /**
- * One FV-style drag indicator whose visual state changes during the same pointer stream.
+ * FV-style 24dp action indicator.
  *
- * PLUS: 24dp action hint beside the moving floating icon.
- * DOT: 15dp probe indicator centred on the transformed View hit-test point.
- *
- * The same View/WindowManager.LayoutParams instance is retained across the transition. This mirrors
- * the user-visible FV behaviour: the helper does not appear as two independent icons in different
- * places; one indicator changes shape/size/position as the gesture enters selection mode.
+ * The Window itself never changes size or jumps to ProbePoint. PLUS and DOT are only drawable
+ * states inside the same 24dp CircleImageView-equivalent container. Its side is supplied from the
+ * gesture snapshot and remains fixed for that pointer stream, matching FloatIconView.V()/D4().
  */
 public final class FvActionHintOverlay {
     public enum Mode { PLUS, DOT }
 
-    private static final float FV_PLUS_SIZE_DP = 24f;
-    private static final float FV_DOT_SIZE_DP = 15f;
+    private static final float FV_WINDOW_SIZE_DP = 24f;
+    private static final float FV_DOT_DIAMETER_DP = 15f;
 
     private final Context context;
     private final WindowManager wm;
-    private final int plusSizePx;
-    private final int dotSizePx;
+    private final int windowSizePx;
+    private final int dotDiameterPx;
     private final HintView view;
     private final WindowManager.LayoutParams lp;
     private boolean attached;
@@ -40,13 +36,13 @@ public final class FvActionHintOverlay {
         context = c.getApplicationContext();
         wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         float density = Math.max(.1f, context.getResources().getDisplayMetrics().density);
-        plusSizePx = Math.max(1, Math.round(FV_PLUS_SIZE_DP * density));
-        dotSizePx = Math.max(1, Math.round(FV_DOT_SIZE_DP * density));
-        view = new HintView(context);
+        windowSizePx = Math.max(1, Math.round(FV_WINDOW_SIZE_DP * density));
+        dotDiameterPx = Math.max(1, Math.round(FV_DOT_DIAMETER_DP * density));
+        view = new HintView(context, dotDiameterPx);
         view.setVisibility(View.INVISIBLE);
         lp = new WindowManager.LayoutParams(
-                plusSizePx,
-                plusSizePx,
+                windowSizePx,
+                windowSizePx,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
@@ -54,7 +50,7 @@ public final class FvActionHintOverlay {
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
-        lp.x = -plusSizePx;
+        lp.x = -windowSizePx;
         lp.y = 0;
         attachHidden();
     }
@@ -64,61 +60,44 @@ public final class FvActionHintOverlay {
         try {
             wm.addView(view, lp);
             attached = true;
-            DiagnosticLog.i(context, "FV_INDICATOR", "ATTACH plus=" + plusSizePx + " dot=" + dotSizePx);
+            DiagnosticLog.i(context, "FV_INDICATOR", "ATTACH window=" + windowSizePx
+                    + " dotGlyph=" + dotDiameterPx);
         } catch (Throwable t) {
             DiagnosticLog.i(context, "FV_INDICATOR", "attach failed=" + t);
         }
     }
 
-    public void showNextTo(View icon) {
-        if (icon == null) return;
-        int[] loc = new int[2];
-        try { icon.getLocationOnScreen(loc); } catch (Throwable t) { return; }
-        showPlusNextTo(loc[0], loc[1], icon.getWidth(), icon.getHeight());
+    public void showPlusNextTo(float iconLeft, float iconTop, float iconWidth,
+                               float iconHeight, boolean leftSide) {
+        showStateNextTo(Mode.PLUS, iconLeft, iconTop, iconWidth, iconHeight, leftSide);
     }
 
-    /** Drag phase: the same indicator is a 24dp PLUS beside the moving icon. */
-    public void showNextTo(float iconLeft, float iconTop, float iconWidth, float iconHeight) {
-        showPlusNextTo(iconLeft, iconTop, iconWidth, iconHeight);
+    public void showDotNextTo(float iconLeft, float iconTop, float iconWidth,
+                              float iconHeight, boolean leftSide) {
+        showStateNextTo(Mode.DOT, iconLeft, iconTop, iconWidth, iconHeight, leftSide);
     }
 
-    public void showPlusNextTo(float iconLeft, float iconTop, float iconWidth, float iconHeight) {
+    private void showStateNextTo(Mode next, float iconLeft, float iconTop, float iconWidth,
+                                 float iconHeight, boolean leftSide) {
         if (!attached) attachHidden();
         if (!attached) return;
 
-        setMode(Mode.PLUS);
-        Rect screen = screenBounds();
-        float iconCenter = iconLeft + iconWidth / 2f;
-        float screenCenter = screen.isEmpty() ? iconCenter : screen.exactCenterX();
-        boolean leftSide = iconCenter < screenCenter;
-
-        lp.x = Math.round(leftSide ? iconLeft + iconWidth : iconLeft - plusSizePx);
-        lp.y = Math.round(iconTop - plusSizePx);
-        updateVisible("PLUS side=" + (leftSide ? "L" : "R")
+        setMode(next);
+        // FV D4(): position is always derived from the floating icon and the fixed V() side state.
+        // PLUS -> DOT therefore changes only the drawable; the top-left remains continuous.
+        lp.x = Math.round(leftSide ? iconLeft + iconWidth : iconLeft - windowSizePx);
+        lp.y = Math.round(iconTop - windowSizePx);
+        updateVisible(next + " side=" + (leftSide ? "L" : "R")
                 + " icon=" + Math.round(iconLeft) + "," + Math.round(iconTop));
-    }
-
-    /** Selection phase: the very same indicator becomes a 15dp DOT at ProbePoint. */
-    public void showDotAt(float screenX, float screenY) {
-        if (!attached) attachHidden();
-        if (!attached) return;
-
-        setMode(Mode.DOT);
-        lp.x = Math.round(screenX - dotSizePx / 2f);
-        lp.y = Math.round(screenY - dotSizePx / 2f);
-        updateVisible("DOT centre=" + Math.round(screenX) + "," + Math.round(screenY));
     }
 
     private void setMode(Mode next) {
         if (next == null) next = Mode.PLUS;
-        int size = next == Mode.DOT ? dotSizePx : plusSizePx;
-        if (mode != next || lp.width != size || lp.height != size) {
-            mode = next;
-            lp.width = size;
-            lp.height = size;
-            view.setMode(next);
-            DiagnosticLog.i(context, "FV_INDICATOR", "STATE " + next + " size=" + size);
-        }
+        if (mode == next) return;
+        mode = next;
+        view.setMode(next);
+        DiagnosticLog.i(context, "FV_INDICATOR", "STATE " + next
+                + " windowSize=" + windowSizePx);
     }
 
     private void updateVisible(String detail) {
@@ -129,19 +108,17 @@ public final class FvActionHintOverlay {
                 visible = true;
             }
             DiagnosticLog.i(context, "FV_INDICATOR", detail + " window=" + lp.x + "," + lp.y
-                    + " size=" + lp.width);
+                    + " size=" + windowSizePx);
         } catch (Throwable t) {
             DiagnosticLog.i(context, "FV_INDICATOR", "move failed=" + t);
         }
     }
 
     public void hide() {
-        if (!attached) return;
-        if (!visible) return;
+        if (!attached || !visible) return;
         visible = false;
         view.setVisibility(View.INVISIBLE);
-        int size = Math.max(plusSizePx, dotSizePx);
-        lp.x = -size;
+        lp.x = -windowSizePx;
         try { wm.updateViewLayout(view, lp); } catch (Throwable ignored) {}
         DiagnosticLog.i(context, "FV_INDICATOR", "HIDE mode=" + mode);
     }
@@ -154,19 +131,16 @@ public final class FvActionHintOverlay {
         attached = false;
     }
 
-    private Rect screenBounds() {
-        try { return new Rect(wm.getCurrentWindowMetrics().getBounds()); }
-        catch (Throwable t) { return new Rect(); }
-    }
-
     private static final class HintView extends View {
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint glyph = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final int dotDiameterPx;
         private Mode mode = Mode.PLUS;
 
-        HintView(Context c) {
+        HintView(Context c, int dotDiameterPx) {
             super(c);
+            this.dotDiameterPx = dotDiameterPx;
             fill.setStyle(Paint.Style.FILL);
             border.setStyle(Paint.Style.STROKE);
             border.setStrokeWidth(Math.max(1f, 1.5f * getResources().getDisplayMetrics().density));
@@ -189,15 +163,18 @@ public final class FvActionHintOverlay {
             super.onDraw(canvas);
             float cx = getWidth() / 2f;
             float cy = getHeight() / 2f;
-            float r = Math.max(1f, Math.min(getWidth(), getHeight()) / 2f - border.getStrokeWidth());
 
             if (mode == Mode.DOT) {
+                // FV swaps the Drawable in the same 24dp CircleImageView. Keep the window fixed and
+                // render the smaller dot glyph centred inside it instead of resizing/repositioning.
+                float r = Math.max(1f, dotDiameterPx / 2f - border.getStrokeWidth());
                 fill.setColor(0xDD1976D2);
                 canvas.drawCircle(cx, cy, r, fill);
                 canvas.drawCircle(cx, cy, r, border);
                 return;
             }
 
+            float r = Math.max(1f, Math.min(getWidth(), getHeight()) / 2f - border.getStrokeWidth());
             fill.setColor(0xE62B2D31);
             canvas.drawCircle(cx, cy, r, fill);
             canvas.drawCircle(cx, cy, r, border);
