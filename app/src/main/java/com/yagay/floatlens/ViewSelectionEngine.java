@@ -2,6 +2,7 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.PointF;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.view.MotionEvent;
 
@@ -132,19 +133,49 @@ public final class ViewSelectionEngine {
         return probeOverlay.showAt(Math.round(p.x), Math.round(p.y));
     }
 
-    /** Same-touch ACTION_UP: execute exactly the operation state shown immediately before release. */
+    /**
+     * Same-touch ACTION_UP. The operation shown by the FV 24dp hint is the operation executed.
+     * This avoids the old ambiguous "recognize" release path where everything looked like OCR.
+     */
     public boolean finishDirect(float rawX, float rawY) {
         if (state != State.DIRECT) {
             cancel();
             return false;
         }
         updateDirect(rawX, rawY);
+
         boolean region = overlay != null && overlay.isRegionMode();
-        boolean hadTarget = overlay != null && overlay.hasCandidate();
+        ScreenCandidate candidate = overlay == null ? null : overlay.currentCandidate();
         FvOperationHintOverlay.Mode op = currentOperationMode();
-        boolean result = overlay != null && overlay.finishDirect();
+        boolean result = false;
+
+        if (overlay != null) {
+            if (op == FvOperationHintOverlay.Mode.SCREENSHOT) {
+                Rect bounds = region ? overlay.currentRegion()
+                        : candidate == null ? new Rect() : candidate.bounds();
+                overlay.cancel();
+                if (!bounds.isEmpty()) {
+                    ScreenshotController.captureBoundsForRegion(context, bounds);
+                    result = true;
+                }
+            } else if (candidate != null && !candidate.bounds().isEmpty()) {
+                Rect bounds = candidate.bounds();
+                ViewNodeCandidate view = candidate.toViewNodeCandidate();
+                String text = candidate.hasText() ? candidate.text() : "";
+                overlay.cancel();
+                if (op == FvOperationHintOverlay.Mode.TEXT) {
+                    ScreenshotController.captureBoundsForViewCandidate(context, bounds, view, text);
+                } else {
+                    ScreenshotController.captureBoundsForVisualCandidate(context, bounds, view);
+                }
+                result = true;
+            } else {
+                overlay.cancel();
+            }
+        }
+
         DiagnosticLog.i(context, "FV_SELECT", "DIRECT_UP region=" + region
-                + " target=" + hadTarget + " result=" + result + " focusHit="
+                + " target=" + (candidate != null) + " result=" + result + " focusHit="
                 + Math.round(selectionX) + "," + Math.round(selectionY) + " op=" + op);
         overlay = null;
         state = State.IDLE;
@@ -182,7 +213,7 @@ public final class ViewSelectionEngine {
         if (candidate.type() == ScreenCandidate.Type.NON_TEXT) {
             return FvOperationHintOverlay.Mode.IMAGE;
         }
-        // A ROOT/fullscreen container behaves like FV's screen-capture fallback, not OCR.
+        // ROOT/fullscreen container is FV's screen-capture fallback.
         return FvOperationHintOverlay.Mode.SCREENSHOT;
     }
 
