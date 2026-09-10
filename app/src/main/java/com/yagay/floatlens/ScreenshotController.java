@@ -26,6 +26,26 @@ public final class ScreenshotController {
     /** OCR only the Accessibility View rectangle. */
     public static void captureBoundsForOcr(Context c, Rect screenBounds) {
         if(screenBounds==null||screenBounds.isEmpty()){captureForOcr(c);return;}
+        captureBounds(c,screenBounds,crop->{
+            FloatService f=FloatService.get();if(f!=null)f.onCircleRecognizeStarted();
+            OcrEngine.recognize(c.getApplicationContext(),crop);
+        },"View OCR 失败，改用自由圈选",true);
+    }
+
+    /**
+     * Preserve a pure icon/ImageView as an image candidate. FV can select visual Views even when
+     * they expose no text; FloatLens therefore crops the exact accessibility bounds and shows the
+     * visual candidate instead of forcing an OCR-only result.
+     */
+    public static void captureBoundsForVisualCandidate(Context c, Rect screenBounds, ViewNodeCandidate candidate) {
+        if(screenBounds==null||screenBounds.isEmpty())return;
+        captureBounds(c,screenBounds,crop->{
+            DiagnosticLog.i(c.getApplicationContext(),"VIEW_VISUAL","crop="+crop.getWidth()+"x"+crop.getHeight()+" kind="+(candidate==null?"view":candidate.kind()));
+            ResultOverlay.showVisual(c.getApplicationContext(),crop,candidate);
+        },"图标/View 截取失败",false);
+    }
+
+    private static void captureBounds(Context c,Rect screenBounds,Consumer<Bitmap> onCrop,String failText,boolean fallbackToFreeOcr){
         Context app=c.getApplicationContext();
         FloatSettings fs=new FloatSettings(app);
         FloatService service=FloatService.get();
@@ -33,27 +53,31 @@ public final class ScreenshotController {
         if(hideIcon)service.setScreenshotHidden(true);
         new Handler(Looper.getMainLooper()).postDelayed(() -> captureNow(app,fs,raw -> {
             try{
-                WindowManager wm=(WindowManager)app.getSystemService(Context.WINDOW_SERVICE);
-                Rect display=wm.getCurrentWindowMetrics().getBounds();
-                float sx=raw.getWidth()/(float)Math.max(1,display.width());
-                float sy=raw.getHeight()/(float)Math.max(1,display.height());
-                int left=Math.max(0,Math.min(raw.getWidth()-1,Math.round((screenBounds.left-display.left)*sx)));
-                int top=Math.max(0,Math.min(raw.getHeight()-1,Math.round((screenBounds.top-display.top)*sy)));
-                int right=Math.max(left+1,Math.min(raw.getWidth(),Math.round((screenBounds.right-display.left)*sx)));
-                int bottom=Math.max(top+1,Math.min(raw.getHeight(),Math.round((screenBounds.bottom-display.top)*sy)));
-                Bitmap crop=Bitmap.createBitmap(raw,left,top,right-left,bottom-top);
+                Bitmap crop=cropToScreenBounds(app,raw,screenBounds);
                 restoreIcon(service,hideIcon);
-                FloatService f=FloatService.get();if(f!=null)f.onCircleRecognizeStarted();
-                OcrEngine.recognize(app,crop);
+                onCrop.accept(crop);
             }catch(Throwable t){
                 restoreIcon(service,hideIcon);
-                Toast.makeText(app,"View OCR 失败，改用自由圈选",Toast.LENGTH_SHORT).show();
-                captureForOcr(app);
+                Toast.makeText(app,failText,Toast.LENGTH_SHORT).show();
+                if(fallbackToFreeOcr)captureForOcr(app);
             }
         }, t -> {
             restoreIcon(service,hideIcon);
             Toast.makeText(app,"截图失败: "+safeMessage(t),Toast.LENGTH_LONG).show();
         }),hideIcon?100L:0L);
+    }
+
+    private static Bitmap cropToScreenBounds(Context app,Bitmap raw,Rect screenBounds){
+        if(raw==null||screenBounds==null||screenBounds.isEmpty())throw new IllegalArgumentException("invalid crop");
+        WindowManager wm=(WindowManager)app.getSystemService(Context.WINDOW_SERVICE);
+        Rect display=wm.getCurrentWindowMetrics().getBounds();
+        float sx=raw.getWidth()/(float)Math.max(1,display.width());
+        float sy=raw.getHeight()/(float)Math.max(1,display.height());
+        int left=Math.max(0,Math.min(raw.getWidth()-1,Math.round((screenBounds.left-display.left)*sx)));
+        int top=Math.max(0,Math.min(raw.getHeight()-1,Math.round((screenBounds.top-display.top)*sy)));
+        int right=Math.max(left+1,Math.min(raw.getWidth(),Math.round((screenBounds.right-display.left)*sx)));
+        int bottom=Math.max(top+1,Math.min(raw.getHeight(),Math.round((screenBounds.bottom-display.top)*sy)));
+        return Bitmap.createBitmap(raw,left,top,right-left,bottom-top);
     }
 
     private static void getBitmap(Context c, Consumer<Bitmap> ok) {
