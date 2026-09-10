@@ -58,24 +58,25 @@ public final class ScreenshotController {
     }
 
     /**
-     * Capture the region drawn during FV same-touch direct dragging. The region is already expressed
-     * in screen coordinates, so use the same screen-bounds crop path as Accessibility View capture.
+     * FV same-touch region selection is an OCR target in Direct Selection mode. The ordinary
+     * screenshot / region-screenshot actions still use capture(Context, boolean) and remain visual
+     * screenshot operations rather than being forced through OCR.
      */
     public static void captureBoundsForRegion(Context c, Rect screenBounds) {
         if (screenBounds == null || screenBounds.isEmpty()) return;
         Context app = c.getApplicationContext();
         Rect bounds = new Rect(screenBounds);
         captureBounds(app, bounds, crop -> {
-            DiagnosticLog.i(app, "FV_REGION_CAPTURE", "crop=" + crop.getWidth() + "x" + crop.getHeight()
+            DiagnosticLog.i(app, "FV_REGION_OCR", "crop=" + crop.getWidth() + "x" + crop.getHeight()
                     + " bounds=" + bounds);
-            ResultOverlay.showVisual(app, crop, null);
-        }, "区域截取失败", false);
+            OcrEngine.recognize(app, crop);
+        }, "区域 OCR 失败", true);
     }
 
     /**
      * Capture a highlighted View exactly by its Accessibility screen bounds.
-     * If Accessibility already supplied text, show that exact text together with the cropped View
-     * image; do not run OCR again. Pure image/icon Views use the visual result UI.
+     * If Accessibility already supplied text, show that exact text directly with the cropped View.
+     * If the View has no Accessibility text (image/WebView/Canvas/icon/etc), OCR the exact crop.
      */
     public static void captureBoundsForViewCandidate(Context c, Rect screenBounds,
                                                      ViewNodeCandidate candidate, String directText) {
@@ -91,12 +92,13 @@ public final class ScreenshotController {
                 if(f!=null)f.onOcrResults(1);
                 ResultOverlay.show(app,text,List.of(text),crop);
             }else{
-                ResultOverlay.showVisual(app,crop,candidate);
+                DiagnosticLog.i(app,"VIEW_OCR","no Accessibility text; OCR cropped View bounds="+screenBounds);
+                OcrEngine.recognize(app,crop);
             }
-        },"高亮 View 截取失败",false);
+        },"高亮 View OCR 失败",true);
     }
 
-    /** Preserve compatibility for image/icon callers. */
+    /** Compatibility entry: visual candidates selected from Direct Selection should also OCR. */
     public static void captureBoundsForVisualCandidate(Context c, Rect screenBounds, ViewNodeCandidate candidate) {
         captureBoundsForViewCandidate(c,screenBounds,candidate,"");
     }
