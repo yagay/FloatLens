@@ -12,15 +12,14 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 import java.util.Collections;
-import java.util.List;
 
 /**
  * Strict text/image hover layer.
  *
- * Selection comes only from Accessibility TEXT or image/icon NON_TEXT nodes. Accessibility bounds
- * stay in screen coordinates for hit testing. The drawing layer converts those screen coordinates
- * to the overlay View's local coordinate space before rendering, which avoids status-bar/cutout/
- * navigation-bar offsets on devices whose overlay frame does not start at physical screen (0,0).
+ * Selection comes only from Accessibility TEXT or image/icon NON_TEXT nodes. A candidate can be
+ * marked confirmed by ViewSelectionEngine after a stable dwell. Confirmed release captures exactly
+ * the highlighted View bounds. Screen-space Accessibility bounds are converted to overlay-local
+ * coordinates only for drawing; selection/capture continue using screen coordinates.
  */
 public final class ViewHoverOverlay {
     private static final long TREE_REFRESH_MS = 120L;
@@ -31,6 +30,7 @@ public final class ViewHoverOverlay {
     private final ScreenSelectionModel model = new ScreenSelectionModel();
     private HoverView view;
     private ScreenCandidate current;
+    private boolean confirmed;
     private long lastScanAt;
     private long lastTreeScanAt;
     private float lastX = Float.NaN, lastY = Float.NaN;
@@ -85,7 +85,9 @@ public final class ViewHoverOverlay {
         ScreenCandidate next = model.selectAt(selectionX, selectionY);
         if (!sameCandidate(current, next)) {
             current = next;
+            confirmed = false;
             view.setCandidate(next);
+            view.setConfirmed(false);
             if (next != null) {
                 DiagnosticLog.i(context, "VIEW_HOVER", "strict source=" + next.source()
                         + " type=" + next.type() + " screenBounds=" + next.bounds()
@@ -111,25 +113,27 @@ public final class ViewHoverOverlay {
         }
     }
 
+    public void setConfirmed(boolean value) {
+        confirmed = value && current != null;
+        if (view != null) view.setConfirmed(confirmed);
+    }
+
+    public boolean isConfirmed() { return confirmed; }
+
+    /** Capture exactly the highlighted View after dwell confirmation. */
     public boolean finish(boolean extract) {
         ScreenCandidate picked = current;
+        boolean wasConfirmed = confirmed;
         close();
-        if (!extract || picked == null) return false;
+        if (!extract || !wasConfirmed || picked == null) return false;
         Rect b = picked.bounds();
         if (b.isEmpty()) return false;
 
-        if (picked.type() == ScreenCandidate.Type.TEXT && picked.hasText()) {
-            FloatService f = FloatService.get();
-            if (f != null) f.onOcrResults(1);
-            ResultOverlay.show(context, picked.text(), List.of(picked.text()), null);
-            DiagnosticLog.i(context, "VIEW_EXTRACT", "direct text bounds=" + b
-                    + " len=" + picked.text().length());
-            return true;
-        }
-
-        if (picked.type() == ScreenCandidate.Type.NON_TEXT) {
-            ScreenshotController.captureBoundsForVisualCandidate(context, b, picked.toViewNodeCandidate());
-            DiagnosticLog.i(context, "VIEW_EXTRACT", "image/icon bounds=" + b
+        if (picked.type() == ScreenCandidate.Type.TEXT || picked.type() == ScreenCandidate.Type.NON_TEXT) {
+            ScreenshotController.captureBoundsForViewCandidate(
+                    context, b, picked.toViewNodeCandidate(), picked.hasText() ? picked.text() : "");
+            DiagnosticLog.i(context, "VIEW_EXTRACT", "capture highlighted view type=" + picked.type()
+                    + " bounds=" + b + " textLen=" + picked.text().length()
                     + " class=" + picked.className() + " id=" + picked.viewId());
             return true;
         }
@@ -144,6 +148,7 @@ public final class ViewHoverOverlay {
         if (view != null) try { wm.removeView(view); } catch (Throwable ignored) {}
         view = null;
         current = null;
+        confirmed = false;
         model.setAccessibility(Collections.emptyList());
         model.setVisual(Collections.emptyList());
         lastScanAt = lastTreeScanAt = 0L;
@@ -162,6 +167,7 @@ public final class ViewHoverOverlay {
         private final Paint label = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final int[] overlayLocation = new int[2];
         private ScreenCandidate candidate;
+        private boolean confirmed;
         private int lastLoggedOriginX = Integer.MIN_VALUE;
         private int lastLoggedOriginY = Integer.MIN_VALUE;
 
@@ -169,13 +175,12 @@ public final class ViewHoverOverlay {
             super(c);
             setBackgroundColor(Color.TRANSPARENT);
             fill.setStyle(Paint.Style.FILL);
-            fill.setColor(0x332196F3);
             border.setStyle(Paint.Style.STROKE);
-            border.setStrokeWidth(dp(2));
             border.setColor(0xFFFFFFFF);
             label.setColor(Color.WHITE);
             label.setTextSize(dp(14));
             label.setShadowLayer(dp(3), 0, dp(1), Color.BLACK);
+            updatePaints();
         }
 
         void setCandidate(ScreenCandidate c) {
@@ -183,13 +188,21 @@ public final class ViewHoverOverlay {
             invalidate();
         }
 
+        void setConfirmed(boolean value) {
+            confirmed = value;
+            updatePaints();
+            invalidate();
+        }
+
+        private void updatePaints() {
+            fill.setColor(confirmed ? 0x552196F3 : 0x332196F3);
+            border.setStrokeWidth(dp(confirmed ? 4 : 2));
+        }
+
         @Override protected void onDraw(Canvas c) {
             super.onDraw(c);
             if (candidate == null) return;
 
-            // AccessibilityNodeInfo#getBoundsInScreen() is in physical screen coordinates.
-            // Canvas coordinates are local to this overlay View. Convert by the overlay View's
-            // actual screen origin instead of assuming the origin is always (0,0).
             getLocationOnScreen(overlayLocation);
             Rect r = candidate.bounds();
             r.offset(-overlayLocation[0], -overlayLocation[1]);
@@ -207,7 +220,7 @@ public final class ViewHoverOverlay {
 
             c.drawRect(r, fill);
             c.drawRect(r, border);
-            String text = candidate.label();
+            String text = confirmed ? "已锁定 · " + candidate.label() : candidate.label();
             float x = Math.max(dp(8), Math.min(r.left, getWidth() - dp(180)));
             float y = r.top > dp(28) ? r.top - dp(8)
                     : Math.min(getHeight() - dp(8), r.bottom + dp(20));
