@@ -14,6 +14,7 @@ import android.widget.Toast;
 import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
 
@@ -33,16 +34,32 @@ public final class ScreenshotController {
     }
 
     /**
-     * Preserve a pure icon/ImageView as an image candidate. FV can select visual Views even when
-     * they expose no text; FloatLens therefore crops the exact accessibility bounds and shows the
-     * visual candidate instead of forcing an OCR-only result.
+     * Capture a locked highlighted View exactly by its Accessibility screen bounds.
+     * If Accessibility already supplied text, show that exact text together with the cropped View
+     * image; do not run OCR again. Pure image/icon Views use the visual result UI.
      */
-    public static void captureBoundsForVisualCandidate(Context c, Rect screenBounds, ViewNodeCandidate candidate) {
+    public static void captureBoundsForViewCandidate(Context c, Rect screenBounds,
+                                                     ViewNodeCandidate candidate, String directText) {
         if(screenBounds==null||screenBounds.isEmpty())return;
-        captureBounds(c,screenBounds,crop->{
-            DiagnosticLog.i(c.getApplicationContext(),"VIEW_VISUAL","crop="+crop.getWidth()+"x"+crop.getHeight()+" kind="+(candidate==null?"view":candidate.kind()));
-            ResultOverlay.showVisual(c.getApplicationContext(),crop,candidate);
-        },"图标/View 截取失败",false);
+        Context app=c.getApplicationContext();
+        captureBounds(app,screenBounds,crop->{
+            String text=directText==null?"":directText.trim();
+            DiagnosticLog.i(app,"VIEW_CAPTURE","crop="+crop.getWidth()+"x"+crop.getHeight()
+                    +" bounds="+screenBounds+" textLen="+text.length()
+                    +" kind="+(candidate==null?"view":candidate.kind()));
+            if(!text.isEmpty()){
+                FloatService f=FloatService.get();
+                if(f!=null)f.onOcrResults(1);
+                ResultOverlay.show(app,text,List.of(text),crop);
+            }else{
+                ResultOverlay.showVisual(app,crop,candidate);
+            }
+        },"高亮 View 截取失败",false);
+    }
+
+    /** Preserve compatibility for image/icon callers. */
+    public static void captureBoundsForVisualCandidate(Context c, Rect screenBounds, ViewNodeCandidate candidate) {
+        captureBoundsForViewCandidate(c,screenBounds,candidate,"");
     }
 
     private static void captureBounds(Context c,Rect screenBounds,Consumer<Bitmap> onCrop,String failText,boolean fallbackToFreeOcr){
