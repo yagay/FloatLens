@@ -2,6 +2,7 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.PointF;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
@@ -10,8 +11,10 @@ import android.view.MotionEvent;
 
 /**
  * FV-style selection engine driven in parallel with the floating-icon MOVE stream.
- * Accessibility candidates update live; a frozen screenshot requested on DOWN supplies NonText
- * visual rectangles without repeatedly taking screenshots while the icon is being dragged.
+ *
+ * Gesture speed remains based on raw finger MotionEvents, while View/image targeting uses the
+ * floating icon's stable hotspot. This prevents the selected rectangle from shifting simply because
+ * the user touched the icon near its edge instead of its centre.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, ACTIVE }
@@ -24,13 +27,14 @@ public final class ViewSelectionEngine {
     private final LensAccessibilityService accessibility;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable settleRunnable = this::settledRefresh;
+    private final SelectionPointTransformer pointTransformer;
 
     private ViewHoverOverlay overlay;
     private State state = State.IDLE;
-    private float downX = Float.NaN, downY = Float.NaN;
-    private float previousX = Float.NaN, previousY = Float.NaN;
-    private float pointerX = Float.NaN, pointerY = Float.NaN;
-    private float minX, minY, maxX, maxY;
+    private float downRawX = Float.NaN, downRawY = Float.NaN;
+    private float previousRawX = Float.NaN, previousRawY = Float.NaN;
+    private float selectionX = Float.NaN, selectionY = Float.NaN;
+    private float minSelectionX, minSelectionY, maxSelectionX, maxSelectionY;
     private long downAt;
     private long lastFastFrameAt;
     private boolean moved;
@@ -41,6 +45,9 @@ public final class ViewSelectionEngine {
     public ViewSelectionEngine(Context c) {
         context = c.getApplicationContext();
         accessibility = LensAccessibilityService.get();
+        FloatSettings fs = new FloatSettings(context);
+        float px = fs.sizeDp() * context.getResources().getDisplayMetrics().density;
+        pointTransformer = new SelectionPointTransformer(context, px, px);
     }
 
     public boolean available() { return accessibility != null; }
@@ -50,36 +57,42 @@ public final class ViewSelectionEngine {
     public void dispatchTouchEvent(MotionEvent e) {
         if (e == null || accessibility == null) return;
         final int action = e.getActionMasked();
-        final float x = e.getRawX(), y = e.getRawY();
+        final float rawX = e.getRawX(), rawY = e.getRawY();
         final long now = SystemClock.uptimeMillis();
-        pointerX = x;
-        pointerY = y;
+
+        if (action == MotionEvent.ACTION_DOWN) pointTransformer.begin(e);
+        PointF p = pointTransformer.transform(e);
+        selectionX = p.x;
+        selectionY = p.y;
 
         if (action == MotionEvent.ACTION_DOWN) {
             resetInternal(true);
+            pointTransformer.begin(e);
+            p = pointTransformer.transform(e);
+            selectionX = p.x;
+            selectionY = p.y;
             downAt = now;
-            downX = previousX = x;
-            downY = previousY = y;
-            pointerX = x;
-            pointerY = y;
-            minX = maxX = x;
-            minY = maxY = y;
+            downRawX = previousRawX = rawX;
+            downRawY = previousRawY = rawY;
+            minSelectionX = maxSelectionX = selectionX;
+            minSelectionY = maxSelectionY = selectionY;
             requestFrozenSnapshot(++captureGeneration);
-            DiagnosticLog.i(context, "FV_SELECT", "DOWN x=" + Math.round(x) + " y=" + Math.round(y) + " snapshot=requested");
+            DiagnosticLog.i(context, "FV_SELECT", "DOWN raw=" + Math.round(rawX) + "," + Math.round(rawY)
+                    + " hotspot=" + Math.round(selectionX) + "," + Math.round(selectionY));
             return;
         }
 
         if (action == MotionEvent.ACTION_MOVE) {
             moved = true;
-            minX = Math.min(minX, x);
-            minY = Math.min(minY, y);
-            maxX = Math.max(maxX, x);
-            maxY = Math.max(maxY, y);
+            minSelectionX = Math.min(minSelectionX, selectionX);
+            minSelectionY = Math.min(minSelectionY, selectionY);
+            maxSelectionX = Math.max(maxSelectionX, selectionX);
+            maxSelectionY = Math.max(maxSelectionY, selectionY);
 
-            float frameDx = Float.isNaN(previousX) ? 0f : Math.abs(x - previousX);
-            float frameDy = Float.isNaN(previousY) ? 0f : Math.abs(y - previousY);
-            previousX = x;
-            previousY = y;
+            float frameDx = Float.isNaN(previousRawX) ? 0f : Math.abs(rawX - previousRawX);
+            float frameDy = Float.isNaN(previousRawY) ? 0f : Math.abs(rawY - previousRawY);
+            previousRawX = rawX;
+            previousRawY = rawY;
 
             if (frameDx >= FV_FAST_FRAME_PX || frameDy >= FV_FAST_FRAME_PX) {
                 lastFastFrameAt = now;
@@ -87,21 +100,22 @@ public final class ViewSelectionEngine {
                 if (state == State.ACTIVE) {
                     closeOverlay();
                     state = State.IDLE;
-                    DiagnosticLog.i(context, "FV_SELECT", "LEAVE_ACTIVE fastFrame dx=" + Math.round(frameDx) + " dy=" + Math.round(frameDy));
+                    DiagnosticLog.i(context, "FV_SELECT", "LEAVE_ACTIVE fastFrame dx="
+                            + Math.round(frameDx) + " dy=" + Math.round(frameDy));
                 }
                 return;
             }
 
             float start = dp(FV_SELECT_START_DP);
-            float totalDx = x - downX;
-            float totalDy = y - downY;
+            float totalDx = rawX - downRawX;
+            float totalDy = rawY - downRawY;
             boolean meaningfulMove = totalDx * totalDx + totalDy * totalDy >= start * start;
 
             if (meaningfulMove) {
                 if (state != State.ACTIVE && now - lastFastFrameAt >= FV_SETTLE_DELAY_MS) {
-                    activateNow(x, y, "controlled_move");
+                    activateNow(selectionX, selectionY, "controlled_move");
                 }
-                if (state == State.ACTIVE && overlay != null) overlay.update(x, y);
+                if (state == State.ACTIVE && overlay != null) overlay.update(selectionX, selectionY);
 
                 handler.removeCallbacks(settleRunnable);
                 handler.postDelayed(settleRunnable, FV_SETTLE_DELAY_MS);
@@ -120,9 +134,9 @@ public final class ViewSelectionEngine {
             screenSnapshot = bitmap;
             snapshotBounds = new Rect(bounds);
             if (overlay != null) overlay.setScreenSnapshot(screenSnapshot, snapshotBounds);
-            DiagnosticLog.i(context,"FV_SELECT","snapshot ready="+bitmap.getWidth()+"x"+bitmap.getHeight());
+            DiagnosticLog.i(context, "FV_SELECT", "snapshot ready=" + bitmap.getWidth() + "x" + bitmap.getHeight());
         }, error -> {
-            if (generation == captureGeneration) DiagnosticLog.i(context,"FV_SELECT","snapshot failed="+error);
+            if (generation == captureGeneration) DiagnosticLog.i(context, "FV_SELECT", "snapshot failed=" + error);
         });
     }
 
@@ -137,25 +151,31 @@ public final class ViewSelectionEngine {
         if (screenSnapshot != null && snapshotBounds != null) overlay.setScreenSnapshot(screenSnapshot, snapshotBounds);
         state = State.ACTIVE;
         overlay.update(x, y);
-        DiagnosticLog.i(context, "FV_SELECT", "ACTIVE reason=" + reason + " after=" + (SystemClock.uptimeMillis() - downAt) + "ms x=" + Math.round(x) + " y=" + Math.round(y));
+        DiagnosticLog.i(context, "FV_SELECT", "ACTIVE reason=" + reason
+                + " after=" + (SystemClock.uptimeMillis() - downAt) + "ms hotspot="
+                + Math.round(x) + "," + Math.round(y));
     }
 
-    /** Final settled refresh so visual and Accessibility candidates land on the final point. */
     private void settledRefresh() {
-        if (!moved || accessibility == null || Float.isNaN(pointerX) || Float.isNaN(pointerY)) return;
+        if (!moved || accessibility == null || Float.isNaN(selectionX) || Float.isNaN(selectionY)) return;
         long now = SystemClock.uptimeMillis();
         if (now - lastFastFrameAt < FV_SETTLE_DELAY_MS) {
             handler.postDelayed(settleRunnable, FV_SETTLE_DELAY_MS - (now - lastFastFrameAt));
             return;
         }
-        if (state != State.ACTIVE) activateNow(pointerX, pointerY, "settled_100ms");
-        else if (overlay != null) overlay.update(pointerX, pointerY);
+        if (state != State.ACTIVE) activateNow(selectionX, selectionY, "settled_100ms");
+        else if (overlay != null) overlay.update(selectionX, selectionY);
     }
 
     public boolean finish(MotionEvent up) {
         boolean wasActive = state == State.ACTIVE;
         handler.removeCallbacks(settleRunnable);
-        if (overlay != null && up != null) overlay.update(up.getRawX(), up.getRawY());
+        if (up != null) {
+            PointF p = pointTransformer.transform(up);
+            selectionX = p.x;
+            selectionY = p.y;
+            if (overlay != null) overlay.update(selectionX, selectionY);
+        }
         boolean hadCandidate = overlay != null && overlay.hasCandidate();
         boolean producedResult = false;
         if (overlay != null) producedResult = overlay.finish(wasActive);
@@ -168,7 +188,9 @@ public final class ViewSelectionEngine {
                 DiagnosticLog.i(context, "FV_SELECT", "fallback bounds OCR=" + r);
             }
         }
-        DiagnosticLog.i(context, "FV_SELECT", "UP active=" + wasActive + " candidate=" + hadCandidate + " result=" + producedResult);
+        DiagnosticLog.i(context, "FV_SELECT", "UP active=" + wasActive
+                + " candidate=" + hadCandidate + " result=" + producedResult
+                + " hotspot=" + Math.round(selectionX) + "," + Math.round(selectionY));
         resetInternal(false);
         return wasActive;
     }
@@ -183,10 +205,10 @@ public final class ViewSelectionEngine {
     }
 
     private Rect selectionBounds() {
-        int l = Math.round(Math.min(minX, maxX));
-        int t = Math.round(Math.min(minY, maxY));
-        int r = Math.round(Math.max(minX, maxX));
-        int b = Math.round(Math.max(minY, maxY));
+        int l = Math.round(Math.min(minSelectionX, maxSelectionX));
+        int t = Math.round(Math.min(minSelectionY, maxSelectionY));
+        int r = Math.round(Math.max(minSelectionX, maxSelectionX));
+        int b = Math.round(Math.max(minSelectionY, maxSelectionY));
         return new Rect(l, t, r, b);
     }
 
@@ -200,8 +222,8 @@ public final class ViewSelectionEngine {
         if (close) closeOverlay();
         overlay = null;
         state = State.IDLE;
-        downX = downY = previousX = previousY = pointerX = pointerY = Float.NaN;
-        minX = minY = maxX = maxY = 0f;
+        downRawX = downRawY = previousRawX = previousRawY = selectionX = selectionY = Float.NaN;
+        minSelectionX = minSelectionY = maxSelectionX = maxSelectionY = 0f;
         downAt = 0L;
         lastFastFrameAt = 0L;
         moved = false;
