@@ -339,6 +339,7 @@ public final class ResultOverlay {
         iv.setImageBitmap(image);
         iv.setAdjustViewBounds(true);
         iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        ImageShareUtils.attachLongPressShare(c, iv, image);
         body.addView(iv, new LinearLayout.LayoutParams(-1, h));
         return h;
     }

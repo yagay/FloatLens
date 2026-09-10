@@ -127,6 +127,7 @@ public final class ViewContentActivity extends AppCompatActivity {
             iv.setImageBitmap(payload.image);
             iv.setAdjustViewBounds(true);
             iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            ImageShareUtils.attachLongPressShare(this, iv, payload.image);
             body.addView(iv, new LinearLayout.LayoutParams(-1, imageH));
             desired += imageH + dp(4);
         }
