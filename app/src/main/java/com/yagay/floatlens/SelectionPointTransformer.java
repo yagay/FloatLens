@@ -39,9 +39,9 @@ public final class SelectionPointTransformer {
     }
 
     /**
-     * Snapshot FV's gesture origin while the icon is still the small overlay.
-     * The helper side is deliberately locked here and is never recalculated from screen centre
-     * during MOVE. This mirrors FloatIconView.V(): one side state for the whole pointer stream.
+     * Snapshot the pointer origin while the icon is still in its resting (possibly edge-hidden)
+     * Window. FloatService restores that Window fully as soon as FV temporary-follow starts, so the
+     * live helper path below deliberately uses the corresponding fully-visible effective start.
      */
     public void begin(MotionEvent e) {
         if (e == null) return;
@@ -60,7 +60,9 @@ public final class SelectionPointTransformer {
         DiagnosticLog.i(context, "FV_PROBE", "BEGIN raw="
                 + Math.round(downRawX) + "," + Math.round(downRawY)
                 + " local=" + Math.round(touchOffsetX) + "," + Math.round(touchOffsetY)
-                + " startIcon=" + Math.round(startIconLeft) + "," + Math.round(startIconTop)
+                + " restingIcon=" + Math.round(startIconLeft) + "," + Math.round(startIconTop)
+                + " effectiveFollow=" + Math.round(effectiveStartIconLeft()) + ","
+                + Math.round(effectiveStartIconTop())
                 + " side=" + (gestureLeftSide ? "L" : "R")
                 + " icon=" + Math.round(iconWidth) + "x" + Math.round(iconHeight)
                 + " density=" + String.format(java.util.Locale.US, "%.3f", density)
@@ -79,13 +81,15 @@ public final class SelectionPointTransformer {
     }
 
     /**
-     * Reconstruct FV's virtual small-icon bounds from the gesture origin plus absolute raw delta.
-     * This remains stable after the real FloatIconView is expanded to MATCH_PARENT.
+     * Reconstruct the same small icon that the user actually sees during temporary-follow.
+     * FloatService.onDragStart() calls restoreFully() before the first visible follow update, so using
+     * the edge-hidden ACTION_DOWN origin here causes the helper to trail the icon by exactly the
+     * hidden amount. Anchor from the restored edge instead, then apply the raw pointer delta 1:1.
      */
     public RectF iconBoundsForRaw(float rawX, float rawY) {
         ensureInitializedFallback();
-        float left = startIconLeft + (rawX - downRawX);
-        float top = startIconTop + (rawY - downRawY);
+        float left = effectiveStartIconLeft() + (rawX - downRawX);
+        float top = effectiveStartIconTop() + (rawY - downRawY);
         return new RectF(left, top, left + iconWidth, top + iconHeight);
     }
 
@@ -97,9 +101,9 @@ public final class SelectionPointTransformer {
         final float lead = dp(FV_EDGE_LEAD_DP);
         final float edgeSpan = dp(FV_EDGE_SPAN_DP);
         final float helperInset = dp(FV_Y_HELPER_INSET_DP);
-        final float iconLeft = startIconLeft + (rawX - downRawX);
+        final float iconLeft = effectiveStartIconLeft() + (rawX - downRawX);
 
-        // FV normal X path reconstructed from its starting icon position + raw pointer delta.
+        // FV normal X path: effective small-icon start + currentRawX - downRawX - 25dp.
         float x = iconLeft - dp(FV_X_PROBE_OFFSET_DP);
         boolean rightCompensation = false;
         float rightThreshold = Float.NaN;
@@ -133,6 +137,21 @@ public final class SelectionPointTransformer {
         return new PointF(x, y);
     }
 
+    /** Matches FloatService.restoreFully() for the horizontal resting edge. */
+    private float effectiveStartIconLeft() {
+        Rect screen = screenBounds();
+        if (screen.isEmpty()) return startIconLeft;
+        return gestureLeftSide ? screen.left : screen.right - iconWidth;
+    }
+
+    /** Matches FloatService.restoreFully()/clamp(false) for the vertical start. */
+    private float effectiveStartIconTop() {
+        Rect screen = screenBounds();
+        if (screen.isEmpty()) return startIconTop;
+        float max = Math.max(screen.top, screen.bottom - iconHeight);
+        return Math.max(screen.top, Math.min(startIconTop, max));
+    }
+
     private void ensureInitializedFallback() {
         if (initialized) return;
         Rect screen = screenBounds();
@@ -154,7 +173,7 @@ public final class SelectionPointTransformer {
         if (now - lastLogAt < LOG_INTERVAL_MS && !rightCompensation && !bottomCompensation) return;
         lastLogAt = now;
         DiagnosticLog.i(context, "FV_PROBE", "raw=" + Math.round(rawX) + "," + Math.round(rawY)
-                + " iconLeft=" + Math.round(iconLeft)
+                + " followIconLeft=" + Math.round(iconLeft)
                 + " side=" + (gestureLeftSide ? "L" : "R")
                 + " probe=" + Math.round(x) + "," + Math.round(y)
                 + " edgeR=" + rightCompensation + " edgeB=" + bottomCompensation
