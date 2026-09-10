@@ -68,7 +68,9 @@ public final class ScreenshotController {
         captureBounds(app, bounds, crop -> {
             DiagnosticLog.i(app, "FV_REGION_CAPTURE", "crop=" + crop.getWidth() + "x" + crop.getHeight()
                     + " bounds=" + bounds);
-            ScreenshotResultOverlay.show(app, crop, bounds);
+            if (!ScreenshotResultActivity.show(app, crop, bounds)) {
+                ScreenshotResultOverlay.show(app, crop, bounds);
+            }
         }, "区域截图失败", false);
     }
 
