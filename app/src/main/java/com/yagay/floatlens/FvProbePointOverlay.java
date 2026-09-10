@@ -11,15 +11,18 @@ import android.view.View;
 import android.view.WindowManager;
 
 /**
- * FV's real selection probe (FooViewService M/N/O/Q).
+ * FV selection probe (FooViewService M/N/O/Q).
  *
- * fooView 1.6.4 creates a 15dp FrameLayout/ImageView and uses the circle_focus drawable. e4(Point)
- * centres that Window on the transformed selection Point; the same Point is passed to the selection
- * layer and View hit-test path. FloatLens mirrors that invariant: visible plus centre == hit point.
+ * FV's own help text describes the interaction explicitly: while the icon is moving the selection
+ * cross is red; after the move-idle selection delay fires, the cross turns yellow. The same 15dp
+ * probe Window remains centred on the transformed hit Point in both states.
  */
 public final class FvProbePointOverlay {
+    public enum State { TRACKING_RED, READY_YELLOW }
+
     private static final float FV_PROBE_SIZE_DP = 15f;
-    private static final int FV_FOCUS_COLOR = 0xFFC2185B;
+    private static final int FV_TRACKING_RED = 0xFFFF0000;
+    private static final int FV_READY_YELLOW = 0xFFFFFF00;
 
     private final Context context;
     private final WindowManager wm;
@@ -28,6 +31,7 @@ public final class FvProbePointOverlay {
     private final WindowManager.LayoutParams lp;
     private boolean attached;
     private boolean visible;
+    private State state = State.TRACKING_RED;
 
     public FvProbePointOverlay(Context c) {
         context = c.getApplicationContext();
@@ -35,6 +39,7 @@ public final class FvProbePointOverlay {
         float density = Math.max(.1f, context.getResources().getDisplayMetrics().density);
         sizePx = Math.max(1, Math.round(FV_PROBE_SIZE_DP * density));
         view = new ProbeView(context);
+        view.setState(state);
         view.setVisibility(View.INVISIBLE);
         lp = new WindowManager.LayoutParams(
                 sizePx,
@@ -56,10 +61,26 @@ public final class FvProbePointOverlay {
         try {
             wm.addView(view, lp);
             attached = true;
-            DiagnosticLog.i(context, "FV_PROBE_VIEW", "ATTACH size=" + sizePx);
+            DiagnosticLog.i(context, "FV_PROBE_VIEW", "ATTACH size=" + sizePx + " state=" + state);
         } catch (Throwable t) {
             DiagnosticLog.i(context, "FV_PROBE_VIEW", "attach failed=" + t);
         }
+    }
+
+    /** Red while following/moving before FV's delayed selection state has fired. */
+    public void setTracking() { setState(State.TRACKING_RED); }
+
+    /** Yellow once the move-idle/direct-selection state has fired. */
+    public void setReady() { setState(State.READY_YELLOW); }
+
+    public State state() { return state; }
+
+    private void setState(State next) {
+        if (next == null) next = State.TRACKING_RED;
+        if (state == next) return;
+        state = next;
+        view.setState(next);
+        DiagnosticLog.i(context, "FV_PROBE_VIEW", "STATE " + next);
     }
 
     /** Mirrors FooViewService.e4(Point): O.x=p.x-Q/2, O.y=p.y-Q/2. */
@@ -81,7 +102,7 @@ public final class FvProbePointOverlay {
         float cx = lp.x + sizePx / 2f;
         float cy = lp.y + sizePx / 2f;
         DiagnosticLog.i(context, "FV_PROBE_VIEW", "MOVE centre=" + Math.round(cx) + ","
-                + Math.round(cy) + " window=" + lp.x + "," + lp.y);
+                + Math.round(cy) + " window=" + lp.x + "," + lp.y + " state=" + state);
         return new PointF(cx, cy);
     }
 
@@ -92,7 +113,7 @@ public final class FvProbePointOverlay {
         view.setVisibility(View.INVISIBLE);
         lp.x = -sizePx;
         try { wm.updateViewLayout(view, lp); } catch (Throwable ignored) {}
-        DiagnosticLog.i(context, "FV_PROBE_VIEW", "HIDE");
+        DiagnosticLog.i(context, "FV_PROBE_VIEW", "HIDE state=" + state);
     }
 
     public void close() {
@@ -105,18 +126,30 @@ public final class FvProbePointOverlay {
 
     private static final class ProbeView extends View {
         private final Paint plus = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private State state = State.TRACKING_RED;
 
         ProbeView(Context c) {
             super(c);
-            plus.setColor(FV_FOCUS_COLOR);
             plus.setStyle(Paint.Style.STROKE);
             plus.setStrokeCap(Paint.Cap.SQUARE);
             plus.setStrokeWidth(Math.max(1f, 1.8f * getResources().getDisplayMetrics().density));
-            // FV circle_focus PNG has a subtle dark shadow around the magenta plus.
             plus.setShadowLayer(Math.max(1f, 1.25f * getResources().getDisplayMetrics().density), 0f,
-                    Math.max(.5f, .5f * getResources().getDisplayMetrics().density), 0x66000000);
+                    Math.max(.5f, .5f * getResources().getDisplayMetrics().density), 0x77000000);
             setLayerType(LAYER_TYPE_SOFTWARE, null);
             setBackgroundColor(Color.TRANSPARENT);
+            updateColor();
+        }
+
+        void setState(State value) {
+            if (value == null) value = State.TRACKING_RED;
+            if (state == value) return;
+            state = value;
+            updateColor();
+            invalidate();
+        }
+
+        private void updateColor() {
+            plus.setColor(state == State.READY_YELLOW ? FV_READY_YELLOW : FV_TRACKING_RED);
         }
 
         @Override protected void onDraw(Canvas canvas) {
