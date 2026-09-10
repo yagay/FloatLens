@@ -7,10 +7,10 @@ import android.view.MotionEvent;
 /**
  * FV-style same-touch selection engine.
  *
- * fooView keeps two different helper layers. The 15dp circle_focus plus is the actual selection
- * probe (FooViewService M/N/O/Q), while the 24dp CircleImageView is an action-state helper. This
- * engine owns only the real selection probe. The transformed Point is used for all three operations:
- * moving the visible plus, selecting/highlighting a View, and completing the release/capture.
+ * The 15dp probe follows the same transformed Point used for View hit testing. FV exposes two
+ * visible probe states: red while the icon is still being moved, and yellow after the delayed
+ * move-idle/direct-selection trigger has fired. Yellow remains active while selecting a View or
+ * drawing a rectangular region.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
@@ -57,11 +57,13 @@ public final class ViewSelectionEngine {
     }
 
     /**
-     * FV c3 MOVE path: v3/c2 calculates Point, then q2/e4 moves circle_focus to that exact Point.
-     * This runs on every live MOVE after temporary-follow starts; there is no +/dot state swap.
+     * FV moving state: show a RED cross at the transformed point. FloatIconView rearms its delayed
+     * selector while movement continues; the cross remains red until that delay actually fires.
      */
     public PointF showProbe(float rawX, float rawY) {
         PointF transformed = pointTransformer.transformRaw(rawX, rawY);
+        ensureProbe();
+        if (probeOverlay != null) probeOverlay.setTracking();
         PointF shown = showProbeAt(transformed);
         selectionX = shown.x;
         selectionY = shown.y;
@@ -72,7 +74,10 @@ public final class ViewSelectionEngine {
         if (probeOverlay != null) probeOverlay.hide();
     }
 
-    /** Called by the observed FV-style delayed q Runnable while the same pointer is still down. */
+    /**
+     * FV delayed move-idle state: the red cross turns YELLOW. From this moment the same yellow probe
+     * drives View highlighting and any subsequent rectangular region selection.
+     */
     public boolean activateDirect(float rawX, float rawY) {
         if (accessibility == null) return false;
         if (state == State.DIRECT) {
@@ -90,7 +95,10 @@ public final class ViewSelectionEngine {
         overlay.begin();
         state = State.DIRECT;
 
-        // Critical FV invariant: circle_focus centre == selection layer Point == View hit-test Point.
+        ensureProbe();
+        if (probeOverlay != null) probeOverlay.setReady();
+
+        // Critical FV invariant: visible cross centre == selection layer Point == View hit-test Point.
         PointF transformed = pointTransformer.transformRaw(rawX, rawY);
         PointF shown = showProbeAt(transformed);
         selectionX = shown.x;
@@ -99,12 +107,15 @@ public final class ViewSelectionEngine {
 
         DiagnosticLog.i(context, "FV_SELECT", "DIRECT_ENTER raw="
                 + Math.round(rawX) + "," + Math.round(rawY)
-                + " focusHit=" + Math.round(selectionX) + "," + Math.round(selectionY));
+                + " focusHit=" + Math.round(selectionX) + "," + Math.round(selectionY)
+                + " probe=YELLOW");
         return true;
     }
 
     public void updateDirect(float rawX, float rawY) {
         if (state != State.DIRECT || overlay == null) return;
+        ensureProbe();
+        if (probeOverlay != null) probeOverlay.setReady();
         PointF transformed = pointTransformer.transformRaw(rawX, rawY);
         PointF shown = showProbeAt(transformed);
         selectionX = shown.x;
