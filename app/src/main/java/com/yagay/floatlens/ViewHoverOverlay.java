@@ -12,10 +12,7 @@ import android.view.View;
 import android.view.WindowManager;
 import java.util.List;
 
-/**
- * Non-touchable FV-style hover layer controlled by the floating icon drag path.
- * It never owns the gesture: FloatIconView keeps receiving all MotionEvents.
- */
+/** Non-touchable FV-style hover layer controlled by the floating icon drag path. */
 public final class ViewHoverOverlay {
     private final Context context;
     private final WindowManager wm;
@@ -57,19 +54,22 @@ public final class ViewHoverOverlay {
         long now = SystemClock.uptimeMillis();
         float dx = Float.isNaN(lastX) ? 999f : screenX - lastX;
         float dy = Float.isNaN(lastY) ? 999f : screenY - lastY;
-        if (now - lastScanAt < 40 && dx*dx + dy*dy < 64f) return;
+        if (now - lastScanAt < 32 && dx*dx + dy*dy < 36f) return;
         lastScanAt = now; lastX = screenX; lastY = screenY;
         ViewNodeCandidate next = accessibility.findViewAt(screenX, screenY);
         if (!sameCandidate(current, next)) {
             current = next;
             view.setCandidate(next);
-            if (next != null) DiagnosticLog.i(context,"VIEW_HOVER","bounds="+next.bounds()+" textLen="+next.text().length()+" class="+next.className()+" id="+next.viewId());
+            if (next != null) {
+                DiagnosticLog.i(context,"VIEW_HOVER","kind="+next.kind()+" bounds="+next.bounds()+" textLen="+next.text().length()+" class="+next.className()+" id="+next.viewId());
+            }
         }
     }
 
     /**
-     * Finishes hover selection. When extract=true and a useful candidate exists, this consumes
-     * the drag release and performs View text extraction / View-bounds OCR fallback.
+     * FV-style result resolution. Text Views return exposed accessibility text directly. Visual-only
+     * icon/image Views remain image candidates and are cropped from their exact View bounds instead
+     * of being discarded just because OCR text is absent.
      */
     public boolean finish(boolean extract) {
         ViewNodeCandidate picked = current;
@@ -81,7 +81,12 @@ public final class ViewHoverOverlay {
             FloatService f = FloatService.get();
             if (f != null) f.onOcrResults(1);
             ResultOverlay.show(context, picked.text(), List.of(picked.text()), null);
-            DiagnosticLog.i(context,"VIEW_EXTRACT","direct text bounds="+b+" len="+picked.text().length());
+            DiagnosticLog.i(context,"VIEW_EXTRACT","direct text kind="+picked.kind()+" bounds="+b+" len="+picked.text().length());
+            return true;
+        }
+        if (picked.iconLike()) {
+            ScreenshotController.captureBoundsForVisualCandidate(context, b, picked);
+            DiagnosticLog.i(context,"VIEW_EXTRACT","visual candidate bounds="+b+" class="+picked.className()+" id="+picked.viewId());
             return true;
         }
         ScreenshotController.captureBoundsForOcr(context, b);
@@ -100,7 +105,9 @@ public final class ViewHoverOverlay {
     private boolean sameCandidate(ViewNodeCandidate a, ViewNodeCandidate b) {
         if (a == b) return true;
         if (a == null || b == null) return false;
-        return a.bounds().equals(b.bounds()) && a.text().equals(b.text()) && a.className().equals(b.className()) && a.viewId().equals(b.viewId());
+        return a.bounds().equals(b.bounds()) && a.text().equals(b.text())
+                && a.className().equals(b.className()) && a.viewId().equals(b.viewId())
+                && a.iconLike()==b.iconLike();
     }
 
     private static final class HoverView extends View {
