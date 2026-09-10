@@ -52,8 +52,12 @@ public class FloatService extends Service implements android.content.SharedPrefe
                 DiagnosticLog.i(FloatService.this,"POSITION","temporary follow origin="+origin[0]+","+origin[1]+" moveMode="+positionMoveArmed);
             }
             @Override public void onMove(int dx,int dy){
-                lp.x+=dx;lp.y+=dy;clamp(lp,false);safeUpdate(mirrored?secondary:primary,lp);
-                if(!mirrored&&secondary!=null&&secondaryLp!=null){secondaryLp.y=lp.y;clamp(secondaryLp,false);safeUpdate(secondary,secondaryLp);}
+                // FV FloatIconView.c0() writes the supplied x/y directly. During the live pointer
+                // stream it does not force the whole icon inside the display. Keeping the finger
+                // delta un-clamped lets the icon naturally become partially off-screen at an edge,
+                // while release/save paths below still clamp/snap the persistent resting position.
+                lp.x+=dx;lp.y+=dy;safeUpdate(mirrored?secondary:primary,lp);
+                if(!mirrored&&secondary!=null&&secondaryLp!=null){secondaryLp.y=lp.y;safeUpdate(secondary,secondaryLp);}
             }
             @Override public void onRelease(boolean moved){
                 View icon=mirrored?secondary:primary;
