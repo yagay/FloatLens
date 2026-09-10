@@ -15,15 +15,14 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Non-touchable FV-style selection layer.
+ * Strict text/image hover layer.
  *
- * A full Accessibility Text/Edit/NonText candidate tree is primary. Screenshot visual rectangles are
- * a fallback/refinement only when Accessibility cannot expose a concrete target (or only exposes a
- * coarse cell such as icon+label). All candidates remain in screen coordinates before drawing.
+ * Selection comes only from Accessibility TEXT or image/icon NON_TEXT nodes. Screenshot geometry is
+ * intentionally not used for hover selection, so an icon+label node remains one rectangle and
+ * generic controls/layout edges cannot be mistaken for images.
  */
 public final class ViewHoverOverlay {
-    private static final long TREE_REFRESH_MS = 140L;
-    private static final long VISUAL_REFRESH_MS = 90L;
+    private static final long TREE_REFRESH_MS = 120L;
 
     private final Context context;
     private final WindowManager wm;
@@ -31,11 +30,8 @@ public final class ViewHoverOverlay {
     private final ScreenSelectionModel model = new ScreenSelectionModel();
     private HoverView view;
     private ScreenCandidate current;
-    private Bitmap screenSnapshot;
-    private Rect snapshotScreenBounds;
     private long lastScanAt;
     private long lastTreeScanAt;
-    private long lastVisualScanAt;
     private float lastX = Float.NaN, lastY = Float.NaN;
 
     public ViewHoverOverlay(Context c) {
@@ -46,11 +42,8 @@ public final class ViewHoverOverlay {
 
     public boolean available() { return accessibility != null; }
 
-    public void setScreenSnapshot(Bitmap bitmap, Rect displayBounds) {
-        screenSnapshot = bitmap;
-        snapshotScreenBounds = displayBounds == null ? null : new Rect(displayBounds);
-        if (!Float.isNaN(lastX) && !Float.isNaN(lastY)) update(lastX, lastY, true);
-    }
+    /** Compatibility no-op: visual screenshot candidates are no longer used for selection. */
+    public void setScreenSnapshot(Bitmap bitmap, Rect displayBounds) {}
 
     public void begin() {
         if (accessibility == null || view != null) return;
@@ -74,9 +67,7 @@ public final class ViewHoverOverlay {
         }
     }
 
-    public void update(float selectionX, float selectionY) { update(selectionX, selectionY, false); }
-
-    private void update(float selectionX, float selectionY, boolean forceVisual) {
+    public void update(float selectionX, float selectionY) {
         if (accessibility == null) return;
         if (view == null) begin();
         if (view == null) return;
@@ -84,38 +75,18 @@ public final class ViewHoverOverlay {
         long now = SystemClock.uptimeMillis();
         float dx = Float.isNaN(lastX) ? 999f : selectionX - lastX;
         float dy = Float.isNaN(lastY) ? 999f : selectionY - lastY;
-        if (!forceVisual && now - lastScanAt < 24L && dx * dx + dy * dy < 16f) return;
+        if (now - lastScanAt < 20L && dx * dx + dy * dy < 9f) return;
         lastScanAt = now;
         lastX = selectionX;
         lastY = selectionY;
 
         refreshAccessibilityTree(false);
-        ScreenCandidate accessSelected = model.selectAccessibilityAt(selectionX, selectionY);
-
-        boolean allowVisual = shouldUseVisual(accessSelected);
-        if (allowVisual && screenSnapshot != null && !screenSnapshot.isRecycled()
-                && snapshotScreenBounds != null && !snapshotScreenBounds.isEmpty()
-                && (forceVisual || now - lastVisualScanAt >= VISUAL_REFRESH_MS)) {
-            lastVisualScanAt = now;
-            Rect hint = accessSelected == null ? null : accessSelected.bounds();
-            try {
-                model.setVisual(VisualCandidateDetector.detect(context, screenSnapshot,
-                        snapshotScreenBounds, selectionX, selectionY, hint));
-            } catch (Throwable t) {
-                model.setVisual(Collections.emptyList());
-                DiagnosticLog.i(context, "VIEW_VISUAL", "fallback detect failed=" + t);
-            }
-        } else if (!allowVisual) {
-            // Never let a stale screenshot rectangle replace a newly available Accessibility node.
-            model.setVisual(Collections.emptyList());
-        }
-
         ScreenCandidate next = model.selectAt(selectionX, selectionY);
         if (!sameCandidate(current, next)) {
             current = next;
             view.setCandidate(next);
             if (next != null) {
-                DiagnosticLog.i(context, "VIEW_HOVER", "source=" + next.source()
+                DiagnosticLog.i(context, "VIEW_HOVER", "strict source=" + next.source()
                         + " type=" + next.type() + " bounds=" + next.bounds()
                         + " depth=" + next.depth() + " textLen=" + next.text().length()
                         + " class=" + next.className() + " id=" + next.viewId());
@@ -128,26 +99,17 @@ public final class ViewHoverOverlay {
 
     private void refreshAccessibilityTree(boolean force) {
         long now = SystemClock.uptimeMillis();
-        if (!force && now - lastTreeScanAt < TREE_REFRESH_MS && !model.accessibilityCandidates().isEmpty()) return;
+        if (!force && now - lastTreeScanAt < TREE_REFRESH_MS
+                && !model.accessibilityCandidates().isEmpty()) return;
         lastTreeScanAt = now;
         try {
             model.setAccessibility(AccessibilityCandidateCollector.collect(accessibility));
         } catch (Throwable t) {
             DiagnosticLog.i(context, "FV_TREE", "refresh failed=" + t);
+            model.setAccessibility(Collections.emptyList());
         }
     }
 
-    private boolean shouldUseVisual(ScreenCandidate access) {
-        if (access == null || access.fullscreenLike() || access.type() == ScreenCandidate.Type.ROOT) return true;
-        // A known Accessibility NON_TEXT node already has an exact getBoundsInScreen rectangle.
-        if (access.source() == ScreenCandidate.Source.ACCESSIBILITY
-                && access.type() == ScreenCandidate.Type.NON_TEXT) return false;
-        Rect r = access.bounds();
-        float density = context.getResources().getDisplayMetrics().density;
-        return r.width() >= 42f * density && r.height() >= 42f * density;
-    }
-
-    /** Resolve the currently highlighted unified candidate. */
     public boolean finish(boolean extract) {
         ScreenCandidate picked = current;
         close();
@@ -155,20 +117,22 @@ public final class ViewHoverOverlay {
         Rect b = picked.bounds();
         if (b.isEmpty()) return false;
 
-        if (picked.hasText() && picked.type() == ScreenCandidate.Type.TEXT) {
+        if (picked.type() == ScreenCandidate.Type.TEXT && picked.hasText()) {
             FloatService f = FloatService.get();
             if (f != null) f.onOcrResults(1);
             ResultOverlay.show(context, picked.text(), List.of(picked.text()), null);
-            DiagnosticLog.i(context, "VIEW_EXTRACT", "direct text source=" + picked.source()
-                    + " bounds=" + b + " len=" + picked.text().length());
+            DiagnosticLog.i(context, "VIEW_EXTRACT", "direct text bounds=" + b
+                    + " len=" + picked.text().length());
             return true;
         }
 
-        ScreenshotController.captureBoundsForVisualCandidate(context, b, picked.toViewNodeCandidate());
-        DiagnosticLog.i(context, "VIEW_EXTRACT", "visual/nonText source=" + picked.source()
-                + " type=" + picked.type() + " bounds=" + b
-                + " class=" + picked.className() + " id=" + picked.viewId());
-        return true;
+        if (picked.type() == ScreenCandidate.Type.NON_TEXT) {
+            ScreenshotController.captureBoundsForVisualCandidate(context, b, picked.toViewNodeCandidate());
+            DiagnosticLog.i(context, "VIEW_EXTRACT", "image/icon bounds=" + b
+                    + " class=" + picked.className() + " id=" + picked.viewId());
+            return true;
+        }
+        return false;
     }
 
     public void cancel() { close(); }
@@ -181,9 +145,7 @@ public final class ViewHoverOverlay {
         current = null;
         model.setAccessibility(Collections.emptyList());
         model.setVisual(Collections.emptyList());
-        screenSnapshot = null;
-        snapshotScreenBounds = null;
-        lastScanAt = lastTreeScanAt = lastVisualScanAt = 0L;
+        lastScanAt = lastTreeScanAt = 0L;
         lastX = lastY = Float.NaN;
     }
 
@@ -202,12 +164,20 @@ public final class ViewHoverOverlay {
         HoverView(Context c) {
             super(c);
             setBackgroundColor(Color.TRANSPARENT);
-            fill.setStyle(Paint.Style.FILL); fill.setColor(0x332196F3);
-            border.setStyle(Paint.Style.STROKE); border.setStrokeWidth(dp(2)); border.setColor(0xFFFFFFFF);
-            label.setColor(Color.WHITE); label.setTextSize(dp(14)); label.setShadowLayer(dp(3), 0, dp(1), Color.BLACK);
+            fill.setStyle(Paint.Style.FILL);
+            fill.setColor(0x332196F3);
+            border.setStyle(Paint.Style.STROKE);
+            border.setStrokeWidth(dp(2));
+            border.setColor(0xFFFFFFFF);
+            label.setColor(Color.WHITE);
+            label.setTextSize(dp(14));
+            label.setShadowLayer(dp(3), 0, dp(1), Color.BLACK);
         }
 
-        void setCandidate(ScreenCandidate c) { candidate = c; invalidate(); }
+        void setCandidate(ScreenCandidate c) {
+            candidate = c;
+            invalidate();
+        }
 
         @Override protected void onDraw(Canvas c) {
             super.onDraw(c);
@@ -217,11 +187,14 @@ public final class ViewHoverOverlay {
             c.drawRect(r, border);
             String text = candidate.label();
             float x = Math.max(dp(8), Math.min(r.left, getWidth() - dp(180)));
-            float y = r.top > dp(28) ? r.top - dp(8) : Math.min(getHeight() - dp(8), r.bottom + dp(20));
+            float y = r.top > dp(28) ? r.top - dp(8)
+                    : Math.min(getHeight() - dp(8), r.bottom + dp(20));
             if (text.length() > 90) text = text.substring(0, 90) + "…";
             c.drawText(text, x, y, label);
         }
 
-        private float dp(float v) { return v * getResources().getDisplayMetrics().density; }
+        private float dp(float v) {
+            return v * getResources().getDisplayMetrics().density;
+        }
     }
 }
