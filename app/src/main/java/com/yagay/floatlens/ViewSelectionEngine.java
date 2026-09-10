@@ -7,8 +7,9 @@ import android.view.MotionEvent;
 /**
  * FV-style direct selection engine.
  *
- * This class intentionally owns no dwell timer. FooViewService's observed behavior is modelled in
- * FloatIconView: every MOVE restarts a 400 ms Runnable; when that Runnable fires the original icon
+ * This class intentionally owns no dwell timer. FloatIconView mirrors the observed FV q timing:
+ * meaningful pointer displacement rearms a 400 ms Runnable, while tiny continued MOVE jitter is
+ * ignored so the Runnable can fire with the same finger still down. When it fires the original icon
  * window expands to MATCH_PARENT and this engine enters DIRECT mode. All following MOVE/UP events
  * remain in the same pointer stream and are forwarded here.
  */
@@ -54,7 +55,7 @@ public final class ViewSelectionEngine {
         }
     }
 
-    /** Called by the observed FV-style 400 ms MOVE-idle Runnable while the finger is still down. */
+    /** Called by the observed FV-style 400 ms move-anchor Runnable while the finger is still down. */
     public boolean activateDirect(float rawX, float rawY) {
         if (accessibility == null) return false;
         if (state == State.DIRECT) {
