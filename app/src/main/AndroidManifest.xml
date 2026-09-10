@@ -13,6 +13,7 @@
 
     <application android:theme="@style/Theme.FloatLens" android:label="FloatLens" android:description="@string/app_description" android:allowBackup="false" android:supportsRtl="true">
         <activity android:name=".ResultTextActivity" android:theme="@style/Theme.FloatLens.ResultText" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" />
+        <activity android:name=".ViewContentActivity" android:theme="@style/Theme.FloatLens.ResultText" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" />
         <activity android:name=".SettingsActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
