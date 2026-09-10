@@ -25,14 +25,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
-/**
- * Compact result popup.
- *
- * The header and action row are always fixed. Only the middle body scrolls. This guarantees that
- * Copy/Save/Close remain visible even for very long OCR text or tall screenshots. The popup size is
- * still content-aware, but its maximum height is intentionally much smaller than the previous 72%
- * implementation.
- */
+/** Compact result popup: fixed header/actions, scrollable middle body. */
 public final class ResultOverlay {
     private static final int OUTER_MARGIN_DP = 12;
     private static final int ANCHOR_GAP_DP = 10;
@@ -46,7 +39,6 @@ public final class ResultOverlay {
         show(c, text, blocks, image, null);
     }
 
-    /** Show OCR/View text close to, but preferably not covering, the selected screen rectangle. */
     public static void show(Context c, String text, List<String> blocks, Bitmap image, Rect anchor) {
         Context app = c.getApplicationContext();
         FloatSettings fs = new FloatSettings(app);
@@ -60,22 +52,19 @@ public final class ResultOverlay {
         int maxBodyH = Math.max(dp(app, 72), maxPopupH - reservedH);
 
         LinearLayout box = baseBox(app);
-        TextView heading = title(app, "OCR 结果");
-        box.addView(heading, new LinearLayout.LayoutParams(-1, dp(app, TITLE_AREA_DP)));
+        box.addView(title(app, "OCR 结果"), new LinearLayout.LayoutParams(-1, dp(app, TITLE_AREA_DP)));
 
         ScrollView bodyScroll = new ScrollView(app);
         bodyScroll.setFillViewport(false);
         bodyScroll.setVerticalScrollBarEnabled(true);
-        bodyScroll.setFadeScrollbars(false);
+        bodyScroll.setScrollbarFadingEnabled(false);
         LinearLayout body = new LinearLayout(app);
         body.setOrientation(LinearLayout.VERTICAL);
 
         int desiredBodyH = 0;
-
         if (fs.ocrShowImage() && image != null) {
             int imageMaxH = Math.min(dp(app, 135), Math.max(dp(app, 72), Math.round(usable.height() * .20f)));
-            int imageH = addImage(app, body, image, innerW, imageMaxH);
-            desiredBodyH += imageH + dp(app, 4);
+            desiredBodyH += addImage(app, body, image, innerW, imageMaxH) + dp(app, 4);
         }
 
         if (fs.ocrShowText()) {
@@ -91,7 +80,6 @@ public final class ResultOverlay {
                 h.setPadding(dp(app, 8), dp(app, 8), dp(app, 8), dp(app, 3));
                 body.addView(h);
                 desiredBodyH += dp(app, 31);
-
                 for (String block : blocks) {
                     TextView tv = candidate(app, block, false);
                     tv.setOnClickListener(v -> copy(app, block));
@@ -102,12 +90,11 @@ public final class ResultOverlay {
         }
 
         if (desiredBodyH <= 0) {
-            TextView empty = candidate(app, "无可显示内容", false);
-            body.addView(empty);
+            body.addView(candidate(app, "无可显示内容", false));
             desiredBodyH = dp(app, 48);
         }
 
-        bodyScroll.addView(body, new ScrollView.LayoutParams(-1, -2));
+        bodyScroll.addView(body);
         int bodyH = clamp(desiredBodyH, dp(app, 56), maxBodyH);
         box.addView(bodyScroll, new LinearLayout.LayoutParams(-1, bodyH));
 
@@ -120,7 +107,6 @@ public final class ResultOverlay {
 
         int popupH = clamp(reservedH + bodyH, dp(app, 158), maxPopupH);
         showWindow(app, wm, box, popupW, popupH, anchor);
-
         copy.setOnClickListener(v -> copy(app, text));
         close.setOnClickListener(v -> {
             closeWindow(wm, box);
@@ -129,7 +115,6 @@ public final class ResultOverlay {
         });
     }
 
-    /** Pure ImageView/ImageButton/icon candidate selected from the accessibility View tree. */
     public static void showVisual(Context c, Bitmap image, ViewNodeCandidate view) {
         Rect anchor = view == null ? null : new Rect(view.bounds());
         showVisual(c, image, view, anchor);
@@ -146,9 +131,7 @@ public final class ResultOverlay {
             if (!view.className().isBlank()) meta.append("\n").append(view.className());
             if (!view.viewId().isBlank()) meta.append("\n").append(view.viewId());
             meta.append("\n").append(view.bounds().toShortString());
-        } else {
-            meta.append("图片 View");
-        }
+        } else meta.append("图片 View");
 
         int popupW = preferredWidth(app, usable, meta.toString(), null, image);
         int innerW = Math.max(dp(app, 120), popupW - dp(app, BOX_HPAD_DP * 2));
@@ -162,7 +145,7 @@ public final class ResultOverlay {
         ScrollView bodyScroll = new ScrollView(app);
         bodyScroll.setFillViewport(false);
         bodyScroll.setVerticalScrollBarEnabled(true);
-        bodyScroll.setFadeScrollbars(false);
+        bodyScroll.setScrollbarFadingEnabled(false);
         LinearLayout body = new LinearLayout(app);
         body.setOrientation(LinearLayout.VERTICAL);
 
@@ -171,12 +154,11 @@ public final class ResultOverlay {
             int imageMaxH = Math.min(dp(app, 190), Math.max(dp(app, 90), Math.round(usable.height() * .28f)));
             desiredBodyH += addImage(app, body, image, innerW, imageMaxH) + dp(app, 4);
         }
-
         TextView info = candidate(app, meta.toString(), true);
         body.addView(info, new LinearLayout.LayoutParams(-1, -2));
         desiredBodyH += textHeight(app, meta.toString(), innerW - dp(app, 16), 16f, 14);
 
-        bodyScroll.addView(body, new ScrollView.LayoutParams(-1, -2));
+        bodyScroll.addView(body);
         int bodyH = clamp(desiredBodyH, dp(app, 64), maxBodyH);
         box.addView(bodyScroll, new LinearLayout.LayoutParams(-1, bodyH));
 
@@ -189,7 +171,6 @@ public final class ResultOverlay {
 
         int popupH = clamp(reservedH + bodyH, dp(app, 168), maxPopupH);
         showWindow(app, wm, box, popupW, popupH, anchor);
-
         save.setOnClickListener(v -> { if (image != null) ScreenshotController.save(app, image); });
         close.setOnClickListener(v -> closeWindow(wm, box));
     }
@@ -231,12 +212,10 @@ public final class ResultOverlay {
         return b;
     }
 
-    /** Preserve image aspect ratio and return the exact preview height added to the body. */
     private static int addImage(Context c, LinearLayout body, Bitmap image, int innerW, int maxHeightPx) {
         if (image == null || image.getWidth() <= 0 || image.getHeight() <= 0) return 0;
         float ratio = image.getHeight() / (float) image.getWidth();
-        int h = Math.round(innerW * ratio);
-        h = clamp(h, dp(c, 44), maxHeightPx);
+        int h = clamp(Math.round(innerW * ratio), dp(c, 44), maxHeightPx);
         ImageView iv = new ImageView(c);
         iv.setImageBitmap(image);
         iv.setAdjustViewBounds(true);
@@ -245,7 +224,6 @@ public final class ResultOverlay {
         return h;
     }
 
-    /** Much more compact than the old 72%-screen popup. */
     private static int compactMaxHeight(Context c, Rect usable) {
         int byScreen = Math.round(usable.height() * .52f);
         int hardCap = dp(c, 430);
@@ -258,20 +236,15 @@ public final class ResultOverlay {
         int minW = Math.min(dp(c, 220), Math.max(1, usable.width() - margin * 2));
         int maxW = Math.max(minW, Math.min(dp(c, 410), Math.max(1, usable.width() - margin * 2)));
         int desired = minW;
-
         TextPaint p = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
         p.setTextSize(spPx(c, 16f));
         desired = Math.max(desired, measuredTextWidth(text, p) + dp(c, BOX_HPAD_DP * 2 + 16));
-        if (blocks != null) {
-            for (String block : blocks) {
-                desired = Math.max(desired, measuredTextWidth(block, p) + dp(c, BOX_HPAD_DP * 2 + 16));
-            }
-        }
+        if (blocks != null) for (String block : blocks)
+            desired = Math.max(desired, measuredTextWidth(block, p) + dp(c, BOX_HPAD_DP * 2 + 16));
         if (image != null && image.getWidth() > 0) {
             float density = Math.max(.1f, c.getResources().getDisplayMetrics().density);
             int sourceDpWidth = Math.round(image.getWidth() / density);
-            desired = Math.max(desired,
-                    dp(c, Math.min(360, Math.max(170, sourceDpWidth))) + dp(c, BOX_HPAD_DP * 2));
+            desired = Math.max(desired, dp(c, Math.min(360, Math.max(170, sourceDpWidth))) + dp(c, BOX_HPAD_DP * 2));
         }
         return clamp(desired, minW, maxW);
     }
@@ -289,9 +262,7 @@ public final class ResultOverlay {
             TextPaint p = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
             p.setTextSize(spPx(c, textSp));
             StaticLayout layout = StaticLayout.Builder.obtain(text, 0, text.length(), p, widthPx)
-                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                    .setIncludePad(false)
-                    .build();
+                    .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).build();
             return Math.max(1, layout.getLineCount());
         } catch (Throwable ignored) {
             return Math.max(1, text.split("\\n", -1).length);
@@ -302,27 +273,19 @@ public final class ResultOverlay {
         return wrappedLines(c, text, widthPx, textSp) * dp(c, 22) + dp(c, extraDp);
     }
 
-    private static void showWindow(Context c, WindowManager wm, LinearLayout box,
-                                   int popupW, int popupH, Rect anchor) {
+    private static void showWindow(Context c, WindowManager wm, LinearLayout box, int popupW, int popupH, Rect anchor) {
         Rect usable = usableBounds(c, wm);
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                popupW,
-                popupH,
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(popupW, popupH,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
-
         Rect normalizedAnchor = normalizeAnchor(anchor, usable);
         int[] xy = choosePosition(c, usable, normalizedAnchor, popupW, popupH);
-        lp.x = xy[0];
-        lp.y = xy[1];
-
+        lp.x = xy[0]; lp.y = xy[1];
         try {
             wm.addView(box, lp);
-            DiagnosticLog.i(c, "RESULT_WINDOW", "size=" + popupW + "x" + popupH
-                    + " pos=" + lp.x + "," + lp.y
+            DiagnosticLog.i(c, "RESULT_WINDOW", "size=" + popupW + "x" + popupH + " pos=" + lp.x + "," + lp.y
                     + " anchor=" + (normalizedAnchor == null ? "none" : normalizedAnchor.toShortString())
                     + " usable=" + usable.toShortString());
         } catch (Throwable t) {
@@ -330,45 +293,30 @@ public final class ResultOverlay {
         }
     }
 
-    /** Prefer below/above/right/left and choose the least-overlapping fallback if none fits. */
     private static int[] choosePosition(Context c, Rect usable, Rect anchor, int w, int h) {
-        int margin = dp(c, OUTER_MARGIN_DP);
-        int gap = dp(c, ANCHOR_GAP_DP);
-        if (anchor == null || anchor.isEmpty()) {
-            return new int[]{
-                    clamp(usable.centerX() - w / 2, usable.left + margin, usable.right - margin - w),
-                    clamp(usable.centerY() - h / 2, usable.top + margin, usable.bottom - margin - h)
-            };
-        }
+        int margin = dp(c, OUTER_MARGIN_DP), gap = dp(c, ANCHOR_GAP_DP);
+        if (anchor == null || anchor.isEmpty()) return new int[]{
+                clamp(usable.centerX() - w / 2, usable.left + margin, usable.right - margin - w),
+                clamp(usable.centerY() - h / 2, usable.top + margin, usable.bottom - margin - h)};
 
-        int cx = anchor.centerX();
-        int cy = anchor.centerY();
+        int cx = anchor.centerX(), cy = anchor.centerY();
         ArrayList<Placement> choices = new ArrayList<>();
         choices.add(new Placement(cx - w / 2, anchor.bottom + gap, 0));
         choices.add(new Placement(cx - w / 2, anchor.top - gap - h, 1));
         choices.add(new Placement(anchor.right + gap, cy - h / 2, 2));
         choices.add(new Placement(anchor.left - gap - w, cy - h / 2, 3));
 
-        final int minX = usable.left + margin;
-        final int maxX = Math.max(minX, usable.right - margin - w);
-        final int minY = usable.top + margin;
-        final int maxY = Math.max(minY, usable.bottom - margin - h);
-
+        int minX = usable.left + margin, maxX = Math.max(minX, usable.right - margin - w);
+        int minY = usable.top + margin, maxY = Math.max(minY, usable.bottom - margin - h);
         for (Placement p : choices) {
             p.fit = p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
-            p.cx = clamp(p.x, minX, maxX);
-            p.cy = clamp(p.y, minY, maxY);
-            Rect placed = new Rect(p.cx, p.cy, p.cx + w, p.cy + h);
-            Rect overlap = new Rect(placed);
+            p.cx = clamp(p.x, minX, maxX); p.cy = clamp(p.y, minY, maxY);
+            Rect placed = new Rect(p.cx, p.cy, p.cx + w, p.cy + h), overlap = new Rect(placed);
             p.overlap = overlap.intersect(anchor) ? (long) overlap.width() * overlap.height() : 0L;
             p.shift = Math.abs(p.cx - p.x) + Math.abs(p.cy - p.y);
         }
-
-        choices.sort(Comparator
-                .comparing((Placement p) -> !p.fit)
-                .thenComparingLong(p -> p.overlap)
-                .thenComparingInt(p -> p.shift)
-                .thenComparingInt(p -> p.preference));
+        choices.sort(Comparator.comparing((Placement p) -> !p.fit)
+                .thenComparingLong(p -> p.overlap).thenComparingInt(p -> p.shift).thenComparingInt(p -> p.preference));
         Placement best = choices.get(0);
         return new int[]{best.cx, best.cy};
     }
@@ -376,8 +324,7 @@ public final class ResultOverlay {
     private static Rect normalizeAnchor(Rect anchor, Rect usable) {
         if (anchor == null || anchor.isEmpty()) return null;
         Rect r = new Rect(anchor);
-        if (!r.intersect(usable)) return null;
-        return r;
+        return r.intersect(usable) ? r : null;
     }
 
     private static Rect usableBounds(Context c, WindowManager wm) {
@@ -385,14 +332,10 @@ public final class ResultOverlay {
             var metrics = wm.getCurrentWindowMetrics();
             Rect r = new Rect(metrics.getBounds());
             var insets = metrics.getWindowInsets().getInsetsIgnoringVisibility(WindowInsets.Type.systemBars());
-            r.left += insets.left;
-            r.top += insets.top;
-            r.right -= insets.right;
-            r.bottom -= insets.bottom;
+            r.left += insets.left; r.top += insets.top; r.right -= insets.right; r.bottom -= insets.bottom;
             if (!r.isEmpty()) return r;
         } catch (Throwable ignored) {}
-        return new Rect(0, 0,
-                c.getResources().getDisplayMetrics().widthPixels,
+        return new Rect(0, 0, c.getResources().getDisplayMetrics().widthPixels,
                 c.getResources().getDisplayMetrics().heightPixels);
     }
 
@@ -416,30 +359,13 @@ public final class ResultOverlay {
         Toast.makeText(c, "已复制", Toast.LENGTH_SHORT).show();
     }
 
-    private static float spPx(Context c, float sp) {
-        return sp * c.getResources().getDisplayMetrics().scaledDensity;
-    }
-
-    private static int dp(Context c, int v) {
-        return Math.round(v * c.getResources().getDisplayMetrics().density);
-    }
-
-    private static int clamp(int v, int min, int max) {
-        if (max < min) return min;
-        return Math.max(min, Math.min(v, max));
-    }
+    private static float spPx(Context c, float sp) { return sp * c.getResources().getDisplayMetrics().scaledDensity; }
+    private static int dp(Context c, int v) { return Math.round(v * c.getResources().getDisplayMetrics().density); }
+    private static int clamp(int v, int min, int max) { if (max < min) return min; return Math.max(min, Math.min(v, max)); }
 
     private static final class Placement {
-        final int x, y, preference;
-        int cx, cy, shift;
-        long overlap;
-        boolean fit;
-
-        Placement(int x, int y, int preference) {
-            this.x = x;
-            this.y = y;
-            this.preference = preference;
-        }
+        final int x, y, preference; int cx, cy, shift; long overlap; boolean fit;
+        Placement(int x, int y, int preference) { this.x = x; this.y = y; this.preference = preference; }
     }
 
     private ResultOverlay() {}
