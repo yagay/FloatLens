@@ -12,7 +12,7 @@ public class SettingsActivity extends AppCompatActivity {
     private EditText hidePackagesEdit;
     private final String[] ids = {ActionId.NONE, ActionId.BACK, ActionId.HOME, ActionId.RECENTS,
             ActionId.SCREENSHOT, ActionId.REGION_SCREENSHOT, ActionId.OCR, ActionId.AI_SCREEN,
-            ActionId.NOTIFICATIONS, ActionId.CLICK_UNDER, ActionId.HIDE};
+            ActionId.NOTIFICATIONS, ActionId.CLICK_UNDER, ActionId.MOVE_ICON, ActionId.HIDE};
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -45,7 +45,6 @@ public class SettingsActivity extends AppCompatActivity {
         seek(root, "手势启动距离", FloatSettings.K_GESTURE_START_DISTANCE, 10, 80, fs.gestureStartDistance(), " dp");
         seek(root, "下滑长短分界 / down_swipe_short_distance_2", FloatSettings.K_DOWN_SHORT_DISTANCE, 50, 600, fs.downShortDistance(), " dp基准");
         seek(root, "侧滑长短分界 / side_swipe_short_distance_2", FloatSettings.K_SIDE_SHORT_DISTANCE, 50, 700, fs.sideShortDistance(), " dp基准");
-        check(root, "长按后拖动图标 / isLongPressDragEnabled", FloatSettings.K_LONG_PRESS_DRAG, fs.longPressDragEnabled());
         check(root, "震动反馈 / vibration_fb", FloatSettings.K_VIBRATE, fs.vibrate());
         check(root, "显示全屏手势轨迹 / showGestureTracking", FloatSettings.K_TRACK, fs.track());
         seek(root, "轨迹透明度 / float_line_alpha", FloatSettings.K_LINE_ALPHA, 10, 100, fs.lineAlpha(), "%");
@@ -72,7 +71,7 @@ public class SettingsActivity extends AppCompatActivity {
         hidePackagesEdit = new EditText(this); hidePackagesEdit.setText(fs.prefs().getString(FloatSettings.K_HIDE_PACKAGES, "")); hidePackagesEdit.setHint("例如 com.example.game com.example.bank"); root.addView(hidePackagesEdit);
         hidePackagesEdit.setOnFocusChangeListener((v, hasFocus) -> { if (!hasFocus) saveHidePackages(); });
 
-        title(root, "操作映射（识别层与动作层分离）");
+        title(root, "操作映射");
         Map<String, String> map = new LinkedHashMap<>();
         map.put("单击 / action_click", FloatSettings.K_ACTION_CLICK);
         map.put("双击 / action_db_click", FloatSettings.K_ACTION_DOUBLE);
@@ -86,7 +85,7 @@ public class SettingsActivity extends AppCompatActivity {
         for (var e : map.entrySet()) spinner(root, e.getKey(), e.getValue(), defaultFor(e.getValue()));
 
         TextView note = new TextView(this);
-        note.setText("2.4.0 起，触摸轨迹先分类为 GestureCode，再映射到 ActionId。长按、圈选、OCR 结果使用独立 Circle 状态机；智能屏幕也是独立 action，不再和普通滑动动作混在一起。");
+        note.setText("FV式位置逻辑：普通手势时图标只临时跟手，松手恢复原来的贴边位置；只有先触发“移动图标位置”动作，下一次拖动才保存新位置。");
         note.setPadding(0, dp(28), 0, 0);
         root.addView(note);
         setContentView(sv);
