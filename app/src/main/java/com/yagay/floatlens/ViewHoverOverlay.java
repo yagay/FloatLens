@@ -343,16 +343,8 @@ public final class ViewHoverOverlay {
                     c.drawText(text, x, y, label);
                 }
             }
-
-            // FV keeps a small helper/handler view after the main FloatIconView expands fullscreen.
-            // Draw an equivalent non-touchable pointer marker at the transformed selection hotspot.
-            if (!Float.isNaN(pointerX) && !Float.isNaN(pointerY)) {
-                float px = pointerX - overlayLocation[0];
-                float py = pointerY - overlayLocation[1];
-                float r = dp(10);
-                c.drawCircle(px, py, r, pointerFill);
-                c.drawCircle(px, py, r, pointerBorder);
-            }
+            // Probe indicator is rendered by the single stateful FvActionHintOverlay.
+            // This fullscreen layer only draws View/region selection bounds.
         }
 
         private float dp(float v) { return v * getResources().getDisplayMetrics().density; }
