@@ -15,7 +15,6 @@ import android.widget.Toast;
 import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
-import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
 
@@ -49,24 +48,19 @@ public final class ScreenshotController {
         }), hideIcon ? 100L : 0L);
     }
 
-    /** Explicit OCR path: OCR only the selected Accessibility View rectangle. */
+    /** Explicit OCR path only. */
     public static void captureBoundsForOcr(Context c, Rect screenBounds) {
         if (screenBounds == null || screenBounds.isEmpty()) {
             captureForOcr(c);
             return;
         }
         Rect anchor = new Rect(screenBounds);
-        captureBounds(c, anchor, crop -> {
-            FloatService f = FloatService.get();
-            if (f != null) f.onCircleRecognizeStarted();
-            OcrEngine.recognize(c.getApplicationContext(), crop, anchor);
-        }, "View OCR 失败，改用自由圈选", true);
+        captureBounds(c, anchor, crop ->
+                OcrEngine.recognize(c.getApplicationContext(), crop, anchor),
+                "View OCR 失败，改用自由圈选", true);
     }
 
-    /**
-     * FV Direct region selection is a screenshot path, not an implicit OCR path.
-     * OCR remains available through the explicit OCR action.
-     */
+    /** FV screenshot operation. This path never invokes OCR. */
     public static void captureBoundsForRegion(Context c, Rect screenBounds) {
         if (screenBounds == null || screenBounds.isEmpty()) return;
         Context app = c.getApplicationContext();
@@ -74,14 +68,13 @@ public final class ScreenshotController {
         captureBounds(app, bounds, crop -> {
             DiagnosticLog.i(app, "FV_REGION_CAPTURE", "crop=" + crop.getWidth() + "x" + crop.getHeight()
                     + " bounds=" + bounds);
-            ResultOverlay.showVisual(app, crop, null, bounds);
+            ScreenshotResultOverlay.show(app, crop, bounds);
         }, "区域截图失败", false);
     }
 
     /**
-     * FV Direct View extraction keeps Accessibility text as View content. If the selected View has
-     * no extractable text, show its exact cropped bitmap as a screenshot instead of silently OCRing
-     * it. This keeps View extraction, screenshot and OCR as three separate capabilities.
+     * FV text/View operation. Accessibility text is extracted directly and shown as View content,
+     * never as an OCR result. A textless View is a View-image capture instead.
      */
     public static void captureBoundsForViewCandidate(Context c, Rect screenBounds,
                                                      ViewNodeCandidate candidate, String directText) {
@@ -96,7 +89,10 @@ public final class ScreenshotController {
             if (!text.isEmpty()) {
                 DiagnosticLog.i(app, "VIEW_EXTRACT", "direct Accessibility text chars=" + text.length()
                         + " bounds=" + bounds);
-                ResultOverlay.show(app, text, List.of(text), crop, bounds);
+                if (!ViewContentActivity.show(app, text, crop, bounds)) {
+                    // Emergency fallback only; no OCR engine is called.
+                    ResultOverlay.show(app, text, java.util.List.of(text), crop, bounds);
+                }
             } else {
                 DiagnosticLog.i(app, "VIEW_SCREENSHOT", "no Accessibility text; show cropped View bounds=" + bounds);
                 ResultOverlay.showVisual(app, crop, candidate, bounds);
@@ -104,7 +100,7 @@ public final class ScreenshotController {
         }, "View 截图失败", false);
     }
 
-    /** Visual View candidates are shown as screenshots; they no longer fall through to OCR. */
+    /** FV image/View operation. This path never invokes OCR. */
     public static void captureBoundsForVisualCandidate(Context c, Rect screenBounds, ViewNodeCandidate candidate) {
         if (screenBounds == null || screenBounds.isEmpty()) return;
         Context app = c.getApplicationContext();
