@@ -19,8 +19,8 @@ import java.util.ArrayList;
 
 /**
  * Floating icon touch engine modelled from FV FooViewService$c3.onTouch.
- * MOVE updates the floating icon immediately. FV-style Quick Move/View selection is armed separately,
- * and a stationary long hold switches the same pointer stream into Circle before ACTION_UP.
+ * Normal MOVE is temporary visual follow only. A new resting position is committed only after
+ * the explicit "move icon position" mode has been armed.
  */
 public class FloatIconView extends View {
     public interface Callback {
@@ -48,6 +48,7 @@ public class FloatIconView extends View {
     private boolean followStarted;
     private boolean selectionTookOver;
     private boolean circleActive;
+    private boolean positionMoveMode;
     private ViewSelectionEngine selectionEngine;
     private final Runnable slideRunnable = new Runnable() {
         public void run() {
@@ -115,7 +116,7 @@ public class FloatIconView extends View {
         final float rx = e.getRawX(), ry = e.getRawY();
         final long now = SystemClock.uptimeMillis();
         if (action != MotionEvent.ACTION_MOVE || session.points.size() % 4 == 0) {
-            DiagnosticLog.i(getContext(), "TOUCH", "action="+action+" pointers="+e.getPointerCount()+" raw="+Math.round(rx)+","+Math.round(ry)+" phase="+session.phase+" circle="+circleActive);
+            DiagnosticLog.i(getContext(), "TOUCH", "action="+action+" pointers="+e.getPointerCount()+" raw="+Math.round(rx)+","+Math.round(ry)+" phase="+session.phase+" circle="+circleActive+" positionMove="+positionMoveMode);
         }
 
         if (action == MotionEvent.ACTION_POINTER_DOWN) {
@@ -123,6 +124,7 @@ public class FloatIconView extends View {
             cancelLongPress();
             if(selectionEngine!=null)selectionEngine.cancel();
             if(circleActive){CircleLiveController.cancel("multitouch");circleActive=false;}
+            if(positionMoveMode){FloatService f=FloatService.get();if(f!=null)f.cancelPositionMove();}
             cb.onGestureEnd(session.snapshot());
             invalidate();
             return true;
@@ -134,29 +136,33 @@ public class FloatIconView extends View {
                 cancelLongPress();
                 if(selectionEngine!=null)selectionEngine.cancel();
                 if(circleActive)CircleLiveController.cancel("new_down");
-                selectionEngine=new ViewSelectionEngine(getContext());
+                FloatService service=FloatService.get();
+                positionMoveMode=service!=null&&service.isPositionMoveArmed();
+                selectionEngine=positionMoveMode?null:new ViewSelectionEngine(getContext());
                 selectionTookOver=false;
                 circleActive=false;
                 followStarted=false;
                 session.begin(rx, ry, now);
-                if(selectionEngine.available())selectionEngine.dispatchTouchEvent(e);
-                DiagnosticLog.i(getContext(), "STATE", "DOWN begin="+Math.round(rx)+","+Math.round(ry)+" fvSelection="+selectionEngine.available());
+                if(selectionEngine!=null&&selectionEngine.available())selectionEngine.dispatchTouchEvent(e);
+                DiagnosticLog.i(getContext(), "STATE", "DOWN begin="+Math.round(rx)+","+Math.round(ry)+" fvSelection="+(selectionEngine!=null&&selectionEngine.available())+" positionMove="+positionMoveMode);
                 invalidate();
 
-                longPressRunnable = () -> {
-                    if (!session.multiTouch && session.phase == GestureSession.Phase.DOWN && session.distance() < gestureSlopPx()) {
-                        session.longPressReady = true;
-                        session.phase = GestureSession.Phase.CIRCLE;
-                        if(selectionEngine!=null)selectionEngine.cancel();
-                        GesturePointSample p=session.points.isEmpty()?null:session.points.get(session.points.size()-1);
-                        float x=p==null?session.downX:p.x(), y=p==null?session.downY:p.y();
-                        circleActive=CircleLiveController.start(getContext(),x,y);
-                        DiagnosticLog.i(getContext(),"GESTURE_LAYER","code="+GestureCode.ENTER_CIRCLE+" label="+GestureCode.label(GestureCode.ENTER_CIRCLE)+" source=mid_touch_long_hold");
-                        if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-                        invalidate();
-                    }
-                };
-                handler.postDelayed(longPressRunnable, fs.longPressMs());
+                if(!positionMoveMode){
+                    longPressRunnable = () -> {
+                        if (!session.multiTouch && session.phase == GestureSession.Phase.DOWN && session.distance() < gestureSlopPx()) {
+                            session.longPressReady = true;
+                            session.phase = GestureSession.Phase.CIRCLE;
+                            if(selectionEngine!=null)selectionEngine.cancel();
+                            GesturePointSample p=session.points.isEmpty()?null:session.points.get(session.points.size()-1);
+                            float x=p==null?session.downX:p.x(), y=p==null?session.downY:p.y();
+                            circleActive=CircleLiveController.start(getContext(),x,y);
+                            DiagnosticLog.i(getContext(),"GESTURE_LAYER","code="+GestureCode.ENTER_CIRCLE+" label="+GestureCode.label(GestureCode.ENTER_CIRCLE)+" source=mid_touch_long_hold");
+                            if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                            invalidate();
+                        }
+                    };
+                    handler.postDelayed(longPressRunnable, fs.longPressMs());
+                }
                 return true;
             }
 
@@ -165,19 +171,29 @@ public class FloatIconView extends View {
                 session.add(rx, ry, now);
                 if (session.multiTouch) return true;
 
+                int stepDx=prev==null?0:Math.round(rx-prev.x());
+                int stepDy=prev==null?0:Math.round(ry-prev.y());
+                float dist=session.distance();
+
+                if(positionMoveMode){
+                    if((stepDx!=0||stepDy!=0)&&dist>=dp(1.5f)){
+                        if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","explicit position move started");}
+                        cb.onMove(stepDx,stepDy);
+                        session.moved=true;
+                        session.phase=GestureSession.Phase.ICON_DRAG;
+                    }
+                    return true;
+                }
+
                 if(circleActive || session.phase==GestureSession.Phase.CIRCLE){
                     CircleLiveController.move(rx,ry);
                     return true;
                 }
 
-                int stepDx=prev==null?0:Math.round(rx-prev.x());
-                int stepDy=prev==null?0:Math.round(ry-prev.y());
-                float dist=session.distance();
-                float slop=gestureSlopPx();
-
-                // Confirmed in FV Full Capture: FloatIconView.c0(...) updates continuously on MOVE.
+                // Confirmed by FV Full Capture: c0() follows MOVE immediately, but the next touch
+                // starts from the same resting coordinate unless position-edit mode was requested.
                 if ((stepDx!=0||stepDy!=0) && dist>=dp(1.5f)) {
-                    if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","fvFollowStart distance="+Math.round(dist));}
+                    if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","fvTemporaryFollowStart distance="+Math.round(dist));}
                     cb.onMove(stepDx,stepDy);
                     session.moved=true;
                 }
@@ -196,6 +212,12 @@ public class FloatIconView extends View {
             case MotionEvent.ACTION_UP -> {
                 cancelLongPress();
                 session.add(rx, ry, now);
+                if(positionMoveMode){
+                    cb.onGestureEnd(session.snapshot());
+                    cb.onRelease(followStarted);
+                    resetSession();
+                    return true;
+                }
                 if(circleActive || session.phase==GestureSession.Phase.CIRCLE){
                     if(selectionEngine!=null)selectionEngine.cancel();
                     DiagnosticLog.i(getContext(),"GESTURE_LAYER","code="+GestureCode.CIRCLE_FINISH+" label="+GestureCode.label(GestureCode.CIRCLE_FINISH)+" source=mid_touch_release");
@@ -215,6 +237,7 @@ public class FloatIconView extends View {
                 cancelLongPress();
                 if(selectionEngine!=null)selectionEngine.cancel();
                 if(circleActive){CircleLiveController.cancel("touch_cancel");circleActive=false;}
+                if(positionMoveMode){FloatService f=FloatService.get();if(f!=null)f.cancelPositionMove();}
                 selectionTookOver=false;
                 finish(now, true);
                 return true;
@@ -233,8 +256,6 @@ public class FloatIconView extends View {
             resetSession(); return;
         }
 
-        // Once FV's m2/g is shown, c3 routes the stream there and returns instead of also executing
-        // the ordinary swipe action path. Candidate existence by itself is NOT the takeover condition.
         if (selectionTookOver) {
             cb.onRelease(followStarted);
             DiagnosticLog.i(getContext(),"FV_SELECT","release handled by active selection container");
@@ -255,7 +276,7 @@ public class FloatIconView extends View {
         resetSession();
     }
 
-    private void resetSession(){selectionEngine=null;selectionTookOver=false;circleActive=false;followStarted=false;session.reset();invalidate();}
+    private void resetSession(){selectionEngine=null;selectionTookOver=false;circleActive=false;positionMoveMode=false;followStarted=false;session.reset();invalidate();}
 
     private void handleTap(long now) {
         if (lastTapAt != 0 && now - lastTapAt <= fs.doubleTapMs()) {
