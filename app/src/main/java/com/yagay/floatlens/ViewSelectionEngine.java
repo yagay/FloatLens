@@ -92,7 +92,8 @@ public final class ViewSelectionEngine {
         state = State.DIRECT;
         ensureIndicator();
 
-        // Critical invariant: direct-selection coordinate == visible DOT centre.
+        // Direct-selection DOT is intentionally kept on the LEFT of the moving icon. Its exact
+        // visible centre remains the hit-test coordinate, so visual position and selection match.
         PointF dot = showIndicatorForRaw(FvActionHintOverlay.Mode.DOT, rawX, rawY);
         selectionX = dot.x;
         selectionY = dot.y;
@@ -101,7 +102,7 @@ public final class ViewSelectionEngine {
         DiagnosticLog.i(context, "FV_SELECT", "DIRECT_ENTER raw="
                 + Math.round(rawX) + "," + Math.round(rawY)
                 + " dotHit=" + Math.round(selectionX) + "," + Math.round(selectionY)
-                + " side=" + (pointTransformer.gestureLeftSide() ? "L" : "R"));
+                + " dotSide=LEFT");
         return true;
     }
 
@@ -117,23 +118,26 @@ public final class ViewSelectionEngine {
 
     private PointF showIndicatorForRaw(FvActionHintOverlay.Mode mode, float rawX, float rawY) {
         RectF icon = pointTransformer.iconBoundsForRaw(rawX, rawY);
-        boolean left = pointTransformer.gestureLeftSide();
+        boolean gestureLeftSide = pointTransformer.gestureLeftSide();
+
+        // FvActionHintOverlay's leftSide parameter describes which side of the SCREEN the icon is
+        // on: false places the helper on the LEFT of the icon, true places it on the RIGHT.
+        // Keep PLUS on the gesture/FV side behavior, but force DOT to the icon's left as requested.
+        boolean placementFlag = mode == FvActionHintOverlay.Mode.DOT ? false : gestureLeftSide;
 
         if (indicatorOverlay == null) {
-            // Geometry-only fallback should normally never be used, because ensureIndicator() is
-            // called before both drag and direct-selection paths.
             float helper = 24f * context.getResources().getDisplayMetrics().density;
-            float x = left ? icon.left + icon.width() : icon.left - helper;
+            float x = placementFlag ? icon.left + icon.width() : icon.left - helper;
             float y = icon.top - helper;
             return new PointF(x + helper / 2f, y + helper / 2f);
         }
 
         if (mode == FvActionHintOverlay.Mode.DOT) {
             return indicatorOverlay.showDotNextTo(
-                    icon.left, icon.top, icon.width(), icon.height(), left);
+                    icon.left, icon.top, icon.width(), icon.height(), placementFlag);
         }
         return indicatorOverlay.showPlusNextTo(
-                icon.left, icon.top, icon.width(), icon.height(), left);
+                icon.left, icon.top, icon.width(), icon.height(), placementFlag);
     }
 
     /** Same-touch ACTION_UP: a dragged region wins; otherwise complete the current View candidate. */
