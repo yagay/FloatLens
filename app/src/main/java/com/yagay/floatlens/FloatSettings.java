@@ -24,6 +24,7 @@ public final class FloatSettings {
     public static final String K_KEEP_IN_SCREENSHOT = "screen_capture_keep_icon";
     public static final String K_KEEP_STATUS_BAR = "screen_capture_keep_noti_bar";
     public static final String K_ACCESSIBILITY_SCREENSHOT = "screen_capture_accessibility";
+    public static final String K_VIEW_CAPTURE_DWELL = "view_capture_dwell_ms";
     public static final String K_STYLE = "float_icon_style";
     public static final String K_GRAVITY = "float_gravity";
     public static final String K_GRAVITY_LAND = "float_gravity_land";
@@ -103,6 +104,7 @@ public final class FloatSettings {
     /** FV 1.6.4 onCreate reads icon_db_click_detect_time with a 200 ms default. */
     public int doubleTapMs() { return clamp(p.getInt(K_DOUBLE_TAP, 200), 120, 800); }
     public int tapMaxMs() { return clamp(p.getInt(K_TAP_MAX_MS, 150), 80, 400); }
+    public int viewCaptureDwellMs() { return clamp(p.getInt(K_VIEW_CAPTURE_DWELL, 500), 200, 2000); }
     public int downShortDistance() { return clamp(p.getInt(K_DOWN_SHORT_DISTANCE, 200), 30, 900); }
     public int sideShortDistance() { return clamp(p.getInt(K_SIDE_SHORT_DISTANCE, 320), 30, 1200); }
     public int gestureStartDistance() { return clamp(p.getInt(K_GESTURE_START_DISTANCE, 30), 5, 100); }
