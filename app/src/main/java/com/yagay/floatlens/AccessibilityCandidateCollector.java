@@ -10,13 +10,14 @@ import java.util.Locale;
 /**
  * Strict FV-style candidate collector for FloatLens.
  *
- * The tree is still traversed completely, but only two user-visible candidate kinds are emitted:
+ * User-visible candidates are deliberately narrow:
  *  1) TEXT: a node with its own visible text/contentDescription/hint/stateDescription;
- *  2) NON_TEXT: a node that is explicitly image/icon-like by class or resource id.
+ *  2) NON_TEXT: a node that is explicitly image/icon-like by class or resource id;
+ *  3) ROOT: a near-fullscreen View used only as the final fallback when no TEXT/NON_TEXT target
+ *     exists at the current point.
  *
- * Layout/container/root/clickable/focusable nodes are traversal-only and can never be highlighted.
- * This intentionally avoids generic controls and wrapper views stealing selection from useful
- * text/image targets.
+ * Ordinary layout/container/clickable/focusable nodes remain traversal-only. This keeps useless
+ * controls out of selection while restoring the fullscreen-View fallback present in FV-like flows.
  */
 public final class AccessibilityCandidateCollector {
     private AccessibilityCandidateCollector() {}
@@ -55,7 +56,7 @@ public final class AccessibilityCandidateCollector {
         }
 
         List<ScreenCandidate> filtered = CandidateGeometryFilter.filter(out, screen);
-        DiagnosticLog.i(service, "FV_TREE", "strict text/image raw=" + out.size()
+        DiagnosticLog.i(service, "FV_TREE", "text/image/root raw=" + out.size()
                 + " filtered=" + filtered.size());
         return filtered;
     }
@@ -77,9 +78,11 @@ public final class AccessibilityCandidateCollector {
         CharSequence ownText = firstNonBlank(
                 safeText(n), safeContentDescription(n), safeHint(n), safeStateDescription(n));
 
-        // Image identity wins over textual accessibility metadata. An ImageButton commonly has a
-        // contentDescription, but it is still a picture/icon target rather than a text View.
         boolean image = isImageCandidate(service, n, clipped, cls, id);
+        boolean fullscreen = isFullscreenLike(clipped, screen);
+
+        // A real image/text target always keeps its normal type, even when it happens to fill the
+        // screen. ROOT is only for otherwise-uninteresting near-fullscreen Views.
         if (image) {
             out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.NON_TEXT,
                     ScreenCandidate.Source.ACCESSIBILITY,
@@ -91,10 +94,15 @@ public final class AccessibilityCandidateCollector {
                     ScreenCandidate.Source.ACCESSIBILITY,
                     ownText.toString().trim(), cls, id, pkg, depth, false,
                     safeClickable(n), safeEditable(n), safeFocusable(n), false));
+        } else if (fullscreen) {
+            out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.ROOT,
+                    ScreenCandidate.Source.ACCESSIBILITY,
+                    "", cls, id, pkg, depth, true,
+                    safeClickable(n), safeEditable(n), safeFocusable(n), false));
         }
 
-        // Every other node is traversal-only. In particular: ViewGroup/Layout/RecyclerView,
-        // clickable leaves, Switch/Button wrappers and full-screen roots are never emitted.
+        // Every ordinary node remains traversal-only. ROOT above is the sole exception and is
+        // deliberately deferred by ScreenSelectionModel until no TEXT/NON_TEXT candidate matches.
         int children = Math.min(300, safeChildCount(n));
         for (int i = 0; i < children; i++) {
             AccessibilityNodeInfo child = null;
@@ -132,6 +140,16 @@ public final class AccessibilityCandidateCollector {
                 || containsToken(v, "picture");
 
         return imageClass || imageId;
+    }
+
+    private static boolean isFullscreenLike(Rect r, Rect screen) {
+        if (r == null || r.isEmpty() || screen == null || screen.isEmpty()) return false;
+        long area = (long) r.width() * r.height();
+        long screenArea = (long) screen.width() * screen.height();
+        if (screenArea <= 0) return false;
+        return area >= screenArea * 88L / 100L
+                || (r.width() >= screen.width() * 94L / 100L
+                && r.height() >= screen.height() * 90L / 100L);
     }
 
     private static boolean containsToken(String value, String token) {
