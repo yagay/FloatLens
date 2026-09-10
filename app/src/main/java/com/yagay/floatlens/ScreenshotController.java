@@ -24,6 +24,31 @@ public final class ScreenshotController {
     }
     public static void captureForOcr(Context c) { getBitmap(c, b -> RegionOverlay.show(c, b, true)); }
 
+    /**
+     * Capture an uncropped full-screen frame and open the adjustable rectangular region editor.
+     * The editor owns all later OCR/View-text decisions, so status-bar cropping must not happen here
+     * or its screen-coordinate selection would no longer match Accessibility bounds.
+     */
+    public static void captureForRegionEditor(Context c) {
+        Context app = c.getApplicationContext();
+        FloatSettings fs = new FloatSettings(app);
+        FloatService service = FloatService.get();
+        boolean hideIcon = !fs.keepInScreenshot() && service != null;
+        if (hideIcon) service.setScreenshotHidden(true);
+        new Handler(Looper.getMainLooper()).postDelayed(() -> captureNow(app, fs, raw -> {
+            restoreIcon(service, hideIcon);
+            if (raw == null || raw.isRecycled()) {
+                Toast.makeText(app, "区域截图失败: 截图无效", Toast.LENGTH_LONG).show();
+                return;
+            }
+            DiagnosticLog.i(app, "REGION_EDIT", "open screenshot=" + raw.getWidth() + "x" + raw.getHeight());
+            EditableRegionOverlay.show(app, raw);
+        }, t -> {
+            restoreIcon(service, hideIcon);
+            Toast.makeText(app, "区域截图失败: " + safeMessage(t), Toast.LENGTH_LONG).show();
+        }), hideIcon ? 100L : 0L);
+    }
+
     /** OCR only the Accessibility View rectangle. */
     public static void captureBoundsForOcr(Context c, Rect screenBounds) {
         if(screenBounds==null||screenBounds.isEmpty()){captureForOcr(c);return;}
