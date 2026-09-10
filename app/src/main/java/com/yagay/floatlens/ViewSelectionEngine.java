@@ -7,10 +7,10 @@ import android.view.MotionEvent;
 /**
  * FV-style same-touch selection engine.
  *
- * FloatIconView owns the whole pointer stream. The FV move-idle q trigger expands that same icon
- * window to full screen, while this engine keeps two parallel selection outcomes:
- * 1) a point-based Accessibility View candidate while the pointer remains near the trigger point;
- * 2) a live region once the same finger deliberately moves away from that point.
+ * The moving icon and View hit testing share one SelectionPointTransformer. Before direct selection
+ * starts, FV shows a separate 15dp probe-point window centred on that transformed point. When the
+ * 400ms direct-selection runnable fires, the probe helper is hidden and the full-screen selection
+ * layer takes over without changing the underlying hit-test coordinate.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
@@ -20,6 +20,7 @@ public final class ViewSelectionEngine {
     private final SelectionPointTransformer pointTransformer;
 
     private ViewHoverOverlay overlay;
+    private FvProbePointOverlay probeOverlay;
     private State state = State.IDLE;
     private float selectionX = Float.NaN, selectionY = Float.NaN;
 
@@ -41,6 +42,7 @@ public final class ViewSelectionEngine {
         int action = e.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
             cancel();
+            ensureProbeOverlay(); // FV keeps the helper window attached but hidden before MOVE.
             pointTransformer.begin(e);
             PointF p = pointTransformer.transform(e);
             selectionX = p.x;
@@ -54,6 +56,25 @@ public final class ViewSelectionEngine {
         }
     }
 
+    /**
+     * Show/move FV's independent 15dp helper dot while the small floating icon follows the finger.
+     * The returned coordinate is exactly the one that will later be used for View hit testing.
+     */
+    public PointF showProbe(float rawX, float rawY) {
+        PointF p = pointTransformer.transformRaw(rawX, rawY);
+        selectionX = p.x;
+        selectionY = p.y;
+        if (state == State.IDLE) {
+            ensureProbeOverlay();
+            if (probeOverlay != null) probeOverlay.showAt(selectionX, selectionY);
+        }
+        return p;
+    }
+
+    public void hideProbe() {
+        if (probeOverlay != null) probeOverlay.hide();
+    }
+
     /** Called by the observed FV-style q Runnable while the finger is still down. */
     public boolean activateDirect(float rawX, float rawY) {
         if (accessibility == null) return false;
@@ -61,6 +82,10 @@ public final class ViewSelectionEngine {
             updateDirect(rawX, rawY);
             return true;
         }
+
+        // The small independent probe dot owns the pre-direct phase. Hand visual ownership to the
+        // full-screen ViewHoverOverlay when q fires so two circles are never drawn on top of each other.
+        hideProbe();
 
         overlay = new ViewHoverOverlay(context);
         if (!overlay.available()) {
@@ -102,6 +127,7 @@ public final class ViewSelectionEngine {
                 + Math.round(selectionX) + "," + Math.round(selectionY));
         overlay = null;
         state = State.IDLE;
+        closeProbeOverlay();
         return result;
     }
 
@@ -120,6 +146,16 @@ public final class ViewSelectionEngine {
         overlay = null;
         state = State.IDLE;
         selectionX = selectionY = Float.NaN;
+        closeProbeOverlay();
         if (active) DiagnosticLog.i(context, "FV_SELECT", "DIRECT_CANCEL");
+    }
+
+    private void ensureProbeOverlay() {
+        if (probeOverlay == null) probeOverlay = new FvProbePointOverlay(context);
+    }
+
+    private void closeProbeOverlay() {
+        if (probeOverlay != null) probeOverlay.close();
+        probeOverlay = null;
     }
 }
