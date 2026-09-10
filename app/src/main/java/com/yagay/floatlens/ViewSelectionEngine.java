@@ -11,14 +11,13 @@ import android.view.MotionEvent;
  * FV-style selection engine driven in parallel with the floating-icon MOVE stream.
  *
  * Only text and image/icon Accessibility Views are selectable. A candidate must remain unchanged
- * for VIEW_DWELL_CONFIRM_MS before it becomes locked. Releasing before that time leaves the normal
- * icon gesture untouched; releasing after lock captures exactly the highlighted View bounds.
+ * for the configured dwell delay before it becomes locked. Releasing before that time leaves the
+ * normal icon gesture untouched; releasing after lock captures exactly the highlighted View bounds.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, ACTIVE }
 
     private static final long FV_SETTLE_DELAY_MS = 100L;
-    private static final long VIEW_DWELL_CONFIRM_MS = 500L;
     private static final float FV_SELECT_START_DP = 3f;
     private static final float FV_FAST_FRAME_PX = 40f;
 
@@ -28,6 +27,7 @@ public final class ViewSelectionEngine {
     private final Runnable settleRunnable = this::settledRefresh;
     private final Runnable dwellRunnable = this::confirmDwellCandidate;
     private final SelectionPointTransformer pointTransformer;
+    private final int dwellConfirmMs;
 
     private ViewHoverOverlay overlay;
     private State state = State.IDLE;
@@ -46,6 +46,7 @@ public final class ViewSelectionEngine {
         FloatSettings fs = new FloatSettings(context);
         float px = fs.sizeDp() * context.getResources().getDisplayMetrics().density;
         pointTransformer = new SelectionPointTransformer(context, px, px);
+        dwellConfirmMs = fs.viewCaptureDwellMs();
     }
 
     public boolean available() { return accessibility != null; }
@@ -73,7 +74,8 @@ public final class ViewSelectionEngine {
             downRawX = previousRawX = rawX;
             downRawY = previousRawY = rawY;
             DiagnosticLog.i(context, "FV_SELECT", "DOWN raw=" + Math.round(rawX) + "," + Math.round(rawY)
-                    + " hotspot=" + Math.round(selectionX) + "," + Math.round(selectionY));
+                    + " hotspot=" + Math.round(selectionX) + "," + Math.round(selectionY)
+                    + " dwell=" + dwellConfirmMs + "ms");
             return;
         }
 
@@ -164,8 +166,8 @@ public final class ViewSelectionEngine {
         overlay.setConfirmed(false);
 
         if (!key.isEmpty()) {
-            handler.postDelayed(dwellRunnable, VIEW_DWELL_CONFIRM_MS);
-            DiagnosticLog.i(context, "VIEW_DWELL", "start delay=" + VIEW_DWELL_CONFIRM_MS
+            handler.postDelayed(dwellRunnable, dwellConfirmMs);
+            DiagnosticLog.i(context, "VIEW_DWELL", "start delay=" + dwellConfirmMs
                     + "ms bounds=" + c.bounds() + " type=" + c.type());
         }
     }
@@ -176,7 +178,7 @@ public final class ViewSelectionEngine {
         if (current == null || !dwellCandidateKey.equals(current.stableKey())) return;
         dwellConfirmed = true;
         overlay.setConfirmed(true);
-        DiagnosticLog.i(context, "VIEW_DWELL", "confirmed after=" + VIEW_DWELL_CONFIRM_MS
+        DiagnosticLog.i(context, "VIEW_DWELL", "confirmed after=" + dwellConfirmMs
                 + "ms bounds=" + current.bounds() + " type=" + current.type());
     }
 
