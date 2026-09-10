@@ -8,10 +8,9 @@ import android.view.MotionEvent;
 /**
  * FV-style same-touch selection engine.
  *
- * One persistent helper indicator follows the whole gesture visually:
- * 1) while the floating icon is moving it is a PLUS beside the icon;
- * 2) when direct View selection starts, the same indicator becomes a DOT at ProbePoint;
- * 3) View hit testing continues to use that exact same transformed ProbePoint.
+ * The visible 24dp action indicator and the selection ProbePoint are separate concepts:
+ * - the indicator stays beside the virtual moving icon and only changes drawable PLUS -> DOT;
+ * - the transformed ProbePoint is used for Accessibility/View hit testing and edge compensation.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
@@ -37,7 +36,7 @@ public final class ViewSelectionEngine {
     public boolean isActive() { return state == State.DIRECT; }
     public State state() { return state; }
 
-    /** Capture the original in-icon touch offset while FloatIconView is still the small window. */
+    /** Capture the original icon-local offset and FV side at ACTION_DOWN. */
     public void dispatchTouchEvent(MotionEvent e) {
         if (e == null || accessibility == null) return;
         int action = e.getActionMasked();
@@ -49,7 +48,8 @@ public final class ViewSelectionEngine {
             selectionX = p.x;
             selectionY = p.y;
             DiagnosticLog.i(context, "FV_SELECT", "DOWN hotspot="
-                    + Math.round(selectionX) + "," + Math.round(selectionY));
+                    + Math.round(selectionX) + "," + Math.round(selectionY)
+                    + " side=" + (pointTransformer.gestureLeftSide() ? "L" : "R"));
         } else if (action == MotionEvent.ACTION_MOVE && state == State.DIRECT) {
             updateDirect(e.getRawX(), e.getRawY());
         } else if (action == MotionEvent.ACTION_CANCEL) {
@@ -57,20 +57,14 @@ public final class ViewSelectionEngine {
         }
     }
 
-    /**
-     * Drag phase. We still compute ProbePoint every MOVE so the selection coordinate stays current,
-     * but visually only the single PLUS indicator is shown beside the moving icon.
-     */
+    /** Drag phase: compute ProbePoint, but visually show PLUS beside the virtual icon. */
     public PointF showProbe(float rawX, float rawY) {
         PointF p = pointTransformer.transformRaw(rawX, rawY);
         selectionX = p.x;
         selectionY = p.y;
         if (state == State.IDLE) {
             ensureIndicator();
-            RectF icon = pointTransformer.iconBoundsForRaw(rawX, rawY);
-            if (indicatorOverlay != null) {
-                indicatorOverlay.showPlusNextTo(icon.left, icon.top, icon.width(), icon.height());
-            }
+            showIndicatorForRaw(FvActionHintOverlay.Mode.PLUS, rawX, rawY);
         }
         return p;
     }
@@ -100,15 +94,16 @@ public final class ViewSelectionEngine {
         selectionY = p.y;
         state = State.DIRECT;
 
-        // Do not create a second helper. The same PLUS indicator changes into DOT and moves to the
-        // transformed hit-test point.
+        // FV D4(state) swaps the drawable on the same 24dp helper. Do not resize it and do not
+        // move it to ProbePoint. With the same raw coordinates this transition keeps exact position.
         ensureIndicator();
-        if (indicatorOverlay != null) indicatorOverlay.showDotAt(selectionX, selectionY);
+        showIndicatorForRaw(FvActionHintOverlay.Mode.DOT, rawX, rawY);
 
         overlay.beginDirect(selectionX, selectionY);
         DiagnosticLog.i(context, "FV_SELECT", "DIRECT_ENTER raw="
                 + Math.round(rawX) + "," + Math.round(rawY)
-                + " hotspot=" + Math.round(selectionX) + "," + Math.round(selectionY));
+                + " hotspot=" + Math.round(selectionX) + "," + Math.round(selectionY)
+                + " side=" + (pointTransformer.gestureLeftSide() ? "L" : "R"));
         return true;
     }
 
@@ -117,8 +112,19 @@ public final class ViewSelectionEngine {
         PointF p = pointTransformer.transformRaw(rawX, rawY);
         selectionX = p.x;
         selectionY = p.y;
-        if (indicatorOverlay != null) indicatorOverlay.showDotAt(selectionX, selectionY);
+        showIndicatorForRaw(FvActionHintOverlay.Mode.DOT, rawX, rawY);
         overlay.updateDirect(selectionX, selectionY);
+    }
+
+    private void showIndicatorForRaw(FvActionHintOverlay.Mode mode, float rawX, float rawY) {
+        if (indicatorOverlay == null) return;
+        RectF icon = pointTransformer.iconBoundsForRaw(rawX, rawY);
+        boolean left = pointTransformer.gestureLeftSide();
+        if (mode == FvActionHintOverlay.Mode.DOT) {
+            indicatorOverlay.showDotNextTo(icon.left, icon.top, icon.width(), icon.height(), left);
+        } else {
+            indicatorOverlay.showPlusNextTo(icon.left, icon.top, icon.width(), icon.height(), left);
+        }
     }
 
     /** Same-touch ACTION_UP: a dragged region wins; otherwise complete the current View candidate. */
@@ -140,7 +146,6 @@ public final class ViewSelectionEngine {
         return result;
     }
 
-    /** Compatibility entry for older callers. */
     public boolean finish(MotionEvent up) {
         if (state != State.DIRECT || up == null) {
             cancel();
