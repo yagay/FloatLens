@@ -1,0 +1,57 @@
+name: One-shot Single FV Indicator Patch
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/patch-single-fv-indicator.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Remove duplicate fullscreen pointer drawing
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('app/src/main/java/com/yagay/floatlens/ViewHoverOverlay.java')
+          s = p.read_text()
+          old = '''            // FV keeps a small helper/handler view after the main FloatIconView expands fullscreen.
+            // Draw an equivalent non-touchable pointer marker at the transformed selection hotspot.
+            if (!Float.isNaN(pointerX) && !Float.isNaN(pointerY)) {
+                float px = pointerX - overlayLocation[0];
+                float py = pointerY - overlayLocation[1];
+                float r = dp(10);
+                c.drawCircle(px, py, r, pointerFill);
+                c.drawCircle(px, py, r, pointerBorder);
+            }
+'''
+          new = '''            // Probe indicator is rendered by the single stateful FvActionHintOverlay.
+            // This fullscreen layer only draws View/region selection bounds.
+'''
+          if new in s:
+              print('already patched')
+          elif old in s:
+              p.write_text(s.replace(old, new, 1))
+              print('patched')
+          else:
+              raise SystemExit('pointer block not found; refusing broad rewrite')
+
+      - name: Commit patch
+        run: |
+          if git diff --quiet; then
+            echo 'No changes'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/yagay/floatlens/ViewHoverOverlay.java
+          git commit -m 'Remove duplicate fullscreen FV pointer'
+          git push origin HEAD:main
