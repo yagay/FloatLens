@@ -1,6 +1,7 @@
 package com.yagay.floatlens;
 
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
@@ -9,13 +10,8 @@ import android.view.MotionEvent;
 
 /**
  * FV-style selection engine driven in parallel with the floating-icon MOVE stream.
- *
- * Important separation:
- * - the icon follows the finger immediately;
- * - slow/controlled movement enables Accessibility View hit-testing and live highlighting;
- * - fast swipe frames stay in the ordinary gesture path and cancel selection work;
- * - the 100 ms callback observed in FV is used as a settled candidate refresh/debounce,
- *   not as a delay before any highlight can appear.
+ * Accessibility candidates update live; a frozen screenshot requested on DOWN supplies NonText
+ * visual rectangles without repeatedly taking screenshots while the icon is being dragged.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, ACTIVE }
@@ -38,6 +34,9 @@ public final class ViewSelectionEngine {
     private long downAt;
     private long lastFastFrameAt;
     private boolean moved;
+    private Bitmap screenSnapshot;
+    private Rect snapshotBounds;
+    private int captureGeneration;
 
     public ViewSelectionEngine(Context c) {
         context = c.getApplicationContext();
@@ -65,7 +64,8 @@ public final class ViewSelectionEngine {
             pointerY = y;
             minX = maxX = x;
             minY = maxY = y;
-            DiagnosticLog.i(context, "FV_SELECT", "DOWN x=" + Math.round(x) + " y=" + Math.round(y));
+            requestFrozenSnapshot(++captureGeneration);
+            DiagnosticLog.i(context, "FV_SELECT", "DOWN x=" + Math.round(x) + " y=" + Math.round(y) + " snapshot=requested");
             return;
         }
 
@@ -81,8 +81,6 @@ public final class ViewSelectionEngine {
             previousX = x;
             previousY = y;
 
-            // FV c3.onTouch contains a literal 40 px per-frame gate. Treat those frames as
-            // ordinary fast gestures: cancel/hide View selection rather than letting it steal UP.
             if (frameDx >= FV_FAST_FRAME_PX || frameDy >= FV_FAST_FRAME_PX) {
                 lastFastFrameAt = now;
                 handler.removeCallbacks(settleRunnable);
@@ -100,15 +98,10 @@ public final class ViewSelectionEngine {
             boolean meaningfulMove = totalDx * totalDx + totalDy * totalDy >= start * start;
 
             if (meaningfulMove) {
-                // If the path started with a fast frame, wait for the observed 100 ms settled
-                // period before re-entering selection. For a normal controlled drag, show the
-                // current Accessibility View immediately and continue updating it during MOVE.
                 if (state != State.ACTIVE && now - lastFastFrameAt >= FV_SETTLE_DELAY_MS) {
                     activateNow(x, y, "controlled_move");
                 }
-                if (state == State.ACTIVE && overlay != null) {
-                    overlay.update(x, y);
-                }
+                if (state == State.ACTIVE && overlay != null) overlay.update(x, y);
 
                 handler.removeCallbacks(settleRunnable);
                 handler.postDelayed(settleRunnable, FV_SETTLE_DELAY_MS);
@@ -119,6 +112,20 @@ public final class ViewSelectionEngine {
         if (action == MotionEvent.ACTION_CANCEL) cancel();
     }
 
+    private void requestFrozenSnapshot(int generation) {
+        if (accessibility == null) return;
+        Rect bounds = accessibility.screenBounds();
+        accessibility.capture(bitmap -> {
+            if (generation != captureGeneration || bitmap == null || bitmap.isRecycled()) return;
+            screenSnapshot = bitmap;
+            snapshotBounds = new Rect(bounds);
+            if (overlay != null) overlay.setScreenSnapshot(screenSnapshot, snapshotBounds);
+            DiagnosticLog.i(context,"FV_SELECT","snapshot ready="+bitmap.getWidth()+"x"+bitmap.getHeight());
+        }, error -> {
+            if (generation == captureGeneration) DiagnosticLog.i(context,"FV_SELECT","snapshot failed="+error);
+        });
+    }
+
     private void activateNow(float x, float y, String reason) {
         if (accessibility == null || state == State.ACTIVE) return;
         overlay = new ViewHoverOverlay(context);
@@ -127,12 +134,13 @@ public final class ViewSelectionEngine {
             return;
         }
         overlay.begin();
+        if (screenSnapshot != null && snapshotBounds != null) overlay.setScreenSnapshot(screenSnapshot, snapshotBounds);
         state = State.ACTIVE;
         overlay.update(x, y);
         DiagnosticLog.i(context, "FV_SELECT", "ACTIVE reason=" + reason + " after=" + (SystemClock.uptimeMillis() - downAt) + "ms x=" + Math.round(x) + " y=" + Math.round(y));
     }
 
-    /** Final 100 ms settled refresh so the highlight/candidate lands on the last finger position. */
+    /** Final settled refresh so visual and Accessibility candidates land on the final point. */
     private void settledRefresh() {
         if (!moved || accessibility == null || Float.isNaN(pointerX) || Float.isNaN(pointerY)) return;
         long now = SystemClock.uptimeMillis();
@@ -144,15 +152,11 @@ public final class ViewSelectionEngine {
         else if (overlay != null) overlay.update(pointerX, pointerY);
     }
 
-    /**
-     * An ACTIVE FV-style selection container owns UP. Accessibility text is returned directly;
-     * a node without exposed text falls back to OCR of that node's bounds. If there is no node,
-     * use the path bounds without opening a second, unrelated selection UI.
-     */
     public boolean finish(MotionEvent up) {
         boolean wasActive = state == State.ACTIVE;
-        boolean hadCandidate = overlay != null && overlay.hasCandidate();
         handler.removeCallbacks(settleRunnable);
+        if (overlay != null && up != null) overlay.update(up.getRawX(), up.getRawY());
+        boolean hadCandidate = overlay != null && overlay.hasCandidate();
         boolean producedResult = false;
         if (overlay != null) producedResult = overlay.finish(wasActive);
 
@@ -171,6 +175,7 @@ public final class ViewSelectionEngine {
 
     public void cancel() {
         boolean wasActive = state == State.ACTIVE;
+        captureGeneration++;
         handler.removeCallbacks(settleRunnable);
         closeOverlay();
         DiagnosticLog.i(context, "FV_SELECT", "CANCEL active=" + wasActive);
@@ -200,6 +205,8 @@ public final class ViewSelectionEngine {
         downAt = 0L;
         lastFastFrameAt = 0L;
         moved = false;
+        screenSnapshot = null;
+        snapshotBounds = null;
     }
 
     private float dp(float v) { return v * context.getResources().getDisplayMetrics().density; }
