@@ -14,26 +14,22 @@ import android.os.SystemClock;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewConfiguration;
 import java.util.List;
 import java.util.ArrayList;
 
 /**
  * Floating icon touch engine modelled from FV FooViewService$c3.onTouch.
  *
- * FV Full Capture shows a 400 ms FooViewService$q selection runnable, but importantly that runnable
- * is NOT restarted by every tiny MOVE event. Android can keep emitting sub-pixel / few-pixel MOVE
- * jitter while the finger appears stationary. FV keeps a movement anchor and only rearms q after a
- * meaningful displacement, allowing q to fire while the same pointer stream remains down.
- *
- * When q fires, the SAME FloatIconView is expanded to MATCH_PARENT by FloatService and remains the
- * touch owner. A separate NOT_TOUCHABLE overlay only draws the current View candidate. ACTION_UP
- * completes selection and restores the icon.
+ * FV moves the small icon immediately. Each MOVE derives the target from the gesture-start Window
+ * position plus currentRaw-downRaw; it does not integrate rounded per-frame deltas. The independent
+ * 15dp circle_focus probe is updated on the same MOVE stream. A ~400ms q Runnable can enter the
+ * deeper View-selection state without ever blocking visible movement.
  */
 public class FloatIconView extends View {
     public interface Callback {
         void onDragStart();
-        void onMove(int dx, int dy);
+        /** Absolute displacement from ACTION_DOWN, not a per-frame delta. */
+        void onMove(int dxFromDown, int dyFromDown);
         void onRelease(boolean dragged);
         void onGestureDecision(GestureDecision decision);
         void onAction(String action);
@@ -84,7 +80,9 @@ public class FloatIconView extends View {
     public FloatIconView(Context c, Callback cb) {
         super(c);
         this.cb = cb;
-        directRearmSlopPx = Math.max(1f, ViewConfiguration.get(c).getScaledTouchSlop());
+        // FV's q re-arm anchor is about 3dp, not Android's usually larger generic touch slop.
+        directRearmSlopPx = Math.max(1f,
+                FV_DIRECT_MOVE_START_DP * getResources().getDisplayMetrics().density);
         directSelectionRunnable = () -> {
             directTimerArmed = false;
             if (directSelectionActive || regionEditorTriggered || positionMoveMode || session.multiTouch
@@ -235,18 +233,20 @@ public class FloatIconView extends View {
             }
 
             case MotionEvent.ACTION_MOVE -> {
-                GesturePointSample prev = session.points.isEmpty() ? null : session.points.get(session.points.size()-1);
                 session.add(rx, ry, now);
                 if (session.multiTouch) return true;
 
-                int stepDx=prev==null?0:Math.round(rx-prev.x());
-                int stepDy=prev==null?0:Math.round(ry-prev.y());
+                // FV uses absolute displacement from DOWN. This also preserves sub-pixel movement:
+                // a sequence of tiny MOVE events eventually moves the icon instead of rounding each
+                // individual frame to zero.
+                int moveDx = Math.round(rx - session.downX);
+                int moveDy = Math.round(ry - session.downY);
                 float dist=session.distance();
 
                 if(positionMoveMode){
-                    if((stepDx!=0||stepDy!=0)&&dist>=dp(1.5f)){
+                    if((moveDx!=0||moveDy!=0)&&dist>=dp(1.5f)){
                         if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","explicit position move started");}
-                        cb.onMove(stepDx,stepDy);
+                        cb.onMove(moveDx,moveDy);
                         session.moved=true;
                         session.phase=GestureSession.Phase.ICON_DRAG;
                     }
@@ -267,15 +267,15 @@ public class FloatIconView extends View {
 
                 if (dist >= dp(FV_DIRECT_MOVE_START_DP)) cancelLongPress();
 
-                if ((stepDx!=0||stepDy!=0) && dist>=dp(1.5f)) {
+                if ((moveDx!=0||moveDy!=0) && dist>=dp(1.5f)) {
                     if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","fvTemporaryFollowStart distance="+Math.round(dist));}
-                    cb.onMove(stepDx,stepDy);
+                    cb.onMove(moveDx,moveDy);
                     session.moved=true;
                 }
 
                 if(followStarted && selectionEngine!=null && selectionEngine.available()) {
-                    // FV updates the independent ProbePoint/action-helper windows on every MOVE.
-                    // The exact same transformed point is later reused for View hit testing.
+                    // FV sends one transformed Point to circle_focus and to the selection layer on
+                    // every MOVE. The 400ms Runnable changes selection state, not movement latency.
                     selectionEngine.showProbe(rx, ry);
                     armOrRearmDirectSelection(rx, ry);
                 }
@@ -356,8 +356,8 @@ public class FloatIconView extends View {
 
     /**
      * Mirrors the observed FV q scheduling behavior: tiny MOVE jitter does not rearm the 400 ms
-     * runnable. Only a meaningful displacement from the last timer anchor does. Full Capture shows
-     * q remaining scheduled while identical/sub-pixel MOVE events continue, then firing on time.
+     * runnable. Only displacement beyond FV's ~3dp anchor does. The already-posted q can therefore
+     * fire while the same finger remains down and while circle_focus continues to follow MOVE.
      */
     private void armOrRearmDirectSelection(float rawX, float rawY) {
         lastSelectionRawX = rawX;
@@ -376,10 +376,7 @@ public class FloatIconView extends View {
 
         float dx = rawX - directTimerAnchorX;
         float dy = rawY - directTimerAnchorY;
-        if (dx * dx + dy * dy < directRearmSlopPx * directRearmSlopPx) {
-            // FV Full Capture: small continued MOVE events do not cancel the already-posted q.
-            return;
-        }
+        if (dx * dx + dy * dy < directRearmSlopPx * directRearmSlopPx) return;
 
         handler.removeCallbacks(directSelectionRunnable);
         directTimerAnchorX = rawX;
