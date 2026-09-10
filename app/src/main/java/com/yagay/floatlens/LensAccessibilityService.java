@@ -4,9 +4,10 @@ import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.accessibilityservice.GestureDescription;
 import android.graphics.Bitmap;
-import android.hardware.HardwareBuffer;
 import android.graphics.Path;
 import android.graphics.Rect;
+import android.graphics.Region;
+import android.hardware.HardwareBuffer;
 import android.view.Display;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
@@ -80,40 +81,62 @@ public class LensAccessibilityService extends AccessibilityService {
     /**
      * Position-only View hit testing.
      *
-     * Selection is no longer ranked by text/clickability/image semantics. The pointer coordinate is
-     * the only selector: visible node -> bounds contains(x,y) -> descend through the child at that
-     * position -> return the most specific positional node. Near-fullscreen/root containers are
-     * retained only as a final fallback and can never beat a more specific node under the pointer.
+     * Android returns accessibility windows in descending layer order (top-most first). We walk
+     * them in that documented order and first require the actual interactive Region to contain the
+     * pointer. Inside a window, selection is purely positional: visible node -> bounds contains ->
+     * descend through the child at that position -> most specific node. Near-fullscreen/root
+     * containers are retained only as the final fallback.
      */
     public ViewNodeCandidate findViewAt(float x, float y) {
         try {
-            List<AccessibilityWindowInfo> windows=getWindows();
-            if(windows==null)return null;
-            int px=Math.round(x), py=Math.round(y);
-            Rect screen=currentScreenBounds();
+            final int px=Math.round(x), py=Math.round(y);
+            final Rect screen=currentScreenBounds();
             AccessibilityNodeInfo fullscreenFallback=null;
 
-            // Android accessibility windows are traversed top-most first. We do not score/sort nodes.
-            for(int i=windows.size()-1;i>=0;i--){
-                AccessibilityWindowInfo w=windows.get(i);
-                if(w==null)continue;
-                AccessibilityNodeInfo root=null;
-                try{root=w.getRoot();}catch(Throwable ignored){}
-                if(root==null)continue;
-                String pkg="";
-                try{if(root.getPackageName()!=null)pkg=root.getPackageName().toString();}catch(Throwable ignored){}
-                if(getPackageName().equals(pkg))continue;
+            List<AccessibilityWindowInfo> windows=getWindows();
+            if(windows!=null){
+                // Official API ordering is descending layer order: index 0 is top-most.
+                for(int i=0;i<windows.size();i++){
+                    AccessibilityWindowInfo w=windows.get(i);
+                    if(w==null || !windowContainsPoint(w,px,py))continue;
 
-                PositionMatch hit=findByPosition(root,px,py,screen,0,new int[]{0});
-                if(hit==null||hit.node==null)continue;
-                if(hit.fullscreenLike){
-                    if(fullscreenFallback==null)fullscreenFallback=hit.node;
-                    continue;
+                    AccessibilityNodeInfo root=null;
+                    try{root=w.getRoot();}catch(Throwable ignored){}
+                    if(root==null)continue;
+                    String pkg=nodePackage(root);
+                    if(getPackageName().equals(pkg))continue;
+
+                    PositionMatch hit=findByPosition(root,px,py,screen,0,new int[]{0});
+                    if(hit==null||hit.node==null)continue;
+                    if(hit.fullscreenLike){
+                        if(fullscreenFallback==null)fullscreenFallback=hit.node;
+                        continue;
+                    }
+
+                    ViewNodeCandidate out=snapshot(hit.node);
+                    DiagnosticLog.i(this,"VIEW_PICK","window="+i+" layer="+safeLayer(w)+" pkg="+pkg+" depth="+hit.depth+" bounds="+out.bounds()+" class="+out.className()+" id="+out.viewId()+" kind="+out.kind());
+                    return out;
                 }
+            }
 
-                ViewNodeCandidate out=snapshot(hit.node);
-                DiagnosticLog.i(this,"VIEW_PICK","position hit depth="+hit.depth+" bounds="+out.bounds()+" class="+out.className()+" id="+out.viewId()+" kind="+out.kind());
-                return out;
+            // Launcher implementations can expose the workspace more reliably through the active
+            // root than through getWindows() while overlays are present. Use it only after all
+            // concrete top-layer positional matches above failed.
+            try{
+                AccessibilityNodeInfo active=getRootInActiveWindow();
+                if(active!=null && !getPackageName().equals(nodePackage(active))){
+                    PositionMatch hit=findByPosition(active,px,py,screen,0,new int[]{0});
+                    if(hit!=null&&hit.node!=null){
+                        if(!hit.fullscreenLike){
+                            ViewNodeCandidate out=snapshot(hit.node);
+                            DiagnosticLog.i(this,"VIEW_PICK","active-root fallback pkg="+nodePackage(active)+" depth="+hit.depth+" bounds="+out.bounds()+" class="+out.className()+" id="+out.viewId()+" kind="+out.kind());
+                            return out;
+                        }
+                        if(fullscreenFallback==null)fullscreenFallback=hit.node;
+                    }
+                }
+            }catch(Throwable t){
+                DiagnosticLog.i(this,"VIEW_PICK","active-root fallback failed="+t);
             }
 
             if(fullscreenFallback!=null){
@@ -128,6 +151,28 @@ public class LensAccessibilityService extends AccessibilityService {
         }
     }
 
+    private boolean windowContainsPoint(AccessibilityWindowInfo w,int x,int y){
+        try{
+            Region region=new Region();
+            w.getRegionInScreen(region);
+            if(!region.isEmpty())return region.contains(x,y);
+        }catch(Throwable ignored){}
+        try{
+            Rect r=new Rect();
+            w.getBoundsInScreen(r);
+            return !r.isEmpty()&&r.contains(x,y);
+        }catch(Throwable t){return false;}
+    }
+
+    private int safeLayer(AccessibilityWindowInfo w){
+        try{return w.getLayer();}catch(Throwable t){return Integer.MIN_VALUE;}
+    }
+
+    private String nodePackage(AccessibilityNodeInfo n){
+        try{return n!=null&&n.getPackageName()!=null?n.getPackageName().toString():"";}
+        catch(Throwable t){return "";}
+    }
+
     private static final class PositionMatch {
         final AccessibilityNodeInfo node;
         final boolean fullscreenLike;
@@ -137,7 +182,7 @@ public class LensAccessibilityService extends AccessibilityService {
 
     /** Child-first positional walk. No priority score and no semantic sorting. */
     private PositionMatch findByPosition(AccessibilityNodeInfo n,int x,int y,Rect screen,int depth,int[] count){
-        if(n==null||count[0]++>1200||depth>64)return null;
+        if(n==null||count[0]++>1600||depth>72)return null;
         try{if(!n.isVisibleToUser())return null;}catch(Throwable ignored){}
 
         Rect r=new Rect();
@@ -145,9 +190,9 @@ public class LensAccessibilityService extends AccessibilityService {
         if(r.isEmpty()||!r.contains(x,y))return null;
 
         PositionMatch fullscreenChildFallback=null;
-        int childCount=Math.min(n.getChildCount(),160);
-        // Reverse order follows Android's common visual stacking order; this is traversal order,
-        // not semantic ranking. The first concrete child under the pointer wins.
+        int childCount=Math.min(n.getChildCount(),220);
+        // Reverse child traversal follows common Android drawing order. This is not semantic
+        // ranking: first concrete child at the coordinate wins.
         for(int i=childCount-1;i>=0;i--){
             AccessibilityNodeInfo child=null;
             try{child=n.getChild(i);}catch(Throwable ignored){}
@@ -222,11 +267,11 @@ public class LensAccessibilityService extends AccessibilityService {
     }
 
     private void appendNodeText(AccessibilityNodeInfo n,StringBuilder out,int depth,int[] count){
-        if(n==null||count[0]++>180||depth>12)return;
+        if(n==null||count[0]++>240||depth>16)return;
         appendUnique(out,n.getText());
         appendUnique(out,n.getContentDescription());
         try{appendUnique(out,n.getHintText());}catch(Throwable ignored){}
-        int children=Math.min(n.getChildCount(),60);
+        int children=Math.min(n.getChildCount(),80);
         for(int i=0;i<children;i++){
             AccessibilityNodeInfo c=null; try{c=n.getChild(i);}catch(Throwable ignored){}
             if(c!=null)appendNodeText(c,out,depth+1,count);
