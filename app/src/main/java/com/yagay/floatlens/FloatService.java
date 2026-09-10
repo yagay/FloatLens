@@ -46,18 +46,23 @@ public class FloatService extends Service implements android.content.SharedPrefe
         final int[] otherVisibility={View.VISIBLE};
         return new FloatIconView(this,new FloatIconView.Callback(){
             @Override public void onDragStart(){
+                // FV starts from the real current overlay x/y, even if the resting icon is partly
+                // hidden beyond an edge. It does NOT restore the icon fully before temporary follow.
                 origin[0]=lp.x; origin[1]=lp.y; originReady[0]=true;
                 if(!mirrored&&secondaryLp!=null){mirrorOrigin[0]=secondaryLp.x;mirrorOrigin[1]=secondaryLp.y;mirrorOriginReady[0]=true;}
-                restoreFully(lp);safeUpdate(mirrored?secondary:primary,lp);
-                DiagnosticLog.i(FloatService.this,"POSITION","temporary follow origin="+origin[0]+","+origin[1]+" moveMode="+positionMoveArmed);
+                DiagnosticLog.i(FloatService.this,"POSITION","fv follow origin="+origin[0]+","+origin[1]+" moveMode="+positionMoveArmed);
             }
-            @Override public void onMove(int dx,int dy){
-                // FV FloatIconView.c0() writes the supplied x/y directly. During the live pointer
-                // stream it does not force the whole icon inside the display. Keeping the finger
-                // delta un-clamped lets the icon naturally become partially off-screen at an edge,
-                // while release/save paths below still clamp/snap the persistent resting position.
-                lp.x+=dx;lp.y+=dy;safeUpdate(mirrored?secondary:primary,lp);
-                if(!mirrored&&secondary!=null&&secondaryLp!=null){secondaryLp.y=lp.y;safeUpdate(secondary,secondaryLp);}
+            @Override public void onMove(int dxFromDown,int dyFromDown){
+                // FloatIconView supplies absolute displacement from ACTION_DOWN. Match FV c0():
+                // target = start Window position + currentRaw - downRaw. Never integrate frame deltas.
+                if(!originReady[0]){origin[0]=lp.x;origin[1]=lp.y;originReady[0]=true;}
+                lp.x=origin[0]+dxFromDown;
+                lp.y=origin[1]+dyFromDown;
+                safeUpdate(mirrored?secondary:primary,lp);
+                if(!mirrored&&secondary!=null&&secondaryLp!=null){
+                    secondaryLp.y=(mirrorOriginReady[0]?mirrorOrigin[1]:origin[1])+dyFromDown;
+                    safeUpdate(secondary,secondaryLp);
+                }
             }
             @Override public void onRelease(boolean moved){
                 View icon=mirrored?secondary:primary;
@@ -154,7 +159,6 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private void clamp(WindowManager.LayoutParams lp,boolean allowHidden){int[] wh=displaySize();int hidden=allowHidden?Math.round(lp.width*fs.hiddenPercent()/100f):0;lp.x=Math.max(-hidden,Math.min(lp.x,wh[0]-lp.width+hidden));lp.y=Math.max(0,Math.min(lp.y,wh[1]-lp.height));}
     private void snap(WindowManager.LayoutParams lp,View v){int[] wh=displaySize();lp.x=isLeft(lp,wh[0])?0:wh[0]-lp.width;clamp(lp,false);safeUpdate(v,lp);edgeHide(lp);safeUpdate(v,lp);}
     private void edgeHide(WindowManager.LayoutParams lp){int hp=fs.hiddenPercent();if(hp<=0)return;int[] wh=displaySize();boolean left=isLeft(lp,wh[0]);int hidden=Math.round(lp.width*hp/100f);lp.x=left?-hidden:wh[0]-lp.width+hidden;clamp(lp,true);DiagnosticLog.i(this,"EDGE","side="+(left?"L":"R")+" visiblePct="+fs.showPercentage()+" hiddenPx="+hidden+" x="+lp.x);}
-    private void restoreFully(WindowManager.LayoutParams lp){int[] wh=displaySize();lp.x=isLeft(lp,wh[0])?0:wh[0]-lp.width;clamp(lp,false);}
     private void persistPosition(){if(primaryLp==null)return;DiagnosticLog.i(this,"POSITION","persist x="+primaryLp.x+" y="+primaryLp.y+" side="+(isLeft(primaryLp,displaySize()[0])?"L":"R")+" landscape="+fs.isLandscape());int[] wh=displaySize();fs.saveSide(isLeft(primaryLp,wh[0]));fs.prefs().edit().putInt(fs.posXKey(),primaryLp.x).putInt(fs.posYKey(),primaryLp.y).apply();}
 
     public void setManualHidden(boolean h){manualHidden=h;DiagnosticLog.i(this,"VISIBILITY","manualHidden="+h);recomputeVisibility();} public boolean isManualHidden(){return manualHidden;}
