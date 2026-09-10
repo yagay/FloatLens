@@ -17,9 +17,10 @@ import java.util.List;
 /**
  * Strict text/image hover layer.
  *
- * Selection comes only from Accessibility TEXT or image/icon NON_TEXT nodes. Screenshot geometry is
- * intentionally not used for hover selection, so an icon+label node remains one rectangle and
- * generic controls/layout edges cannot be mistaken for images.
+ * Selection comes only from Accessibility TEXT or image/icon NON_TEXT nodes. Accessibility bounds
+ * stay in screen coordinates for hit testing. The drawing layer converts those screen coordinates
+ * to the overlay View's local coordinate space before rendering, which avoids status-bar/cutout/
+ * navigation-bar offsets on devices whose overlay frame does not start at physical screen (0,0).
  */
 public final class ViewHoverOverlay {
     private static final long TREE_REFRESH_MS = 120L;
@@ -87,7 +88,7 @@ public final class ViewHoverOverlay {
             view.setCandidate(next);
             if (next != null) {
                 DiagnosticLog.i(context, "VIEW_HOVER", "strict source=" + next.source()
-                        + " type=" + next.type() + " bounds=" + next.bounds()
+                        + " type=" + next.type() + " screenBounds=" + next.bounds()
                         + " depth=" + next.depth() + " textLen=" + next.text().length()
                         + " class=" + next.className() + " id=" + next.viewId());
             } else {
@@ -159,7 +160,10 @@ public final class ViewHoverOverlay {
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint label = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final int[] overlayLocation = new int[2];
         private ScreenCandidate candidate;
+        private int lastLoggedOriginX = Integer.MIN_VALUE;
+        private int lastLoggedOriginY = Integer.MIN_VALUE;
 
         HoverView(Context c) {
             super(c);
@@ -182,7 +186,25 @@ public final class ViewHoverOverlay {
         @Override protected void onDraw(Canvas c) {
             super.onDraw(c);
             if (candidate == null) return;
+
+            // AccessibilityNodeInfo#getBoundsInScreen() is in physical screen coordinates.
+            // Canvas coordinates are local to this overlay View. Convert by the overlay View's
+            // actual screen origin instead of assuming the origin is always (0,0).
+            getLocationOnScreen(overlayLocation);
             Rect r = candidate.bounds();
+            r.offset(-overlayLocation[0], -overlayLocation[1]);
+
+            if (overlayLocation[0] != lastLoggedOriginX || overlayLocation[1] != lastLoggedOriginY) {
+                lastLoggedOriginX = overlayLocation[0];
+                lastLoggedOriginY = overlayLocation[1];
+                DiagnosticLog.i(getContext(), "VIEW_DRAW", "overlayOrigin="
+                        + overlayLocation[0] + "," + overlayLocation[1]
+                        + " size=" + getWidth() + "x" + getHeight());
+            }
+
+            Rect localFrame = new Rect(0, 0, getWidth(), getHeight());
+            if (!Rect.intersects(localFrame, r)) return;
+
             c.drawRect(r, fill);
             c.drawRect(r, border);
             String text = candidate.label();
