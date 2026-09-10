@@ -1,9 +1,6 @@
 package com.yagay.floatlens;
 
-import android.accessibilityservice.AccessibilityService;
 import android.graphics.Rect;
-import android.graphics.Region;
-import android.view.WindowManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import java.util.ArrayList;
@@ -13,10 +10,9 @@ import java.util.Locale;
 /**
  * Clean-room collector modelled from the observable FV s0/R pipeline.
  *
- * It walks the full visible Accessibility tree and emits geometry candidates first. Text/non-text
- * classification describes a candidate; it never determines selection priority. Near-screen roots
- * are retained as ROOT fallbacks. Visual screenshot analysis is handled separately and only refines
- * a coarse Accessibility result or fills an Accessibility gap.
+ * It walks the complete visible Accessibility tree but only emits actual selection candidates:
+ * Text/Edit, NonText, and near-screen Root fallbacks. Plain layout/container nodes are traversed but
+ * are not themselves selectable, preventing deep empty wrappers from stealing the pointer.
  */
 public final class AccessibilityCandidateCollector {
     private AccessibilityCandidateCollector() {}
@@ -30,7 +26,6 @@ public final class AccessibilityCandidateCollector {
         try {
             List<AccessibilityWindowInfo> windows = service.getWindows();
             if (windows != null) {
-                // Android documents getWindows() in descending layer order: index 0 is top-most.
                 for (int wi = 0; wi < windows.size(); wi++) {
                     AccessibilityWindowInfo w = windows.get(wi);
                     if (w == null) continue;
@@ -44,7 +39,6 @@ public final class AccessibilityCandidateCollector {
                 }
             }
 
-            // Some launchers expose a richer tree through the active root while overlays exist.
             AccessibilityNodeInfo active = null;
             try { active = service.getRootInActiveWindow(); } catch (Throwable ignored) {}
             if (active != null && !service.getPackageName().equals(nodePackage(active))) {
@@ -68,9 +62,7 @@ public final class AccessibilityCandidateCollector {
         try { n.getBoundsInScreen(r); } catch (Throwable t) { return; }
         if (r.isEmpty()) return;
         Rect clipped = new Rect(r);
-        if (screen != null && !screen.isEmpty()) {
-            if (!clipped.intersect(screen)) return;
-        }
+        if (screen != null && !screen.isEmpty() && !clipped.intersect(screen)) return;
 
         CharSequence ownText = firstNonBlank(
                 safeText(n), safeContentDescription(n), safeHint(n), safeStateDescription(n));
@@ -82,20 +74,19 @@ public final class AccessibilityCandidateCollector {
         String pkg = nodePackage(n);
         boolean fullscreen = isFullscreenLike(clipped, screen);
         boolean explicitImage = isExplicitImageClass(cls);
-        boolean nonText = !editable && isNonTextCandidate(service, n, clipped, ownText, cls, explicitImage);
+        boolean nonText = !editable && isNonTextCandidate(service, n, clipped, ownText, explicitImage);
 
-        ScreenCandidate.Type type;
+        ScreenCandidate.Type type = null;
         if (fullscreen) type = ScreenCandidate.Type.ROOT;
         else if (editable || ownText != null) type = ScreenCandidate.Type.TEXT;
         else if (nonText) type = ScreenCandidate.Type.NON_TEXT;
-        else type = ScreenCandidate.Type.VIEW;
 
-        // Keep actual node text only. FV's non-text rectangles do not inherit all descendant text;
-        // doing so would turn an icon/container into a text candidate merely because a label exists.
-        String text = ownText == null ? "" : ownText.toString().trim();
-        out.add(new ScreenCandidate(clipped, type, ScreenCandidate.Source.ACCESSIBILITY,
-                text, cls, id, pkg, depth, fullscreen,
-                clickable, editable, focusable, explicitImage || nonText));
+        if (type != null) {
+            String text = ownText == null ? "" : ownText.toString().trim();
+            out.add(new ScreenCandidate(clipped, type, ScreenCandidate.Source.ACCESSIBILITY,
+                    text, cls, id, pkg, depth, fullscreen,
+                    clickable, editable, focusable, explicitImage || nonText));
+        }
 
         int children = Math.min(300, safeChildCount(n));
         for (int i = 0; i < children; i++) {
@@ -106,16 +97,13 @@ public final class AccessibilityCandidateCollector {
     }
 
     private static boolean isNonTextCandidate(LensAccessibilityService service, AccessibilityNodeInfo n,
-                                              Rect r, CharSequence ownText, String cls,
-                                              boolean explicitImage) {
+                                              Rect r, CharSequence ownText, boolean explicitImage) {
         if (ownText != null) return false;
         float density = service.getResources().getDisplayMetrics().density;
-        int min = Math.round(20f * density); // FV exposes a 20dp minimum in its non-text path.
+        int min = Math.round(20f * density);
         if (r.width() < min || r.height() < min) return false;
         if (explicitImage) return true;
 
-        // Preserve geometry-only non-text leaves/actionable nodes. This covers custom/Compose image
-        // nodes without relying on a semantic score. The classification does not affect selection.
         int children = safeChildCount(n);
         if (children == 0 && (safeClickable(n) || safeFocusable(n))) return true;
 
