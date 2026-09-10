@@ -47,6 +47,7 @@ public class FloatIconView extends View {
     private final GestureSession session = new GestureSession();
     private FloatSettings fs;
     private final Callback cb;
+    private final Runnable directSelectionRunnable;
     private long lastTapAt;
     private Runnable longPressRunnable;
     private Runnable singleTapRunnable;
@@ -62,32 +63,6 @@ public class FloatIconView extends View {
     private float lastSelectionRawX = Float.NaN, lastSelectionRawY = Float.NaN;
     private ViewSelectionEngine selectionEngine;
 
-    private final Runnable directSelectionRunnable = () -> {
-        if (directSelectionActive || regionEditorTriggered || positionMoveMode || session.multiTouch
-                || !followStarted || selectionEngine == null || !selectionEngine.available()
-                || Float.isNaN(lastSelectionRawX) || Float.isNaN(lastSelectionRawY)
-                || session.phase == GestureSession.Phase.IDLE
-                || session.phase == GestureSession.Phase.FINISHING) return;
-
-        cancelLongPress();
-        directSelectionActive = true;
-        // End the ordinary gesture trail before switching the same touch stream into selection mode.
-        cb.onGestureEnd(session.snapshot());
-        cb.onDirectSelectionStart();
-        boolean ok = selectionEngine.activateDirect(lastSelectionRawX, lastSelectionRawY);
-        if (!ok) {
-            directSelectionActive = false;
-            cb.onDirectSelectionEnd();
-            DiagnosticLog.i(getContext(), "FV_DIRECT", "enter failed");
-            return;
-        }
-        DiagnosticLog.i(getContext(), "FV_DIRECT", "ENTER afterMoveIdle="
-                + FV_DIRECT_SELECT_DELAY_MS + "ms raw=" + Math.round(lastSelectionRawX)
-                + "," + Math.round(lastSelectionRawY));
-        if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
-        invalidate();
-    };
-
     private final Runnable slideRunnable = new Runnable() {
         public void run() {
             if (fs.style()==4 && slideDrawables.size()>1) {
@@ -101,6 +76,30 @@ public class FloatIconView extends View {
     public FloatIconView(Context c, Callback cb) {
         super(c);
         this.cb = cb;
+        directSelectionRunnable = () -> {
+            if (directSelectionActive || regionEditorTriggered || positionMoveMode || session.multiTouch
+                    || !followStarted || selectionEngine == null || !selectionEngine.available()
+                    || Float.isNaN(lastSelectionRawX) || Float.isNaN(lastSelectionRawY)
+                    || session.phase == GestureSession.Phase.IDLE
+                    || session.phase == GestureSession.Phase.FINISHING) return;
+
+            cancelLongPress();
+            directSelectionActive = true;
+            cb.onGestureEnd(session.snapshot());
+            cb.onDirectSelectionStart();
+            boolean ok = selectionEngine.activateDirect(lastSelectionRawX, lastSelectionRawY);
+            if (!ok) {
+                directSelectionActive = false;
+                cb.onDirectSelectionEnd();
+                DiagnosticLog.i(getContext(), "FV_DIRECT", "enter failed");
+                return;
+            }
+            DiagnosticLog.i(getContext(), "FV_DIRECT", "ENTER afterMoveIdle="
+                    + FV_DIRECT_SELECT_DELAY_MS + "ms raw=" + Math.round(lastSelectionRawX)
+                    + "," + Math.round(lastSelectionRawY));
+            if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+            invalidate();
+        };
         DiagnosticLog.init(c);
         fs = new FloatSettings(c);
         loadCustomIcon();
@@ -134,8 +133,6 @@ public class FloatIconView extends View {
 
     @Override protected void onDraw(Canvas c) {
         super.onDraw(c);
-        // During FV direct selection this same View is MATCH_PARENT only to keep ownership of the
-        // existing pointer stream. The icon itself is visually hidden; ViewHoverOverlay draws UI.
         if (directSelectionActive) return;
 
         float w = getWidth(), h = getHeight(), r = Math.min(w, h) * .47f;
@@ -202,8 +199,6 @@ public class FloatIconView extends View {
                         +" positionMove="+positionMoveMode);
                 invalidate();
 
-                // Keep the user's stationary long-press region editor as a separate action. Any real
-                // drag cancels this timer and switches to the observed FV 400 ms MOVE-idle path.
                 if(!positionMoveMode){
                     longPressRunnable = () -> {
                         if (!session.multiTouch && !followStarted && session.phase == GestureSession.Phase.DOWN
@@ -262,8 +257,6 @@ public class FloatIconView extends View {
                     session.moved=true;
                 }
 
-                // Confirmed FV behavior: every MOVE restarts the selection Runnable. If no further
-                // MOVE arrives for ~400 ms while the finger remains down, direct selection begins.
                 if(followStarted && selectionEngine!=null && selectionEngine.available()) {
                     lastSelectionRawX=rx;
                     lastSelectionRawY=ry;
