@@ -1,0 +1,253 @@
+name: Patch text ActionMode
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-text-actionmode.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch ResultTextActivity
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('app/src/main/java/com/yagay/floatlens/ResultTextActivity.java')
+          s = p.read_text()
+
+          s = s.replace('import android.view.MenuItem;\nimport android.view.View;',
+                        'import android.view.MenuItem;\nimport android.view.MotionEvent;\nimport android.view.View;')
+
+          s = s.replace('    private static final int MENU_SHARE = 0x46540002;\n',
+                        '    private static final int MENU_SHARE = 0x46540002;\n'
+                        '    private static final int MENU_GROUP_PROCESS = 0x46540100;\n'
+                        '    private static final int MENU_PROCESS_BASE = 0x46541000;\n')
+
+          s = s.replace('    private boolean circleFinished;\n',
+                        '    private boolean circleFinished;\n'
+                        '    private ActionMode activeBlockActionMode;\n')
+
+          old = '''    /** Full OCR text: a normal selectable editor in a real Activity, so Android owns the menu. */
+    private EditText selectableText(String text) {
+        EditText tv = new EditText(this);
+        tv.setText(text == null ? "" : text);
+        tv.setTextColor(Color.WHITE);
+        tv.setTextSize(16);
+        tv.setBackgroundColor(Color.TRANSPARENT);
+        tv.setGravity(Gravity.TOP | Gravity.START);
+        tv.setSingleLine(false);
+        tv.setHorizontallyScrolling(false);
+        tv.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        tv.setKeyListener(null);
+        tv.setCursorVisible(false);
+        tv.setShowSoftInputOnFocus(false);
+        tv.setTextIsSelectable(true);
+        tv.setLongClickable(true);
+        tv.setFocusable(true);
+        tv.setFocusableInTouchMode(true);
+        tv.setSelectAllOnFocus(false);
+        tv.setPadding(dp(8), dp(5), dp(8), dp(5));
+        return tv;
+    }
+'''
+          new = '''    /**
+     * Full OCR text keeps Android's native selection handles/default actions, but we explicitly
+     * append every visible ACTION_PROCESS_TEXT handler. Some OEM builds only expose a shortened
+     * framework list for selectable read-only text, so relying on the automatic list is incomplete.
+     */
+    private EditText selectableText(String text) {
+        EditText tv = new EditText(this);
+        tv.setText(text == null ? "" : text);
+        tv.setTextColor(Color.WHITE);
+        tv.setTextSize(16);
+        tv.setBackgroundColor(Color.TRANSPARENT);
+        tv.setGravity(Gravity.TOP | Gravity.START);
+        tv.setSingleLine(false);
+        tv.setHorizontallyScrolling(false);
+        tv.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        tv.setKeyListener(null);
+        tv.setCursorVisible(false);
+        tv.setShowSoftInputOnFocus(false);
+        tv.setTextIsSelectable(true);
+        tv.setLongClickable(true);
+        tv.setFocusable(true);
+        tv.setFocusableInTouchMode(true);
+        tv.setSelectAllOnFocus(false);
+        tv.setPadding(dp(8), dp(5), dp(8), dp(5));
+
+        tv.setCustomSelectionActionModeCallback(new ActionMode.Callback() {
+            @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                refreshFullSelectionProcessItems(menu, tv);
+                DiagnosticLog.i(ResultTextActivity.this, "RESULT_TEXT_MENU",
+                        "FULL_CREATE selected=" + selectedText(tv).length()
+                                + " items=" + menu.size());
+                return true;
+            }
+
+            @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                refreshFullSelectionProcessItems(menu, tv);
+                return true;
+            }
+
+            @Override public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                Intent target = item.getIntent();
+                if (target != null && Intent.ACTION_PROCESS_TEXT.equals(target.getAction())) {
+                    String selected = selectedText(tv);
+                    if (selected.isEmpty()) return false;
+                    Intent current = new Intent(target)
+                            .putExtra(Intent.EXTRA_PROCESS_TEXT, selected)
+                            .putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true);
+                    try { startActivity(current); }
+                    catch (Throwable t) {
+                        Toast.makeText(ResultTextActivity.this,
+                                "无法打开文本处理应用", Toast.LENGTH_SHORT).show();
+                    }
+                    mode.finish();
+                    return true;
+                }
+                // Let TextView/Editor handle the framework actions (Copy, Select all, etc.).
+                return false;
+            }
+
+            @Override public void onDestroyActionMode(ActionMode mode) {}
+        });
+        return tv;
+    }
+
+    private String selectedText(EditText tv) {
+        if (tv == null || tv.getText() == null) return "";
+        int start = tv.getSelectionStart();
+        int end = tv.getSelectionEnd();
+        if (start < 0 || end < 0 || start == end) return "";
+        int lo = Math.max(0, Math.min(start, end));
+        int hi = Math.min(tv.length(), Math.max(start, end));
+        return lo < hi ? tv.getText().subSequence(lo, hi).toString() : "";
+    }
+
+    private void refreshFullSelectionProcessItems(Menu menu, EditText tv) {
+        if (menu == null) return;
+        try { menu.removeGroup(MENU_GROUP_PROCESS); } catch (Throwable ignored) {}
+        String selected = selectedText(tv);
+        if (!selected.isEmpty()) addProcessTextItems(menu, selected);
+    }
+'''
+          if old not in s:
+              raise SystemExit('selectableText block not found')
+          s = s.replace(old, new)
+
+          s = s.replace('''    private void showBlockActionMode(TextView anchor, String block) {
+        final String value = block == null ? "" : block.trim();
+        if (value.isEmpty()) return;
+
+        ActionMode.Callback2 cb = new ActionMode.Callback2() {''',
+'''    private void showBlockActionMode(TextView anchor, String block) {
+        final String value = block == null ? "" : block.trim();
+        if (value.isEmpty()) return;
+
+        if (activeBlockActionMode != null) {
+            try { activeBlockActionMode.finish(); } catch (Throwable ignored) {}
+            activeBlockActionMode = null;
+        }
+
+        ActionMode.Callback2 cb = new ActionMode.Callback2() {''')
+
+          s = s.replace('''            @Override public void onDestroyActionMode(ActionMode mode) {}
+
+            @Override public void onGetContentRect(ActionMode mode, View view, Rect outRect) {''',
+'''            @Override public void onDestroyActionMode(ActionMode mode) {
+                if (activeBlockActionMode == mode) activeBlockActionMode = null;
+                DiagnosticLog.i(ResultTextActivity.this, "RESULT_TEXT_MENU", "BLOCK_DESTROY");
+            }
+
+            @Override public void onGetContentRect(ActionMode mode, View view, Rect outRect) {''', 1)
+
+          s = s.replace('''        if (mode == null) {
+            DiagnosticLog.i(this, "RESULT_TEXT_MENU", "BLOCK_ACTIONMODE_NULL -> chooser");
+            launchProcessTextChooser(value);
+        }
+    }
+
+    private void addProcessTextItems(Menu menu, String value) {''',
+'''        if (mode == null) {
+            DiagnosticLog.i(this, "RESULT_TEXT_MENU", "BLOCK_ACTIONMODE_NULL -> chooser");
+            launchProcessTextChooser(value);
+        } else {
+            activeBlockActionMode = mode;
+        }
+    }
+
+    private void addProcessTextItems(Menu menu, String value) {''')
+
+          old_add = '''        int order = 10;
+        if (handlers == null) return;
+        for (ResolveInfo ri : handlers) {
+            if (ri == null || ri.activityInfo == null) continue;
+            CharSequence label;
+            try { label = ri.loadLabel(pm); }
+            catch (Throwable ignored) { label = ri.activityInfo.name; }
+            Intent target = new Intent(base)
+                    .setClassName(ri.activityInfo.packageName, ri.activityInfo.name);
+            MenuItem item = menu.add(Menu.NONE, Menu.NONE, order++,
+                    label == null ? ri.activityInfo.name : label);
+            item.setIntent(target);
+            item.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+        }
+'''
+          new_add = '''        int order = 10;
+        int id = MENU_PROCESS_BASE;
+        if (handlers == null) return;
+        for (ResolveInfo ri : handlers) {
+            if (ri == null || ri.activityInfo == null) continue;
+            CharSequence label;
+            try { label = ri.loadLabel(pm); }
+            catch (Throwable ignored) { label = ri.activityInfo.name; }
+            Intent target = new Intent(base)
+                    .setClassName(ri.activityInfo.packageName, ri.activityInfo.name);
+            MenuItem item = menu.add(MENU_GROUP_PROCESS, id++, order++,
+                    label == null ? ri.activityInfo.name : label);
+            item.setIntent(target);
+            // Keep PROCESS_TEXT handlers in the overflow so the floating toolbar always exposes
+            // its expansion affordance instead of silently dropping handlers that don't fit.
+            item.setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        }
+'''
+          if old_add not in s:
+              raise SystemExit('addProcessTextItems body not found')
+          s = s.replace(old_add, new_add)
+
+          marker = '''    private void finishWithCircle(String reason) {
+'''
+          extra = '''    @Override public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (ev != null && ev.getActionMasked() == MotionEvent.ACTION_DOWN
+                && activeBlockActionMode != null) {
+            ActionMode old = activeBlockActionMode;
+            activeBlockActionMode = null;
+            try { old.finish(); } catch (Throwable ignored) {}
+            DiagnosticLog.i(this, "RESULT_TEXT_MENU", "BLOCK_DISMISS_BY_TOUCH");
+        }
+        return super.dispatchTouchEvent(ev);
+    }
+
+'''
+          if marker not in s:
+              raise SystemExit('finishWithCircle marker not found')
+          s = s.replace(marker, extra + marker)
+
+          p.write_text(s)
+      - name: Commit patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app/src/main/java/com/yagay/floatlens/ResultTextActivity.java
+          git diff --cached --check
+          git commit -m "Fix OCR text ActionMode menus"
+          git push
