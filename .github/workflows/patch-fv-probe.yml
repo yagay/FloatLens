@@ -21,26 +21,34 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import re
+
           p = Path('app/src/main/java/com/yagay/floatlens/FloatIconView.java')
           s = p.read_text()
-          old = '''                if(followStarted && selectionEngine!=null && selectionEngine.available()) {
-                      armOrRearmDirectSelection(rx, ry);
-                  }
-          '''
-          new = '''                if(followStarted && selectionEngine!=null && selectionEngine.available()) {
-                      // FV updates the independent ProbePoint/action-helper windows on every MOVE.
-                      // The exact same transformed point is later reused for View hit testing.
-                      selectionEngine.showProbe(rx, ry);
-                      armOrRearmDirectSelection(rx, ry);
-                  }
-          '''
-          if new in s:
+          marker = 'selectionEngine.showProbe(rx, ry);'
+          if marker in s:
               print('already patched')
-          elif old in s:
-              p.write_text(s.replace(old, new, 1))
-              print('patched')
           else:
-              raise SystemExit('target block not found; refusing broad rewrite')
+              pattern = re.compile(
+                  r'(?m)^(?P<i>[ \t]*)if\(followStarted && selectionEngine!=null && selectionEngine\.available\(\)\) \{\n'
+                  r'(?P=i)    armOrRearmDirectSelection\(rx, ry\);\n'
+                  r'(?P=i)\}'
+              )
+              def repl(m):
+                  i = m.group('i')
+                  return (
+                      i + 'if(followStarted && selectionEngine!=null && selectionEngine.available()) {\n'
+                      + i + '    // FV updates the independent ProbePoint/action-helper windows on every MOVE.\n'
+                      + i + '    // The exact same transformed point is later reused for View hit testing.\n'
+                      + i + '    selectionEngine.showProbe(rx, ry);\n'
+                      + i + '    armOrRearmDirectSelection(rx, ry);\n'
+                      + i + '}'
+                  )
+              patched, count = pattern.subn(repl, s, count=1)
+              if count != 1:
+                  raise SystemExit(f'target block count={count}; refusing broad rewrite')
+              p.write_text(patched)
+              print('patched exactly one MOVE block')
 
       - name: Commit patch
         run: |
