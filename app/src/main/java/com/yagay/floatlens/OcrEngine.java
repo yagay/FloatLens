@@ -15,7 +15,7 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 import java.util.ArrayList;
 import java.util.List;
 
-/** OCR pipeline: bitmap -> ML Kit text -> candidate blocks -> adaptive result overlay. */
+/** OCR pipeline: bitmap -> ML Kit text -> candidate blocks -> adaptive result UI. */
 public final class OcrEngine {
     public static void recognize(Context c, Bitmap b) {
         recognize(c, b, null);
@@ -58,8 +58,12 @@ public final class OcrEngine {
                                 + " candidates=" + blocks.size());
                         if (service != null) service.onOcrResults(blocks.size());
 
-                        // Clipboard remains opt-in only from the result UI.
-                        ResultOverlay.show(app, full, blocks, b, resultAnchor);
+                        // Clipboard remains opt-in only. A real Activity window is preferred here so
+                        // Android's native selection toolbar has a normal application window token.
+                        if (!ResultTextActivity.show(app, full, blocks, b, resultAnchor)) {
+                            DiagnosticLog.i(app, "RESULT_TEXT_ACTIVITY", "fallback to overlay");
+                            ResultOverlay.show(app, full, blocks, b, resultAnchor);
+                        }
                     } finally {
                         client.close();
                     }
