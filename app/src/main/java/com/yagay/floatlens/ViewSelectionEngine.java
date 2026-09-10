@@ -10,9 +10,11 @@ import android.view.MotionEvent;
 /**
  * FV-style selection engine driven in parallel with the floating-icon MOVE stream.
  *
- * Only text and image/icon Accessibility Views are selectable. A candidate must remain unchanged
- * for the configured dwell delay before it becomes locked. Releasing before that time leaves the
- * normal icon gesture untouched; releasing after lock captures exactly the highlighted View bounds.
+ * Moving the floating icon and then holding the selection hotspot still for the configured dwell
+ * delay arms the editable region workflow. If a text/image/full-screen View is under the hotspot it
+ * stays highlighted while dwelling; empty screen space can arm the region workflow as well. The
+ * touchable full-screen region editor is opened only after ACTION_UP so the current icon pointer
+ * stream is never cancelled by a new overlay window.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, ACTIVE }
@@ -20,6 +22,8 @@ public final class ViewSelectionEngine {
     private static final long FV_SETTLE_DELAY_MS = 100L;
     private static final float FV_SELECT_START_DP = 3f;
     private static final float FV_FAST_FRAME_PX = 40f;
+    private static final float DWELL_STABILITY_DP = 8f;
+    private static final String EMPTY_DWELL_KEY = "__EMPTY_REGION__";
 
     private final Context context;
     private final LensAccessibilityService accessibility;
@@ -34,11 +38,13 @@ public final class ViewSelectionEngine {
     private float downRawX = Float.NaN, downRawY = Float.NaN;
     private float previousRawX = Float.NaN, previousRawY = Float.NaN;
     private float selectionX = Float.NaN, selectionY = Float.NaN;
+    private float dwellAnchorX = Float.NaN, dwellAnchorY = Float.NaN;
     private long downAt;
     private long lastFastFrameAt;
     private boolean moved;
     private String dwellCandidateKey = "";
     private boolean dwellConfirmed;
+    private boolean regionEditorArmed;
 
     public ViewSelectionEngine(Context c) {
         context = c.getApplicationContext();
@@ -110,7 +116,7 @@ public final class ViewSelectionEngine {
                 }
                 if (state == State.ACTIVE && overlay != null) {
                     overlay.update(selectionX, selectionY);
-                    updateDwellCandidate();
+                    updateDwellTarget();
                 }
                 handler.removeCallbacks(settleRunnable);
                 handler.postDelayed(settleRunnable, FV_SETTLE_DELAY_MS);
@@ -131,7 +137,7 @@ public final class ViewSelectionEngine {
         overlay.begin();
         state = State.ACTIVE;
         overlay.update(x, y);
-        updateDwellCandidate();
+        updateDwellTarget();
         DiagnosticLog.i(context, "FV_SELECT", "ACTIVE reason=" + reason
                 + " after=" + (SystemClock.uptimeMillis() - downAt) + "ms hotspot="
                 + Math.round(x) + "," + Math.round(y));
@@ -147,45 +153,76 @@ public final class ViewSelectionEngine {
         if (state != State.ACTIVE) activateNow(selectionX, selectionY, "settled_100ms");
         else if (overlay != null) {
             overlay.update(selectionX, selectionY);
-            updateDwellCandidate();
+            updateDwellTarget();
         }
     }
 
-    private void updateDwellCandidate() {
+    /**
+     * Dwell is based on both target identity and hotspot stability. Moving around inside one large
+     * View therefore keeps restarting the timer instead of falsely counting as a stationary dwell.
+     */
+    private void updateDwellTarget() {
         if (state != State.ACTIVE || overlay == null) {
             cancelDwell();
             return;
         }
+
         ScreenCandidate c = overlay.currentCandidate();
-        String key = c == null ? "" : c.stableKey();
-        if (key.equals(dwellCandidateKey)) return;
+        String key = c == null ? EMPTY_DWELL_KEY : c.stableKey();
+        float stability = dp(DWELL_STABILITY_DP);
+        boolean nearAnchor = !Float.isNaN(dwellAnchorX)
+                && distanceSquared(selectionX, selectionY, dwellAnchorX, dwellAnchorY)
+                <= stability * stability;
+
+        if (key.equals(dwellCandidateKey) && nearAnchor) return;
 
         handler.removeCallbacks(dwellRunnable);
         dwellCandidateKey = key;
+        dwellAnchorX = selectionX;
+        dwellAnchorY = selectionY;
         dwellConfirmed = false;
+        regionEditorArmed = false;
         overlay.setConfirmed(false);
 
-        if (!key.isEmpty()) {
-            handler.postDelayed(dwellRunnable, dwellConfirmMs);
-            DiagnosticLog.i(context, "VIEW_DWELL", "start delay=" + dwellConfirmMs
-                    + "ms bounds=" + c.bounds() + " type=" + c.type());
-        }
+        handler.postDelayed(dwellRunnable, dwellConfirmMs);
+        DiagnosticLog.i(context, "VIEW_DWELL", "start delay=" + dwellConfirmMs
+                + "ms target=" + (c == null ? "empty-region" : c.type())
+                + " hotspot=" + Math.round(selectionX) + "," + Math.round(selectionY)
+                + (c == null ? "" : " bounds=" + c.bounds()));
     }
 
     private void confirmDwellCandidate() {
         if (state != State.ACTIVE || overlay == null || dwellCandidateKey.isEmpty()) return;
+
+        float stability = dp(DWELL_STABILITY_DP);
+        if (Float.isNaN(dwellAnchorX)
+                || distanceSquared(selectionX, selectionY, dwellAnchorX, dwellAnchorY)
+                > stability * stability) return;
+
         ScreenCandidate current = overlay.currentCandidate();
-        if (current == null || !dwellCandidateKey.equals(current.stableKey())) return;
+        if (EMPTY_DWELL_KEY.equals(dwellCandidateKey)) {
+            if (current != null) return;
+        } else if (current == null || !dwellCandidateKey.equals(current.stableKey())) {
+            return;
+        }
+
         dwellConfirmed = true;
-        overlay.setConfirmed(true);
-        DiagnosticLog.i(context, "VIEW_DWELL", "confirmed after=" + dwellConfirmMs
-                + "ms bounds=" + current.bounds() + " type=" + current.type());
+        regionEditorArmed = true;
+        // A concrete View gets the existing stronger lock highlight. Empty space is armed only in
+        // state/logging until release because there is no meaningful View rectangle to draw.
+        overlay.setConfirmed(current != null);
+        DiagnosticLog.i(context, "REGION_DWELL", "armed after=" + dwellConfirmMs
+                + "ms target=" + (current == null ? "empty-region" : current.type())
+                + " hotspot=" + Math.round(selectionX) + "," + Math.round(selectionY)
+                + (current == null ? "" : " bounds=" + current.bounds()));
     }
 
     private void cancelDwell() {
         handler.removeCallbacks(dwellRunnable);
         dwellCandidateKey = "";
+        dwellAnchorX = dwellAnchorY = Float.NaN;
         dwellConfirmed = false;
+        regionEditorArmed = false;
         if (overlay != null) overlay.setConfirmed(false);
     }
 
@@ -198,21 +235,31 @@ public final class ViewSelectionEngine {
             selectionY = p.y;
             if (overlay != null) {
                 overlay.update(selectionX, selectionY);
-                updateDwellCandidate();
+                updateDwellTarget();
             }
         }
 
         boolean hadCandidate = overlay != null && overlay.hasCandidate();
-        boolean locked = wasActive && hadCandidate && dwellConfirmed;
-        boolean producedResult = overlay != null && overlay.finish(locked);
-        boolean tookOver = locked && producedResult;
+        boolean launchRegionEditor = wasActive && dwellConfirmed && regionEditorArmed;
 
+        if (launchRegionEditor) {
+            if (overlay != null) overlay.cancel();
+            DiagnosticLog.i(context, "REGION_DWELL", "launch editor on release candidate="
+                    + hadCandidate + " hotspot=" + Math.round(selectionX) + "," + Math.round(selectionY));
+            ScreenshotController.captureForRegionEditor(context);
+            resetInternal(false);
+            return true;
+        }
+
+        // No completed dwell: close the hover overlay without producing a View screenshot. The
+        // original gesture remains free to finish normally.
+        if (overlay != null) overlay.cancel();
         DiagnosticLog.i(context, "FV_SELECT", "UP active=" + wasActive
                 + " candidate=" + hadCandidate + " dwellConfirmed=" + dwellConfirmed
-                + " result=" + producedResult + " takeover=" + tookOver + " hotspot="
+                + " regionArmed=" + regionEditorArmed + " takeover=false hotspot="
                 + Math.round(selectionX) + "," + Math.round(selectionY));
         resetInternal(false);
-        return tookOver;
+        return false;
     }
 
     public void cancel() {
@@ -236,11 +283,18 @@ public final class ViewSelectionEngine {
         overlay = null;
         state = State.IDLE;
         downRawX = downRawY = previousRawX = previousRawY = selectionX = selectionY = Float.NaN;
+        dwellAnchorX = dwellAnchorY = Float.NaN;
         downAt = 0L;
         lastFastFrameAt = 0L;
         moved = false;
         dwellCandidateKey = "";
         dwellConfirmed = false;
+        regionEditorArmed = false;
+    }
+
+    private float distanceSquared(float ax, float ay, float bx, float by) {
+        float dx = ax - bx, dy = ay - by;
+        return dx * dx + dy * dy;
     }
 
     private float dp(float v) { return v * context.getResources().getDisplayMetrics().density; }
