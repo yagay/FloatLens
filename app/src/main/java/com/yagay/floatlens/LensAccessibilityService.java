@@ -24,8 +24,6 @@ public class LensAccessibilityService extends AccessibilityService {
     @Override protected void onServiceConnected(){
         super.onServiceConnected();
         s=this;
-        // OOS and some Android builds do not reliably apply all XML flags until the service is
-        // rebound. Force the FV-required window/node visibility flags at runtime as well.
         try {
             AccessibilityServiceInfo info=getServiceInfo();
             if(info!=null){
@@ -40,6 +38,7 @@ public class LensAccessibilityService extends AccessibilityService {
         try { publishEnvironment(); }
         catch (Throwable t) { DiagnosticLog.i(this,"ACCESSIBILITY","publish on connect failed="+t); }
     }
+
     @Override public void onDestroy(){ if(s==this)s=null; super.onDestroy(); }
 
     @Override public void onAccessibilityEvent(AccessibilityEvent e) {
@@ -79,16 +78,22 @@ public class LensAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * FV-style coordinate hit testing: visible -> bounds contains -> inspect children -> choose the
-     * most meaningful visual/accessibility node. Image/icon nodes are first-class candidates even
-     * when they expose no text. This is important for toolbar icons, image buttons and Compose
-     * icon nodes whose clickable parent contains no textual accessibility data.
+     * Position-only View hit testing.
+     *
+     * Selection is no longer ranked by text/clickability/image semantics. The pointer coordinate is
+     * the only selector: visible node -> bounds contains(x,y) -> descend through the child at that
+     * position -> return the most specific positional node. Near-fullscreen/root containers are
+     * retained only as a final fallback and can never beat a more specific node under the pointer.
      */
     public ViewNodeCandidate findViewAt(float x, float y) {
         try {
             List<AccessibilityWindowInfo> windows=getWindows();
             if(windows==null)return null;
             int px=Math.round(x), py=Math.round(y);
+            Rect screen=currentScreenBounds();
+            AccessibilityNodeInfo fullscreenFallback=null;
+
+            // Android accessibility windows are traversed top-most first. We do not score/sort nodes.
             for(int i=windows.size()-1;i>=0;i--){
                 AccessibilityWindowInfo w=windows.get(i);
                 if(w==null)continue;
@@ -98,12 +103,23 @@ public class LensAccessibilityService extends AccessibilityService {
                 String pkg="";
                 try{if(root.getPackageName()!=null)pkg=root.getPackageName().toString();}catch(Throwable ignored){}
                 if(getPackageName().equals(pkg))continue;
-                NodeMatch m=findChildFirst(root,px,py,0,new int[]{0});
-                if(m!=null&&m.node!=null){
-                    ViewNodeCandidate out=snapshot(m.node);
-                    DiagnosticLog.i(this,"VIEW_PICK","hit kind="+out.kind()+" p="+m.priority+" bounds="+out.bounds()+" class="+out.className()+" id="+out.viewId()+" textLen="+out.text().length());
-                    return out;
+
+                PositionMatch hit=findByPosition(root,px,py,screen,0,new int[]{0});
+                if(hit==null||hit.node==null)continue;
+                if(hit.fullscreenLike){
+                    if(fullscreenFallback==null)fullscreenFallback=hit.node;
+                    continue;
                 }
+
+                ViewNodeCandidate out=snapshot(hit.node);
+                DiagnosticLog.i(this,"VIEW_PICK","position hit depth="+hit.depth+" bounds="+out.bounds()+" class="+out.className()+" id="+out.viewId()+" kind="+out.kind());
+                return out;
+            }
+
+            if(fullscreenFallback!=null){
+                ViewNodeCandidate out=snapshot(fullscreenFallback);
+                DiagnosticLog.i(this,"VIEW_PICK","fullscreen fallback bounds="+out.bounds()+" class="+out.className()+" id="+out.viewId());
+                return out;
             }
             return null;
         } catch(Throwable t){
@@ -112,63 +128,57 @@ public class LensAccessibilityService extends AccessibilityService {
         }
     }
 
-    private static final class NodeMatch {
-        AccessibilityNodeInfo node;
-        int priority;
-        int depth;
-        NodeMatch(AccessibilityNodeInfo n,int p,int d){node=n;priority=p;depth=d;}
+    private static final class PositionMatch {
+        final AccessibilityNodeInfo node;
+        final boolean fullscreenLike;
+        final int depth;
+        PositionMatch(AccessibilityNodeInfo n,boolean full,int d){node=n;fullscreenLike=full;depth=d;}
     }
 
-    private NodeMatch findChildFirst(AccessibilityNodeInfo n,int x,int y,int depth,int[] count){
-        if(n==null||count[0]++>800||depth>48)return null;
+    /** Child-first positional walk. No priority score and no semantic sorting. */
+    private PositionMatch findByPosition(AccessibilityNodeInfo n,int x,int y,Rect screen,int depth,int[] count){
+        if(n==null||count[0]++>1200||depth>64)return null;
         try{if(!n.isVisibleToUser())return null;}catch(Throwable ignored){}
+
         Rect r=new Rect();
         try{n.getBoundsInScreen(r);}catch(Throwable t){return null;}
         if(r.isEmpty()||!r.contains(x,y))return null;
 
-        NodeMatch bestChild=null;
-        int childCount=Math.min(n.getChildCount(),120);
-        // Reverse traversal approximates the top-most visual child. Do not immediately return an
-        // ordinary clickable child: a deeper ImageView/ImageButton must be allowed to beat its
-        // generic clickable parent/container.
+        PositionMatch fullscreenChildFallback=null;
+        int childCount=Math.min(n.getChildCount(),160);
+        // Reverse order follows Android's common visual stacking order; this is traversal order,
+        // not semantic ranking. The first concrete child under the pointer wins.
         for(int i=childCount-1;i>=0;i--){
-            AccessibilityNodeInfo c=null;
-            try{c=n.getChild(i);}catch(Throwable ignored){}
-            if(c==null)continue;
-            NodeMatch hit=findChildFirst(c,x,y,depth+1,count);
-            if(hit!=null){
-                if(bestChild==null||hit.priority>bestChild.priority||(hit.priority==bestChild.priority&&hit.depth>bestChild.depth))bestChild=hit;
-                if(hit.priority>=6)return hit; // explicit actionable image/icon: strongest match
-            }
+            AccessibilityNodeInfo child=null;
+            try{child=n.getChild(i);}catch(Throwable ignored){}
+            if(child==null)continue;
+            PositionMatch hit=findByPosition(child,x,y,screen,depth+1,count);
+            if(hit==null)continue;
+            if(!hit.fullscreenLike)return hit;
+            if(fullscreenChildFallback==null)fullscreenChildFallback=hit;
         }
 
-        int currentPriority=nodePriority(n,r);
-        if(bestChild!=null){
-            if(bestChild.priority>currentPriority)return bestChild;
-            if(bestChild.priority==currentPriority&&bestChild.depth>depth)return bestChild;
-        }
-        if(currentPriority>0)return new NodeMatch(n,currentPriority,depth);
-        return bestChild;
+        boolean currentFullscreen=isFullscreenLike(r,screen);
+        if(!currentFullscreen)return new PositionMatch(n,false,depth);
+        if(fullscreenChildFallback!=null)return fullscreenChildFallback;
+        return new PositionMatch(n,true,depth);
     }
 
-    /**
-     * Priority model: explicit image/icon nodes > compact visual icon nodes > generic actionable
-     * container > text > neutral leaf. This prevents a clickable toolbar parent from swallowing its
-     * actual ImageButton child, while rejecting giant decorative/background ImageViews.
-     */
-    private int nodePriority(AccessibilityNodeInfo n,Rect r){
-        try{
-            boolean actionable=n.isClickable()||n.isLongClickable()||n.isEditable();
-            boolean text=hasOwnText(n);
-            boolean explicitImage=isExplicitImageNode(n);
+    /** Only near-screen-size nodes are delayed to the final fallback. */
+    private boolean isFullscreenLike(Rect r,Rect screen){
+        if(r==null||r.isEmpty()||screen==null||screen.isEmpty())return false;
+        long area=(long)r.width()*r.height();
+        long screenArea=(long)screen.width()*screen.height();
+        if(screenArea<=0)return false;
+        boolean nearlyFullArea=area>=screenArea*88L/100L;
+        boolean nearlyFullDimensions=r.width()>=screen.width()*94L/100L
+                && r.height()>=screen.height()*90L/100L;
+        return nearlyFullArea||nearlyFullDimensions;
+    }
 
-            if(explicitImage&&!isLargeDecorativeImage(r,actionable,text))return actionable?6:5;
-            if(isCompactIconLikeNode(n,r,actionable,text))return 4;
-            if(actionable)return 3;
-            if(text)return 2;
-            if(n.getChildCount()==0&&isReasonableLeaf(r))return 1;
-        }catch(Throwable ignored){}
-        return 0;
+    private Rect currentScreenBounds(){
+        try{return new Rect(((WindowManager)getSystemService(WINDOW_SERVICE)).getCurrentWindowMetrics().getBounds());}
+        catch(Throwable t){return new Rect(0,0,Integer.MAX_VALUE/4,Integer.MAX_VALUE/4);}
     }
 
     private boolean isExplicitImageNode(AccessibilityNodeInfo n){
@@ -181,7 +191,7 @@ public class LensAccessibilityService extends AccessibilityService {
                 ||id.contains("/image")||id.contains("_image")||id.contains("avatar")||id.contains("thumbnail");
     }
 
-    /** Generic Compose/custom-view icon: compact, leaf-ish, no text, and interactive/focusable. */
+    /** Classification only; it never influences positional selection order. */
     private boolean isCompactIconLikeNode(AccessibilityNodeInfo n,Rect r,boolean actionable,boolean text){
         if(text||r==null||r.isEmpty())return false;
         boolean focusable=false;
@@ -195,28 +205,6 @@ public class LensAccessibilityService extends AccessibilityService {
         float ratio=Math.max(w,h)/(float)Math.max(1,Math.min(w,h));
         return ratio<=3.5f;
     }
-
-    private boolean isReasonableLeaf(Rect r){
-        if(r==null||r.isEmpty())return false;
-        try{
-            Rect screen=((WindowManager)getSystemService(WINDOW_SERVICE)).getCurrentWindowMetrics().getBounds();
-            return r.width()<screen.width()*0.92f||r.height()<screen.height()*0.92f;
-        }catch(Throwable t){return true;}
-    }
-
-    private boolean isLargeDecorativeImage(Rect r,boolean actionable,boolean text){
-        if(actionable||text||r==null||r.isEmpty())return false;
-        try{
-            Rect screen=((WindowManager)getSystemService(WINDOW_SERVICE)).getCurrentWindowMetrics().getBounds();
-            return r.width()>screen.width()*0.78f&&r.height()>screen.height()*0.55f;
-        }catch(Throwable t){return false;}
-    }
-
-    private boolean hasOwnText(AccessibilityNodeInfo n){
-        try{return nonBlank(n.getText())||nonBlank(n.getContentDescription())||nonBlank(n.getHintText())||nonBlank(n.getStateDescription());}
-        catch(Throwable t){return false;}
-    }
-    private boolean nonBlank(CharSequence s){return s!=null&&!s.toString().trim().isEmpty();}
 
     private ViewNodeCandidate snapshot(AccessibilityNodeInfo n){
         Rect r=new Rect(); n.getBoundsInScreen(r);
@@ -233,7 +221,6 @@ public class LensAccessibilityService extends AccessibilityService {
         return new ViewNodeCandidate(r,text.toString().trim(),cls,id,clickable,editable,focusable,image);
     }
 
-    /** FV S0() snapshots bounds/text/class/clickability/collection metadata; this is our selection subset. */
     private void appendNodeText(AccessibilityNodeInfo n,StringBuilder out,int depth,int[] count){
         if(n==null||count[0]++>180||depth>12)return;
         appendUnique(out,n.getText());
@@ -245,9 +232,14 @@ public class LensAccessibilityService extends AccessibilityService {
             if(c!=null)appendNodeText(c,out,depth+1,count);
         }
     }
+
     private void appendUnique(StringBuilder out,CharSequence cs){
-        if(cs==null)return; String s=cs.toString().trim(); if(s.isEmpty())return;
-        if(out.indexOf(s)>=0)return; if(out.length()>0)out.append('\n'); out.append(s);
+        if(cs==null)return;
+        String s=cs.toString().trim();
+        if(s.isEmpty())return;
+        if(out.indexOf(s)>=0)return;
+        if(out.length()>0)out.append('\n');
+        out.append(s);
     }
 
     private void publishEnvironment() { FloatService f=FloatService.get(); if(f!=null) f.onAccessibilityEnvironment(env); }
