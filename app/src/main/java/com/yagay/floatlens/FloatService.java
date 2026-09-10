@@ -41,11 +41,11 @@ public class FloatService extends Service implements android.content.SharedPrefe
         final int[] mirrorOrigin=new int[2];
         final boolean[] originReady={false};
         final boolean[] mirrorOriginReady={false};
+        final int[] directWindow={0,0,0,0};
+        final boolean[] directExpanded={false};
+        final int[] otherVisibility={View.VISIBLE};
         return new FloatIconView(this,new FloatIconView.Callback(){
             @Override public void onDragStart(){
-                // FV Full Capture shows c0() moving all over the screen during a gesture, while
-                // every following touch starts again from the same resting coordinate. Keep that
-                // resting coordinate before exposing the icon for the temporary follow animation.
                 origin[0]=lp.x; origin[1]=lp.y; originReady[0]=true;
                 if(!mirrored&&secondaryLp!=null){mirrorOrigin[0]=secondaryLp.x;mirrorOrigin[1]=secondaryLp.y;mirrorOriginReady[0]=true;}
                 restoreFully(lp);safeUpdate(mirrored?secondary:primary,lp);
@@ -58,8 +58,6 @@ public class FloatService extends Service implements android.content.SharedPrefe
             @Override public void onRelease(boolean moved){
                 View icon=mirrored?secondary:primary;
                 if(positionMoveArmed&&moved){
-                    // Only the explicit FV-style "move icon position" mode commits a new resting
-                    // position. Normal gestures, View selection and Circle never reach this branch.
                     if(fs.snap())snap(lp,icon);else{edgeHide(lp);safeUpdate(icon,lp);}
                     if(mirrored&&primaryLp!=null){primaryLp.y=lp.y;clamp(primaryLp,true);edgeHide(primaryLp);safeUpdate(primary,primaryLp);}
                     if(!mirrored&&secondary!=null&&secondaryLp!=null)syncMirrorPosition();
@@ -72,8 +70,6 @@ public class FloatService extends Service implements android.content.SharedPrefe
                     return;
                 }
 
-                // Ordinary FV gesture: restore the exact resting position captured on DOWN. Do not
-                // snap the temporary end point and do not persist it.
                 if(originReady[0]){lp.x=origin[0];lp.y=origin[1];clamp(lp,true);safeUpdate(icon,lp);}
                 else{edgeHide(lp);safeUpdate(icon,lp);}
                 if(!mirrored&&secondary!=null&&secondaryLp!=null){
@@ -88,6 +84,37 @@ public class FloatService extends Service implements android.content.SharedPrefe
             @Override public void onGestureStart(float x,float y){if(fs.track())trail.begin(x,y);}
             @Override public void onGestureMove(float x,float y){if(fs.track())trail.add(x,y);}
             @Override public void onGestureEnd(List<GesturePointSample> points){trail.end();}
+
+            @Override public void onDirectSelectionStart(){
+                if(directExpanded[0])return;
+                View icon=mirrored?secondary:primary;
+                if(icon==null)return;
+                directWindow[0]=lp.x;directWindow[1]=lp.y;directWindow[2]=lp.width;directWindow[3]=lp.height;
+                directExpanded[0]=true;
+
+                View other=mirrored?primary:secondary;
+                if(other!=null){otherVisibility[0]=other.getVisibility();other.setVisibility(View.INVISIBLE);}
+
+                lp.x=0;lp.y=0;
+                lp.width=WindowManager.LayoutParams.MATCH_PARENT;
+                lp.height=WindowManager.LayoutParams.MATCH_PARENT;
+                safeUpdate(icon,lp);
+                DiagnosticLog.i(FloatService.this,"FV_DIRECT","expand same icon fullscreen saved="
+                        +directWindow[0]+","+directWindow[1]+" "+directWindow[2]+"x"+directWindow[3]);
+            }
+
+            @Override public void onDirectSelectionEnd(){
+                if(!directExpanded[0])return;
+                View icon=mirrored?secondary:primary;
+                lp.x=directWindow[0];lp.y=directWindow[1];lp.width=directWindow[2];lp.height=directWindow[3];
+                safeUpdate(icon,lp);
+
+                View other=mirrored?primary:secondary;
+                if(other!=null)other.setVisibility(otherVisibility[0]);
+                directExpanded[0]=false;
+                DiagnosticLog.i(FloatService.this,"FV_DIRECT","restore icon window="
+                        +lp.x+","+lp.y+" "+lp.width+"x"+lp.height);
+            }
         });
     }
 
