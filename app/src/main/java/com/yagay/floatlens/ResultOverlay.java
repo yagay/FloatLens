@@ -3,6 +3,9 @@ package com.yagay.floatlens;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
@@ -11,7 +14,10 @@ import android.text.InputType;
 import android.text.Layout;
 import android.text.StaticLayout;
 import android.text.TextPaint;
+import android.view.ActionMode;
 import android.view.Gravity;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
@@ -36,6 +42,9 @@ public final class ResultOverlay {
     private static final int ACTION_AREA_DP = 50;
     private static final int ROOT_VPAD_DP = 18;
     private static final int BODY_GAP_DP = 6;
+
+    private static final int MENU_COPY = 0x464C0001;
+    private static final int MENU_SHARE = 0x464C0002;
 
     public static void show(Context c, String text, List<String> blocks, Bitmap image) {
         show(c, text, blocks, image, null);
@@ -70,23 +79,25 @@ public final class ResultOverlay {
         }
 
         if (fs.ocrShowText()) {
-            // Only the complete OCR text uses the editor-backed selection surface. This keeps
-            // Android's character-level selection handles precise without changing block behavior.
+            // Complete OCR text keeps Android's native selectable editor behaviour. Once the user
+            // selects text, the framework owns the floating selection toolbar and PROCESS_TEXT menu.
             EditText all = selectableText(app, text);
             body.addView(all, new LinearLayout.LayoutParams(-1, -2));
             desiredBodyH += textHeight(app, text, innerW - dp(app, 16), 16f, 14);
 
             if (!fs.ocrCollapse() && blocks != null && blocks.size() > 1) {
                 TextView h = new TextView(app);
-                h.setText("识别块（点按复制单块）");
+                h.setText("识别块（点按文本处理）");
                 h.setTextColor(0xFFBBBBBB);
                 h.setTextSize(13);
                 h.setPadding(dp(app, 8), dp(app, 8), dp(app, 8), dp(app, 3));
                 body.addView(h);
                 desiredBodyH += dp(app, 31);
+
                 for (String block : blocks) {
                     TextView tv = candidate(app, block, false);
-                    tv.setOnClickListener(v -> copy(app, block));
+                    tv.setClickable(true);
+                    tv.setOnClickListener(v -> showBlockTextMenu(app, tv, block));
                     body.addView(tv, new LinearLayout.LayoutParams(-1, -2));
                     desiredBodyH += textHeight(app, block, innerW - dp(app, 16), 16f, 10);
                 }
@@ -179,6 +190,110 @@ public final class ResultOverlay {
         close.setOnClickListener(v -> closeWindow(wm, box));
     }
 
+    /**
+     * Recognition blocks are one-tap actions, so they don't need selection handles. We still use a
+     * real TYPE_FLOATING ActionMode: Android renders the system floating text toolbar and we fill it
+     * with Copy, Share and every installed ACTION_PROCESS_TEXT handler (translation/search/etc.).
+     */
+    private static void showBlockTextMenu(Context c, TextView anchor, String block) {
+        final String value = block == null ? "" : block.trim();
+        if (value.isEmpty() || anchor == null) return;
+
+        try {
+            anchor.startActionMode(new ActionMode.Callback() {
+                @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                    menu.add(Menu.NONE, MENU_COPY, 0, "复制")
+                            .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+                    menu.add(Menu.NONE, MENU_SHARE, 1, "分享")
+                            .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+
+                    Intent base = new Intent(Intent.ACTION_PROCESS_TEXT)
+                            .setType("text/plain")
+                            .putExtra(Intent.EXTRA_PROCESS_TEXT, value)
+                            .putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true);
+
+                    PackageManager pm = c.getPackageManager();
+                    List<ResolveInfo> handlers;
+                    try {
+                        handlers = pm.queryIntentActivities(base, PackageManager.MATCH_DEFAULT_ONLY);
+                    } catch (Throwable t) {
+                        handlers = new ArrayList<>();
+                    }
+
+                    int order = 10;
+                    if (handlers != null) {
+                        for (ResolveInfo ri : handlers) {
+                            if (ri == null || ri.activityInfo == null) continue;
+                            CharSequence label;
+                            try { label = ri.loadLabel(pm); }
+                            catch (Throwable ignored) { label = ri.activityInfo.name; }
+                            Intent target = new Intent(base)
+                                    .setClassName(ri.activityInfo.packageName, ri.activityInfo.name)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            MenuItem item = menu.add(Menu.NONE, Menu.NONE, order++,
+                                    label == null ? ri.activityInfo.name : label);
+                            item.setIntent(target);
+                            item.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+                        }
+                    }
+                    return true;
+                }
+
+                @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                    return false;
+                }
+
+                @Override public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                    if (item.getItemId() == MENU_COPY) {
+                        copy(c, value);
+                        mode.finish();
+                        return true;
+                    }
+                    if (item.getItemId() == MENU_SHARE) {
+                        Intent share = new Intent(Intent.ACTION_SEND)
+                                .setType("text/plain")
+                                .putExtra(Intent.EXTRA_TEXT, value)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        try {
+                            c.startActivity(Intent.createChooser(share, "分享文字")
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                        } catch (Throwable t) {
+                            Toast.makeText(c, "无法打开分享菜单", Toast.LENGTH_SHORT).show();
+                        }
+                        mode.finish();
+                        return true;
+                    }
+                    Intent target = item.getIntent();
+                    if (target != null) {
+                        try {
+                            c.startActivity(target);
+                        } catch (Throwable t) {
+                            Toast.makeText(c, "无法打开文本处理应用", Toast.LENGTH_SHORT).show();
+                        }
+                        mode.finish();
+                        return true;
+                    }
+                    return false;
+                }
+
+                @Override public void onDestroyActionMode(ActionMode mode) {}
+            }, ActionMode.TYPE_FLOATING);
+        } catch (Throwable t) {
+            DiagnosticLog.i(c, "RESULT_TEXT_MENU", "floating action mode failed=" + t);
+            try {
+                Intent process = new Intent(Intent.ACTION_PROCESS_TEXT)
+                        .setType("text/plain")
+                        .putExtra(Intent.EXTRA_PROCESS_TEXT, value)
+                        .putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                c.startActivity(Intent.createChooser(process, "处理文字")
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            } catch (Throwable ignored) {
+                Toast.makeText(c, "没有可用的文本处理应用", Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
     private static LinearLayout baseBox(Context c) {
         LinearLayout box = new LinearLayout(c);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -248,7 +363,8 @@ public final class ResultOverlay {
         if (image != null && image.getWidth() > 0) {
             float density = Math.max(.1f, c.getResources().getDisplayMetrics().density);
             int sourceDpWidth = Math.round(image.getWidth() / density);
-            desired = Math.max(desired, dp(c, Math.min(360, Math.max(170, sourceDpWidth))) + dp(c, BOX_HPAD_DP * 2));
+            desired = Math.max(desired,
+                    dp(c, Math.min(360, Math.max(170, sourceDpWidth))) + dp(c, BOX_HPAD_DP * 2));
         }
         return clamp(desired, minW, maxW);
     }
@@ -266,7 +382,9 @@ public final class ResultOverlay {
             TextPaint p = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
             p.setTextSize(spPx(c, textSp));
             StaticLayout layout = StaticLayout.Builder.obtain(text, 0, text.length(), p, widthPx)
-                    .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).build();
+                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                    .setIncludePad(false)
+                    .build();
             return Math.max(1, layout.getLineCount());
         } catch (Throwable ignored) {
             return Math.max(1, text.split("\\n", -1).length);
@@ -277,19 +395,27 @@ public final class ResultOverlay {
         return wrappedLines(c, text, widthPx, textSp) * dp(c, 22) + dp(c, extraDp);
     }
 
-    private static void showWindow(Context c, WindowManager wm, LinearLayout box, int popupW, int popupH, Rect anchor) {
+    private static void showWindow(Context c, WindowManager wm, LinearLayout box,
+                                   int popupW, int popupH, Rect anchor) {
         Rect usable = usableBounds(c, wm);
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(popupW, popupH,
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                popupW,
+                popupH,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
+
         Rect normalizedAnchor = normalizeAnchor(anchor, usable);
         int[] xy = choosePosition(c, usable, normalizedAnchor, popupW, popupH);
-        lp.x = xy[0]; lp.y = xy[1];
+        lp.x = xy[0];
+        lp.y = xy[1];
+
         try {
             wm.addView(box, lp);
-            DiagnosticLog.i(c, "RESULT_WINDOW", "size=" + popupW + "x" + popupH + " pos=" + lp.x + "," + lp.y
+            DiagnosticLog.i(c, "RESULT_WINDOW", "size=" + popupW + "x" + popupH
+                    + " pos=" + lp.x + "," + lp.y
                     + " anchor=" + (normalizedAnchor == null ? "none" : normalizedAnchor.toShortString())
                     + " usable=" + usable.toShortString());
         } catch (Throwable t) {
@@ -298,29 +424,42 @@ public final class ResultOverlay {
     }
 
     private static int[] choosePosition(Context c, Rect usable, Rect anchor, int w, int h) {
-        int margin = dp(c, OUTER_MARGIN_DP), gap = dp(c, ANCHOR_GAP_DP);
-        if (anchor == null || anchor.isEmpty()) return new int[]{
-                clamp(usable.centerX() - w / 2, usable.left + margin, usable.right - margin - w),
-                clamp(usable.centerY() - h / 2, usable.top + margin, usable.bottom - margin - h)};
+        int margin = dp(c, OUTER_MARGIN_DP);
+        int gap = dp(c, ANCHOR_GAP_DP);
+        if (anchor == null || anchor.isEmpty()) {
+            return new int[]{
+                    clamp(usable.centerX() - w / 2, usable.left + margin, usable.right - margin - w),
+                    clamp(usable.centerY() - h / 2, usable.top + margin, usable.bottom - margin - h)
+            };
+        }
 
-        int cx = anchor.centerX(), cy = anchor.centerY();
+        int cx = anchor.centerX();
+        int cy = anchor.centerY();
         ArrayList<Placement> choices = new ArrayList<>();
         choices.add(new Placement(cx - w / 2, anchor.bottom + gap, 0));
         choices.add(new Placement(cx - w / 2, anchor.top - gap - h, 1));
         choices.add(new Placement(anchor.right + gap, cy - h / 2, 2));
         choices.add(new Placement(anchor.left - gap - w, cy - h / 2, 3));
 
-        int minX = usable.left + margin, maxX = Math.max(minX, usable.right - margin - w);
-        int minY = usable.top + margin, maxY = Math.max(minY, usable.bottom - margin - h);
+        int minX = usable.left + margin;
+        int maxX = Math.max(minX, usable.right - margin - w);
+        int minY = usable.top + margin;
+        int maxY = Math.max(minY, usable.bottom - margin - h);
+
         for (Placement p : choices) {
             p.fit = p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
-            p.cx = clamp(p.x, minX, maxX); p.cy = clamp(p.y, minY, maxY);
-            Rect placed = new Rect(p.cx, p.cy, p.cx + w, p.cy + h), overlap = new Rect(placed);
+            p.cx = clamp(p.x, minX, maxX);
+            p.cy = clamp(p.y, minY, maxY);
+            Rect placed = new Rect(p.cx, p.cy, p.cx + w, p.cy + h);
+            Rect overlap = new Rect(placed);
             p.overlap = overlap.intersect(anchor) ? (long) overlap.width() * overlap.height() : 0L;
             p.shift = Math.abs(p.cx - p.x) + Math.abs(p.cy - p.y);
         }
+
         choices.sort(Comparator.comparing((Placement p) -> !p.fit)
-                .thenComparingLong(p -> p.overlap).thenComparingInt(p -> p.shift).thenComparingInt(p -> p.preference));
+                .thenComparingLong(p -> p.overlap)
+                .thenComparingInt(p -> p.shift)
+                .thenComparingInt(p -> p.preference));
         Placement best = choices.get(0);
         return new int[]{best.cx, best.cy};
     }
@@ -335,11 +474,18 @@ public final class ResultOverlay {
         try {
             var metrics = wm.getCurrentWindowMetrics();
             Rect r = new Rect(metrics.getBounds());
-            var insets = metrics.getWindowInsets().getInsetsIgnoringVisibility(WindowInsets.Type.systemBars());
-            r.left += insets.left; r.top += insets.top; r.right -= insets.right; r.bottom -= insets.bottom;
+            var insets = metrics.getWindowInsets()
+                    .getInsetsIgnoringVisibility(WindowInsets.Type.systemBars());
+            r.left += insets.left;
+            r.top += insets.top;
+            r.right -= insets.right;
+            r.bottom -= insets.bottom;
             if (!r.isEmpty()) return r;
         } catch (Throwable ignored) {}
-        return new Rect(0, 0, c.getResources().getDisplayMetrics().widthPixels,
+        return new Rect(
+                0,
+                0,
+                c.getResources().getDisplayMetrics().widthPixels,
                 c.getResources().getDisplayMetrics().heightPixels);
     }
 
@@ -347,7 +493,11 @@ public final class ResultOverlay {
         try { wm.removeView(box); } catch (Throwable ignored) {}
     }
 
-    /** Editor-backed read-only surface used only for the complete OCR text. */
+    /**
+     * Read-only editor-backed selection surface. We intentionally don't install a custom selection
+     * ActionMode callback: Android's own selection toolbar can therefore supply Copy/Share and
+     * ACTION_PROCESS_TEXT entries for the currently selected substring.
+     */
     private static EditText selectableText(Context c, String text) {
         EditText tv = new EditText(c);
         tv.setText(text == null ? "" : text);
@@ -388,13 +538,34 @@ public final class ResultOverlay {
         Toast.makeText(c, "已复制", Toast.LENGTH_SHORT).show();
     }
 
-    private static float spPx(Context c, float sp) { return sp * c.getResources().getDisplayMetrics().scaledDensity; }
-    private static int dp(Context c, int v) { return Math.round(v * c.getResources().getDisplayMetrics().density); }
-    private static int clamp(int v, int min, int max) { if (max < min) return min; return Math.max(min, Math.min(v, max)); }
+    private static float spPx(Context c, float sp) {
+        return sp * c.getResources().getDisplayMetrics().scaledDensity;
+    }
+
+    private static int dp(Context c, int v) {
+        return Math.round(v * c.getResources().getDisplayMetrics().density);
+    }
+
+    private static int clamp(int v, int min, int max) {
+        if (max < min) return min;
+        return Math.max(min, Math.min(v, max));
+    }
 
     private static final class Placement {
-        final int x, y, preference; int cx, cy, shift; long overlap; boolean fit;
-        Placement(int x, int y, int preference) { this.x = x; this.y = y; this.preference = preference; }
+        final int x;
+        final int y;
+        final int preference;
+        int cx;
+        int cy;
+        int shift;
+        long overlap;
+        boolean fit;
+
+        Placement(int x, int y, int preference) {
+            this.x = x;
+            this.y = y;
+            this.preference = preference;
+        }
     }
 
     private ResultOverlay() {}
