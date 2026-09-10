@@ -21,28 +21,20 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import re
           p = Path('app/src/main/java/com/yagay/floatlens/ViewHoverOverlay.java')
           s = p.read_text()
-          old = '''            // FV keeps a small helper/handler view after the main FloatIconView expands fullscreen.
-            // Draw an equivalent non-touchable pointer marker at the transformed selection hotspot.
-            if (!Float.isNaN(pointerX) && !Float.isNaN(pointerY)) {
-                float px = pointerX - overlayLocation[0];
-                float py = pointerY - overlayLocation[1];
-                float r = dp(10);
-                c.drawCircle(px, py, r, pointerFill);
-                c.drawCircle(px, py, r, pointerBorder);
-            }
-'''
-          new = '''            // Probe indicator is rendered by the single stateful FvActionHintOverlay.
-            // This fullscreen layer only draws View/region selection bounds.
-'''
-          if new in s:
+          marker = '// Probe indicator is rendered by the single stateful FvActionHintOverlay.'
+          if marker in s:
               print('already patched')
-          elif old in s:
-              p.write_text(s.replace(old, new, 1))
-              print('patched')
           else:
-              raise SystemExit('pointer block not found; refusing broad rewrite')
+              pattern = re.compile(r'\n\s*// FV keeps a small helper/handler view after the main FloatIconView expands fullscreen\.\n\s*// Draw an equivalent non-touchable pointer marker at the transformed selection hotspot\.\n\s*if \(!Float\.isNaN\(pointerX\) && !Float\.isNaN\(pointerY\)\) \{.*?\n\s*\}\n', re.S)
+              replacement = '\n            // Probe indicator is rendered by the single stateful FvActionHintOverlay.\n            // This fullscreen layer only draws View/region selection bounds.\n'
+              out, count = pattern.subn(replacement, s, count=1)
+              if count != 1:
+                  raise SystemExit('pointer block not found; refusing broad rewrite')
+              p.write_text(out)
+              print('patched')
 
       - name: Commit patch
         run: |
