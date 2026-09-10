@@ -13,6 +13,7 @@ import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Executor;
@@ -79,76 +80,99 @@ public class LensAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * Position-only View hit testing.
-     *
-     * Android returns accessibility windows in descending layer order (top-most first). We walk
-     * them in that documented order and first require the actual interactive Region to contain the
-     * pointer. Inside a window, selection is purely positional: visible node -> bounds contains ->
-     * descend through the child at that position -> most specific node. Near-fullscreen/root
-     * containers are retained only as the final fallback.
+     * FV r0(x,y)-style collection: return the whole Accessibility candidate chain at the point,
+     * not one pre-ranked node. Window order is Android's documented top-most -> bottom-most order.
+     * Candidate attributes are descriptive only; final selection is performed geometrically by
+     * ScreenSelectionModel.
      */
-    public ViewNodeCandidate findViewAt(float x, float y) {
+    public List<ScreenCandidate> collectCandidatesAt(float x, float y) {
+        ArrayList<ScreenCandidate> out=new ArrayList<>();
         try {
             final int px=Math.round(x), py=Math.round(y);
             final Rect screen=currentScreenBounds();
-            AccessibilityNodeInfo fullscreenFallback=null;
-
             List<AccessibilityWindowInfo> windows=getWindows();
             if(windows!=null){
-                // Official API ordering is descending layer order: index 0 is top-most.
                 for(int i=0;i<windows.size();i++){
                     AccessibilityWindowInfo w=windows.get(i);
-                    if(w==null || !windowContainsPoint(w,px,py))continue;
-
+                    if(w==null||!windowContainsPoint(w,px,py))continue;
                     AccessibilityNodeInfo root=null;
                     try{root=w.getRoot();}catch(Throwable ignored){}
                     if(root==null)continue;
                     String pkg=nodePackage(root);
                     if(getPackageName().equals(pkg))continue;
-
-                    PositionMatch hit=findByPosition(root,px,py,screen,0,new int[]{0});
-                    if(hit==null||hit.node==null)continue;
-                    if(hit.fullscreenLike){
-                        if(fullscreenFallback==null)fullscreenFallback=hit.node;
-                        continue;
+                    int before=out.size();
+                    collectByPosition(root,px,py,screen,0,new int[]{0},out);
+                    if(out.size()>before){
+                        DiagnosticLog.i(this,"VIEW_PICK","window="+i+" layer="+safeLayer(w)+" pkg="+pkg+" candidates="+(out.size()-before));
                     }
-
-                    ViewNodeCandidate out=snapshot(hit.node);
-                    DiagnosticLog.i(this,"VIEW_PICK","window="+i+" layer="+safeLayer(w)+" pkg="+pkg+" depth="+hit.depth+" bounds="+out.bounds()+" class="+out.className()+" id="+out.viewId()+" kind="+out.kind());
-                    return out;
                 }
             }
 
-            // Launcher implementations can expose the workspace more reliably through the active
-            // root than through getWindows() while overlays are present. Use it only after all
-            // concrete top-layer positional matches above failed.
+            // Some launchers expose their workspace more completely through the active root while
+            // application overlays are present. Add this chain as another source; dedupe happens in
+            // ScreenSelectionModel and no semantic priority is introduced.
             try{
                 AccessibilityNodeInfo active=getRootInActiveWindow();
-                if(active!=null && !getPackageName().equals(nodePackage(active))){
-                    PositionMatch hit=findByPosition(active,px,py,screen,0,new int[]{0});
-                    if(hit!=null&&hit.node!=null){
-                        if(!hit.fullscreenLike){
-                            ViewNodeCandidate out=snapshot(hit.node);
-                            DiagnosticLog.i(this,"VIEW_PICK","active-root fallback pkg="+nodePackage(active)+" depth="+hit.depth+" bounds="+out.bounds()+" class="+out.className()+" id="+out.viewId()+" kind="+out.kind());
-                            return out;
-                        }
-                        if(fullscreenFallback==null)fullscreenFallback=hit.node;
-                    }
+                if(active!=null&&!getPackageName().equals(nodePackage(active))){
+                    int before=out.size();
+                    collectByPosition(active,px,py,screen,0,new int[]{0},out);
+                    if(out.size()>before)DiagnosticLog.i(this,"VIEW_PICK","active-root pkg="+nodePackage(active)+" candidates="+(out.size()-before));
                 }
             }catch(Throwable t){
-                DiagnosticLog.i(this,"VIEW_PICK","active-root fallback failed="+t);
+                DiagnosticLog.i(this,"VIEW_PICK","active-root collection failed="+t);
             }
-
-            if(fullscreenFallback!=null){
-                ViewNodeCandidate out=snapshot(fullscreenFallback);
-                DiagnosticLog.i(this,"VIEW_PICK","fullscreen fallback bounds="+out.bounds()+" class="+out.className()+" id="+out.viewId());
-                return out;
-            }
-            return null;
         } catch(Throwable t){
-            DiagnosticLog.i(this,"VIEW_PICK","findViewAt failed="+t);
-            return null;
+            DiagnosticLog.i(this,"VIEW_PICK","collectCandidatesAt failed="+t);
         }
+        return out;
+    }
+
+    /** Compatibility entry point; core selection now uses collectCandidatesAt + ScreenSelectionModel. */
+    public ViewNodeCandidate findViewAt(float x, float y) {
+        ScreenSelectionModel model=new ScreenSelectionModel();
+        model.setAccessibility(collectCandidatesAt(x,y));
+        ScreenCandidate selected=model.selectAt(x,y);
+        return selected==null?null:selected.toViewNodeCandidate();
+    }
+
+    /**
+     * Collect every visible node whose bounds contain the point. Children are traversed first so
+     * logs naturally expose the deep chain, but ScreenSelectionModel does not rely on this order.
+     */
+    private void collectByPosition(AccessibilityNodeInfo n,int x,int y,Rect screen,int depth,int[] count,List<ScreenCandidate> out){
+        if(n==null||count[0]++>2200||depth>80)return;
+        try{if(!n.isVisibleToUser())return;}catch(Throwable ignored){}
+        Rect r=new Rect();
+        try{n.getBoundsInScreen(r);}catch(Throwable t){return;}
+        if(r.isEmpty()||!r.contains(x,y))return;
+
+        int children=Math.min(n.getChildCount(),260);
+        for(int i=children-1;i>=0;i--){
+            AccessibilityNodeInfo child=null;
+            try{child=n.getChild(i);}catch(Throwable ignored){}
+            if(child!=null)collectByPosition(child,x,y,screen,depth+1,count,out);
+        }
+        out.add(snapshotScreenCandidate(n,depth,screen));
+    }
+
+    private ScreenCandidate snapshotScreenCandidate(AccessibilityNodeInfo n,int depth,Rect screen){
+        Rect r=new Rect();
+        try{n.getBoundsInScreen(r);}catch(Throwable ignored){}
+        StringBuilder text=new StringBuilder();
+        appendNodeText(n,text,0,new int[]{0});
+        String cls="",id="",pkg=nodePackage(n);
+        try{if(n.getClassName()!=null)cls=n.getClassName().toString();}catch(Throwable ignored){}
+        try{if(n.getViewIdResourceName()!=null)id=n.getViewIdResourceName();}catch(Throwable ignored){}
+        boolean clickable=false,editable=false,focusable=false;
+        try{clickable=n.isClickable()||n.isLongClickable();}catch(Throwable ignored){}
+        try{editable=n.isEditable();}catch(Throwable ignored){}
+        try{focusable=n.isFocusable();}catch(Throwable ignored){}
+        boolean iconLike=isExplicitImageNode(n)||isCompactIconLikeNode(n,r,clickable||editable,text.length()>0);
+        boolean full=isFullscreenLike(r,screen);
+        ScreenCandidate.Type type=full?ScreenCandidate.Type.ROOT:
+                (text.length()>0?ScreenCandidate.Type.TEXT:(iconLike?ScreenCandidate.Type.NON_TEXT:ScreenCandidate.Type.VIEW));
+        return new ScreenCandidate(r,type,ScreenCandidate.Source.ACCESSIBILITY,text.toString().trim(),cls,id,pkg,
+                depth,full,clickable,editable,focusable,iconLike);
     }
 
     private boolean windowContainsPoint(AccessibilityWindowInfo w,int x,int y){
@@ -173,43 +197,6 @@ public class LensAccessibilityService extends AccessibilityService {
         catch(Throwable t){return "";}
     }
 
-    private static final class PositionMatch {
-        final AccessibilityNodeInfo node;
-        final boolean fullscreenLike;
-        final int depth;
-        PositionMatch(AccessibilityNodeInfo n,boolean full,int d){node=n;fullscreenLike=full;depth=d;}
-    }
-
-    /** Child-first positional walk. No priority score and no semantic sorting. */
-    private PositionMatch findByPosition(AccessibilityNodeInfo n,int x,int y,Rect screen,int depth,int[] count){
-        if(n==null||count[0]++>1600||depth>72)return null;
-        try{if(!n.isVisibleToUser())return null;}catch(Throwable ignored){}
-
-        Rect r=new Rect();
-        try{n.getBoundsInScreen(r);}catch(Throwable t){return null;}
-        if(r.isEmpty()||!r.contains(x,y))return null;
-
-        PositionMatch fullscreenChildFallback=null;
-        int childCount=Math.min(n.getChildCount(),220);
-        // Reverse child traversal follows common Android drawing order. This is not semantic
-        // ranking: first concrete child at the coordinate wins.
-        for(int i=childCount-1;i>=0;i--){
-            AccessibilityNodeInfo child=null;
-            try{child=n.getChild(i);}catch(Throwable ignored){}
-            if(child==null)continue;
-            PositionMatch hit=findByPosition(child,x,y,screen,depth+1,count);
-            if(hit==null)continue;
-            if(!hit.fullscreenLike)return hit;
-            if(fullscreenChildFallback==null)fullscreenChildFallback=hit;
-        }
-
-        boolean currentFullscreen=isFullscreenLike(r,screen);
-        if(!currentFullscreen)return new PositionMatch(n,false,depth);
-        if(fullscreenChildFallback!=null)return fullscreenChildFallback;
-        return new PositionMatch(n,true,depth);
-    }
-
-    /** Only near-screen-size nodes are delayed to the final fallback. */
     private boolean isFullscreenLike(Rect r,Rect screen){
         if(r==null||r.isEmpty()||screen==null||screen.isEmpty())return false;
         long area=(long)r.width()*r.height();
@@ -221,14 +208,15 @@ public class LensAccessibilityService extends AccessibilityService {
         return nearlyFullArea||nearlyFullDimensions;
     }
 
+    public Rect screenBounds(){return currentScreenBounds();}
+
     private Rect currentScreenBounds(){
         try{return new Rect(((WindowManager)getSystemService(WINDOW_SERVICE)).getCurrentWindowMetrics().getBounds());}
         catch(Throwable t){return new Rect(0,0,Integer.MAX_VALUE/4,Integer.MAX_VALUE/4);}
     }
 
     private boolean isExplicitImageNode(AccessibilityNodeInfo n){
-        String cls="";
-        String id="";
+        String cls="",id="";
         try{if(n.getClassName()!=null)cls=n.getClassName().toString().toLowerCase(Locale.ROOT);}catch(Throwable ignored){}
         try{if(n.getViewIdResourceName()!=null)id=n.getViewIdResourceName().toLowerCase(Locale.ROOT);}catch(Throwable ignored){}
         return cls.contains("imageview")||cls.contains("imagebutton")||cls.contains("iconview")
@@ -236,7 +224,7 @@ public class LensAccessibilityService extends AccessibilityService {
                 ||id.contains("/image")||id.contains("_image")||id.contains("avatar")||id.contains("thumbnail");
     }
 
-    /** Classification only; it never influences positional selection order. */
+    /** Classification only; never used to rank selection. */
     private boolean isCompactIconLikeNode(AccessibilityNodeInfo n,Rect r,boolean actionable,boolean text){
         if(text||r==null||r.isEmpty())return false;
         boolean focusable=false;
@@ -251,27 +239,12 @@ public class LensAccessibilityService extends AccessibilityService {
         return ratio<=3.5f;
     }
 
-    private ViewNodeCandidate snapshot(AccessibilityNodeInfo n){
-        Rect r=new Rect(); n.getBoundsInScreen(r);
-        StringBuilder text=new StringBuilder();
-        appendNodeText(n,text,0,new int[]{0});
-        String cls=n.getClassName()==null?"":n.getClassName().toString();
-        String id="";
-        try{id=n.getViewIdResourceName()==null?"":n.getViewIdResourceName();}catch(Throwable ignored){}
-        boolean clickable=false,editable=false,focusable=false;
-        try{clickable=n.isClickable()||n.isLongClickable();}catch(Throwable ignored){}
-        try{editable=n.isEditable();}catch(Throwable ignored){}
-        try{focusable=n.isFocusable();}catch(Throwable ignored){}
-        boolean image=isExplicitImageNode(n)||isCompactIconLikeNode(n,r,clickable||editable,text.length()>0);
-        return new ViewNodeCandidate(r,text.toString().trim(),cls,id,clickable,editable,focusable,image);
-    }
-
     private void appendNodeText(AccessibilityNodeInfo n,StringBuilder out,int depth,int[] count){
-        if(n==null||count[0]++>240||depth>16)return;
+        if(n==null||count[0]++>260||depth>18)return;
         appendUnique(out,n.getText());
         appendUnique(out,n.getContentDescription());
         try{appendUnique(out,n.getHintText());}catch(Throwable ignored){}
-        int children=Math.min(n.getChildCount(),80);
+        int children=Math.min(n.getChildCount(),90);
         for(int i=0;i<children;i++){
             AccessibilityNodeInfo c=null; try{c=n.getChild(i);}catch(Throwable ignored){}
             if(c!=null)appendNodeText(c,out,depth+1,count);
@@ -280,11 +253,10 @@ public class LensAccessibilityService extends AccessibilityService {
 
     private void appendUnique(StringBuilder out,CharSequence cs){
         if(cs==null)return;
-        String s=cs.toString().trim();
-        if(s.isEmpty())return;
-        if(out.indexOf(s)>=0)return;
+        String value=cs.toString().trim();
+        if(value.isEmpty()||out.indexOf(value)>=0)return;
         if(out.length()>0)out.append('\n');
-        out.append(s);
+        out.append(value);
     }
 
     private void publishEnvironment() { FloatService f=FloatService.get(); if(f!=null) f.onAccessibilityEnvironment(env); }
