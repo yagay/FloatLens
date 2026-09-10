@@ -53,6 +53,7 @@ public final class ScreenshotResultOverlay {
         iv.setImageBitmap(image);
         iv.setAdjustViewBounds(true);
         iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        ImageShareUtils.attachLongPressShare(app, iv, image);
         box.addView(iv, new LinearLayout.LayoutParams(-1, imageH));
 
         LinearLayout actions = new LinearLayout(app);
