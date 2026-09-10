@@ -2,15 +2,15 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.PointF;
-import android.graphics.RectF;
 import android.view.MotionEvent;
 
 /**
  * FV-style same-touch selection engine.
  *
- * During drag the helper is a PLUS. Once direct View selection starts, it becomes DOT. From that
- * moment the exact geometric centre of the visible DOT is the single source of truth for View hit
- * testing, candidate highlighting, region selection and release. What the user sees is what selects.
+ * fooView keeps two different helper layers. The 15dp circle_focus plus is the actual selection
+ * probe (FooViewService M/N/O/Q), while the 24dp CircleImageView is an action-state helper. This
+ * engine owns only the real selection probe. The transformed Point is used for all three operations:
+ * moving the visible plus, selecting/highlighting a View, and completing the release/capture.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
@@ -20,7 +20,7 @@ public final class ViewSelectionEngine {
     private final SelectionPointTransformer pointTransformer;
 
     private ViewHoverOverlay overlay;
-    private FvActionHintOverlay indicatorOverlay;
+    private FvProbePointOverlay probeOverlay;
     private State state = State.IDLE;
     private float selectionX = Float.NaN, selectionY = Float.NaN;
 
@@ -36,20 +36,19 @@ public final class ViewSelectionEngine {
     public boolean isActive() { return state == State.DIRECT; }
     public State state() { return state; }
 
-    /** Capture the original icon-local offset and FV side at ACTION_DOWN. */
+    /** Snapshot FV's real small-icon origin while ACTION_DOWN still belongs to that Window. */
     public void dispatchTouchEvent(MotionEvent e) {
         if (e == null || accessibility == null) return;
         int action = e.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
             cancel();
-            ensureIndicator();
             pointTransformer.begin(e);
             PointF p = pointTransformer.transform(e);
             selectionX = p.x;
             selectionY = p.y;
-            DiagnosticLog.i(context, "FV_SELECT", "DOWN preDirectProbe="
+            DiagnosticLog.i(context, "FV_SELECT", "DOWN probe="
                     + Math.round(selectionX) + "," + Math.round(selectionY)
-                    + " side=" + (pointTransformer.gestureLeftSide() ? "L" : "R"));
+                    + " iconSide=" + (pointTransformer.gestureLeftSide() ? "L" : "R"));
         } else if (action == MotionEvent.ACTION_MOVE && state == State.DIRECT) {
             updateDirect(e.getRawX(), e.getRawY());
         } else if (action == MotionEvent.ACTION_CANCEL) {
@@ -57,23 +56,23 @@ public final class ViewSelectionEngine {
         }
     }
 
-    /** Drag phase: keep the FV pre-direct probe current, while visually showing PLUS. */
+    /**
+     * FV c3 MOVE path: v3/c2 calculates Point, then q2/e4 moves circle_focus to that exact Point.
+     * This runs on every live MOVE after temporary-follow starts; there is no +/dot state swap.
+     */
     public PointF showProbe(float rawX, float rawY) {
-        PointF p = pointTransformer.transformRaw(rawX, rawY);
-        selectionX = p.x;
-        selectionY = p.y;
-        if (state == State.IDLE) {
-            ensureIndicator();
-            showIndicatorForRaw(FvActionHintOverlay.Mode.PLUS, rawX, rawY);
-        }
-        return p;
+        PointF transformed = pointTransformer.transformRaw(rawX, rawY);
+        PointF shown = showProbeAt(transformed);
+        selectionX = shown.x;
+        selectionY = shown.y;
+        return shown;
     }
 
     public void hideProbe() {
-        if (indicatorOverlay != null) indicatorOverlay.hide();
+        if (probeOverlay != null) probeOverlay.hide();
     }
 
-    /** Called by the observed FV-style q Runnable while the finger is still down. */
+    /** Called by the observed FV-style delayed q Runnable while the same pointer is still down. */
     public boolean activateDirect(float rawX, float rawY) {
         if (accessibility == null) return false;
         if (state == State.DIRECT) {
@@ -84,60 +83,40 @@ public final class ViewSelectionEngine {
         overlay = new ViewHoverOverlay(context);
         if (!overlay.available()) {
             overlay = null;
-            if (indicatorOverlay != null) indicatorOverlay.hide();
+            hideProbe();
             return false;
         }
 
         overlay.begin();
         state = State.DIRECT;
-        ensureIndicator();
 
-        // Direct-selection DOT is intentionally kept on the LEFT of the moving icon. Its exact
-        // visible centre remains the hit-test coordinate, so visual position and selection match.
-        PointF dot = showIndicatorForRaw(FvActionHintOverlay.Mode.DOT, rawX, rawY);
-        selectionX = dot.x;
-        selectionY = dot.y;
-
+        // Critical FV invariant: circle_focus centre == selection layer Point == View hit-test Point.
+        PointF transformed = pointTransformer.transformRaw(rawX, rawY);
+        PointF shown = showProbeAt(transformed);
+        selectionX = shown.x;
+        selectionY = shown.y;
         overlay.beginDirect(selectionX, selectionY);
+
         DiagnosticLog.i(context, "FV_SELECT", "DIRECT_ENTER raw="
                 + Math.round(rawX) + "," + Math.round(rawY)
-                + " dotHit=" + Math.round(selectionX) + "," + Math.round(selectionY)
-                + " dotSide=LEFT");
+                + " focusHit=" + Math.round(selectionX) + "," + Math.round(selectionY));
         return true;
     }
 
     public void updateDirect(float rawX, float rawY) {
         if (state != State.DIRECT || overlay == null) return;
-
-        // Every MOVE first places the visible DOT, then uses that exact centre for hit testing.
-        PointF dot = showIndicatorForRaw(FvActionHintOverlay.Mode.DOT, rawX, rawY);
-        selectionX = dot.x;
-        selectionY = dot.y;
+        PointF transformed = pointTransformer.transformRaw(rawX, rawY);
+        PointF shown = showProbeAt(transformed);
+        selectionX = shown.x;
+        selectionY = shown.y;
         overlay.updateDirect(selectionX, selectionY);
     }
 
-    private PointF showIndicatorForRaw(FvActionHintOverlay.Mode mode, float rawX, float rawY) {
-        RectF icon = pointTransformer.iconBoundsForRaw(rawX, rawY);
-        boolean gestureLeftSide = pointTransformer.gestureLeftSide();
-
-        // FvActionHintOverlay's leftSide parameter describes which side of the SCREEN the icon is
-        // on: false places the helper on the LEFT of the icon, true places it on the RIGHT.
-        // Keep PLUS on the gesture/FV side behavior, but force DOT to the icon's left as requested.
-        boolean placementFlag = mode == FvActionHintOverlay.Mode.DOT ? false : gestureLeftSide;
-
-        if (indicatorOverlay == null) {
-            float helper = 24f * context.getResources().getDisplayMetrics().density;
-            float x = placementFlag ? icon.left + icon.width() : icon.left - helper;
-            float y = icon.top - helper;
-            return new PointF(x + helper / 2f, y + helper / 2f);
-        }
-
-        if (mode == FvActionHintOverlay.Mode.DOT) {
-            return indicatorOverlay.showDotNextTo(
-                    icon.left, icon.top, icon.width(), icon.height(), placementFlag);
-        }
-        return indicatorOverlay.showPlusNextTo(
-                icon.left, icon.top, icon.width(), icon.height(), placementFlag);
+    private PointF showProbeAt(PointF p) {
+        if (p == null) return new PointF();
+        ensureProbe();
+        if (probeOverlay == null) return new PointF(Math.round(p.x), Math.round(p.y));
+        return probeOverlay.showAt(Math.round(p.x), Math.round(p.y));
     }
 
     /** Same-touch ACTION_UP: a dragged region wins; otherwise complete the current View candidate. */
@@ -151,11 +130,11 @@ public final class ViewSelectionEngine {
         boolean hadTarget = overlay != null && overlay.hasCandidate();
         boolean result = overlay != null && overlay.finishDirect();
         DiagnosticLog.i(context, "FV_SELECT", "DIRECT_UP region=" + region
-                + " target=" + hadTarget + " result=" + result + " dotHit="
+                + " target=" + hadTarget + " result=" + result + " focusHit="
                 + Math.round(selectionX) + "," + Math.round(selectionY));
         overlay = null;
         state = State.IDLE;
-        closeIndicator();
+        closeProbe();
         return result;
     }
 
@@ -173,16 +152,16 @@ public final class ViewSelectionEngine {
         overlay = null;
         state = State.IDLE;
         selectionX = selectionY = Float.NaN;
-        closeIndicator();
+        closeProbe();
         if (active) DiagnosticLog.i(context, "FV_SELECT", "DIRECT_CANCEL");
     }
 
-    private void ensureIndicator() {
-        if (indicatorOverlay == null) indicatorOverlay = new FvActionHintOverlay(context);
+    private void ensureProbe() {
+        if (probeOverlay == null) probeOverlay = new FvProbePointOverlay(context);
     }
 
-    private void closeIndicator() {
-        if (indicatorOverlay != null) indicatorOverlay.close();
-        indicatorOverlay = null;
+    private void closeProbe() {
+        if (probeOverlay != null) probeOverlay.close();
+        probeOverlay = null;
     }
 }
