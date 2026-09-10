@@ -70,25 +70,23 @@ public final class ResultOverlay {
         }
 
         if (fs.ocrShowText()) {
-            // Use a read-only EditText instead of TextView.setTextIsSelectable(true). In overlay
-            // windows EditText gives much more reliable character-level handles, long-press
-            // selection and selection ActionMode. Keyboard/editing stay disabled.
+            // Only the complete OCR text uses the editor-backed selection surface. This keeps
+            // Android's character-level selection handles precise without changing block behavior.
             EditText all = selectableText(app, text);
             body.addView(all, new LinearLayout.LayoutParams(-1, -2));
             desiredBodyH += textHeight(app, text, innerW - dp(app, 16), 16f, 14);
 
             if (!fs.ocrCollapse() && blocks != null && blocks.size() > 1) {
                 TextView h = new TextView(app);
-                h.setText("识别块（长按可精确选择）");
+                h.setText("识别块（点按复制单块）");
                 h.setTextColor(0xFFBBBBBB);
                 h.setTextSize(13);
                 h.setPadding(dp(app, 8), dp(app, 8), dp(app, 8), dp(app, 3));
                 body.addView(h);
                 desiredBodyH += dp(app, 31);
                 for (String block : blocks) {
-                    // Do not install a click-to-copy listener here. It competes with long-press and
-                    // handle dragging in the same text area. Explicit Copy All remains below.
-                    EditText tv = selectableText(app, block);
+                    TextView tv = candidate(app, block, false);
+                    tv.setOnClickListener(v -> copy(app, block));
                     body.addView(tv, new LinearLayout.LayoutParams(-1, -2));
                     desiredBodyH += textHeight(app, block, innerW - dp(app, 16), 16f, 10);
                 }
@@ -349,11 +347,7 @@ public final class ResultOverlay {
         try { wm.removeView(box); } catch (Throwable ignored) {}
     }
 
-    /**
-     * Read-only multiline editor used only as a selection surface. EditText's editor machinery gives
-     * precise Android selection handles even inside TYPE_APPLICATION_OVERLAY, unlike a selectable
-     * TextView nested in a scrolling overlay. No IME or mutation is allowed.
-     */
+    /** Editor-backed read-only surface used only for the complete OCR text. */
     private static EditText selectableText(Context c, String text) {
         EditText tv = new EditText(c);
         tv.setText(text == null ? "" : text);
