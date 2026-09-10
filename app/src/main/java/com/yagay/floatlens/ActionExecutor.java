@@ -17,6 +17,7 @@ public final class ActionExecutor {
             case ActionId.REGION_SCREENSHOT -> ScreenshotController.capture(c,true);
             case ActionId.OCR -> ViewSelectionOverlay.show(c);
             case ActionId.AI_SCREEN -> AiScreenController.show(c);
+            case ActionId.MOVE_ICON -> { FloatService f=FloatService.get(); if(f!=null) f.armPositionMove(); }
             case ActionId.CLICK_UNDER -> { FloatService f=FloatService.get(); if(f!=null) f.clickScreenUnderIcon(); }
             case ActionId.HIDE -> {
                 FloatService f = FloatService.get();
