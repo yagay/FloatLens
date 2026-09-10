@@ -48,6 +48,7 @@ public class FloatIconView extends View {
     private boolean followStarted;
     private boolean selectionTookOver;
     private boolean circleActive;
+    private boolean regionEditorTriggered;
     private boolean positionMoveMode;
     private ViewSelectionEngine selectionEngine;
     private final Runnable slideRunnable = new Runnable() {
@@ -116,12 +117,13 @@ public class FloatIconView extends View {
         final float rx = e.getRawX(), ry = e.getRawY();
         final long now = SystemClock.uptimeMillis();
         if (action != MotionEvent.ACTION_MOVE || session.points.size() % 4 == 0) {
-            DiagnosticLog.i(getContext(), "TOUCH", "action="+action+" pointers="+e.getPointerCount()+" raw="+Math.round(rx)+","+Math.round(ry)+" phase="+session.phase+" circle="+circleActive+" positionMove="+positionMoveMode);
+            DiagnosticLog.i(getContext(), "TOUCH", "action="+action+" pointers="+e.getPointerCount()+" raw="+Math.round(rx)+","+Math.round(ry)+" phase="+session.phase+" circle="+circleActive+" regionEditor="+regionEditorTriggered+" positionMove="+positionMoveMode);
         }
 
         if (action == MotionEvent.ACTION_POINTER_DOWN) {
             session.multiTouch = true;
             cancelLongPress();
+            regionEditorTriggered=false;
             if(selectionEngine!=null)selectionEngine.cancel();
             if(circleActive){CircleLiveController.cancel("multitouch");circleActive=false;}
             if(positionMoveMode){FloatService f=FloatService.get();if(f!=null)f.cancelPositionMove();}
@@ -141,6 +143,7 @@ public class FloatIconView extends View {
                 selectionEngine=positionMoveMode?null:new ViewSelectionEngine(getContext());
                 selectionTookOver=false;
                 circleActive=false;
+                regionEditorTriggered=false;
                 followStarted=false;
                 session.begin(rx, ry, now);
                 if(selectionEngine!=null&&selectionEngine.available())selectionEngine.dispatchTouchEvent(e);
@@ -151,12 +154,9 @@ public class FloatIconView extends View {
                     longPressRunnable = () -> {
                         if (!session.multiTouch && session.phase == GestureSession.Phase.DOWN && session.distance() < gestureSlopPx()) {
                             session.longPressReady = true;
-                            session.phase = GestureSession.Phase.CIRCLE;
+                            regionEditorTriggered = true;
                             if(selectionEngine!=null)selectionEngine.cancel();
-                            GesturePointSample p=session.points.isEmpty()?null:session.points.get(session.points.size()-1);
-                            float x=p==null?session.downX:p.x(), y=p==null?session.downY:p.y();
-                            circleActive=CircleLiveController.start(getContext(),x,y);
-                            DiagnosticLog.i(getContext(),"GESTURE_LAYER","code="+GestureCode.ENTER_CIRCLE+" label="+GestureCode.label(GestureCode.ENTER_CIRCLE)+" source=mid_touch_long_hold");
+                            DiagnosticLog.i(getContext(),"REGION_EDIT","long_press_armed duration="+session.duration(SystemClock.uptimeMillis()));
                             if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
                             invalidate();
                         }
@@ -185,13 +185,16 @@ public class FloatIconView extends View {
                     return true;
                 }
 
+                // After long-press has armed the editable region workflow, keep this original pointer
+                // stream owned by the icon until ACTION_UP. The touchable full-screen editor is opened
+                // only after release so Android never cancels/re-targets the current gesture midway.
+                if(regionEditorTriggered) return true;
+
                 if(circleActive || session.phase==GestureSession.Phase.CIRCLE){
                     CircleLiveController.move(rx,ry);
                     return true;
                 }
 
-                // Confirmed by FV Full Capture: c0() follows MOVE immediately, but the next touch
-                // starts from the same resting coordinate unless position-edit mode was requested.
                 if ((stepDx!=0||stepDy!=0) && dist>=dp(1.5f)) {
                     if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","fvTemporaryFollowStart distance="+Math.round(dist));}
                     cb.onMove(stepDx,stepDy);
@@ -218,6 +221,15 @@ public class FloatIconView extends View {
                     resetSession();
                     return true;
                 }
+                if(regionEditorTriggered){
+                    if(selectionEngine!=null)selectionEngine.cancel();
+                    cb.onGestureEnd(session.snapshot());
+                    cb.onRelease(followStarted);
+                    DiagnosticLog.i(getContext(),"REGION_EDIT","launch_on_release");
+                    ScreenshotController.captureForRegionEditor(getContext());
+                    resetSession();
+                    return true;
+                }
                 if(circleActive || session.phase==GestureSession.Phase.CIRCLE){
                     if(selectionEngine!=null)selectionEngine.cancel();
                     DiagnosticLog.i(getContext(),"GESTURE_LAYER","code="+GestureCode.CIRCLE_FINISH+" label="+GestureCode.label(GestureCode.CIRCLE_FINISH)+" source=mid_touch_release");
@@ -235,6 +247,7 @@ public class FloatIconView extends View {
 
             case MotionEvent.ACTION_CANCEL -> {
                 cancelLongPress();
+                regionEditorTriggered=false;
                 if(selectionEngine!=null)selectionEngine.cancel();
                 if(circleActive){CircleLiveController.cancel("touch_cancel");circleActive=false;}
                 if(positionMoveMode){FloatService f=FloatService.get();if(f!=null)f.cancelPositionMove();}
@@ -276,7 +289,7 @@ public class FloatIconView extends View {
         resetSession();
     }
 
-    private void resetSession(){selectionEngine=null;selectionTookOver=false;circleActive=false;positionMoveMode=false;followStarted=false;session.reset();invalidate();}
+    private void resetSession(){selectionEngine=null;selectionTookOver=false;circleActive=false;regionEditorTriggered=false;positionMoveMode=false;followStarted=false;session.reset();invalidate();}
 
     private void handleTap(long now) {
         if (lastTapAt != 0 && now - lastTapAt <= fs.doubleTapMs()) {
