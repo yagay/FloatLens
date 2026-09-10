@@ -26,8 +26,7 @@ public final class ScreenshotController {
 
     /**
      * Capture an uncropped full-screen frame and open the adjustable rectangular region editor.
-     * The editor owns all later OCR/View-text decisions, so status-bar cropping must not happen here
-     * or its screen-coordinate selection would no longer match Accessibility bounds.
+     * This remains available for the separate stationary-long-press workflow.
      */
     public static void captureForRegionEditor(Context c) {
         Context app = c.getApplicationContext();
@@ -59,7 +58,22 @@ public final class ScreenshotController {
     }
 
     /**
-     * Capture a locked highlighted View exactly by its Accessibility screen bounds.
+     * Capture the region drawn during FV same-touch direct dragging. The region is already expressed
+     * in screen coordinates, so use the same screen-bounds crop path as Accessibility View capture.
+     */
+    public static void captureBoundsForRegion(Context c, Rect screenBounds) {
+        if (screenBounds == null || screenBounds.isEmpty()) return;
+        Context app = c.getApplicationContext();
+        Rect bounds = new Rect(screenBounds);
+        captureBounds(app, bounds, crop -> {
+            DiagnosticLog.i(app, "FV_REGION_CAPTURE", "crop=" + crop.getWidth() + "x" + crop.getHeight()
+                    + " bounds=" + bounds);
+            ResultOverlay.showVisual(app, crop, null);
+        }, "区域截取失败", false);
+    }
+
+    /**
+     * Capture a highlighted View exactly by its Accessibility screen bounds.
      * If Accessibility already supplied text, show that exact text together with the cropped View
      * image; do not run OCR again. Pure image/icon Views use the visual result UI.
      */
