@@ -48,9 +48,10 @@ public final class ImageShareUtils {
                     app.getPackageName() + ".fileprovider", outFile);
             Intent send = new Intent(Intent.ACTION_SEND)
                     .setType("image/png")
-                    .putExtra(Intent.EXTRA_STREAM, uri)
-                    .setClipData(ClipData.newRawUri("FloatLens image", uri))
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    .putExtra(Intent.EXTRA_STREAM, uri);
+            send.setClipData(ClipData.newRawUri("FloatLens image", uri));
+            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
             Intent chooser = Intent.createChooser(send, "分享图片")
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             app.startActivity(chooser);
