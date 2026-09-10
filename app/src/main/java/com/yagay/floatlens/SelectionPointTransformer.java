@@ -7,12 +7,12 @@ import android.view.MotionEvent;
 import android.view.WindowManager;
 
 /**
- * Converts the finger MotionEvent into the floating icon's actual selection hotspot.
+ * Converts the finger stream into the floating icon's screen-space selection hotspot.
  *
- * FV's v3() works from floating-icon/selection geometry rather than blindly using raw finger
- * coordinates. The exact private selection-layer edge interpolation is intentionally not guessed
- * here; this clean-room implementation preserves the confirmed invariant that the selected point
- * follows the icon geometry, so touching the icon off-centre does not shift image/View targeting.
+ * The touch offset is captured while FloatIconView is still the small floating window. Once the
+ * same View is expanded to MATCH_PARENT for FV-style direct selection, MotionEvent local x/y change
+ * coordinate spaces, but raw x/y remain stable. All later selection therefore uses raw coordinates
+ * plus the original in-icon offset.
  */
 public final class SelectionPointTransformer {
     private final Context context;
@@ -38,11 +38,13 @@ public final class SelectionPointTransformer {
     public PointF transform(MotionEvent e) {
         if (e == null) return new PointF();
         if (!initialized) begin(e);
+        return transformRaw(e.getRawX(), e.getRawY());
+    }
 
-        // Derive the icon's temporary top-left from the raw finger point and where inside the icon
-        // the user originally touched, then use the icon centre as the screen-space selection point.
-        float iconLeft = e.getRawX() - touchOffsetX;
-        float iconTop = e.getRawY() - touchOffsetY;
+    /** Use after FloatIconView has been expanded to full screen. */
+    public PointF transformRaw(float rawX, float rawY) {
+        float iconLeft = rawX - touchOffsetX;
+        float iconTop = rawY - touchOffsetY;
         float x = iconLeft + iconWidth / 2f;
         float y = iconTop + iconHeight / 2f;
 
