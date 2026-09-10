@@ -94,6 +94,7 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
         int height = Math.min(maxH, titleH + actionsH + desiredImageH + verticalPadding);
         int minHeight = titleH + actionsH + dp(64) + verticalPadding;
         height = Math.max(Math.min(maxH, minHeight), height);
+        final int requestedHeight = height;
 
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -128,14 +129,14 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
         box.addView(actions, new LinearLayout.LayoutParams(-1, actionsH));
 
         setContentView(box);
-        positionWindow(usable, width, height, payload.anchor);
+        positionWindow(usable, width, requestedHeight, payload.anchor);
 
         box.post(() -> DiagnosticLog.i(this, "SCREENSHOT_RESULT_LAYOUT",
                 "root=" + box.getWidth() + "x" + box.getHeight()
                         + " titleH=" + title.getHeight()
                         + " imageH=" + image.getHeight()
                         + " actionsH=" + actions.getHeight()
-                        + " requestedH=" + height));
+                        + " requestedH=" + requestedHeight));
 
         save.setOnClickListener(v -> ScreenshotController.save(this, payload.image));
         close.setOnClickListener(v -> finishNoAnim());
