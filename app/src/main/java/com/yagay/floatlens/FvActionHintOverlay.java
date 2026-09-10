@@ -63,26 +63,32 @@ public final class FvActionHintOverlay {
 
     public void showNextTo(View icon) {
         if (icon == null) return;
+        int[] loc = new int[2];
+        try { icon.getLocationOnScreen(loc); } catch (Throwable t) { return; }
+        showNextTo(loc[0], loc[1], icon.getWidth(), icon.getHeight());
+    }
+
+    /** Same placement rule, but usable directly from FV's reconstructed icon coordinates. */
+    public void showNextTo(float iconLeft, float iconTop, float iconWidth, float iconHeight) {
         if (!attached) attachHidden();
         if (!attached) return;
 
-        int[] loc = new int[2];
-        try { icon.getLocationOnScreen(loc); } catch (Throwable t) { return; }
         Rect screen = screenBounds();
-        float iconCenter = loc[0] + icon.getWidth() / 2f;
+        float iconCenter = iconLeft + iconWidth / 2f;
         float screenCenter = screen.isEmpty() ? iconCenter : screen.exactCenterX();
         boolean leftSide = iconCenter < screenCenter;
 
-        lp.x = leftSide ? loc[0] + icon.getWidth() : loc[0] - sizePx;
-        lp.y = loc[1] - sizePx;
+        lp.x = Math.round(leftSide ? iconLeft + iconWidth : iconLeft - sizePx);
+        lp.y = Math.round(iconTop - sizePx);
         try {
             wm.updateViewLayout(view, lp);
             if (!visible) {
                 view.setVisibility(View.VISIBLE);
                 visible = true;
                 DiagnosticLog.i(context, "FV_ACTION_HINT", "SHOW side="
-                        + (leftSide ? "L" : "R") + " icon=" + loc[0] + "," + loc[1]
-                        + " helper=" + lp.x + "," + lp.y + " size=" + sizePx);
+                        + (leftSide ? "L" : "R") + " icon=" + Math.round(iconLeft) + ","
+                        + Math.round(iconTop) + " helper=" + lp.x + "," + lp.y
+                        + " size=" + sizePx);
             }
         } catch (Throwable t) {
             DiagnosticLog.i(context, "FV_ACTION_HINT", "move failed=" + t);
