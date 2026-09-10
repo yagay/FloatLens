@@ -57,6 +57,7 @@ public final class FloatSettings {
     public static final String K_IME_AVOID = "ime_avoid_icon";
     public static final String K_QUICK_MOVE = "quickMoveIcon";
     public static final String K_DIAGNOSTIC = "fv_diagnostic_logging";
+    private static final String K_MIGRATE_LONG_PRESS_CONFIG_V1 = "migrate_long_press_config_v1";
 
     public static final String K_POS_X_PORTRAIT = "float_pos_x_portrait";
     public static final String K_POS_Y_PORTRAIT = "float_pos_y_portrait";
@@ -94,6 +95,11 @@ public final class FloatSettings {
         }
         Object old = p.getAll().get(K_HIDE_FULLSCREEN);
         if (old instanceof Boolean b) p.edit().putInt(K_HIDE_FULLSCREEN, b ? 2 : 0).apply();
+        if (!p.getBoolean(K_MIGRATE_LONG_PRESS_CONFIG_V1, false)) {
+            SharedPreferences.Editor e = p.edit();
+            if (ActionId.OCR.equals(p.getString(K_ACTION_LONG, null))) e.remove(K_ACTION_LONG);
+            e.putBoolean(K_MIGRATE_LONG_PRESS_CONFIG_V1, true).apply();
+        }
     }
 
     public float alpha() { return clamp(p.getInt(K_ALPHA, 62), 10, 100) / 100f; }

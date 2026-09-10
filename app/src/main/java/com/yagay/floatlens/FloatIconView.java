@@ -59,7 +59,7 @@ public class FloatIconView extends View {
     private boolean followStarted;
     private boolean selectionTookOver;
     private boolean circleActive;
-    private boolean regionEditorTriggered;
+    private boolean longPressActionTriggered;
     private boolean directSelectionActive;
     private boolean directTimerArmed;
     private boolean positionMoveMode;
@@ -85,7 +85,7 @@ public class FloatIconView extends View {
                 FV_DIRECT_MOVE_START_DP * getResources().getDisplayMetrics().density);
         directSelectionRunnable = () -> {
             directTimerArmed = false;
-            if (directSelectionActive || regionEditorTriggered || positionMoveMode || session.multiTouch
+            if (directSelectionActive || longPressActionTriggered || positionMoveMode || session.multiTouch
                     || !followStarted || selectionEngine == null || !selectionEngine.available()
                     || Float.isNaN(lastSelectionRawX) || Float.isNaN(lastSelectionRawY)
                     || session.phase == GestureSession.Phase.IDLE
@@ -168,7 +168,7 @@ public class FloatIconView extends View {
         if (action != MotionEvent.ACTION_MOVE || session.points.size() % 4 == 0) {
             DiagnosticLog.i(getContext(), "TOUCH", "action="+action+" pointers="+e.getPointerCount()
                     +" raw="+Math.round(rx)+","+Math.round(ry)+" phase="+session.phase
-                    +" direct="+directSelectionActive+" regionEditor="+regionEditorTriggered
+                    +" direct="+directSelectionActive+" regionEditor="+longPressActionTriggered
                     +" positionMove="+positionMoveMode);
         }
 
@@ -176,7 +176,7 @@ public class FloatIconView extends View {
             session.multiTouch = true;
             cancelLongPress();
             cancelDirectSelectionTimer();
-            regionEditorTriggered=false;
+            longPressActionTriggered=false;
             if(directSelectionActive){if(selectionEngine!=null)selectionEngine.cancel();cb.onDirectSelectionEnd();directSelectionActive=false;}
             else if(selectionEngine!=null)selectionEngine.cancel();
             if(circleActive){CircleLiveController.cancel("multitouch");circleActive=false;}
@@ -198,7 +198,7 @@ public class FloatIconView extends View {
                 selectionEngine=positionMoveMode?null:new ViewSelectionEngine(getContext());
                 selectionTookOver=false;
                 circleActive=false;
-                regionEditorTriggered=false;
+                longPressActionTriggered=false;
                 directSelectionActive=false;
                 followStarted=false;
                 lastSelectionRawX=lastSelectionRawY=Float.NaN;
@@ -211,19 +211,21 @@ public class FloatIconView extends View {
                         +" positionMove="+positionMoveMode);
                 invalidate();
 
-                // User-requested stationary long-press editor remains separate. A real drag cancels
-                // it and follows FV's q Runnable path below.
+                // Stationary long press is a normal configurable action. No OCR or region
+                // behavior is hard-coded here; action_long_press is the single source of truth.
                 if(!positionMoveMode){
                     longPressRunnable = () -> {
                         if (!session.multiTouch && !followStarted && session.phase == GestureSession.Phase.DOWN
                                 && session.distance() < dp(FV_DIRECT_MOVE_START_DP)) {
                             session.longPressReady = true;
-                            regionEditorTriggered = true;
+                            longPressActionTriggered = true;
                             cancelDirectSelectionTimer();
                             if(selectionEngine!=null)selectionEngine.cancel();
-                            DiagnosticLog.i(getContext(),"REGION_EDIT","stationary_long_press_armed duration="
-                                    +session.duration(SystemClock.uptimeMillis()));
+                            String configured = fs.action(FloatSettings.K_ACTION_LONG, ActionId.NONE);
+                            DiagnosticLog.i(getContext(),"LONG_PRESS","trigger duration="
+                                    +session.duration(SystemClock.uptimeMillis())+" action="+configured);
                             if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                            if (!ActionId.NONE.equals(configured)) cb.onAction(configured);
                             invalidate();
                         }
                     };
@@ -253,7 +255,7 @@ public class FloatIconView extends View {
                     return true;
                 }
 
-                if(regionEditorTriggered) return true;
+                if(longPressActionTriggered) return true;
 
                 if(directSelectionActive){
                     if(selectionEngine!=null)selectionEngine.updateDirect(rx,ry);
@@ -298,12 +300,11 @@ public class FloatIconView extends View {
                     resetSession();
                     return true;
                 }
-                if(regionEditorTriggered){
+                if(longPressActionTriggered){
                     if(selectionEngine!=null)selectionEngine.cancel();
                     cb.onGestureEnd(session.snapshot());
                     cb.onRelease(followStarted);
-                    DiagnosticLog.i(getContext(),"REGION_EDIT","launch_on_release");
-                    ScreenshotController.captureForRegionEditor(getContext());
+                    DiagnosticLog.i(getContext(),"LONG_PRESS","release consumed");
                     resetSession();
                     return true;
                 }
@@ -338,7 +339,7 @@ public class FloatIconView extends View {
             case MotionEvent.ACTION_CANCEL -> {
                 cancelLongPress();
                 cancelDirectSelectionTimer();
-                regionEditorTriggered=false;
+                longPressActionTriggered=false;
                 if(directSelectionActive){
                     if(selectionEngine!=null)selectionEngine.cancel();
                     cb.onDirectSelectionEnd();
@@ -424,7 +425,7 @@ public class FloatIconView extends View {
         selectionEngine=null;
         selectionTookOver=false;
         circleActive=false;
-        regionEditorTriggered=false;
+        longPressActionTriggered=false;
         directSelectionActive=false;
         positionMoveMode=false;
         followStarted=false;

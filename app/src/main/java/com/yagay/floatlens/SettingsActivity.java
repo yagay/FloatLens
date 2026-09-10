@@ -76,7 +76,7 @@ public class SettingsActivity extends AppCompatActivity {
         Map<String, String> map = new LinkedHashMap<>();
         map.put("单击 / action_click", FloatSettings.K_ACTION_CLICK);
         map.put("双击 / action_db_click", FloatSettings.K_ACTION_DOUBLE);
-        map.put("长按进入 Circle / action_long_press", FloatSettings.K_ACTION_LONG);
+        map.put("长按 / action_long_press", FloatSettings.K_ACTION_LONG);
         map.put("圈选识别 / action_recognize", FloatSettings.K_ACTION_RECOGNIZE);
         map.put("上滑 / gesture_up", FloatSettings.K_ACTION_UP);
         map.put("下滑-短 / gesture_down_short", FloatSettings.K_ACTION_DOWN_SHORT);
@@ -100,7 +100,8 @@ public class SettingsActivity extends AppCompatActivity {
 
     private String defaultFor(String k) {
         if (k.equals(FloatSettings.K_ACTION_DOUBLE)) return ActionId.SCREENSHOT;
-        if (k.equals(FloatSettings.K_ACTION_LONG) || k.equals(FloatSettings.K_ACTION_RECOGNIZE)) return ActionId.OCR;
+        if (k.equals(FloatSettings.K_ACTION_LONG)) return ActionId.NONE;
+        if (k.equals(FloatSettings.K_ACTION_RECOGNIZE)) return ActionId.OCR;
         if (k.equals(FloatSettings.K_ACTION_UP)) return ActionId.RECENTS;
         if (k.equals(FloatSettings.K_ACTION_DOWN_SHORT)) return ActionId.NOTIFICATIONS;
         if (k.equals(FloatSettings.K_ACTION_SIDE_SHORT)) return ActionId.BACK;

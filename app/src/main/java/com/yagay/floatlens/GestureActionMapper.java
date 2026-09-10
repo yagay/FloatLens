@@ -21,7 +21,7 @@ public final class GestureActionMapper {
                     longTier ? ActionId.NONE : ActionId.NOTIFICATIONS);
             case GestureCode.SIDE_SHORT -> fs.action(FloatSettings.K_ACTION_SIDE_SHORT, ActionId.BACK);
             case GestureCode.SIDE_LONG -> fs.action(FloatSettings.K_ACTION_SIDE_LONG, ActionId.NONE);
-            case GestureCode.ENTER_CIRCLE -> fs.action(FloatSettings.K_ACTION_LONG, ActionId.OCR);
+            case GestureCode.ENTER_CIRCLE -> fs.action(FloatSettings.K_ACTION_LONG, ActionId.NONE);
             case GestureCode.RECOGNIZE -> fs.action(FloatSettings.K_ACTION_RECOGNIZE, ActionId.OCR);
             case GestureCode.AI_SCREEN -> ActionId.AI_SCREEN;
             default -> ActionId.NONE;
