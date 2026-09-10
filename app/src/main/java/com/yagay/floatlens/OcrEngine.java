@@ -2,6 +2,7 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.Rect;
 import android.widget.Toast;
 
 import com.google.mlkit.vision.common.InputImage;
@@ -14,10 +15,16 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 import java.util.ArrayList;
 import java.util.List;
 
-/** OCR pipeline: bitmap -> ML Kit text -> candidate blocks -> result overlay. */
+/** OCR pipeline: bitmap -> ML Kit text -> candidate blocks -> adaptive result overlay. */
 public final class OcrEngine {
     public static void recognize(Context c, Bitmap b) {
+        recognize(c, b, null);
+    }
+
+    /** Anchor is the selected View/region in screen coordinates; null keeps the centered fallback. */
+    public static void recognize(Context c, Bitmap b, Rect anchor) {
         Context app = c.getApplicationContext();
+        Rect resultAnchor = anchor == null ? null : new Rect(anchor);
         FloatService service = FloatService.get();
         if (service != null) service.onCircleRecognizeStarted();
 
@@ -27,7 +34,8 @@ public final class OcrEngine {
                 : TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
 
         DiagnosticLog.i(app, "OCR_PIPELINE", "start type=" + fs.ocrType()
-                + " bitmap=" + (b == null ? "null" : b.getWidth() + "x" + b.getHeight()));
+                + " bitmap=" + (b == null ? "null" : b.getWidth() + "x" + b.getHeight())
+                + " anchor=" + (resultAnchor == null ? "none" : resultAnchor.toShortString()));
 
         client.process(InputImage.fromBitmap(b, 0))
                 .addOnSuccessListener(t -> {
@@ -50,9 +58,8 @@ public final class OcrEngine {
                                 + " candidates=" + blocks.size());
                         if (service != null) service.onOcrResults(blocks.size());
 
-                        // Do not write OCR results to the clipboard automatically. The result UI
-                        // remains responsible for any explicit copy action requested by the user.
-                        ResultOverlay.show(app, full, blocks, b);
+                        // Clipboard remains opt-in only from the result UI.
+                        ResultOverlay.show(app, full, blocks, b, resultAnchor);
                     } finally {
                         client.close();
                     }
