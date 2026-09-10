@@ -84,13 +84,16 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
         int maxH = Math.min(dp(430), Math.round(usable.height() * .52f));
         int titleH = dp(38);
         int actionsH = dp(50);
+        int verticalPadding = dp(16);
         int horizontalPad = dp(14) * 2;
         int imageW = Math.max(dp(160), width - horizontalPad);
-        int imageH = Math.round(imageW * (payload.image.getHeight()
+        int desiredImageH = Math.round(imageW * (payload.image.getHeight()
                 / (float) Math.max(1, payload.image.getWidth())));
-        imageH = clamp(imageH, dp(90),
-                Math.max(dp(90), maxH - titleH - actionsH - dp(22)));
-        int height = Math.min(maxH, titleH + actionsH + imageH + dp(22));
+        desiredImageH = clamp(desiredImageH, dp(72),
+                Math.max(dp(72), maxH - titleH - actionsH - verticalPadding));
+        int height = Math.min(maxH, titleH + actionsH + desiredImageH + verticalPadding);
+        int minHeight = titleH + actionsH + dp(64) + verticalPadding;
+        height = Math.max(Math.min(maxH, minHeight), height);
 
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -107,10 +110,13 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
 
         ImageView image = new ImageView(this);
         image.setImageBitmap(payload.image);
-        image.setAdjustViewBounds(true);
+        image.setAdjustViewBounds(false);
         image.setScaleType(ImageView.ScaleType.FIT_CENTER);
         ImageShareUtils.attachLongPressShare(this, image, payload.image);
-        box.addView(image, new LinearLayout.LayoutParams(-1, imageH));
+        // The image is the only flexible area. Dialog decor/OEM insets may reduce the real
+        // content viewport below the requested Window height; using weight here guarantees
+        // that the fixed action row remains visible and only the image shrinks.
+        box.addView(image, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
@@ -123,6 +129,13 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
 
         setContentView(box);
         positionWindow(usable, width, height, payload.anchor);
+
+        box.post(() -> DiagnosticLog.i(this, "SCREENSHOT_RESULT_LAYOUT",
+                "root=" + box.getWidth() + "x" + box.getHeight()
+                        + " titleH=" + title.getHeight()
+                        + " imageH=" + image.getHeight()
+                        + " actionsH=" + actions.getHeight()
+                        + " requestedH=" + height));
 
         save.setOnClickListener(v -> ScreenshotController.save(this, payload.image));
         close.setOnClickListener(v -> finishNoAnim());
