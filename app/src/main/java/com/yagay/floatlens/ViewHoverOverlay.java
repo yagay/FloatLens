@@ -14,12 +14,11 @@ import android.view.WindowManager;
 import java.util.Collections;
 
 /**
- * Strict text/image hover layer.
+ * Strict text/image hover layer with a fullscreen final fallback.
  *
- * Selection comes only from Accessibility TEXT or image/icon NON_TEXT nodes. A candidate can be
- * marked confirmed by ViewSelectionEngine after a stable dwell. Confirmed release captures exactly
- * the highlighted View bounds. Screen-space Accessibility bounds are converted to overlay-local
- * coordinates only for drawing; selection/capture continue using screen coordinates.
+ * TEXT and image/icon NON_TEXT are normal candidates. A near-fullscreen ROOT can be highlighted only
+ * when no more specific text/image candidate exists at the pointer. A candidate can be confirmed by
+ * ViewSelectionEngine after a stable dwell; confirmed release captures exactly its screen bounds.
  */
 public final class ViewHoverOverlay {
     private static final long TREE_REFRESH_MS = 120L;
@@ -89,7 +88,7 @@ public final class ViewHoverOverlay {
             view.setCandidate(next);
             view.setConfirmed(false);
             if (next != null) {
-                DiagnosticLog.i(context, "VIEW_HOVER", "strict source=" + next.source()
+                DiagnosticLog.i(context, "VIEW_HOVER", "source=" + next.source()
                         + " type=" + next.type() + " screenBounds=" + next.bounds()
                         + " depth=" + next.depth() + " textLen=" + next.text().length()
                         + " class=" + next.className() + " id=" + next.viewId());
@@ -129,7 +128,9 @@ public final class ViewHoverOverlay {
         Rect b = picked.bounds();
         if (b.isEmpty()) return false;
 
-        if (picked.type() == ScreenCandidate.Type.TEXT || picked.type() == ScreenCandidate.Type.NON_TEXT) {
+        if (picked.type() == ScreenCandidate.Type.TEXT
+                || picked.type() == ScreenCandidate.Type.NON_TEXT
+                || picked.type() == ScreenCandidate.Type.ROOT) {
             ScreenshotController.captureBoundsForViewCandidate(
                     context, b, picked.toViewNodeCandidate(), picked.hasText() ? picked.text() : "");
             DiagnosticLog.i(context, "VIEW_EXTRACT", "capture highlighted view type=" + picked.type()
@@ -220,7 +221,9 @@ public final class ViewHoverOverlay {
 
             c.drawRect(r, fill);
             c.drawRect(r, border);
-            String text = confirmed ? "已锁定 · " + candidate.label() : candidate.label();
+            String base = candidate.type() == ScreenCandidate.Type.ROOT
+                    ? "整屏 View" : candidate.label();
+            String text = confirmed ? "已锁定 · " + base : base;
             float x = Math.max(dp(8), Math.min(r.left, getWidth() - dp(180)));
             float y = r.top > dp(28) ? r.top - dp(8)
                     : Math.min(getHeight() - dp(8), r.bottom + dp(20));
