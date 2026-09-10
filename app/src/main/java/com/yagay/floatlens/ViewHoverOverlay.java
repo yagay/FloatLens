@@ -14,11 +14,11 @@ import android.view.WindowManager;
 import java.util.Collections;
 
 /**
- * Strict text/image hover layer with a fullscreen final fallback.
+ * Non-touchable FV-style selection display layer.
  *
- * TEXT and image/icon NON_TEXT are normal candidates. A near-fullscreen ROOT can be highlighted only
- * when no more specific text/image candidate exists at the pointer. A candidate can be confirmed by
- * ViewSelectionEngine after a stable dwell; confirmed release captures exactly its screen bounds.
+ * TEXT and image/icon NON_TEXT are normal candidates. A near-fullscreen ROOT is only the final
+ * fallback. This overlay never owns the pointer stream; the original FloatIconView remains the
+ * touch owner even after it expands to MATCH_PARENT.
  */
 public final class ViewHoverOverlay {
     private static final long TREE_REFRESH_MS = 120L;
@@ -119,26 +119,36 @@ public final class ViewHoverOverlay {
 
     public boolean isConfirmed() { return confirmed; }
 
-    /** Capture exactly the highlighted View after dwell confirmation. */
+    /** Compatibility path for the old dwell-confirmed flow. */
     public boolean finish(boolean extract) {
         ScreenCandidate picked = current;
         boolean wasConfirmed = confirmed;
         close();
-        if (!extract || !wasConfirmed || picked == null) return false;
+        if (!extract || !wasConfirmed) return false;
+        return extractPicked(picked, "VIEW_EXTRACT");
+    }
+
+    /** FV direct-drag path: ACTION_UP immediately completes the candidate under the current pointer. */
+    public boolean finishDirect() {
+        ScreenCandidate picked = current;
+        close();
+        return extractPicked(picked, "FV_DIRECT_EXTRACT");
+    }
+
+    private boolean extractPicked(ScreenCandidate picked, String logTag) {
+        if (picked == null) return false;
         Rect b = picked.bounds();
         if (b.isEmpty()) return false;
+        if (picked.type() != ScreenCandidate.Type.TEXT
+                && picked.type() != ScreenCandidate.Type.NON_TEXT
+                && picked.type() != ScreenCandidate.Type.ROOT) return false;
 
-        if (picked.type() == ScreenCandidate.Type.TEXT
-                || picked.type() == ScreenCandidate.Type.NON_TEXT
-                || picked.type() == ScreenCandidate.Type.ROOT) {
-            ScreenshotController.captureBoundsForViewCandidate(
-                    context, b, picked.toViewNodeCandidate(), picked.hasText() ? picked.text() : "");
-            DiagnosticLog.i(context, "VIEW_EXTRACT", "capture highlighted view type=" + picked.type()
-                    + " bounds=" + b + " textLen=" + picked.text().length()
-                    + " class=" + picked.className() + " id=" + picked.viewId());
-            return true;
-        }
-        return false;
+        ScreenshotController.captureBoundsForViewCandidate(
+                context, b, picked.toViewNodeCandidate(), picked.hasText() ? picked.text() : "");
+        DiagnosticLog.i(context, logTag, "capture type=" + picked.type()
+                + " bounds=" + b + " textLen=" + picked.text().length()
+                + " class=" + picked.className() + " id=" + picked.viewId());
+        return true;
     }
 
     public void cancel() { close(); }
@@ -184,16 +194,8 @@ public final class ViewHoverOverlay {
             updatePaints();
         }
 
-        void setCandidate(ScreenCandidate c) {
-            candidate = c;
-            invalidate();
-        }
-
-        void setConfirmed(boolean value) {
-            confirmed = value;
-            updatePaints();
-            invalidate();
-        }
+        void setCandidate(ScreenCandidate c) { candidate = c; invalidate(); }
+        void setConfirmed(boolean value) { confirmed = value; updatePaints(); invalidate(); }
 
         private void updatePaints() {
             fill.setColor(confirmed ? 0x552196F3 : 0x332196F3);
@@ -221,8 +223,7 @@ public final class ViewHoverOverlay {
 
             c.drawRect(r, fill);
             c.drawRect(r, border);
-            String base = candidate.type() == ScreenCandidate.Type.ROOT
-                    ? "整屏 View" : candidate.label();
+            String base = candidate.type() == ScreenCandidate.Type.ROOT ? "整屏 View" : candidate.label();
             String text = confirmed ? "已锁定 · " + base : base;
             float x = Math.max(dp(8), Math.min(r.left, getWidth() - dp(180)));
             float y = r.top > dp(28) ? r.top - dp(8)
@@ -231,8 +232,6 @@ public final class ViewHoverOverlay {
             c.drawText(text, x, y, label);
         }
 
-        private float dp(float v) {
-            return v * getResources().getDisplayMetrics().density;
-        }
+        private float dp(float v) { return v * getResources().getDisplayMetrics().density; }
     }
 }
