@@ -10,14 +10,15 @@ import android.view.MotionEvent;
 /**
  * FV-style selection engine driven in parallel with the floating-icon MOVE stream.
  *
- * Targeting is deliberately strict: only Accessibility text views and image/icon views can take
- * over the gesture. Generic controls, containers and arbitrary screenshot regions never become
- * selectable targets.
+ * Only text and image/icon Accessibility Views are selectable. A candidate must remain unchanged
+ * for VIEW_DWELL_CONFIRM_MS before it becomes locked. Releasing before that time leaves the normal
+ * icon gesture untouched; releasing after lock captures exactly the highlighted View bounds.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, ACTIVE }
 
     private static final long FV_SETTLE_DELAY_MS = 100L;
+    private static final long VIEW_DWELL_CONFIRM_MS = 500L;
     private static final float FV_SELECT_START_DP = 3f;
     private static final float FV_FAST_FRAME_PX = 40f;
 
@@ -25,6 +26,7 @@ public final class ViewSelectionEngine {
     private final LensAccessibilityService accessibility;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable settleRunnable = this::settledRefresh;
+    private final Runnable dwellRunnable = this::confirmDwellCandidate;
     private final SelectionPointTransformer pointTransformer;
 
     private ViewHoverOverlay overlay;
@@ -35,6 +37,8 @@ public final class ViewSelectionEngine {
     private long downAt;
     private long lastFastFrameAt;
     private boolean moved;
+    private String dwellCandidateKey = "";
+    private boolean dwellConfirmed;
 
     public ViewSelectionEngine(Context c) {
         context = c.getApplicationContext();
@@ -83,6 +87,7 @@ public final class ViewSelectionEngine {
             if (frameDx >= FV_FAST_FRAME_PX || frameDy >= FV_FAST_FRAME_PX) {
                 lastFastFrameAt = now;
                 handler.removeCallbacks(settleRunnable);
+                cancelDwell();
                 if (state == State.ACTIVE) {
                     closeOverlay();
                     state = State.IDLE;
@@ -101,7 +106,10 @@ public final class ViewSelectionEngine {
                 if (state != State.ACTIVE && now - lastFastFrameAt >= FV_SETTLE_DELAY_MS) {
                     activateNow(selectionX, selectionY, "controlled_move");
                 }
-                if (state == State.ACTIVE && overlay != null) overlay.update(selectionX, selectionY);
+                if (state == State.ACTIVE && overlay != null) {
+                    overlay.update(selectionX, selectionY);
+                    updateDwellCandidate();
+                }
                 handler.removeCallbacks(settleRunnable);
                 handler.postDelayed(settleRunnable, FV_SETTLE_DELAY_MS);
             }
@@ -121,6 +129,7 @@ public final class ViewSelectionEngine {
         overlay.begin();
         state = State.ACTIVE;
         overlay.update(x, y);
+        updateDwellCandidate();
         DiagnosticLog.i(context, "FV_SELECT", "ACTIVE reason=" + reason
                 + " after=" + (SystemClock.uptimeMillis() - downAt) + "ms hotspot="
                 + Math.round(x) + "," + Math.round(y));
@@ -134,7 +143,48 @@ public final class ViewSelectionEngine {
             return;
         }
         if (state != State.ACTIVE) activateNow(selectionX, selectionY, "settled_100ms");
-        else if (overlay != null) overlay.update(selectionX, selectionY);
+        else if (overlay != null) {
+            overlay.update(selectionX, selectionY);
+            updateDwellCandidate();
+        }
+    }
+
+    private void updateDwellCandidate() {
+        if (state != State.ACTIVE || overlay == null) {
+            cancelDwell();
+            return;
+        }
+        ScreenCandidate c = overlay.currentCandidate();
+        String key = c == null ? "" : c.stableKey();
+        if (key.equals(dwellCandidateKey)) return;
+
+        handler.removeCallbacks(dwellRunnable);
+        dwellCandidateKey = key;
+        dwellConfirmed = false;
+        overlay.setConfirmed(false);
+
+        if (!key.isEmpty()) {
+            handler.postDelayed(dwellRunnable, VIEW_DWELL_CONFIRM_MS);
+            DiagnosticLog.i(context, "VIEW_DWELL", "start delay=" + VIEW_DWELL_CONFIRM_MS
+                    + "ms bounds=" + c.bounds() + " type=" + c.type());
+        }
+    }
+
+    private void confirmDwellCandidate() {
+        if (state != State.ACTIVE || overlay == null || dwellCandidateKey.isEmpty()) return;
+        ScreenCandidate current = overlay.currentCandidate();
+        if (current == null || !dwellCandidateKey.equals(current.stableKey())) return;
+        dwellConfirmed = true;
+        overlay.setConfirmed(true);
+        DiagnosticLog.i(context, "VIEW_DWELL", "confirmed after=" + VIEW_DWELL_CONFIRM_MS
+                + "ms bounds=" + current.bounds() + " type=" + current.type());
+    }
+
+    private void cancelDwell() {
+        handler.removeCallbacks(dwellRunnable);
+        dwellCandidateKey = "";
+        dwellConfirmed = false;
+        if (overlay != null) overlay.setConfirmed(false);
     }
 
     public boolean finish(MotionEvent up) {
@@ -144,16 +194,20 @@ public final class ViewSelectionEngine {
             PointF p = pointTransformer.transform(up);
             selectionX = p.x;
             selectionY = p.y;
-            if (overlay != null) overlay.update(selectionX, selectionY);
+            if (overlay != null) {
+                overlay.update(selectionX, selectionY);
+                updateDwellCandidate();
+            }
         }
 
         boolean hadCandidate = overlay != null && overlay.hasCandidate();
-        boolean producedResult = overlay != null && overlay.finish(wasActive && hadCandidate);
-        boolean tookOver = wasActive && hadCandidate && producedResult;
+        boolean locked = wasActive && hadCandidate && dwellConfirmed;
+        boolean producedResult = overlay != null && overlay.finish(locked);
+        boolean tookOver = locked && producedResult;
 
         DiagnosticLog.i(context, "FV_SELECT", "UP active=" + wasActive
-                + " candidate=" + hadCandidate + " result=" + producedResult
-                + " takeover=" + tookOver + " hotspot="
+                + " candidate=" + hadCandidate + " dwellConfirmed=" + dwellConfirmed
+                + " result=" + producedResult + " takeover=" + tookOver + " hotspot="
                 + Math.round(selectionX) + "," + Math.round(selectionY));
         resetInternal(false);
         return tookOver;
@@ -162,6 +216,7 @@ public final class ViewSelectionEngine {
     public void cancel() {
         boolean wasActive = state == State.ACTIVE;
         handler.removeCallbacks(settleRunnable);
+        cancelDwell();
         closeOverlay();
         DiagnosticLog.i(context, "FV_SELECT", "CANCEL active=" + wasActive);
         resetInternal(false);
@@ -174,6 +229,7 @@ public final class ViewSelectionEngine {
 
     private void resetInternal(boolean close) {
         handler.removeCallbacks(settleRunnable);
+        handler.removeCallbacks(dwellRunnable);
         if (close) closeOverlay();
         overlay = null;
         state = State.IDLE;
@@ -181,6 +237,8 @@ public final class ViewSelectionEngine {
         downAt = 0L;
         lastFastFrameAt = 0L;
         moved = false;
+        dwellCandidateKey = "";
+        dwellConfirmed = false;
     }
 
     private float dp(float v) { return v * context.getResources().getDisplayMetrics().density; }
