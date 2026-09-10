@@ -7,11 +7,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Strict position-only model for user-visible Accessibility candidates.
+ * Position-only selection model.
  *
- * Only TEXT and NON_TEXT(image/icon) nodes are selectable. No screenshot candidate is allowed to
- * split or replace an Accessibility node. Therefore an icon+label exposed as one node (for example
- * a launcher BubbleTextView) stays one highlighted rectangle exactly as Android reports it.
+ * TEXT and NON_TEXT(image/icon) candidates are normal selectable targets. Near-fullscreen ROOT
+ * candidates are retained only as final fallback: they can never beat a text/image candidate at the
+ * same point. No semantic score or clickable priority participates in selection.
  */
 public final class ScreenSelectionModel {
     private final ArrayList<ScreenCandidate> accessibility = new ArrayList<>();
@@ -20,7 +20,7 @@ public final class ScreenSelectionModel {
         accessibility.clear();
         if (items == null) return;
         for (ScreenCandidate c : dedupe(items)) {
-            if (isSelectableType(c)) accessibility.add(c);
+            if (isAcceptedType(c)) accessibility.add(c);
         }
     }
 
@@ -38,21 +38,33 @@ public final class ScreenSelectionModel {
     public ScreenCandidate selectAccessibilityAt(float x, float y) {
         final int px = Math.round(x), py = Math.round(y);
         ScreenCandidate best = null;
+        ScreenCandidate rootFallback = null;
 
         for (ScreenCandidate c : accessibility) {
-            if (!isSelectableType(c)) continue;
+            if (!isAcceptedType(c)) continue;
             Rect r = c.bounds();
             if (r.isEmpty() || !r.contains(px, py)) continue;
 
-            // Pure geometry/tree position. A real deeper child wins. At equal depth, prefer a
-            // strictly contained rectangle; if unrelated rectangles overlap, prefer the smaller one.
+            if (c.type() == ScreenCandidate.Type.ROOT || c.fullscreenLike()) {
+                // Fullscreen Views are deliberately last. If several windows expose a fullscreen
+                // root, keep the geometrically/depth-wise most specific one only for fallback.
+                if (rootFallback == null
+                        || c.depth() > rootFallback.depth()
+                        || (c.depth() == rootFallback.depth()
+                        && moreSpecific(r, rootFallback.bounds()))) {
+                    rootFallback = c;
+                }
+                continue;
+            }
+
+            // Normal TEXT/NON_TEXT selection remains pure geometry/tree position.
             if (best == null
                     || c.depth() > best.depth()
                     || (c.depth() == best.depth() && moreSpecific(r, best.bounds()))) {
                 best = c;
             }
         }
-        return best;
+        return best != null ? best : rootFallback;
     }
 
     public ScreenCandidate selectAt(float x, float y) {
@@ -63,9 +75,10 @@ public final class ScreenSelectionModel {
         return false;
     }
 
-    private boolean isSelectableType(ScreenCandidate c) {
+    private boolean isAcceptedType(ScreenCandidate c) {
         return c != null && (c.type() == ScreenCandidate.Type.TEXT
-                || c.type() == ScreenCandidate.Type.NON_TEXT);
+                || c.type() == ScreenCandidate.Type.NON_TEXT
+                || c.type() == ScreenCandidate.Type.ROOT);
     }
 
     private boolean moreSpecific(Rect candidate, Rect current) {
