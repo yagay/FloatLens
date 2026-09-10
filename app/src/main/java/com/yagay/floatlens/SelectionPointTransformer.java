@@ -8,7 +8,7 @@ import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.WindowManager;
 
-/** Converts the original floating-icon touch stream into FV-style coordinates. */
+/** Converts the original floating-icon touch stream into FV FooViewService.v3()-style coordinates. */
 public final class SelectionPointTransformer {
     private static final float FV_EDGE_LEAD_DP = 10f;
     private static final float FV_X_PROBE_OFFSET_DP = 25f;
@@ -35,13 +35,12 @@ public final class SelectionPointTransformer {
         context = c.getApplicationContext();
         this.iconWidth = Math.max(1f, iconWidth);
         this.iconHeight = Math.max(1f, iconHeight);
-        density = Math.max(0.1f, context.getResources().getDisplayMetrics().density);
+        density = Math.max(.1f, context.getResources().getDisplayMetrics().density);
     }
 
     /**
-     * Snapshot the pointer origin while the icon is still in its resting (possibly edge-hidden)
-     * Window. FloatService restores that Window fully as soon as FV temporary-follow starts, so the
-     * live helper path below deliberately uses the corresponding fully-visible effective start.
+     * FV starts from the FloatIconView's actual current Window position, including a partially hidden
+     * edge position. raw-local gives that real overlay origin before the View is ever expanded.
      */
     public void begin(MotionEvent e) {
         if (e == null) return;
@@ -60,12 +59,9 @@ public final class SelectionPointTransformer {
         DiagnosticLog.i(context, "FV_PROBE", "BEGIN raw="
                 + Math.round(downRawX) + "," + Math.round(downRawY)
                 + " local=" + Math.round(touchOffsetX) + "," + Math.round(touchOffsetY)
-                + " restingIcon=" + Math.round(startIconLeft) + "," + Math.round(startIconTop)
-                + " effectiveFollow=" + Math.round(effectiveStartIconLeft()) + ","
-                + Math.round(effectiveStartIconTop())
+                + " startIcon=" + Math.round(startIconLeft) + "," + Math.round(startIconTop)
                 + " side=" + (gestureLeftSide ? "L" : "R")
                 + " icon=" + Math.round(iconWidth) + "x" + Math.round(iconHeight)
-                + " density=" + String.format(java.util.Locale.US, "%.3f", density)
                 + " screen=" + screen);
     }
 
@@ -80,36 +76,33 @@ public final class SelectionPointTransformer {
         return gestureLeftSide;
     }
 
-    /**
-     * Reconstruct the same small icon that the user actually sees during temporary-follow.
-     * FloatService.onDragStart() calls restoreFully() before the first visible follow update, so using
-     * the edge-hidden ACTION_DOWN origin here causes the helper to trail the icon by exactly the
-     * hidden amount. Anchor from the restored edge instead, then apply the raw pointer delta 1:1.
-     */
+    /** Exact virtual small-icon trajectory: startWindow + currentRaw - downRaw. */
     public RectF iconBoundsForRaw(float rawX, float rawY) {
         ensureInitializedFallback();
-        float left = effectiveStartIconLeft() + (rawX - downRawX);
-        float top = effectiveStartIconTop() + (rawY - downRawY);
+        float left = startIconLeft + (rawX - downRawX);
+        float top = startIconTop + (rawY - downRawY);
         return new RectF(left, top, left + iconWidth, top + iconHeight);
     }
 
-    /** Use after FloatIconView has been expanded to full screen. */
+    /**
+     * Clean-room reconstruction of FooViewService.v3(). The output is the Point later sent both to
+     * q2/e4(circle_focus) and to the selection/View hit-test layer.
+     */
     public PointF transformRaw(float rawX, float rawY) {
         ensureInitializedFallback();
 
-        final Rect screen = screenBounds();
-        final float lead = dp(FV_EDGE_LEAD_DP);
-        final float edgeSpan = dp(FV_EDGE_SPAN_DP);
-        final float helperInset = dp(FV_Y_HELPER_INSET_DP);
-        final float iconLeft = effectiveStartIconLeft() + (rawX - downRawX);
+        Rect screen = screenBounds();
+        float lead = dp(FV_EDGE_LEAD_DP);
+        float edgeSpan = dp(FV_EDGE_SPAN_DP);
+        float helperInset = dp(FV_Y_HELPER_INSET_DP);
+        float iconLeft = startIconLeft + (rawX - downRawX);
 
-        // FV normal X path: effective small-icon start + currentRawX - downRawX - 25dp.
+        // Normal FV X path: K(false) + rawX - downRawX - 25dp.
         float x = iconLeft - dp(FV_X_PROBE_OFFSET_DP);
         boolean rightCompensation = false;
         float rightThreshold = Float.NaN;
-
         if (!screen.isEmpty()) {
-            final float edgeX = rawX + lead;
+            float edgeX = rawX + lead;
             rightThreshold = screen.right - iconWidth - edgeSpan - lead;
             if (edgeX > rightThreshold) {
                 x += edgeX - rightThreshold;
@@ -117,12 +110,11 @@ public final class SelectionPointTransformer {
             }
         }
 
-        // FV v3() normal Y: rawY + 10dp - 20dp - 50dp.
-        final float edgeY = rawY + lead;
+        // Normal FV Y path: rawY + 10dp - 20dp - 50dp == rawY - 60dp.
+        float edgeY = rawY + lead;
         float y = edgeY - helperInset - edgeSpan;
         boolean bottomCompensation = false;
         float bottomThreshold = Float.NaN;
-
         if (!screen.isEmpty()) {
             bottomThreshold = screen.bottom - helperInset - edgeSpan;
             if (edgeY > bottomThreshold) {
@@ -132,24 +124,9 @@ public final class SelectionPointTransformer {
             if (y > screen.bottom) y = screen.bottom;
         }
 
-        maybeLog(rawX, rawY, iconLeft, x, y,
-                rightCompensation, bottomCompensation, rightThreshold, bottomThreshold, screen);
+        maybeLog(rawX, rawY, iconLeft, x, y, rightCompensation, bottomCompensation,
+                rightThreshold, bottomThreshold, screen);
         return new PointF(x, y);
-    }
-
-    /** Matches FloatService.restoreFully() for the horizontal resting edge. */
-    private float effectiveStartIconLeft() {
-        Rect screen = screenBounds();
-        if (screen.isEmpty()) return startIconLeft;
-        return gestureLeftSide ? screen.left : screen.right - iconWidth;
-    }
-
-    /** Matches FloatService.restoreFully()/clamp(false) for the vertical start. */
-    private float effectiveStartIconTop() {
-        Rect screen = screenBounds();
-        if (screen.isEmpty()) return startIconTop;
-        float max = Math.max(screen.top, screen.bottom - iconHeight);
-        return Math.max(screen.top, Math.min(startIconTop, max));
     }
 
     private void ensureInitializedFallback() {
@@ -173,7 +150,7 @@ public final class SelectionPointTransformer {
         if (now - lastLogAt < LOG_INTERVAL_MS && !rightCompensation && !bottomCompensation) return;
         lastLogAt = now;
         DiagnosticLog.i(context, "FV_PROBE", "raw=" + Math.round(rawX) + "," + Math.round(rawY)
-                + " followIconLeft=" + Math.round(iconLeft)
+                + " iconLeft=" + Math.round(iconLeft)
                 + " side=" + (gestureLeftSide ? "L" : "R")
                 + " probe=" + Math.round(x) + "," + Math.round(y)
                 + " edgeR=" + rightCompensation + " edgeB=" + bottomCompensation
