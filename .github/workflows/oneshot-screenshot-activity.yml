@@ -1,0 +1,51 @@
+name: One-shot screenshot result activity
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message == 'Add one-shot screenshot activity migration'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Migrate pure screenshot popup to Activity
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              s = p.read_text()
+              if old not in s:
+                  raise SystemExit(f'pattern not found in {path}: {old!r}')
+              p.write_text(s.replace(old, new, 1))
+
+          replace_once(
+              'app/src/main/java/com/yagay/floatlens/ScreenshotController.java',
+              '            ScreenshotResultOverlay.show(app, crop, bounds);',
+              '            if (!ScreenshotResultActivity.show(app, crop, bounds)) {\n                ScreenshotResultOverlay.show(app, crop, bounds);\n            }')
+
+          replace_once(
+              'app/src/main/AndroidManifest.xml',
+              '        <activity android:name=".ViewContentActivity" android:theme="@style/Theme.FloatLens.ResultText" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" />',
+              '        <activity android:name=".ViewContentActivity" android:theme="@style/Theme.FloatLens.ResultText" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" />\n        <activity android:name=".ScreenshotResultActivity" android:theme="@style/Theme.FloatLens.ResultText" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" />')
+
+          replace_once(
+              'app/build.gradle',
+              "        versionCode 76\n        versionName '3.0.24'",
+              "        versionCode 77\n        versionName '3.0.25'")
+      - name: Commit migration
+        run: |
+          git config user.name "FloatLens Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add app/src/main/java/com/yagay/floatlens/ScreenshotController.java \
+                  app/src/main/AndroidManifest.xml app/build.gradle
+          git commit -m "Move pure image result above sharesheet in 3.0.25"
+          git push
