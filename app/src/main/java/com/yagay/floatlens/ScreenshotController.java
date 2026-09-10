@@ -49,7 +49,7 @@ public final class ScreenshotController {
         }), hideIcon ? 100L : 0L);
     }
 
-    /** OCR only the Accessibility View rectangle and place the result popup around that View. */
+    /** Explicit OCR path: OCR only the selected Accessibility View rectangle. */
     public static void captureBoundsForOcr(Context c, Rect screenBounds) {
         if (screenBounds == null || screenBounds.isEmpty()) {
             captureForOcr(c);
@@ -63,21 +63,25 @@ public final class ScreenshotController {
         }, "View OCR 失败，改用自由圈选", true);
     }
 
-    /** FV same-touch region selection is an OCR target in Direct Selection mode. */
+    /**
+     * FV Direct region selection is a screenshot path, not an implicit OCR path.
+     * OCR remains available through the explicit OCR action.
+     */
     public static void captureBoundsForRegion(Context c, Rect screenBounds) {
         if (screenBounds == null || screenBounds.isEmpty()) return;
         Context app = c.getApplicationContext();
         Rect bounds = new Rect(screenBounds);
         captureBounds(app, bounds, crop -> {
-            DiagnosticLog.i(app, "FV_REGION_OCR", "crop=" + crop.getWidth() + "x" + crop.getHeight()
+            DiagnosticLog.i(app, "FV_REGION_CAPTURE", "crop=" + crop.getWidth() + "x" + crop.getHeight()
                     + " bounds=" + bounds);
-            OcrEngine.recognize(app, crop, bounds);
-        }, "区域 OCR 失败", true);
+            ResultOverlay.showVisual(app, crop, null, bounds);
+        }, "区域截图失败", false);
     }
 
     /**
-     * Capture a highlighted View exactly by its Accessibility screen bounds. Direct Accessibility
-     * text uses the same bounds to position the result; image/WebView/Canvas falls through to OCR.
+     * FV Direct View extraction keeps Accessibility text as View content. If the selected View has
+     * no extractable text, show its exact cropped bitmap as a screenshot instead of silently OCRing
+     * it. This keeps View extraction, screenshot and OCR as three separate capabilities.
      */
     public static void captureBoundsForViewCandidate(Context c, Rect screenBounds,
                                                      ViewNodeCandidate candidate, String directText) {
@@ -90,19 +94,26 @@ public final class ScreenshotController {
                     + " bounds=" + bounds + " textLen=" + text.length()
                     + " kind=" + (candidate == null ? "view" : candidate.kind()));
             if (!text.isEmpty()) {
-                FloatService f = FloatService.get();
-                if (f != null) f.onOcrResults(1);
+                DiagnosticLog.i(app, "VIEW_EXTRACT", "direct Accessibility text chars=" + text.length()
+                        + " bounds=" + bounds);
                 ResultOverlay.show(app, text, List.of(text), crop, bounds);
             } else {
-                DiagnosticLog.i(app, "VIEW_OCR", "no Accessibility text; OCR cropped View bounds=" + bounds);
-                OcrEngine.recognize(app, crop, bounds);
+                DiagnosticLog.i(app, "VIEW_SCREENSHOT", "no Accessibility text; show cropped View bounds=" + bounds);
+                ResultOverlay.showVisual(app, crop, candidate, bounds);
             }
-        }, "高亮 View OCR 失败", true);
+        }, "View 截图失败", false);
     }
 
-    /** Compatibility entry: visual candidates selected from Direct Selection should also OCR. */
+    /** Visual View candidates are shown as screenshots; they no longer fall through to OCR. */
     public static void captureBoundsForVisualCandidate(Context c, Rect screenBounds, ViewNodeCandidate candidate) {
-        captureBoundsForViewCandidate(c, screenBounds, candidate, "");
+        if (screenBounds == null || screenBounds.isEmpty()) return;
+        Context app = c.getApplicationContext();
+        Rect bounds = new Rect(screenBounds);
+        captureBounds(app, bounds, crop -> {
+            DiagnosticLog.i(app, "VIEW_SCREENSHOT", "visual candidate crop="
+                    + crop.getWidth() + "x" + crop.getHeight() + " bounds=" + bounds);
+            ResultOverlay.showVisual(app, crop, candidate, bounds);
+        }, "View 截图失败", false);
     }
 
     private static void captureBounds(Context c, Rect screenBounds, Consumer<Bitmap> onCrop,
