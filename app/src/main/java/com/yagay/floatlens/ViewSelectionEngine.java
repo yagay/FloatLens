@@ -5,13 +5,12 @@ import android.graphics.PointF;
 import android.view.MotionEvent;
 
 /**
- * FV-style direct selection engine.
+ * FV-style same-touch selection engine.
  *
- * This class intentionally owns no dwell timer. FloatIconView mirrors the observed FV q timing:
- * meaningful pointer displacement rearms a 400 ms Runnable, while tiny continued MOVE jitter is
- * ignored so the Runnable can fire with the same finger still down. When it fires the original icon
- * window expands to MATCH_PARENT and this engine enters DIRECT mode. All following MOVE/UP events
- * remain in the same pointer stream and are forwarded here.
+ * FloatIconView owns the whole pointer stream. The FV move-idle q trigger expands that same icon
+ * window to full screen, while this engine keeps two parallel selection outcomes:
+ * 1) a point-based Accessibility View candidate while the pointer remains near the trigger point;
+ * 2) a live region once the same finger deliberately moves away from that point.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
@@ -55,7 +54,7 @@ public final class ViewSelectionEngine {
         }
     }
 
-    /** Called by the observed FV-style 400 ms move-anchor Runnable while the finger is still down. */
+    /** Called by the observed FV-style q Runnable while the finger is still down. */
     public boolean activateDirect(float rawX, float rawY) {
         if (accessibility == null) return false;
         if (state == State.DIRECT) {
@@ -69,8 +68,11 @@ public final class ViewSelectionEngine {
             return false;
         }
         overlay.begin();
+        PointF p = pointTransformer.transformRaw(rawX, rawY);
+        selectionX = p.x;
+        selectionY = p.y;
         state = State.DIRECT;
-        updateDirect(rawX, rawY);
+        overlay.beginDirect(selectionX, selectionY);
         DiagnosticLog.i(context, "FV_SELECT", "DIRECT_ENTER raw="
                 + Math.round(rawX) + "," + Math.round(rawY)
                 + " hotspot=" + Math.round(selectionX) + "," + Math.round(selectionY));
@@ -82,20 +84,21 @@ public final class ViewSelectionEngine {
         PointF p = pointTransformer.transformRaw(rawX, rawY);
         selectionX = p.x;
         selectionY = p.y;
-        overlay.update(selectionX, selectionY);
+        overlay.updateDirect(selectionX, selectionY);
     }
 
-    /** Same-touch ACTION_UP: complete the candidate currently under the FV selection hotspot. */
+    /** Same-touch ACTION_UP: a dragged region wins; otherwise complete the current View candidate. */
     public boolean finishDirect(float rawX, float rawY) {
         if (state != State.DIRECT) {
             cancel();
             return false;
         }
         updateDirect(rawX, rawY);
-        boolean hadCandidate = overlay != null && overlay.hasCandidate();
+        boolean region = overlay != null && overlay.isRegionMode();
+        boolean hadTarget = overlay != null && overlay.hasCandidate();
         boolean result = overlay != null && overlay.finishDirect();
-        DiagnosticLog.i(context, "FV_SELECT", "DIRECT_UP candidate=" + hadCandidate
-                + " result=" + result + " hotspot="
+        DiagnosticLog.i(context, "FV_SELECT", "DIRECT_UP region=" + region
+                + " target=" + hadTarget + " result=" + result + " hotspot="
                 + Math.round(selectionX) + "," + Math.round(selectionY));
         overlay = null;
         state = State.IDLE;
