@@ -274,6 +274,9 @@ public class FloatIconView extends View {
                 }
 
                 if(followStarted && selectionEngine!=null && selectionEngine.available()) {
+                    // FV updates the independent ProbePoint/action-helper windows on every MOVE.
+                    // The exact same transformed point is later reused for View hit testing.
+                    selectionEngine.showProbe(rx, ry);
                     armOrRearmDirectSelection(rx, ry);
                 }
 
