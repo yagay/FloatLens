@@ -8,24 +8,7 @@ import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.WindowManager;
 
-/**
- * Converts the original floating-icon touch stream into FV's selection probe point.
- *
- * fooView 1.6.4 does not use rawX/rawY or the floating icon centre directly for View selection.
- * Runtime capture of FooViewService.v3() shows a separate probe coordinate with four important
- * behaviours:
- *
- * 1) X normally tracks the floating icon's left edge minus about 25dp.
- * 2) Near the right edge FV progressively adds the distance into an edge compensation zone. This
- *    makes the probe accelerate (roughly 2:1) instead of becoming unreachable at the screen edge.
- * 3) Y normally sits about 60dp above the finger (10dp lead - 20dp helper inset - 50dp span).
- * 4) Near the bottom edge FV switches to a mirrored/accelerated formula so the probe can continue
- *    toward the bottom rather than stopping one icon radius early.
- *
- * The touch offset is captured while FloatIconView is still the small overlay. Once the same View
- * is expanded to MATCH_PARENT, local MotionEvent x/y change coordinate spaces, but raw x/y remain
- * stable, so every later update is reconstructed from raw coordinates plus that original offset.
- */
+/** Converts the original floating-icon touch stream into FV-style coordinates. */
 public final class SelectionPointTransformer {
     private static final float FV_EDGE_LEAD_DP = 10f;
     private static final float FV_X_PROBE_OFFSET_DP = 25f;
@@ -40,6 +23,11 @@ public final class SelectionPointTransformer {
 
     private float touchOffsetX;
     private float touchOffsetY;
+    private float downRawX;
+    private float downRawY;
+    private float startIconLeft;
+    private float startIconTop;
+    private boolean gestureLeftSide;
     private boolean initialized;
     private long lastLogAt;
 
@@ -50,16 +38,30 @@ public final class SelectionPointTransformer {
         density = Math.max(0.1f, context.getResources().getDisplayMetrics().density);
     }
 
+    /**
+     * Snapshot FV's gesture origin while the icon is still the small overlay.
+     * The helper side is deliberately locked here and is never recalculated from screen centre
+     * during MOVE. This mirrors FloatIconView.V(): one side state for the whole pointer stream.
+     */
     public void begin(MotionEvent e) {
         if (e == null) return;
         touchOffsetX = e.getX();
         touchOffsetY = e.getY();
-        initialized = true;
+        downRawX = e.getRawX();
+        downRawY = e.getRawY();
+        startIconLeft = downRawX - touchOffsetX;
+        startIconTop = downRawY - touchOffsetY;
 
         Rect screen = screenBounds();
+        gestureLeftSide = screen.isEmpty()
+                || startIconLeft + iconWidth / 2f < screen.exactCenterX();
+        initialized = true;
+
         DiagnosticLog.i(context, "FV_PROBE", "BEGIN raw="
-                + Math.round(e.getRawX()) + "," + Math.round(e.getRawY())
+                + Math.round(downRawX) + "," + Math.round(downRawY)
                 + " local=" + Math.round(touchOffsetX) + "," + Math.round(touchOffsetY)
+                + " startIcon=" + Math.round(startIconLeft) + "," + Math.round(startIconTop)
+                + " side=" + (gestureLeftSide ? "L" : "R")
                 + " icon=" + Math.round(iconWidth) + "x" + Math.round(iconHeight)
                 + " density=" + String.format(java.util.Locale.US, "%.3f", density)
                 + " screen=" + screen);
@@ -71,11 +73,19 @@ public final class SelectionPointTransformer {
         return transformRaw(e.getRawX(), e.getRawY());
     }
 
-    /** Reconstruct the small icon bounds from the same raw stream and original in-icon offset. */
+    public boolean gestureLeftSide() {
+        ensureInitializedFallback();
+        return gestureLeftSide;
+    }
+
+    /**
+     * Reconstruct FV's virtual small-icon bounds from the gesture origin plus absolute raw delta.
+     * This remains stable after the real FloatIconView is expanded to MATCH_PARENT.
+     */
     public RectF iconBoundsForRaw(float rawX, float rawY) {
         ensureInitializedFallback();
-        float left = rawX - touchOffsetX;
-        float top = rawY - touchOffsetY;
+        float left = startIconLeft + (rawX - downRawX);
+        float top = startIconTop + (rawY - downRawY);
         return new RectF(left, top, left + iconWidth, top + iconHeight);
     }
 
@@ -87,19 +97,13 @@ public final class SelectionPointTransformer {
         final float lead = dp(FV_EDGE_LEAD_DP);
         final float edgeSpan = dp(FV_EDGE_SPAN_DP);
         final float helperInset = dp(FV_Y_HELPER_INSET_DP);
+        final float iconLeft = startIconLeft + (rawX - downRawX);
 
-        // FV normal X path: current icon-left reconstructed from the original finger offset, then
-        // move the selection probe 25dp to the left of that icon edge.
-        final float iconLeft = rawX - touchOffsetX;
+        // FV normal X path reconstructed from its starting icon position + raw pointer delta.
         float x = iconLeft - dp(FV_X_PROBE_OFFSET_DP);
         boolean rightCompensation = false;
         float rightThreshold = Float.NaN;
 
-        // Runtime samples on a 1272px-wide device match:
-        //   baseX = iconLeft - 25dp
-        //   if rawX + 10dp enters the right edge zone:
-        //       baseX += (rawX + 10dp - threshold)
-        // This is why FV's probe continues moving at the right edge instead of feeling clamped.
         if (!screen.isEmpty()) {
             final float edgeX = rawX + lead;
             rightThreshold = screen.right - iconWidth - edgeSpan - lead;
@@ -109,7 +113,7 @@ public final class SelectionPointTransformer {
             }
         }
 
-        // FV normal Y path observed from v3(): rawY + 10dp - 20dp - 50dp.
+        // FV v3() normal Y: rawY + 10dp - 20dp - 50dp.
         final float edgeY = rawY + lead;
         float y = edgeY - helperInset - edgeSpan;
         boolean bottomCompensation = false;
@@ -118,14 +122,9 @@ public final class SelectionPointTransformer {
         if (!screen.isEmpty()) {
             bottomThreshold = screen.bottom - helperInset - edgeSpan;
             if (edgeY > bottomThreshold) {
-                // FV bottom-edge branch: y = 2 * (rawY + 10dp) - screenHeight.
                 y = 2f * edgeY - screen.bottom;
                 bottomCompensation = true;
             }
-
-            // FV allows the helper/probe to go outside the left/right edge, but the bottom branch
-            // is bounded by the display height. Do not clamp X and do not clamp Y at the top: both
-            // behaviours are visible in the captured APK runtime data.
             if (y > screen.bottom) y = screen.bottom;
         }
 
@@ -136,10 +135,15 @@ public final class SelectionPointTransformer {
 
     private void ensureInitializedFallback() {
         if (initialized) return;
-        // Compatibility fallback only. Normal selection calls begin() on ACTION_DOWN while the icon
-        // is still a small window.
+        Rect screen = screenBounds();
         touchOffsetX = iconWidth / 2f;
         touchOffsetY = iconHeight / 2f;
+        downRawX = screen.isEmpty() ? iconWidth / 2f : screen.exactCenterX();
+        downRawY = screen.isEmpty() ? iconHeight / 2f : screen.exactCenterY();
+        startIconLeft = downRawX - touchOffsetX;
+        startIconTop = downRawY - touchOffsetY;
+        gestureLeftSide = screen.isEmpty()
+                || startIconLeft + iconWidth / 2f < screen.exactCenterX();
         initialized = true;
     }
 
@@ -151,6 +155,7 @@ public final class SelectionPointTransformer {
         lastLogAt = now;
         DiagnosticLog.i(context, "FV_PROBE", "raw=" + Math.round(rawX) + "," + Math.round(rawY)
                 + " iconLeft=" + Math.round(iconLeft)
+                + " side=" + (gestureLeftSide ? "L" : "R")
                 + " probe=" + Math.round(x) + "," + Math.round(y)
                 + " edgeR=" + rightCompensation + " edgeB=" + bottomCompensation
                 + " thresholdR=" + (Float.isNaN(rightThreshold) ? "n/a" : Math.round(rightThreshold))
@@ -158,9 +163,7 @@ public final class SelectionPointTransformer {
                 + " screen=" + screen);
     }
 
-    private float dp(float value) {
-        return value * density;
-    }
+    private float dp(float value) { return value * density; }
 
     private Rect screenBounds() {
         try {
