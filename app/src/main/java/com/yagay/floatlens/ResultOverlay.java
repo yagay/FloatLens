@@ -7,6 +7,7 @@ import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.Typeface;
+import android.text.InputType;
 import android.text.Layout;
 import android.text.StaticLayout;
 import android.text.TextPaint;
@@ -15,6 +16,7 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -68,21 +70,25 @@ public final class ResultOverlay {
         }
 
         if (fs.ocrShowText()) {
-            TextView all = candidate(app, text, true);
+            // Use a read-only EditText instead of TextView.setTextIsSelectable(true). In overlay
+            // windows EditText gives much more reliable character-level handles, long-press
+            // selection and selection ActionMode. Keyboard/editing stay disabled.
+            EditText all = selectableText(app, text);
             body.addView(all, new LinearLayout.LayoutParams(-1, -2));
             desiredBodyH += textHeight(app, text, innerW - dp(app, 16), 16f, 14);
 
             if (!fs.ocrCollapse() && blocks != null && blocks.size() > 1) {
                 TextView h = new TextView(app);
-                h.setText("识别块（点按复制单块）");
+                h.setText("识别块（长按可精确选择）");
                 h.setTextColor(0xFFBBBBBB);
                 h.setTextSize(13);
                 h.setPadding(dp(app, 8), dp(app, 8), dp(app, 8), dp(app, 3));
                 body.addView(h);
                 desiredBodyH += dp(app, 31);
                 for (String block : blocks) {
-                    TextView tv = candidate(app, block, false);
-                    tv.setOnClickListener(v -> copy(app, block));
+                    // Do not install a click-to-copy listener here. It competes with long-press and
+                    // handle dragging in the same text area. Explicit Copy All remains below.
+                    EditText tv = selectableText(app, block);
                     body.addView(tv, new LinearLayout.LayoutParams(-1, -2));
                     desiredBodyH += textHeight(app, block, innerW - dp(app, 16), 16f, 10);
                 }
@@ -341,6 +347,35 @@ public final class ResultOverlay {
 
     private static void closeWindow(WindowManager wm, LinearLayout box) {
         try { wm.removeView(box); } catch (Throwable ignored) {}
+    }
+
+    /**
+     * Read-only multiline editor used only as a selection surface. EditText's editor machinery gives
+     * precise Android selection handles even inside TYPE_APPLICATION_OVERLAY, unlike a selectable
+     * TextView nested in a scrolling overlay. No IME or mutation is allowed.
+     */
+    private static EditText selectableText(Context c, String text) {
+        EditText tv = new EditText(c);
+        tv.setText(text == null ? "" : text);
+        tv.setTextColor(0xFFFFFFFF);
+        tv.setTextSize(16);
+        tv.setBackgroundColor(0x00000000);
+        tv.setGravity(Gravity.TOP | Gravity.START);
+        tv.setSingleLine(false);
+        tv.setHorizontallyScrolling(false);
+        tv.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        tv.setKeyListener(null);
+        tv.setCursorVisible(false);
+        tv.setShowSoftInputOnFocus(false);
+        tv.setTextIsSelectable(true);
+        tv.setLongClickable(true);
+        tv.setFocusable(true);
+        tv.setFocusableInTouchMode(true);
+        tv.setSelectAllOnFocus(false);
+        tv.setPadding(dp(c, 8), dp(c, 5), dp(c, 8), dp(c, 5));
+        return tv;
     }
 
     private static TextView candidate(Context c, String text, boolean selectable) {
