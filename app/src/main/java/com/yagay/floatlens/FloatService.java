@@ -12,7 +12,7 @@ import android.view.*;
 import androidx.core.app.NotificationCompat;
 import java.util.List;
 
-/** Persistent floating icon service with separated gesture/action/environment/Circle layers. */
+/** Persistent floating icon service with FV-style temporary-follow positioning. */
 public class FloatService extends Service implements android.content.SharedPreferences.OnSharedPreferenceChangeListener {
     public static final String ACT_START="com.yagay.floatlens.START", ACT_STOP="com.yagay.floatlens.STOP", ACT_SHOW="com.yagay.floatlens.SHOW";
     private static volatile FloatService instance;
@@ -22,6 +22,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private EdgeWakeView wakeLeft,wakeRight; private WindowManager.LayoutParams wakeLeftLp,wakeRightLp;
     private boolean manualHidden,screenshotHidden,appHidden,lockHidden,fullscreenHidden;
     private boolean imeVisible,notificationExpanded,statusBarVisible=true;
+    private boolean positionMoveArmed;
     private String topPackage=""; private int imeTopPx; private Integer imeRestoreY;
     private float lastActionX,lastActionY;
     public static FloatService get(){return instance;}
@@ -35,16 +36,60 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private void addPrimary(){int px=iconPx();primaryLp=makeLp(px);int[] wh=displaySize();int defaultX=wh[0]-px,defaultY=wh[1]/3;primaryLp.x=fs.prefs().getInt(fs.posXKey(),fs.prefs().getInt(FloatSettings.K_POS_X,defaultX));primaryLp.y=fs.prefs().getInt(fs.posYKey(),fs.prefs().getInt(FloatSettings.K_POS_Y,defaultY));int side=fs.savedSide(primaryLp.x+px/2<wh[0]/2?0:1);primaryLp.x=side==0?0:wh[0]-px;clamp(primaryLp,false);primary=newIcon(primaryLp,false);primary.setAlpha(fs.alpha());wm.addView(primary,primaryLp);edgeHide(primaryLp);safeUpdate(primary,primaryLp);}
     private void syncSecondary(){if(fs.bothSide()){if(secondary==null&&primaryLp!=null){secondaryLp=makeLp(iconPx());int[] wh=displaySize();secondaryLp.x=isLeft(primaryLp,wh[0])?wh[0]-secondaryLp.width:0;secondaryLp.y=primaryLp.y;secondary=newIcon(secondaryLp,true);secondary.setAlpha(fs.alpha());wm.addView(secondary,secondaryLp);edgeHide(secondaryLp);safeUpdate(secondary,secondaryLp);}}else if(secondary!=null){try{wm.removeView(secondary);}catch(Throwable ignored){}secondary=null;secondaryLp=null;}}
 
-    private FloatIconView newIcon(WindowManager.LayoutParams lp,boolean mirrored){return new FloatIconView(this,new FloatIconView.Callback(){
-        @Override public void onDragStart(){restoreFully(lp);safeUpdate(mirrored?secondary:primary,lp);}
-        @Override public void onMove(int dx,int dy){lp.x+=dx;lp.y+=dy;clamp(lp,false);safeUpdate(mirrored?secondary:primary,lp);if(!mirrored&&secondary!=null&&secondaryLp!=null){secondaryLp.y=lp.y;clamp(secondaryLp,false);safeUpdate(secondary,secondaryLp);}}
-        @Override public void onRelease(boolean moved){if(moved&&fs.snap())snap(lp,mirrored?secondary:primary);else{edgeHide(lp);safeUpdate(mirrored?secondary:primary,lp);}if(!mirrored){persistPosition();if(secondary!=null&&secondaryLp!=null)syncMirrorPosition();}}
-        @Override public void onGestureDecision(GestureDecision d){lastActionX=lp.x+lp.width/2f;lastActionY=lp.y+lp.height/2f;dispatchGesture(d);}
-        @Override public void onAction(String a){lastActionX=lp.x+lp.width/2f;lastActionY=lp.y+lp.height/2f;DiagnosticLog.i(FloatService.this,"ACTION_LAYER","direct action="+a);ActionExecutor.execute(FloatService.this,a);}
-        @Override public void onGestureStart(float x,float y){if(fs.track())trail.begin(x,y);}
-        @Override public void onGestureMove(float x,float y){if(fs.track())trail.add(x,y);}
-        @Override public void onGestureEnd(List<GesturePointSample> points){trail.end();}
-    });}
+    private FloatIconView newIcon(WindowManager.LayoutParams lp,boolean mirrored){
+        final int[] origin=new int[2];
+        final int[] mirrorOrigin=new int[2];
+        final boolean[] originReady={false};
+        final boolean[] mirrorOriginReady={false};
+        return new FloatIconView(this,new FloatIconView.Callback(){
+            @Override public void onDragStart(){
+                // FV Full Capture shows c0() moving all over the screen during a gesture, while
+                // every following touch starts again from the same resting coordinate. Keep that
+                // resting coordinate before exposing the icon for the temporary follow animation.
+                origin[0]=lp.x; origin[1]=lp.y; originReady[0]=true;
+                if(!mirrored&&secondaryLp!=null){mirrorOrigin[0]=secondaryLp.x;mirrorOrigin[1]=secondaryLp.y;mirrorOriginReady[0]=true;}
+                restoreFully(lp);safeUpdate(mirrored?secondary:primary,lp);
+                DiagnosticLog.i(FloatService.this,"POSITION","temporary follow origin="+origin[0]+","+origin[1]+" moveMode="+positionMoveArmed);
+            }
+            @Override public void onMove(int dx,int dy){
+                lp.x+=dx;lp.y+=dy;clamp(lp,false);safeUpdate(mirrored?secondary:primary,lp);
+                if(!mirrored&&secondary!=null&&secondaryLp!=null){secondaryLp.y=lp.y;clamp(secondaryLp,false);safeUpdate(secondary,secondaryLp);}
+            }
+            @Override public void onRelease(boolean moved){
+                View icon=mirrored?secondary:primary;
+                if(positionMoveArmed&&moved){
+                    // Only the explicit FV-style "move icon position" mode commits a new resting
+                    // position. Normal gestures, View selection and Circle never reach this branch.
+                    if(fs.snap())snap(lp,icon);else{edgeHide(lp);safeUpdate(icon,lp);}
+                    if(mirrored&&primaryLp!=null){primaryLp.y=lp.y;clamp(primaryLp,true);edgeHide(primaryLp);safeUpdate(primary,primaryLp);}
+                    if(!mirrored&&secondary!=null&&secondaryLp!=null)syncMirrorPosition();
+                    persistPosition();
+                    positionMoveArmed=false;
+                    originReady[0]=false;mirrorOriginReady[0]=false;
+                    DiagnosticLog.i(FloatService.this,"POSITION","committed explicit move x="+lp.x+" y="+lp.y);
+                    android.widget.Toast.makeText(FloatService.this,"图标位置已保存",android.widget.Toast.LENGTH_SHORT).show();
+                    updateNotification();
+                    return;
+                }
+
+                // Ordinary FV gesture: restore the exact resting position captured on DOWN. Do not
+                // snap the temporary end point and do not persist it.
+                if(originReady[0]){lp.x=origin[0];lp.y=origin[1];clamp(lp,true);safeUpdate(icon,lp);}
+                else{edgeHide(lp);safeUpdate(icon,lp);}
+                if(!mirrored&&secondary!=null&&secondaryLp!=null){
+                    if(mirrorOriginReady[0]){secondaryLp.x=mirrorOrigin[0];secondaryLp.y=mirrorOrigin[1];clamp(secondaryLp,true);safeUpdate(secondary,secondaryLp);}
+                    else syncMirrorPosition();
+                }
+                DiagnosticLog.i(FloatService.this,"POSITION","restored temporary follow x="+lp.x+" y="+lp.y+" moved="+moved);
+                originReady[0]=false;mirrorOriginReady[0]=false;
+            }
+            @Override public void onGestureDecision(GestureDecision d){lastActionX=lp.x+lp.width/2f;lastActionY=lp.y+lp.height/2f;dispatchGesture(d);}
+            @Override public void onAction(String a){lastActionX=lp.x+lp.width/2f;lastActionY=lp.y+lp.height/2f;DiagnosticLog.i(FloatService.this,"ACTION_LAYER","direct action="+a);ActionExecutor.execute(FloatService.this,a);}
+            @Override public void onGestureStart(float x,float y){if(fs.track())trail.begin(x,y);}
+            @Override public void onGestureMove(float x,float y){if(fs.track())trail.add(x,y);}
+            @Override public void onGestureEnd(List<GesturePointSample> points){trail.end();}
+        });
+    }
 
     private void dispatchGesture(GestureDecision d){
         if(d==null||d.isNone())return;
@@ -54,6 +99,16 @@ public class FloatService extends Service implements android.content.SharedPrefe
         DiagnosticLog.i(this,"GESTURE_LAYER","code="+d.code()+" label="+GestureCode.label(d.code())+" longTier="+d.longTier()+" -> action="+action);
         if(!ActionId.NONE.equals(action))ActionExecutor.execute(this,action);
     }
+
+    /** Arms the one-shot FV-style position edit. Normal icon gestures never change the rest position. */
+    public void armPositionMove(){
+        positionMoveArmed=true;
+        DiagnosticLog.i(this,"POSITION","explicit move mode armed");
+        android.widget.Toast.makeText(this,"移动图标位置：拖动悬浮球后松手保存",android.widget.Toast.LENGTH_SHORT).show();
+        updateNotification();
+    }
+    public boolean isPositionMoveArmed(){return positionMoveArmed;}
+    public void cancelPositionMove(){positionMoveArmed=false;updateNotification();}
 
     public void onCircleCaptureStarted(){if(circleState!=null)circleState.captureStarted();}
     public void onCircleRecognizeStarted(){if(circleState!=null)circleState.recognizeStarted();}
@@ -96,7 +151,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private void safeUpdate(View v,WindowManager.LayoutParams lp){if(v==null)return;try{wm.updateViewLayout(v,lp);}catch(Throwable ignored){}}
     @Override public void onDestroy(){persistPosition();if(circleState!=null)circleState.finish("service_destroy");removeIcons();try{fs.prefs().unregisterOnSharedPreferenceChangeListener(this);}catch(Throwable ignored){}if(screenReceiver!=null)try{unregisterReceiver(screenReceiver);}catch(Throwable ignored){}if(instance==this)instance=null;super.onDestroy();}
     @Override public IBinder onBind(Intent i){return null;}
-    private Notification buildNotification(){Intent stop=new Intent(this,FloatService.class).setAction(ACT_STOP),show=new Intent(this,FloatService.class).setAction(ACT_SHOW);PendingIntent stopPi=PendingIntent.getService(this,1,stop,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE),showPi=PendingIntent.getService(this,3,show,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE),openPi=PendingIntent.getActivity(this,2,new Intent(this,MainActivity.class),PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);String state=manualHidden?"图标已手动隐藏":lockHidden?"锁屏隐藏":fullscreenHidden?"全屏应用隐藏":appHidden?"当前应用按规则隐藏":circleState!=null&&circleState.active()?"Circle: "+circleState.state():notificationExpanded?"通知栏已展开":"点击进入设置";NotificationCompat.Builder b=new NotificationCompat.Builder(this,"floatlens").setSmallIcon(android.R.drawable.ic_menu_search).setContentTitle("FloatLens 悬浮图标已运行").setContentText(state).setContentIntent(openPi).setOngoing(true);if(manualHidden)b.addAction(0,"显示图标",showPi);b.addAction(0,"停止",stopPi);return b.build();}
+    private Notification buildNotification(){Intent stop=new Intent(this,FloatService.class).setAction(ACT_STOP),show=new Intent(this,FloatService.class).setAction(ACT_SHOW);PendingIntent stopPi=PendingIntent.getService(this,1,stop,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE),showPi=PendingIntent.getService(this,3,show,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE),openPi=PendingIntent.getActivity(this,2,new Intent(this,MainActivity.class),PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);String state=positionMoveArmed?"移动图标位置：拖动后松手保存":manualHidden?"图标已手动隐藏":lockHidden?"锁屏隐藏":fullscreenHidden?"全屏应用隐藏":appHidden?"当前应用按规则隐藏":circleState!=null&&circleState.active()?"Circle: "+circleState.state():notificationExpanded?"通知栏已展开":"点击进入设置";NotificationCompat.Builder b=new NotificationCompat.Builder(this,"floatlens").setSmallIcon(android.R.drawable.ic_menu_search).setContentTitle("FloatLens 悬浮图标已运行").setContentText(state).setContentIntent(openPi).setOngoing(true);if(manualHidden)b.addAction(0,"显示图标",showPi);b.addAction(0,"停止",stopPi);return b.build();}
     private void updateNotification(){try{((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(27,buildNotification());}catch(Throwable ignored){}}
     private void createChannel(){NotificationManager n=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);n.createNotificationChannel(new NotificationChannel("floatlens","FloatLens 悬浮服务",NotificationManager.IMPORTANCE_LOW));}
     private int dp(int v){return Math.round(v*getResources().getDisplayMetrics().density);}
