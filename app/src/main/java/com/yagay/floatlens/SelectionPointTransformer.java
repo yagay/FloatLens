@@ -3,6 +3,7 @@ package com.yagay.floatlens;
 import android.content.Context;
 import android.graphics.PointF;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.WindowManager;
@@ -70,15 +71,17 @@ public final class SelectionPointTransformer {
         return transformRaw(e.getRawX(), e.getRawY());
     }
 
+    /** Reconstruct the small icon bounds from the same raw stream and original in-icon offset. */
+    public RectF iconBoundsForRaw(float rawX, float rawY) {
+        ensureInitializedFallback();
+        float left = rawX - touchOffsetX;
+        float top = rawY - touchOffsetY;
+        return new RectF(left, top, left + iconWidth, top + iconHeight);
+    }
+
     /** Use after FloatIconView has been expanded to full screen. */
     public PointF transformRaw(float rawX, float rawY) {
-        if (!initialized) {
-            // This should only be a compatibility fallback. Normal selection always calls begin()
-            // on ACTION_DOWN while the icon is still a small window.
-            touchOffsetX = iconWidth / 2f;
-            touchOffsetY = iconHeight / 2f;
-            initialized = true;
-        }
+        ensureInitializedFallback();
 
         final Rect screen = screenBounds();
         final float lead = dp(FV_EDGE_LEAD_DP);
@@ -129,6 +132,15 @@ public final class SelectionPointTransformer {
         maybeLog(rawX, rawY, iconLeft, x, y,
                 rightCompensation, bottomCompensation, rightThreshold, bottomThreshold, screen);
         return new PointF(x, y);
+    }
+
+    private void ensureInitializedFallback() {
+        if (initialized) return;
+        // Compatibility fallback only. Normal selection calls begin() on ACTION_DOWN while the icon
+        // is still a small window.
+        touchOffsetX = iconWidth / 2f;
+        touchOffsetY = iconHeight / 2f;
+        initialized = true;
     }
 
     private void maybeLog(float rawX, float rawY, float iconLeft, float x, float y,
