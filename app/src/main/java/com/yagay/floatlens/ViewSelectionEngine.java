@@ -8,42 +8,35 @@ import android.os.SystemClock;
 import android.view.MotionEvent;
 
 /**
- * Clean-room equivalent of FV's m2/g selection activation path.
+ * FV-style selection engine driven in parallel with the floating-icon MOVE stream.
  *
- * Confirmed from FooViewService$c3.onTouch and m2/g + m2/p/q/r:
- * - icon movement itself is handled before this path;
- * - while m2/g is not shown, per-frame |dx|/|dy| are compared with literal 40;
- * - a fast frame (>=40 px on either axis) cancels pending O0 activation;
- * - otherwise movement more than ~3dp from c3.i/j removes/reposts O0;
- * - normal O0 delay is 400 ms (1000 ms only in a special secondary-pointer state);
- * - G() shows the selection container and calls its Capture/OCR handler d();
- * - Accessibility results are then fed into that handler through setAccessiblityResult -> f()/g();
- * - once m2/g is shown, subsequent MotionEvents are routed to it until UP/CANCEL;
- * - on release the handler e() is called and the container is hidden.
- *
- * FloatLens mirrors that user-visible pipeline with Accessibility View text first and OCR on that
- * View's bounds as fallback. Candidate existence never activates the container; only the delayed
- * FV-style state transition does.
+ * Important separation:
+ * - the icon follows the finger immediately;
+ * - slow/controlled movement enables Accessibility View hit-testing and live highlighting;
+ * - fast swipe frames stay in the ordinary gesture path and cancel selection work;
+ * - the 100 ms callback observed in FV is used as a settled candidate refresh/debounce,
+ *   not as a delay before any highlight can appear.
  */
 public final class ViewSelectionEngine {
-    public enum State { IDLE, ARMING, ACTIVE }
+    public enum State { IDLE, ACTIVE }
 
-    private static final long NORMAL_ARM_DELAY_MS = 400L;
-    private static final float FV_REARM_DISTANCE_DP = 3f;
+    private static final long FV_SETTLE_DELAY_MS = 100L;
+    private static final float FV_SELECT_START_DP = 3f;
     private static final float FV_FAST_FRAME_PX = 40f;
 
     private final Context context;
     private final LensAccessibilityService accessibility;
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final Runnable activateRunnable = this::activate;
+    private final Runnable settleRunnable = this::settledRefresh;
 
     private ViewHoverOverlay overlay;
     private State state = State.IDLE;
-    private float armX = Float.NaN, armY = Float.NaN;
+    private float downX = Float.NaN, downY = Float.NaN;
     private float previousX = Float.NaN, previousY = Float.NaN;
     private float pointerX = Float.NaN, pointerY = Float.NaN;
     private float minX, minY, maxX, maxY;
     private long downAt;
+    private long lastFastFrameAt;
     private boolean moved;
 
     public ViewSelectionEngine(Context c) {
@@ -57,121 +50,157 @@ public final class ViewSelectionEngine {
 
     public void dispatchTouchEvent(MotionEvent e) {
         if (e == null || accessibility == null) return;
-        final int action=e.getActionMasked();
-        final float x=e.getRawX(), y=e.getRawY();
-        pointerX=x; pointerY=y;
+        final int action = e.getActionMasked();
+        final float x = e.getRawX(), y = e.getRawY();
+        final long now = SystemClock.uptimeMillis();
+        pointerX = x;
+        pointerY = y;
 
-        if(action==MotionEvent.ACTION_DOWN){
-            resetInternal(false);
-            downAt=SystemClock.uptimeMillis();
-            pointerX=previousX=armX=x;
-            pointerY=previousY=armY=y;
-            minX=maxX=x; minY=maxY=y;
-            DiagnosticLog.i(context,"FV_SELECT","DOWN x="+Math.round(x)+" y="+Math.round(y));
+        if (action == MotionEvent.ACTION_DOWN) {
+            resetInternal(true);
+            downAt = now;
+            downX = previousX = x;
+            downY = previousY = y;
+            pointerX = x;
+            pointerY = y;
+            minX = maxX = x;
+            minY = maxY = y;
+            DiagnosticLog.i(context, "FV_SELECT", "DOWN x=" + Math.round(x) + " y=" + Math.round(y));
             return;
         }
 
-        if(action==MotionEvent.ACTION_MOVE){
-            moved=true;
-            minX=Math.min(minX,x); minY=Math.min(minY,y); maxX=Math.max(maxX,x); maxY=Math.max(maxY,y);
-            if(state==State.ACTIVE){
-                if(overlay!=null)overlay.update(x,y);
-                previousX=x;previousY=y;
-                return;
-            }
+        if (action == MotionEvent.ACTION_MOVE) {
+            moved = true;
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
 
-            float frameDx=Float.isNaN(previousX)?0f:Math.abs(x-previousX);
-            float frameDy=Float.isNaN(previousY)?0f:Math.abs(y-previousY);
-            previousX=x;previousY=y;
+            float frameDx = Float.isNaN(previousX) ? 0f : Math.abs(x - previousX);
+            float frameDy = Float.isNaN(previousY) ? 0f : Math.abs(y - previousY);
+            previousX = x;
+            previousY = y;
 
-            // Literal FV gate: current-vs-previous X or Y >= 40px cancels pending O0.
-            if(frameDx>=FV_FAST_FRAME_PX || frameDy>=FV_FAST_FRAME_PX){
-                if(state==State.ARMING){
-                    handler.removeCallbacks(activateRunnable);
-                    DiagnosticLog.i(context,"FV_SELECT","CANCEL_ARM fastFrame dx="+Math.round(frameDx)+" dy="+Math.round(frameDy));
+            // FV c3.onTouch contains a literal 40 px per-frame gate. Treat those frames as
+            // ordinary fast gestures: cancel/hide View selection rather than letting it steal UP.
+            if (frameDx >= FV_FAST_FRAME_PX || frameDy >= FV_FAST_FRAME_PX) {
+                lastFastFrameAt = now;
+                handler.removeCallbacks(settleRunnable);
+                if (state == State.ACTIVE) {
+                    closeOverlay();
+                    state = State.IDLE;
+                    DiagnosticLog.i(context, "FV_SELECT", "LEAVE_ACTIVE fastFrame dx=" + Math.round(frameDx) + " dy=" + Math.round(frameDy));
                 }
-                state=State.IDLE;
-                armX=x;armY=y;
                 return;
             }
 
-            float rearm=dp(FV_REARM_DISTANCE_DP);
-            float dx=x-armX,dy=y-armY;
-            if(dx*dx+dy*dy>rearm*rearm){
-                handler.removeCallbacks(activateRunnable);
-                armX=x;armY=y;
-                state=State.ARMING;
-                handler.postDelayed(activateRunnable,NORMAL_ARM_DELAY_MS);
-                DiagnosticLog.i(context,"FV_SELECT","ARM x="+Math.round(x)+" y="+Math.round(y)+" delay="+NORMAL_ARM_DELAY_MS+" frame="+Math.round(frameDx)+","+Math.round(frameDy));
+            float start = dp(FV_SELECT_START_DP);
+            float totalDx = x - downX;
+            float totalDy = y - downY;
+            boolean meaningfulMove = totalDx * totalDx + totalDy * totalDy >= start * start;
+
+            if (meaningfulMove) {
+                // If the path started with a fast frame, wait for the observed 100 ms settled
+                // period before re-entering selection. For a normal controlled drag, show the
+                // current Accessibility View immediately and continue updating it during MOVE.
+                if (state != State.ACTIVE && now - lastFastFrameAt >= FV_SETTLE_DELAY_MS) {
+                    activateNow(x, y, "controlled_move");
+                }
+                if (state == State.ACTIVE && overlay != null) {
+                    overlay.update(x, y);
+                }
+
+                handler.removeCallbacks(settleRunnable);
+                handler.postDelayed(settleRunnable, FV_SETTLE_DELAY_MS);
             }
             return;
         }
 
-        if(action==MotionEvent.ACTION_CANCEL)cancel();
+        if (action == MotionEvent.ACTION_CANCEL) cancel();
     }
 
-    private void activate(){
-        if(accessibility==null||!moved||state!=State.ARMING)return;
-        state=State.ACTIVE;
-        overlay=new ViewHoverOverlay(context);
-        if(overlay.available()){
-            overlay.begin();
-            if(!Float.isNaN(pointerX)&&!Float.isNaN(pointerY))overlay.update(pointerX,pointerY);
+    private void activateNow(float x, float y, String reason) {
+        if (accessibility == null || state == State.ACTIVE) return;
+        overlay = new ViewHoverOverlay(context);
+        if (!overlay.available()) {
+            overlay = null;
+            return;
         }
-        DiagnosticLog.i(context,"FV_SELECT","ACTIVE after="+(SystemClock.uptimeMillis()-downAt)+"ms x="+Math.round(pointerX)+" y="+Math.round(pointerY)+" captureHandler=start");
+        overlay.begin();
+        state = State.ACTIVE;
+        overlay.update(x, y);
+        DiagnosticLog.i(context, "FV_SELECT", "ACTIVE reason=" + reason + " after=" + (SystemClock.uptimeMillis() - downAt) + "ms x=" + Math.round(x) + " y=" + Math.round(y));
+    }
+
+    /** Final 100 ms settled refresh so the highlight/candidate lands on the last finger position. */
+    private void settledRefresh() {
+        if (!moved || accessibility == null || Float.isNaN(pointerX) || Float.isNaN(pointerY)) return;
+        long now = SystemClock.uptimeMillis();
+        if (now - lastFastFrameAt < FV_SETTLE_DELAY_MS) {
+            handler.postDelayed(settleRunnable, FV_SETTLE_DELAY_MS - (now - lastFastFrameAt));
+            return;
+        }
+        if (state != State.ACTIVE) activateNow(pointerX, pointerY, "settled_100ms");
+        else if (overlay != null) overlay.update(pointerX, pointerY);
     }
 
     /**
-     * True only if the FV-style selection container was actually ACTIVE at release. An active
-     * selection owns this UP exactly like m2/g; it resolves Accessibility text first and performs
-     * View-bounds OCR when the selected node has no exposed text.
+     * An ACTIVE FV-style selection container owns UP. Accessibility text is returned directly;
+     * a node without exposed text falls back to OCR of that node's bounds. If there is no node,
+     * use the path bounds without opening a second, unrelated selection UI.
      */
-    public boolean finish(MotionEvent up){
-        boolean wasActive=state==State.ACTIVE;
-        boolean hadCandidate=overlay!=null&&overlay.hasCandidate();
-        handler.removeCallbacks(activateRunnable);
-        boolean producedResult=false;
-        if(overlay!=null)producedResult=overlay.finish(wasActive);
+    public boolean finish(MotionEvent up) {
+        boolean wasActive = state == State.ACTIVE;
+        boolean hadCandidate = overlay != null && overlay.hasCandidate();
+        handler.removeCallbacks(settleRunnable);
+        boolean producedResult = false;
+        if (overlay != null) producedResult = overlay.finish(wasActive);
 
-        // FV capture handlers can still OCR a selection when Accessibility provides no useful node.
-        // Use the dragged selection bounds as the clean-room fallback rather than opening another UI.
-        if(wasActive&&!producedResult&&!hadCandidate){
-            Rect r=selectionBounds();
-            if(r.width()>=Math.round(dp(8))&&r.height()>=Math.round(dp(8))){
-                ScreenshotController.captureBoundsForOcr(context,r);
-                producedResult=true;
-                DiagnosticLog.i(context,"FV_SELECT","fallback bounds OCR="+r);
+        if (wasActive && !producedResult && !hadCandidate) {
+            Rect r = selectionBounds();
+            if (r.width() >= Math.round(dp(8)) && r.height() >= Math.round(dp(8))) {
+                ScreenshotController.captureBoundsForOcr(context, r);
+                producedResult = true;
+                DiagnosticLog.i(context, "FV_SELECT", "fallback bounds OCR=" + r);
             }
         }
-        DiagnosticLog.i(context,"FV_SELECT","UP active="+wasActive+" candidate="+hadCandidate+" result="+producedResult);
+        DiagnosticLog.i(context, "FV_SELECT", "UP active=" + wasActive + " candidate=" + hadCandidate + " result=" + producedResult);
         resetInternal(false);
         return wasActive;
     }
 
-    public void cancel(){
-        boolean wasArming=state==State.ARMING,wasActive=state==State.ACTIVE;
-        handler.removeCallbacks(activateRunnable);
-        if(overlay!=null)overlay.cancel();
-        DiagnosticLog.i(context,"FV_SELECT","CANCEL arming="+wasArming+" active="+wasActive);
+    public void cancel() {
+        boolean wasActive = state == State.ACTIVE;
+        handler.removeCallbacks(settleRunnable);
+        closeOverlay();
+        DiagnosticLog.i(context, "FV_SELECT", "CANCEL active=" + wasActive);
         resetInternal(false);
     }
 
-    private Rect selectionBounds(){
-        int l=Math.round(Math.min(minX,maxX)),t=Math.round(Math.min(minY,maxY));
-        int r=Math.round(Math.max(minX,maxX)),b=Math.round(Math.max(minY,maxY));
-        return new Rect(l,t,r,b);
+    private Rect selectionBounds() {
+        int l = Math.round(Math.min(minX, maxX));
+        int t = Math.round(Math.min(minY, maxY));
+        int r = Math.round(Math.max(minX, maxX));
+        int b = Math.round(Math.max(minY, maxY));
+        return new Rect(l, t, r, b);
     }
 
-    private void resetInternal(boolean closeOverlay){
-        handler.removeCallbacks(activateRunnable);
-        if(closeOverlay&&overlay!=null)overlay.cancel();
-        overlay=null;
-        state=State.IDLE;
-        armX=armY=previousX=previousY=pointerX=pointerY=Float.NaN;
-        minX=minY=maxX=maxY=0f;
-        downAt=0L;
-        moved=false;
+    private void closeOverlay() {
+        if (overlay != null) overlay.cancel();
+        overlay = null;
     }
 
-    private float dp(float v){return v*context.getResources().getDisplayMetrics().density;}
+    private void resetInternal(boolean close) {
+        handler.removeCallbacks(settleRunnable);
+        if (close) closeOverlay();
+        overlay = null;
+        state = State.IDLE;
+        downX = downY = previousX = previousY = pointerX = pointerY = Float.NaN;
+        minX = minY = maxX = maxY = 0f;
+        downAt = 0L;
+        lastFastFrameAt = 0L;
+        moved = false;
+    }
+
+    private float dp(float v) { return v * context.getResources().getDisplayMetrics().density; }
 }
