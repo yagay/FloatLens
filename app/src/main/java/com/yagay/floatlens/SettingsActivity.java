@@ -54,6 +54,7 @@ public class SettingsActivity extends AppCompatActivity {
         EditText lineColors = new EditText(this); lineColors.setHint("轨迹颜色，如 #FFFFFF,#42A5F5"); lineColors.setText(fs.lineColors()); root.addView(lineColors); lineColors.setOnFocusChangeListener((v, has)->{ if(!has) fs.prefs().edit().putString(FloatSettings.K_LINE_COLORS, lineColors.getText().toString()).apply(); });
 
         title(root, "截图与 OCR");
+        seek(root, "高亮 View 停留确认 / view_capture_dwell_ms", FloatSettings.K_VIEW_CAPTURE_DWELL, 200, 2000, fs.viewCaptureDwellMs(), " ms");
         check(root, "截图保留悬浮图标 / screen_capture_keep_icon", FloatSettings.K_KEEP_IN_SCREENSHOT, fs.keepInScreenshot());
         check(root, "截图保留状态栏 / screen_capture_keep_noti_bar", FloatSettings.K_KEEP_STATUS_BAR, fs.keepStatusBarInScreenshot());
         check(root, "优先无障碍截图 / screen_capture_accessibility", FloatSettings.K_ACCESSIBILITY_SCREENSHOT, fs.accessibilityScreenshot());
@@ -85,7 +86,7 @@ public class SettingsActivity extends AppCompatActivity {
         for (var e : map.entrySet()) spinner(root, e.getKey(), e.getValue(), defaultFor(e.getValue()));
 
         TextView note = new TextView(this);
-        note.setText("FV式位置逻辑：普通手势时图标只临时跟手，松手恢复原来的贴边位置；只有先触发“移动图标位置”动作，下一次拖动才保存新位置。");
+        note.setText("FV式位置逻辑：普通手势时图标只临时跟手，松手恢复原来的贴边位置；只有先触发“移动图标位置”动作，下一次拖动才保存新位置。高亮 View 连续停留达到设定时间后锁定，松手截取整个高亮 View。");
         note.setPadding(0, dp(28), 0, 0);
         root.addView(note);
         setContentView(sv);
