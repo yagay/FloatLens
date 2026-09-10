@@ -14,16 +14,21 @@ import android.os.SystemClock;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import java.util.List;
 import java.util.ArrayList;
 
 /**
  * Floating icon touch engine modelled from FV FooViewService$c3.onTouch.
  *
- * Normal MOVE temporarily follows the finger. Every MOVE restarts the observed FV-style 400 ms
- * selection Runnable. If the finger stops while still down, the SAME FloatIconView is expanded to
- * MATCH_PARENT by FloatService and remains the only touch owner; a separate NOT_TOUCHABLE overlay
- * only draws the current View candidate. ACTION_UP completes selection and restores the icon.
+ * FV Full Capture shows a 400 ms FooViewService$q selection runnable, but importantly that runnable
+ * is NOT restarted by every tiny MOVE event. Android can keep emitting sub-pixel / few-pixel MOVE
+ * jitter while the finger appears stationary. FV keeps a movement anchor and only rearms q after a
+ * meaningful displacement, allowing q to fire while the same pointer stream remains down.
+ *
+ * When q fires, the SAME FloatIconView is expanded to MATCH_PARENT by FloatService and remains the
+ * touch owner. A separate NOT_TOUCHABLE overlay only draws the current View candidate. ACTION_UP
+ * completes selection and restores the icon.
  */
 public class FloatIconView extends View {
     public interface Callback {
@@ -48,6 +53,7 @@ public class FloatIconView extends View {
     private FloatSettings fs;
     private final Callback cb;
     private final Runnable directSelectionRunnable;
+    private final float directRearmSlopPx;
     private long lastTapAt;
     private Runnable longPressRunnable;
     private Runnable singleTapRunnable;
@@ -59,8 +65,10 @@ public class FloatIconView extends View {
     private boolean circleActive;
     private boolean regionEditorTriggered;
     private boolean directSelectionActive;
+    private boolean directTimerArmed;
     private boolean positionMoveMode;
     private float lastSelectionRawX = Float.NaN, lastSelectionRawY = Float.NaN;
+    private float directTimerAnchorX = Float.NaN, directTimerAnchorY = Float.NaN;
     private ViewSelectionEngine selectionEngine;
 
     private final Runnable slideRunnable = new Runnable() {
@@ -76,7 +84,9 @@ public class FloatIconView extends View {
     public FloatIconView(Context c, Callback cb) {
         super(c);
         this.cb = cb;
+        directRearmSlopPx = Math.max(1f, ViewConfiguration.get(c).getScaledTouchSlop());
         directSelectionRunnable = () -> {
+            directTimerArmed = false;
             if (directSelectionActive || regionEditorTriggered || positionMoveMode || session.multiTouch
                     || !followStarted || selectionEngine == null || !selectionEngine.available()
                     || Float.isNaN(lastSelectionRawX) || Float.isNaN(lastSelectionRawY)
@@ -94,9 +104,11 @@ public class FloatIconView extends View {
                 DiagnosticLog.i(getContext(), "FV_DIRECT", "enter failed");
                 return;
             }
-            DiagnosticLog.i(getContext(), "FV_DIRECT", "ENTER afterMoveIdle="
+            DiagnosticLog.i(getContext(), "FV_DIRECT", "ENTER delay="
                     + FV_DIRECT_SELECT_DELAY_MS + "ms raw=" + Math.round(lastSelectionRawX)
-                    + "," + Math.round(lastSelectionRawY));
+                    + "," + Math.round(lastSelectionRawY)
+                    + " anchor=" + Math.round(directTimerAnchorX) + "," + Math.round(directTimerAnchorY)
+                    + " rearmSlopPx=" + Math.round(directRearmSlopPx));
             if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
             invalidate();
         };
@@ -111,7 +123,7 @@ public class FloatIconView extends View {
     public void refreshSettings() { fs = new FloatSettings(getContext()); loadCustomIcon(); invalidate(); }
 
     @Override protected void onDetachedFromWindow() {
-        handler.removeCallbacks(directSelectionRunnable);
+        cancelDirectSelectionTimer();
         if(selectionEngine!=null)selectionEngine.cancel();
         if(circleActive)CircleLiveController.cancel("icon_detached");
         handler.removeCallbacks(slideRunnable);
@@ -192,13 +204,17 @@ public class FloatIconView extends View {
                 directSelectionActive=false;
                 followStarted=false;
                 lastSelectionRawX=lastSelectionRawY=Float.NaN;
+                directTimerAnchorX=directTimerAnchorY=Float.NaN;
                 session.begin(rx, ry, now);
                 if(selectionEngine!=null&&selectionEngine.available())selectionEngine.dispatchTouchEvent(e);
                 DiagnosticLog.i(getContext(), "STATE", "DOWN begin="+Math.round(rx)+","+Math.round(ry)
                         +" fvDirectAvailable="+(selectionEngine!=null&&selectionEngine.available())
+                        +" directRearmSlopPx="+Math.round(directRearmSlopPx)
                         +" positionMove="+positionMoveMode);
                 invalidate();
 
+                // User-requested stationary long-press editor remains separate. A real drag cancels
+                // it and follows FV's q Runnable path below.
                 if(!positionMoveMode){
                     longPressRunnable = () -> {
                         if (!session.multiTouch && !followStarted && session.phase == GestureSession.Phase.DOWN
@@ -258,10 +274,7 @@ public class FloatIconView extends View {
                 }
 
                 if(followStarted && selectionEngine!=null && selectionEngine.available()) {
-                    lastSelectionRawX=rx;
-                    lastSelectionRawY=ry;
-                    handler.removeCallbacks(directSelectionRunnable);
-                    handler.postDelayed(directSelectionRunnable,FV_DIRECT_SELECT_DELAY_MS);
+                    armOrRearmDirectSelection(rx, ry);
                 }
 
                 if(session.phase==GestureSession.Phase.DOWN && dist>=gestureSlopPx()){
@@ -338,6 +351,42 @@ public class FloatIconView extends View {
         return true;
     }
 
+    /**
+     * Mirrors the observed FV q scheduling behavior: tiny MOVE jitter does not rearm the 400 ms
+     * runnable. Only a meaningful displacement from the last timer anchor does. Full Capture shows
+     * q remaining scheduled while identical/sub-pixel MOVE events continue, then firing on time.
+     */
+    private void armOrRearmDirectSelection(float rawX, float rawY) {
+        lastSelectionRawX = rawX;
+        lastSelectionRawY = rawY;
+
+        if (!directTimerArmed || Float.isNaN(directTimerAnchorX) || Float.isNaN(directTimerAnchorY)) {
+            directTimerAnchorX = rawX;
+            directTimerAnchorY = rawY;
+            directTimerArmed = true;
+            handler.removeCallbacks(directSelectionRunnable);
+            handler.postDelayed(directSelectionRunnable, FV_DIRECT_SELECT_DELAY_MS);
+            DiagnosticLog.i(getContext(), "FV_DIRECT", "ARM anchor="+Math.round(rawX)+","+Math.round(rawY)
+                    +" delay="+FV_DIRECT_SELECT_DELAY_MS+" slopPx="+Math.round(directRearmSlopPx));
+            return;
+        }
+
+        float dx = rawX - directTimerAnchorX;
+        float dy = rawY - directTimerAnchorY;
+        if (dx * dx + dy * dy < directRearmSlopPx * directRearmSlopPx) {
+            // FV Full Capture: small continued MOVE events do not cancel the already-posted q.
+            return;
+        }
+
+        handler.removeCallbacks(directSelectionRunnable);
+        directTimerAnchorX = rawX;
+        directTimerAnchorY = rawY;
+        handler.postDelayed(directSelectionRunnable, FV_DIRECT_SELECT_DELAY_MS);
+        DiagnosticLog.i(getContext(), "FV_DIRECT", "REARM anchor="+Math.round(rawX)+","+Math.round(rawY)
+                +" moved="+Math.round((float)Math.sqrt(dx*dx+dy*dy))
+                +" slopPx="+Math.round(directRearmSlopPx));
+    }
+
     private void finish(long now, boolean cancelled) {
         GestureSession.Phase ended = session.phase;
         DiagnosticLog.i(getContext(), "FINISH", "ended="+ended+" cancelled="+cancelled
@@ -404,7 +453,11 @@ public class FloatIconView extends View {
         handler.postDelayed(singleTapRunnable, fs.doubleTapMs());
     }
 
-    private void cancelDirectSelectionTimer(){handler.removeCallbacks(directSelectionRunnable);}
+    private void cancelDirectSelectionTimer(){
+        handler.removeCallbacks(directSelectionRunnable);
+        directTimerArmed=false;
+        directTimerAnchorX=directTimerAnchorY=Float.NaN;
+    }
     private float gestureSlopPx() { return dp(fs.gestureStartDistance()); }
     @Override public void cancelLongPress() {
         super.cancelLongPress();
