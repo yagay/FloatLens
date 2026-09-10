@@ -5,6 +5,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
+import android.graphics.PointF;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
@@ -12,9 +13,12 @@ import android.view.WindowManager;
 /**
  * FV-style 24dp action indicator.
  *
- * The Window itself never changes size or jumps to ProbePoint. PLUS and DOT are only drawable
- * states inside the same 24dp CircleImageView-equivalent container. Its side is supplied from the
- * gesture snapshot and remains fixed for that pointer stream, matching FloatIconView.V()/D4().
+ * The Window itself never changes size. PLUS and DOT are drawable states inside the same 24dp
+ * container. Its side is supplied from the gesture snapshot and remains fixed for that pointer
+ * stream, matching FloatIconView.V()/D4().
+ *
+ * Important coordinate rule: when DOT is visible, its geometric centre is also the View hit-test
+ * coordinate. showDotNextTo() therefore returns the exact centre that was just placed on screen.
  */
 public final class FvActionHintOverlay {
     public enum Mode { PLUS, DOT }
@@ -67,28 +71,35 @@ public final class FvActionHintOverlay {
         }
     }
 
-    public void showPlusNextTo(float iconLeft, float iconTop, float iconWidth,
-                               float iconHeight, boolean leftSide) {
-        showStateNextTo(Mode.PLUS, iconLeft, iconTop, iconWidth, iconHeight, leftSide);
-    }
-
-    public void showDotNextTo(float iconLeft, float iconTop, float iconWidth,
-                              float iconHeight, boolean leftSide) {
-        showStateNextTo(Mode.DOT, iconLeft, iconTop, iconWidth, iconHeight, leftSide);
-    }
-
-    private void showStateNextTo(Mode next, float iconLeft, float iconTop, float iconWidth,
+    public PointF showPlusNextTo(float iconLeft, float iconTop, float iconWidth,
                                  float iconHeight, boolean leftSide) {
+        return showStateNextTo(Mode.PLUS, iconLeft, iconTop, iconWidth, iconHeight, leftSide);
+    }
+
+    public PointF showDotNextTo(float iconLeft, float iconTop, float iconWidth,
+                                float iconHeight, boolean leftSide) {
+        return showStateNextTo(Mode.DOT, iconLeft, iconTop, iconWidth, iconHeight, leftSide);
+    }
+
+    /**
+     * Position the one helper Window and return its exact screen-space centre. The DOT glyph is
+     * centred inside this Window, so this PointF is exactly what the user sees as the selection dot.
+     */
+    private PointF showStateNextTo(Mode next, float iconLeft, float iconTop, float iconWidth,
+                                   float iconHeight, boolean leftSide) {
         if (!attached) attachHidden();
-        if (!attached) return;
 
         setMode(next);
-        // FV D4(): position is always derived from the floating icon and the fixed V() side state.
-        // PLUS -> DOT therefore changes only the drawable; the top-left remains continuous.
         lp.x = Math.round(leftSide ? iconLeft + iconWidth : iconLeft - windowSizePx);
         lp.y = Math.round(iconTop - windowSizePx);
-        updateVisible(next + " side=" + (leftSide ? "L" : "R")
-                + " icon=" + Math.round(iconLeft) + "," + Math.round(iconTop));
+        if (attached) {
+            updateVisible(next + " side=" + (leftSide ? "L" : "R")
+                    + " icon=" + Math.round(iconLeft) + "," + Math.round(iconTop));
+        }
+
+        float cx = lp.x + windowSizePx / 2f;
+        float cy = lp.y + windowSizePx / 2f;
+        return new PointF(cx, cy);
     }
 
     private void setMode(Mode next) {
@@ -108,6 +119,8 @@ public final class FvActionHintOverlay {
                 visible = true;
             }
             DiagnosticLog.i(context, "FV_INDICATOR", detail + " window=" + lp.x + "," + lp.y
+                    + " centre=" + Math.round(lp.x + windowSizePx / 2f) + ","
+                    + Math.round(lp.y + windowSizePx / 2f)
                     + " size=" + windowSizePx);
         } catch (Throwable t) {
             DiagnosticLog.i(context, "FV_INDICATOR", "move failed=" + t);
@@ -165,8 +178,6 @@ public final class FvActionHintOverlay {
             float cy = getHeight() / 2f;
 
             if (mode == Mode.DOT) {
-                // FV swaps the Drawable in the same 24dp CircleImageView. Keep the window fixed and
-                // render the smaller dot glyph centred inside it instead of resizing/repositioning.
                 float r = Math.max(1f, dotDiameterPx / 2f - border.getStrokeWidth());
                 fill.setColor(0xDD1976D2);
                 canvas.drawCircle(cx, cy, r, fill);
