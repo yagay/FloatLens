@@ -8,9 +8,9 @@ import android.view.MotionEvent;
 /**
  * FV-style same-touch selection engine.
  *
- * The visible 24dp action indicator and the selection ProbePoint are separate concepts:
- * - the indicator stays beside the virtual moving icon and only changes drawable PLUS -> DOT;
- * - the transformed ProbePoint is used for Accessibility/View hit testing and edge compensation.
+ * During drag the helper is a PLUS. Once direct View selection starts, it becomes DOT. From that
+ * moment the exact geometric centre of the visible DOT is the single source of truth for View hit
+ * testing, candidate highlighting, region selection and release. What the user sees is what selects.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
@@ -47,7 +47,7 @@ public final class ViewSelectionEngine {
             PointF p = pointTransformer.transform(e);
             selectionX = p.x;
             selectionY = p.y;
-            DiagnosticLog.i(context, "FV_SELECT", "DOWN hotspot="
+            DiagnosticLog.i(context, "FV_SELECT", "DOWN preDirectProbe="
                     + Math.round(selectionX) + "," + Math.round(selectionY)
                     + " side=" + (pointTransformer.gestureLeftSide() ? "L" : "R"));
         } else if (action == MotionEvent.ACTION_MOVE && state == State.DIRECT) {
@@ -57,7 +57,7 @@ public final class ViewSelectionEngine {
         }
     }
 
-    /** Drag phase: compute ProbePoint, but visually show PLUS beside the virtual icon. */
+    /** Drag phase: keep the FV pre-direct probe current, while visually showing PLUS. */
     public PointF showProbe(float rawX, float rawY) {
         PointF p = pointTransformer.transformRaw(rawX, rawY);
         selectionX = p.x;
@@ -89,42 +89,51 @@ public final class ViewSelectionEngine {
         }
 
         overlay.begin();
-        PointF p = pointTransformer.transformRaw(rawX, rawY);
-        selectionX = p.x;
-        selectionY = p.y;
         state = State.DIRECT;
-
-        // FV D4(state) swaps the drawable on the same 24dp helper. Do not resize it and do not
-        // move it to ProbePoint. With the same raw coordinates this transition keeps exact position.
         ensureIndicator();
-        showIndicatorForRaw(FvActionHintOverlay.Mode.DOT, rawX, rawY);
+
+        // Critical invariant: direct-selection coordinate == visible DOT centre.
+        PointF dot = showIndicatorForRaw(FvActionHintOverlay.Mode.DOT, rawX, rawY);
+        selectionX = dot.x;
+        selectionY = dot.y;
 
         overlay.beginDirect(selectionX, selectionY);
         DiagnosticLog.i(context, "FV_SELECT", "DIRECT_ENTER raw="
                 + Math.round(rawX) + "," + Math.round(rawY)
-                + " hotspot=" + Math.round(selectionX) + "," + Math.round(selectionY)
+                + " dotHit=" + Math.round(selectionX) + "," + Math.round(selectionY)
                 + " side=" + (pointTransformer.gestureLeftSide() ? "L" : "R"));
         return true;
     }
 
     public void updateDirect(float rawX, float rawY) {
         if (state != State.DIRECT || overlay == null) return;
-        PointF p = pointTransformer.transformRaw(rawX, rawY);
-        selectionX = p.x;
-        selectionY = p.y;
-        showIndicatorForRaw(FvActionHintOverlay.Mode.DOT, rawX, rawY);
+
+        // Every MOVE first places the visible DOT, then uses that exact centre for hit testing.
+        PointF dot = showIndicatorForRaw(FvActionHintOverlay.Mode.DOT, rawX, rawY);
+        selectionX = dot.x;
+        selectionY = dot.y;
         overlay.updateDirect(selectionX, selectionY);
     }
 
-    private void showIndicatorForRaw(FvActionHintOverlay.Mode mode, float rawX, float rawY) {
-        if (indicatorOverlay == null) return;
+    private PointF showIndicatorForRaw(FvActionHintOverlay.Mode mode, float rawX, float rawY) {
         RectF icon = pointTransformer.iconBoundsForRaw(rawX, rawY);
         boolean left = pointTransformer.gestureLeftSide();
-        if (mode == FvActionHintOverlay.Mode.DOT) {
-            indicatorOverlay.showDotNextTo(icon.left, icon.top, icon.width(), icon.height(), left);
-        } else {
-            indicatorOverlay.showPlusNextTo(icon.left, icon.top, icon.width(), icon.height(), left);
+
+        if (indicatorOverlay == null) {
+            // Geometry-only fallback should normally never be used, because ensureIndicator() is
+            // called before both drag and direct-selection paths.
+            float helper = 24f * context.getResources().getDisplayMetrics().density;
+            float x = left ? icon.left + icon.width() : icon.left - helper;
+            float y = icon.top - helper;
+            return new PointF(x + helper / 2f, y + helper / 2f);
         }
+
+        if (mode == FvActionHintOverlay.Mode.DOT) {
+            return indicatorOverlay.showDotNextTo(
+                    icon.left, icon.top, icon.width(), icon.height(), left);
+        }
+        return indicatorOverlay.showPlusNextTo(
+                icon.left, icon.top, icon.width(), icon.height(), left);
     }
 
     /** Same-touch ACTION_UP: a dragged region wins; otherwise complete the current View candidate. */
@@ -138,7 +147,7 @@ public final class ViewSelectionEngine {
         boolean hadTarget = overlay != null && overlay.hasCandidate();
         boolean result = overlay != null && overlay.finishDirect();
         DiagnosticLog.i(context, "FV_SELECT", "DIRECT_UP region=" + region
-                + " target=" + hadTarget + " result=" + result + " hotspot="
+                + " target=" + hadTarget + " result=" + result + " dotHit="
                 + Math.round(selectionX) + "," + Math.round(selectionY));
         overlay = null;
         state = State.IDLE;
