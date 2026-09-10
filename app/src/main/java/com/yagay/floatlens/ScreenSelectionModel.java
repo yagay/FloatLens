@@ -7,36 +7,33 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Strict text/image selection model.
+ * Strict position-only model for user-visible Accessibility candidates.
  *
- * Only TEXT and NON_TEXT(image/icon) Accessibility candidates may be selected directly.
- * Screenshot VISUAL candidates are never standalone controls: they may only geometrically refine
- * an already-known TEXT cell (for example a launcher BubbleTextView containing icon + label).
+ * Only TEXT and NON_TEXT(image/icon) nodes are selectable. No screenshot candidate is allowed to
+ * split or replace an Accessibility node. Therefore an icon+label exposed as one node (for example
+ * a launcher BubbleTextView) stays one highlighted rectangle exactly as Android reports it.
  */
 public final class ScreenSelectionModel {
     private final ArrayList<ScreenCandidate> accessibility = new ArrayList<>();
-    private final ArrayList<ScreenCandidate> visual = new ArrayList<>();
 
     public void setAccessibility(List<ScreenCandidate> items) {
         accessibility.clear();
-        if (items != null) {
-            for (ScreenCandidate c : dedupe(items)) {
-                if (isSelectableType(c)) accessibility.add(c);
-            }
+        if (items == null) return;
+        for (ScreenCandidate c : dedupe(items)) {
+            if (isSelectableType(c)) accessibility.add(c);
         }
     }
 
-    public void setVisual(List<ScreenCandidate> items) {
-        visual.clear();
-        if (items != null) {
-            for (ScreenCandidate c : dedupe(items)) {
-                if (c != null && c.type() == ScreenCandidate.Type.NON_TEXT) visual.add(c);
-            }
-        }
+    /** Kept for source compatibility; visual candidates are intentionally ignored. */
+    public void setVisual(List<ScreenCandidate> items) {}
+
+    public List<ScreenCandidate> accessibilityCandidates() {
+        return new ArrayList<>(accessibility);
     }
 
-    public List<ScreenCandidate> accessibilityCandidates() { return new ArrayList<>(accessibility); }
-    public List<ScreenCandidate> visualCandidates() { return new ArrayList<>(visual); }
+    public List<ScreenCandidate> visualCandidates() {
+        return new ArrayList<>();
+    }
 
     public ScreenCandidate selectAccessibilityAt(float x, float y) {
         final int px = Math.round(x), py = Math.round(y);
@@ -47,11 +44,11 @@ public final class ScreenSelectionModel {
             Rect r = c.bounds();
             if (r.isEmpty() || !r.contains(px, py)) continue;
 
-            // Position + real tree depth only. Type (text/image), clickable and other semantics never
-            // add a score. A deeper child wins; containment/area only breaks equal-depth overlaps.
+            // Pure geometry/tree position. A real deeper child wins. At equal depth, prefer a
+            // strictly contained rectangle; if unrelated rectangles overlap, prefer the smaller one.
             if (best == null
                     || c.depth() > best.depth()
-                    || (c.depth() == best.depth() && strictlyInside(r, best.bounds()))) {
+                    || (c.depth() == best.depth() && moreSpecific(r, best.bounds()))) {
                 best = c;
             }
         }
@@ -59,40 +56,11 @@ public final class ScreenSelectionModel {
     }
 
     public ScreenCandidate selectAt(float x, float y) {
-        ScreenCandidate access = selectAccessibilityAt(x, y);
-        if (access == null) return null; // no generic visual/control recognition
-
-        // An exact Accessibility image/icon already has authoritative screen bounds.
-        if (access.type() == ScreenCandidate.Type.NON_TEXT) return access;
-
-        // A VISUAL rectangle can only refine a known text cell and must be substantially smaller
-        // and fully inside it. This is primarily for launcher icon + label exposed as one text node.
-        ScreenCandidate visualHit = selectVisualAt(x, y);
-        if (visualHit == null) return access;
-        Rect ar = access.bounds();
-        Rect vr = visualHit.bounds();
-        if (!ar.contains(vr) || ar.equals(vr)) return access;
-
-        long aa = area(ar), va = area(vr);
-        if (aa > 0 && va * 100L <= aa * 62L) return visualHit;
-        return access;
+        return selectAccessibilityAt(x, y);
     }
 
     public boolean needsVisualRefinement(float x, float y) {
-        ScreenCandidate c = selectAccessibilityAt(x, y);
-        return c != null && c.type() == ScreenCandidate.Type.TEXT;
-    }
-
-    private ScreenCandidate selectVisualAt(float x, float y) {
-        int px = Math.round(x), py = Math.round(y);
-        ScreenCandidate best = null;
-        for (ScreenCandidate c : visual) {
-            if (c == null || c.type() != ScreenCandidate.Type.NON_TEXT) continue;
-            Rect r = c.bounds();
-            if (r.isEmpty() || !r.contains(px, py)) continue;
-            if (best == null || strictlyInside(r, best.bounds())) best = c;
-        }
-        return best;
+        return false;
     }
 
     private boolean isSelectableType(ScreenCandidate c) {
@@ -100,7 +68,7 @@ public final class ScreenSelectionModel {
                 || c.type() == ScreenCandidate.Type.NON_TEXT);
     }
 
-    private boolean strictlyInside(Rect candidate, Rect current) {
+    private boolean moreSpecific(Rect candidate, Rect current) {
         if (candidate == null || candidate.isEmpty()) return false;
         if (current == null || current.isEmpty()) return true;
         if (current.contains(candidate) && !candidate.equals(current)) return true;
@@ -108,7 +76,9 @@ public final class ScreenSelectionModel {
         return area(candidate) < area(current);
     }
 
-    private long area(Rect r) { return (long) r.width() * r.height(); }
+    private long area(Rect r) {
+        return (long) r.width() * r.height();
+    }
 
     private List<ScreenCandidate> dedupe(List<ScreenCandidate> in) {
         Map<String, ScreenCandidate> map = new LinkedHashMap<>();
