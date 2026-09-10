@@ -8,11 +8,10 @@ import android.view.MotionEvent;
 /**
  * FV-style same-touch selection engine.
  *
- * The moving icon and View hit testing share one SelectionPointTransformer. Before direct selection
- * starts, FV shows two independent helper windows: a 15dp ProbePoint dot centred on the transformed
- * selection coordinate and a 24dp action hint placed beside the reconstructed moving icon. When the
- * 400ms direct-selection runnable fires, those pre-direct helpers are hidden and the full-screen
- * selection layer takes over without changing the underlying hit-test coordinate.
+ * One persistent helper indicator follows the whole gesture visually:
+ * 1) while the floating icon is moving it is a PLUS beside the icon;
+ * 2) when direct View selection starts, the same indicator becomes a DOT at ProbePoint;
+ * 3) View hit testing continues to use that exact same transformed ProbePoint.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
@@ -22,8 +21,7 @@ public final class ViewSelectionEngine {
     private final SelectionPointTransformer pointTransformer;
 
     private ViewHoverOverlay overlay;
-    private FvProbePointOverlay probeOverlay;
-    private FvActionHintOverlay actionHintOverlay;
+    private FvActionHintOverlay indicatorOverlay;
     private State state = State.IDLE;
     private float selectionX = Float.NaN, selectionY = Float.NaN;
 
@@ -45,7 +43,7 @@ public final class ViewSelectionEngine {
         int action = e.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
             cancel();
-            ensurePreDirectOverlays(); // attach hidden before MOVE, matching FV's helper lifecycle.
+            ensureIndicator();
             pointTransformer.begin(e);
             PointF p = pointTransformer.transform(e);
             selectionX = p.x;
@@ -60,27 +58,25 @@ public final class ViewSelectionEngine {
     }
 
     /**
-     * Show/move FV's pre-direct helper windows while the small floating icon follows the finger.
-     * The 15dp dot centre is exactly the point that will later be used for View hit testing.
+     * Drag phase. We still compute ProbePoint every MOVE so the selection coordinate stays current,
+     * but visually only the single PLUS indicator is shown beside the moving icon.
      */
     public PointF showProbe(float rawX, float rawY) {
         PointF p = pointTransformer.transformRaw(rawX, rawY);
         selectionX = p.x;
         selectionY = p.y;
         if (state == State.IDLE) {
-            ensurePreDirectOverlays();
-            if (probeOverlay != null) probeOverlay.showAt(selectionX, selectionY);
-            if (actionHintOverlay != null) {
-                RectF icon = pointTransformer.iconBoundsForRaw(rawX, rawY);
-                actionHintOverlay.showNextTo(icon.left, icon.top, icon.width(), icon.height());
+            ensureIndicator();
+            RectF icon = pointTransformer.iconBoundsForRaw(rawX, rawY);
+            if (indicatorOverlay != null) {
+                indicatorOverlay.showPlusNextTo(icon.left, icon.top, icon.width(), icon.height());
             }
         }
         return p;
     }
 
     public void hideProbe() {
-        if (probeOverlay != null) probeOverlay.hide();
-        if (actionHintOverlay != null) actionHintOverlay.hide();
+        if (indicatorOverlay != null) indicatorOverlay.hide();
     }
 
     /** Called by the observed FV-style q Runnable while the finger is still down. */
@@ -91,20 +87,24 @@ public final class ViewSelectionEngine {
             return true;
         }
 
-        // Pre-direct independent helper windows hand visual ownership to the full-screen selection
-        // layer when q fires, preventing duplicate circles at the same hotspot.
-        hideProbe();
-
         overlay = new ViewHoverOverlay(context);
         if (!overlay.available()) {
             overlay = null;
+            if (indicatorOverlay != null) indicatorOverlay.hide();
             return false;
         }
+
         overlay.begin();
         PointF p = pointTransformer.transformRaw(rawX, rawY);
         selectionX = p.x;
         selectionY = p.y;
         state = State.DIRECT;
+
+        // Do not create a second helper. The same PLUS indicator changes into DOT and moves to the
+        // transformed hit-test point.
+        ensureIndicator();
+        if (indicatorOverlay != null) indicatorOverlay.showDotAt(selectionX, selectionY);
+
         overlay.beginDirect(selectionX, selectionY);
         DiagnosticLog.i(context, "FV_SELECT", "DIRECT_ENTER raw="
                 + Math.round(rawX) + "," + Math.round(rawY)
@@ -117,6 +117,7 @@ public final class ViewSelectionEngine {
         PointF p = pointTransformer.transformRaw(rawX, rawY);
         selectionX = p.x;
         selectionY = p.y;
+        if (indicatorOverlay != null) indicatorOverlay.showDotAt(selectionX, selectionY);
         overlay.updateDirect(selectionX, selectionY);
     }
 
@@ -135,7 +136,7 @@ public final class ViewSelectionEngine {
                 + Math.round(selectionX) + "," + Math.round(selectionY));
         overlay = null;
         state = State.IDLE;
-        closePreDirectOverlays();
+        closeIndicator();
         return result;
     }
 
@@ -154,19 +155,16 @@ public final class ViewSelectionEngine {
         overlay = null;
         state = State.IDLE;
         selectionX = selectionY = Float.NaN;
-        closePreDirectOverlays();
+        closeIndicator();
         if (active) DiagnosticLog.i(context, "FV_SELECT", "DIRECT_CANCEL");
     }
 
-    private void ensurePreDirectOverlays() {
-        if (probeOverlay == null) probeOverlay = new FvProbePointOverlay(context);
-        if (actionHintOverlay == null) actionHintOverlay = new FvActionHintOverlay(context);
+    private void ensureIndicator() {
+        if (indicatorOverlay == null) indicatorOverlay = new FvActionHintOverlay(context);
     }
 
-    private void closePreDirectOverlays() {
-        if (probeOverlay != null) probeOverlay.close();
-        if (actionHintOverlay != null) actionHintOverlay.close();
-        probeOverlay = null;
-        actionHintOverlay = null;
+    private void closeIndicator() {
+        if (indicatorOverlay != null) indicatorOverlay.close();
+        indicatorOverlay = null;
     }
 }
