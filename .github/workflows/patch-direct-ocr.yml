@@ -1,0 +1,74 @@
+name: Patch Direct OCR
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-direct-ocr.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch Direct Selection OCR
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('app/src/main/java/com/yagay/floatlens/ScreenshotController.java')
+          s = p.read_text()
+
+          old_region = '''        captureBounds(app, bounds, crop -> {
+            DiagnosticLog.i(app, "FV_REGION_CAPTURE", "crop=" + crop.getWidth() + "x" + crop.getHeight()
+                    + " bounds=" + bounds);
+            ResultOverlay.showVisual(app, crop, null);
+        }, "区域截取失败", false);'''
+          new_region = '''        captureBounds(app, bounds, crop -> {
+            DiagnosticLog.i(app, "FV_REGION_OCR", "crop=" + crop.getWidth() + "x" + crop.getHeight()
+                    + " bounds=" + bounds);
+            OcrEngine.recognize(app, crop);
+        }, "区域 OCR 失败", true);'''
+          if old_region not in s:
+              raise SystemExit('region capture block not found')
+          s = s.replace(old_region, new_region, 1)
+
+          old_view = '''            if(!text.isEmpty()){
+                FloatService f=FloatService.get();
+                if(f!=null)f.onOcrResults(1);
+                ResultOverlay.show(app,text,List.of(text),crop);
+            }else{
+                ResultOverlay.showVisual(app,crop,candidate);
+            }'''
+          new_view = '''            if(!text.isEmpty()){
+                FloatService f=FloatService.get();
+                if(f!=null)f.onOcrResults(1);
+                ResultOverlay.show(app,text,List.of(text),crop);
+            }else{
+                DiagnosticLog.i(app,"VIEW_OCR","no Accessibility text; OCR cropped View bounds="+screenBounds);
+                OcrEngine.recognize(app,crop);
+            }'''
+          if old_view not in s:
+              raise SystemExit('view capture block not found')
+          s = s.replace(old_view, new_view, 1)
+          p.write_text(s)
+
+          b = Path('app/build.gradle')
+          t = b.read_text()
+          if "versionCode 60" not in t or "versionName '3.0.8'" not in t:
+              raise SystemExit('unexpected current version')
+          t = t.replace('versionCode 60', 'versionCode 61', 1)
+          t = t.replace("versionName '3.0.8'", "versionName '3.0.9'", 1)
+          b.write_text(t)
+          PY
+
+          git config user.name "Jie"
+          git config user.email "1614094+yagay@users.noreply.github.com"
+          git add app/src/main/java/com/yagay/floatlens/ScreenshotController.java app/build.gradle
+          git diff --cached --check
+          git commit -m "Wire Direct Selection to OCR"
+          git push
