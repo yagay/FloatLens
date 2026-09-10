@@ -1,9 +1,7 @@
 package com.yagay.floatlens;
 
 import android.content.Context;
-import android.graphics.Bitmap;
 import android.graphics.PointF;
-import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -12,9 +10,9 @@ import android.view.MotionEvent;
 /**
  * FV-style selection engine driven in parallel with the floating-icon MOVE stream.
  *
- * Gesture speed remains based on raw finger MotionEvents, while View/image targeting uses the
- * floating icon's stable hotspot. This prevents the selected rectangle from shifting simply because
- * the user touched the icon near its edge instead of its centre.
+ * Targeting is deliberately strict: only Accessibility text views and image/icon views can take
+ * over the gesture. Generic controls, containers and arbitrary screenshot regions never become
+ * selectable targets.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, ACTIVE }
@@ -34,13 +32,9 @@ public final class ViewSelectionEngine {
     private float downRawX = Float.NaN, downRawY = Float.NaN;
     private float previousRawX = Float.NaN, previousRawY = Float.NaN;
     private float selectionX = Float.NaN, selectionY = Float.NaN;
-    private float minSelectionX, minSelectionY, maxSelectionX, maxSelectionY;
     private long downAt;
     private long lastFastFrameAt;
     private boolean moved;
-    private Bitmap screenSnapshot;
-    private Rect snapshotBounds;
-    private int captureGeneration;
 
     public ViewSelectionEngine(Context c) {
         context = c.getApplicationContext();
@@ -74,9 +68,6 @@ public final class ViewSelectionEngine {
             downAt = now;
             downRawX = previousRawX = rawX;
             downRawY = previousRawY = rawY;
-            minSelectionX = maxSelectionX = selectionX;
-            minSelectionY = maxSelectionY = selectionY;
-            requestFrozenSnapshot(++captureGeneration);
             DiagnosticLog.i(context, "FV_SELECT", "DOWN raw=" + Math.round(rawX) + "," + Math.round(rawY)
                     + " hotspot=" + Math.round(selectionX) + "," + Math.round(selectionY));
             return;
@@ -84,11 +75,6 @@ public final class ViewSelectionEngine {
 
         if (action == MotionEvent.ACTION_MOVE) {
             moved = true;
-            minSelectionX = Math.min(minSelectionX, selectionX);
-            minSelectionY = Math.min(minSelectionY, selectionY);
-            maxSelectionX = Math.max(maxSelectionX, selectionX);
-            maxSelectionY = Math.max(maxSelectionY, selectionY);
-
             float frameDx = Float.isNaN(previousRawX) ? 0f : Math.abs(rawX - previousRawX);
             float frameDy = Float.isNaN(previousRawY) ? 0f : Math.abs(rawY - previousRawY);
             previousRawX = rawX;
@@ -116,7 +102,6 @@ public final class ViewSelectionEngine {
                     activateNow(selectionX, selectionY, "controlled_move");
                 }
                 if (state == State.ACTIVE && overlay != null) overlay.update(selectionX, selectionY);
-
                 handler.removeCallbacks(settleRunnable);
                 handler.postDelayed(settleRunnable, FV_SETTLE_DELAY_MS);
             }
@@ -124,20 +109,6 @@ public final class ViewSelectionEngine {
         }
 
         if (action == MotionEvent.ACTION_CANCEL) cancel();
-    }
-
-    private void requestFrozenSnapshot(int generation) {
-        if (accessibility == null) return;
-        Rect bounds = accessibility.screenBounds();
-        accessibility.capture(bitmap -> {
-            if (generation != captureGeneration || bitmap == null || bitmap.isRecycled()) return;
-            screenSnapshot = bitmap;
-            snapshotBounds = new Rect(bounds);
-            if (overlay != null) overlay.setScreenSnapshot(screenSnapshot, snapshotBounds);
-            DiagnosticLog.i(context, "FV_SELECT", "snapshot ready=" + bitmap.getWidth() + "x" + bitmap.getHeight());
-        }, error -> {
-            if (generation == captureGeneration) DiagnosticLog.i(context, "FV_SELECT", "snapshot failed=" + error);
-        });
     }
 
     private void activateNow(float x, float y, String reason) {
@@ -148,7 +119,6 @@ public final class ViewSelectionEngine {
             return;
         }
         overlay.begin();
-        if (screenSnapshot != null && snapshotBounds != null) overlay.setScreenSnapshot(screenSnapshot, snapshotBounds);
         state = State.ACTIVE;
         overlay.update(x, y);
         DiagnosticLog.i(context, "FV_SELECT", "ACTIVE reason=" + reason
@@ -176,40 +146,25 @@ public final class ViewSelectionEngine {
             selectionY = p.y;
             if (overlay != null) overlay.update(selectionX, selectionY);
         }
-        boolean hadCandidate = overlay != null && overlay.hasCandidate();
-        boolean producedResult = false;
-        if (overlay != null) producedResult = overlay.finish(wasActive);
 
-        if (wasActive && !producedResult && !hadCandidate) {
-            Rect r = selectionBounds();
-            if (r.width() >= Math.round(dp(8)) && r.height() >= Math.round(dp(8))) {
-                ScreenshotController.captureBoundsForOcr(context, r);
-                producedResult = true;
-                DiagnosticLog.i(context, "FV_SELECT", "fallback bounds OCR=" + r);
-            }
-        }
+        boolean hadCandidate = overlay != null && overlay.hasCandidate();
+        boolean producedResult = overlay != null && overlay.finish(wasActive && hadCandidate);
+        boolean tookOver = wasActive && hadCandidate && producedResult;
+
         DiagnosticLog.i(context, "FV_SELECT", "UP active=" + wasActive
                 + " candidate=" + hadCandidate + " result=" + producedResult
-                + " hotspot=" + Math.round(selectionX) + "," + Math.round(selectionY));
+                + " takeover=" + tookOver + " hotspot="
+                + Math.round(selectionX) + "," + Math.round(selectionY));
         resetInternal(false);
-        return wasActive;
+        return tookOver;
     }
 
     public void cancel() {
         boolean wasActive = state == State.ACTIVE;
-        captureGeneration++;
         handler.removeCallbacks(settleRunnable);
         closeOverlay();
         DiagnosticLog.i(context, "FV_SELECT", "CANCEL active=" + wasActive);
         resetInternal(false);
-    }
-
-    private Rect selectionBounds() {
-        int l = Math.round(Math.min(minSelectionX, maxSelectionX));
-        int t = Math.round(Math.min(minSelectionY, maxSelectionY));
-        int r = Math.round(Math.max(minSelectionX, maxSelectionX));
-        int b = Math.round(Math.max(minSelectionY, maxSelectionY));
-        return new Rect(l, t, r, b);
     }
 
     private void closeOverlay() {
@@ -223,12 +178,9 @@ public final class ViewSelectionEngine {
         overlay = null;
         state = State.IDLE;
         downRawX = downRawY = previousRawX = previousRawY = selectionX = selectionY = Float.NaN;
-        minSelectionX = minSelectionY = maxSelectionX = maxSelectionY = 0f;
         downAt = 0L;
         lastFastFrameAt = 0L;
         moved = false;
-        screenSnapshot = null;
-        snapshotBounds = null;
     }
 
     private float dp(float v) { return v * context.getResources().getDisplayMetrics().density; }
