@@ -101,6 +101,8 @@ public final class ResultTextActivity extends AppCompatActivity {
         w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
         w.setDimAmount(0f);
+        // PositionWindow uses absolute screen coordinates; keep the Activity window in the same coordinate space.
+        w.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
         setFinishOnTouchOutside(true);
 
         buildUi();
@@ -174,7 +176,9 @@ public final class ResultTextActivity extends AppCompatActivity {
 
         bodyScroll.addView(body);
         int bodyH = clamp(desiredBodyH, dp(56), maxBodyH);
-        box.addView(bodyScroll, new LinearLayout.LayoutParams(-1, bodyH));
+        // The body is the only flexible area. Header/actions always keep their fixed height even
+        // when Dialog decor or OEM insets reduce the real content viewport.
+        box.addView(bodyScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
@@ -189,6 +193,8 @@ public final class ResultTextActivity extends AppCompatActivity {
         setContentView(box);
         int popupH = clamp(reservedH + bodyH, dp(158), maxPopupH);
         positionWindow(usable, popupW, popupH, payload.anchor);
+        DiagnosticLog.i(this, "RESULT_LAYOUT", "OCR pinnedActions=true requestedBody=" + bodyH
+                + " popupH=" + popupH);
 
         copy.setOnClickListener(v -> copyText(payload.text));
         close.setOnClickListener(v -> finishWithCircle("result_closed"));

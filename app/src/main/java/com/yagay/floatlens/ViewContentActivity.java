@@ -82,6 +82,8 @@ public final class ViewContentActivity extends AppCompatActivity {
         w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
         w.setDimAmount(0f);
+        // Anchor/usable bounds are screen coordinates, so use the full-screen WindowManager coordinate space.
+        w.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
         setFinishOnTouchOutside(true);
         buildUi();
         overridePendingTransition(0, 0);
@@ -137,7 +139,8 @@ public final class ViewContentActivity extends AppCompatActivity {
 
         scroll.addView(body);
         int bodyH = clamp(desired, dp(70), bodyMax);
-        box.addView(scroll, new LinearLayout.LayoutParams(-1, bodyH));
+        // Only the middle body may shrink/scroll. Keep the bottom action row pinned and visible.
+        box.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
@@ -150,6 +153,8 @@ public final class ViewContentActivity extends AppCompatActivity {
         setContentView(box);
         int height = Math.min(maxHeight, titleH + actionH + bodyH + dp(18));
         positionWindow(usable, width, height, payload.anchor);
+        DiagnosticLog.i(this, "RESULT_LAYOUT", "VIEW pinnedActions=true requestedBody=" + bodyH
+                + " popupH=" + height);
 
         copy.setOnClickListener(v -> copy(payload.text));
         close.setOnClickListener(v -> finishNoAnim());
