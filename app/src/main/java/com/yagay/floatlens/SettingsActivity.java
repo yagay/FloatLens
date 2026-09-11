@@ -63,7 +63,15 @@ public class SettingsActivity extends AppCompatActivity {
         check(root, "OCR 显示文字 / ocr_result_show_text", FloatSettings.K_OCR_SHOW_TEXT, fs.ocrShowText());
         check(root, "OCR 结果折叠 / ocr_result_show_text_collapse", FloatSettings.K_OCR_COLLAPSE, fs.ocrCollapse());
         ocrEngineSpinner(root);
-        ocrModelControls(root);
+        try {
+            ocrModelControls(root);
+        } catch (Throwable t) {
+            DiagnosticLog.i(this, "OCR_MODEL_UI", "init failure=" + t.getClass().getSimpleName() + ":" + String.valueOf(t.getMessage()));
+            TextView err = new TextView(this);
+            err.setText("本地 OCR 模型管理暂不可用；ML Kit 仍可正常使用。");
+            err.setPadding(0, dp(8), 0, dp(8));
+            root.addView(err);
+        }
         ocrTypeSpinner(root);
 
         title(root, "环境与显示");
@@ -207,22 +215,35 @@ public class SettingsActivity extends AppCompatActivity {
         buttons.addView(remove, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         row.addView(buttons); root.addView(row);
         Runnable refresh = () -> {
-            boolean ready = OcrModelManager.isReady(this, model);
-            long mb = OcrModelManager.installedBytes(this, model) / (1024 * 1024);
-            status.setText(OcrModelManager.displayName(model) + ": " + (ready ? "已下载 " + mb + " MB" : "未下载"));
-            remove.setEnabled(ready && !OcrModelManager.isDownloading(model));
-            download.setEnabled(!OcrModelManager.isDownloading(model));
+            try {
+                boolean ready = OcrModelManager.isReady(this, model);
+                long mb = OcrModelManager.installedBytes(this, model) / (1024 * 1024);
+                status.setText(OcrModelManager.displayName(model) + ": " + (ready ? "已下载 " + mb + " MB" : "未下载"));
+                remove.setEnabled(ready && !OcrModelManager.isDownloading(model));
+                download.setEnabled(!OcrModelManager.isDownloading(model));
+            } catch (Throwable t) {
+                status.setText("本地模型状态读取失败");
+                remove.setEnabled(false);
+                download.setEnabled(false);
+                DiagnosticLog.i(SettingsActivity.this, "OCR_MODEL_UI", "refresh failure=" + t.getClass().getSimpleName());
+            }
         };
         refresh.run();
         download.setOnClickListener(v -> {
             download.setEnabled(false); remove.setEnabled(false);
-            OcrModelManager.download(this, model, new OcrModelManager.Callback() {
-                public void onProgress(String stage, int percent) { status.setText(OcrModelManager.displayName(model) + ": " + stage + " " + percent + "%"); }
-                public void onSuccess() { Toast.makeText(SettingsActivity.this, "模型下载完成", Toast.LENGTH_SHORT).show(); refresh.run(); }
-                public void onFailure(String message) { Toast.makeText(SettingsActivity.this, "下载失败: " + message, Toast.LENGTH_LONG).show(); refresh.run(); }
-            });
+            try {
+                OcrModelManager.download(this, model, new OcrModelManager.Callback() {
+                    public void onProgress(String stage, int percent) { status.setText(OcrModelManager.displayName(model) + ": " + stage + " " + percent + "%"); }
+                    public void onSuccess() { Toast.makeText(SettingsActivity.this, "模型下载完成", Toast.LENGTH_SHORT).show(); refresh.run(); }
+                    public void onFailure(String message) { Toast.makeText(SettingsActivity.this, "下载失败: " + message, Toast.LENGTH_LONG).show(); refresh.run(); }
+                });
+            } catch (Throwable t) {
+                Toast.makeText(SettingsActivity.this, "模型下载初始化失败", Toast.LENGTH_LONG).show();
+                DiagnosticLog.i(SettingsActivity.this, "OCR_MODEL_UI", "download launch failure=" + t.getClass().getSimpleName());
+                refresh.run();
+            }
         });
-        remove.setOnClickListener(v -> { OcrModelManager.delete(this, model); refresh.run(); });
+        remove.setOnClickListener(v -> { try { OcrModelManager.delete(this, model); } catch (Throwable ignored) {} refresh.run(); });
     }
 
     private void ocrTypeSpinner(LinearLayout r) {
