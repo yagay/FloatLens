@@ -6,7 +6,7 @@ public final class ActionId {
         return switch (id) {
             case BACK -> "返回"; case HOME -> "主页"; case RECENTS -> "最近任务"; case SCREENSHOT -> "截图";
             case REGION_SCREENSHOT -> "区域截图"; case OCR -> "OCR/提取文字"; case HIDE -> "隐藏悬浮图标";
-            case NOTIFICATIONS -> "通知栏"; case CLICK_UNDER -> "点击悬浮图标下方屏幕"; case AI_SCREEN -> "智能屏幕";
+            case NOTIFICATIONS -> "通知栏"; case CLICK_UNDER -> "点击悬浮图标下方屏幕"; case AI_SCREEN -> "圈画识别";
             case MOVE_ICON -> "移动图标位置"; default -> "无动作";
         };
     }

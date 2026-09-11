@@ -27,6 +27,13 @@ public final class ScreenshotController {
         getBitmap(c, b -> RegionOverlay.show(c, b, true));
     }
 
+    /** Raw full-screen capture for Circle Select. Caller owns visibility and Bitmap lifetime. */
+    public static void captureRawFrame(Context c, Consumer<Bitmap> ok, Consumer<Throwable> fail) {
+        Context app = c.getApplicationContext();
+        FloatSettings fs = new FloatSettings(app);
+        captureNow(app, fs, ok, fail);
+    }
+
     /** Capture an uncropped full-screen frame and open the adjustable rectangular region editor. */
     public static void captureForRegionEditor(Context c) {
         Context app = c.getApplicationContext();

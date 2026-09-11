@@ -2,13 +2,11 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 
-/** Clean-room smart-screen entry point kept separate from normal gesture actions. */
+/** Circle Select entry point kept separate from normal FV View-selection gestures. */
 public final class AiScreenController {
     public static void show(Context c) {
-        DiagnosticLog.i(c,"AI_SCREEN","enter clean-room smart-screen selection");
-        FloatService f=FloatService.get();
-        if(f!=null) f.onCircleCaptureStarted();
-        ScreenshotController.captureForOcr(c);
+        DiagnosticLog.i(c, "AI_SCREEN", "enter Circle Select workspace");
+        CircleSelectController.show(c);
     }
-    private AiScreenController(){}
+    private AiScreenController() {}
 }
