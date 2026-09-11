@@ -8,8 +8,8 @@ android {
         applicationId 'com.yagay.floatlens'
         minSdk 31
         targetSdk 37
-        versionCode 82
-        versionName '3.0.30'
+        versionCode 83
+        versionName '3.0.31'
     }
     buildFeatures {
         buildConfig true
