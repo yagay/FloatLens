@@ -1,0 +1,27 @@
+name: Apply PP-OCRv6 Route
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: contains(github.event.head_commit.message, '[apply-ppocrv6-route]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Apply integration patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/ppocrv6_route_patch.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/yagay/floatlens
+          git commit -m "Route OCR through PP-OCRv6 with ML Kit fallback"
+          git push
