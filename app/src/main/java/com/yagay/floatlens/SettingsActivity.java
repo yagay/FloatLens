@@ -63,6 +63,7 @@ public class SettingsActivity extends AppCompatActivity {
         check(root, "OCR 显示文字 / ocr_result_show_text", FloatSettings.K_OCR_SHOW_TEXT, fs.ocrShowText());
         check(root, "OCR 结果折叠 / ocr_result_show_text_collapse", FloatSettings.K_OCR_COLLAPSE, fs.ocrCollapse());
         ocrEngineSpinner(root);
+        ocrModelControls(root);
         ocrTypeSpinner(root);
 
         title(root, "环境与显示");
@@ -169,10 +170,11 @@ public class SettingsActivity extends AppCompatActivity {
         s.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){ public void onItemSelected(android.widget.AdapterView<?> p, android.view.View v,int pos,long id){fs.prefs().edit().putInt(FloatSettings.K_LINE_STYLE,pos).apply();} public void onNothingSelected(android.widget.AdapterView<?> p){} }); r.addView(s);
     }
     private void ocrEngineSpinner(LinearLayout r) {
-        TextView t = new TextView(this); t.setText("OCR 引擎 / ocr_engine_mode"); r.addView(t);
+        TextView t = new TextView(this); t.setText("OCR 引擎 / ocr_engine_mode_v2"); r.addView(t);
         String[] labels = {
-                "自动：PP-OCRv6 高精度优先，失败回退 ML Kit",
-                "PP-OCRv6 高精度（纯本地）",
+                "自动：Small 优先，低置信度升级 Medium，失败回退 ML Kit",
+                "PP-OCRv6 Medium 高精度",
+                "PP-OCRv6 Small 平衡",
                 "ML Kit 快速"
         };
         Spinner s = new Spinner(this);
@@ -185,6 +187,42 @@ public class SettingsActivity extends AppCompatActivity {
             public void onNothingSelected(android.widget.AdapterView<?> p) {}
         });
         r.addView(s);
+    }
+
+    private void ocrModelControls(LinearLayout root) {
+        TextView note = new TextView(this);
+        note.setText("本地模型与 APK 分离，下载一次后可离线使用。Small 约 32 MB；Medium 约 139 MB。");
+        note.setPadding(0, dp(8), 0, dp(6)); root.addView(note);
+        addOcrModelRow(root, OcrModelManager.SMALL);
+        addOcrModelRow(root, OcrModelManager.MEDIUM);
+    }
+
+    private void addOcrModelRow(LinearLayout root, int model) {
+        LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.VERTICAL);
+        TextView status = new TextView(this); row.addView(status);
+        LinearLayout buttons = new LinearLayout(this); buttons.setOrientation(LinearLayout.HORIZONTAL);
+        Button download = new Button(this); download.setText("下载/更新");
+        Button remove = new Button(this); remove.setText("删除");
+        buttons.addView(download, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        buttons.addView(remove, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(buttons); root.addView(row);
+        Runnable refresh = () -> {
+            boolean ready = OcrModelManager.isReady(this, model);
+            long mb = OcrModelManager.installedBytes(this, model) / (1024 * 1024);
+            status.setText(OcrModelManager.displayName(model) + ": " + (ready ? "已下载 " + mb + " MB" : "未下载"));
+            remove.setEnabled(ready && !OcrModelManager.isDownloading(model));
+            download.setEnabled(!OcrModelManager.isDownloading(model));
+        };
+        refresh.run();
+        download.setOnClickListener(v -> {
+            download.setEnabled(false); remove.setEnabled(false);
+            OcrModelManager.download(this, model, new OcrModelManager.Callback() {
+                public void onProgress(String stage, int percent) { status.setText(OcrModelManager.displayName(model) + ": " + stage + " " + percent + "%"); }
+                public void onSuccess() { Toast.makeText(SettingsActivity.this, "模型下载完成", Toast.LENGTH_SHORT).show(); refresh.run(); }
+                public void onFailure(String message) { Toast.makeText(SettingsActivity.this, "下载失败: " + message, Toast.LENGTH_LONG).show(); refresh.run(); }
+            });
+        });
+        remove.setOnClickListener(v -> { OcrModelManager.delete(this, model); refresh.run(); });
     }
 
     private void ocrTypeSpinner(LinearLayout r) {

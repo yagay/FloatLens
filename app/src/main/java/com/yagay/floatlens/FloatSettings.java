@@ -42,7 +42,7 @@ public final class FloatSettings {
     public static final String K_OCR_SHOW_IMAGE = "ocr_result_show_image";
     public static final String K_OCR_COLLAPSE = "ocr_result_show_text_collapse";
     public static final String K_OCR_TYPE = "ocr_type";
-    public static final String K_OCR_ENGINE = "ocr_engine_mode";
+    public static final String K_OCR_ENGINE = "ocr_engine_mode_v2";
     public static final String K_CUSTOM_ICON = "float_icon_custom_pic";
     public static final String K_SLIDE_PICS = "float_icon_slide_pics";
     public static final String K_SLIDE_INTERVAL = "float_icon_slide_interval";
@@ -155,8 +155,8 @@ public final class FloatSettings {
     public int ocrType() { return clamp(p.getInt(K_OCR_TYPE, 0), 0, 1); }
     public int ocrEngineMode() {
         Object raw = p.getAll().get(K_OCR_ENGINE);
-        if (raw instanceof Number n) return clamp(n.intValue(), 0, 2);
-        if (raw instanceof String v) { try { return clamp(Integer.parseInt(v.trim()), 0, 2); } catch (Throwable ignored) {} }
+        if (raw instanceof Number n) return clamp(n.intValue(), 0, 3);
+        if (raw instanceof String v) { try { return clamp(Integer.parseInt(v.trim()), 0, 3); } catch (Throwable ignored) {} }
         return 0;
     }
     public String customIconUri() { return p.getString(K_CUSTOM_ICON, ""); }

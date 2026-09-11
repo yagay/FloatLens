@@ -14,45 +14,30 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-/** Java-friendly, process-wide PP-OCRv6 bridge. The model is loaded once and reused. */
 object PaddleOcrBridge {
     interface Callback {
-        fun onSuccess(
-            text: String,
-            blocks: List<String>,
-            totalMs: Long,
-            lineCount: Int,
-            averageConfidence: Float,
-        )
+        fun onSuccess(text: String, blocks: List<String>, totalMs: Long, lineCount: Int, averageConfidence: Float)
         fun onFailure(message: String)
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val initMutex = Mutex()
     private val runMutex = Mutex()
-
-    @Volatile
-    private var engine: PaddleOCR? = null
+    private val engines = mutableMapOf<Int, PaddleOCR>()
 
     @JvmStatic
-    fun recognize(context: Context, bitmap: Bitmap, callback: Callback) {
+    fun recognize(context: Context, bitmap: Bitmap, model: Int, callback: Callback) {
         val app = context.applicationContext
         scope.launch {
             try {
-                if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
-                    throw IllegalArgumentException("invalid bitmap")
-                }
-                val ocr = getOrCreate(app)
+                if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) throw IllegalArgumentException("invalid bitmap")
+                if (!OcrModelManager.isReady(app, model)) throw IllegalStateException("model_not_downloaded")
+                val ocr = getOrCreate(app, model)
                 val result = runMutex.withLock { ocr.recognize(bitmap) }
-                val blocks = result.results.mapNotNull { item ->
-                    item.text.trim().takeIf { it.isNotEmpty() }
-                }
+                val blocks = result.results.mapNotNull { item -> item.text.trim().takeIf { it.isNotEmpty() } }
                 val text = blocks.joinToString("\n").trim()
-                val avg = if (result.results.isEmpty()) 0f
-                else result.results.map { it.confidence }.average().toFloat()
-                withContext(Dispatchers.Main) {
-                    callback.onSuccess(text, blocks, result.totalTimeMs, result.lineCount, avg)
-                }
+                val avg = if (result.results.isEmpty()) 0f else result.results.map { it.confidence }.average().toFloat()
+                withContext(Dispatchers.Main) { callback.onSuccess(text, blocks, result.totalTimeMs, result.lineCount, avg) }
             } catch (t: Throwable) {
                 val msg = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
                 withContext(Dispatchers.Main) { callback.onFailure(msg) }
@@ -60,37 +45,40 @@ object PaddleOcrBridge {
         }
     }
 
+    @JvmStatic fun isLoaded(model: Int): Boolean = synchronized(engines) { engines.containsKey(model) }
+
     @JvmStatic
-    fun warmUp(context: Context) {
-        val app = context.applicationContext
+    fun releaseModel(model: Int) {
         scope.launch {
-            try { getOrCreate(app) } catch (_: Throwable) { }
+            initMutex.withLock {
+                val old = synchronized(engines) { engines.remove(model) }
+                try { old?.release() } catch (_: Throwable) { }
+            }
         }
     }
 
-    @JvmStatic
-    fun isLoaded(): Boolean = engine != null
-
-    private suspend fun getOrCreate(context: Context): PaddleOCR {
-        engine?.let { return it }
+    private suspend fun getOrCreate(context: Context, model: Int): PaddleOCR {
+        synchronized(engines) { engines[model] }?.let { return it }
         return initMutex.withLock {
-            engine?.let { return@withLock it }
-            if (!OpenCVUtils.init(context)) {
-                throw IllegalStateException("OpenCV 初始化失败")
-            }
+            synchronized(engines) { engines[model] }?.let { return@withLock it }
+            if (!OpenCVUtils.init(context)) throw IllegalStateException("OpenCV 初始化失败")
+            if (!OcrModelManager.isReady(context, model)) throw IllegalStateException("model_not_downloaded")
             val config = PaddleOCRConfig(
                 detThresh = 0.20f,
                 detBoxThresh = 0.45f,
                 detUnclipRatio = 1.4f,
                 recScoreThresh = 0.0f,
-                recBatchSize = 4,
+                recBatchSize = if (model == OcrModelManager.MEDIUM) 2 else 4,
             )
             val created = PaddleOCR.create(
                 context = context,
                 config = config,
                 engineConfig = EngineConfig(numThreads = 4),
+                detModelAssetPath = OcrModelManager.detFile(context, model).absolutePath,
+                recModelAssetPath = OcrModelManager.recFile(context, model).absolutePath,
+                recConfigAssetPath = OcrModelManager.ymlFile(context, model).absolutePath,
             )
-            engine = created
+            synchronized(engines) { engines[model] = created }
             created
         }
     }

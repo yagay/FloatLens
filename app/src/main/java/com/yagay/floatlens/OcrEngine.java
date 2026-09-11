@@ -55,62 +55,94 @@ public final class OcrEngine {
 
     private static void startSelectedEngine(Context app, FloatService service,
                                             Bitmap source, Rect anchor) {
-        int engineMode = readOcrEngineModeSafely(app);
-        DiagnosticLog.i(app, "OCR_ENGINE", "mode=" + engineMode
-                + " 0=auto 1=ppocrv6 2=mlkit loaded=" + PaddleOcrBridge.isLoaded());
-        if (engineMode == 2) {
-            startMlKitPipeline(app, service, source, anchor, "manual_mlkit");
+        int mode = readOcrEngineModeSafely(app);
+        boolean smallReady = OcrModelManager.isReady(app, OcrModelManager.SMALL);
+        boolean mediumReady = OcrModelManager.isReady(app, OcrModelManager.MEDIUM);
+        DiagnosticLog.i(app, "OCR_ENGINE", "mode=" + mode + " small=" + smallReady + " medium=" + mediumReady);
+        if (mode == 3) { startMlKitPipeline(app, service, source, anchor, "manual_mlkit"); return; }
+        if (mode == 1) { runPaddle(app, service, source, anchor, OcrModelManager.MEDIUM, false, null); return; }
+        if (mode == 2) { runPaddle(app, service, source, anchor, OcrModelManager.SMALL, false, null); return; }
+
+        if (smallReady) {
+            runPaddle(app, service, source, anchor, OcrModelManager.SMALL, true, null);
+        } else if (mediumReady) {
+            runPaddle(app, service, source, anchor, OcrModelManager.MEDIUM, true, null);
+        } else {
+            DiagnosticLog.i(app, "OCR_ENGINE", "auto no local model -> ML Kit");
+            Toast.makeText(app, "未下载 PP-OCRv6 模型，暂用 ML Kit；可在设置中下载", Toast.LENGTH_SHORT).show();
+            startMlKitPipeline(app, service, source, anchor, "no_local_model");
+        }
+    }
+
+    private static final class PaddleResult {
+        final String text; final List<String> blocks; final float confidence;
+        PaddleResult(String text, List<String> blocks, float confidence) {
+            this.text = text == null ? "" : text.trim(); this.blocks = blocks == null ? List.of() : blocks; this.confidence = confidence;
+        }
+    }
+
+    private static void runPaddle(Context app, FloatService service, Bitmap source, Rect anchor,
+                                  int model, boolean auto, PaddleResult previous) {
+        if (!OcrModelManager.isReady(app, model)) {
+            if (auto) { startMlKitPipeline(app, service, source, anchor, "local_model_missing"); return; }
+            if (service != null) service.onCircleFinished("ppocr_model_missing");
+            Toast.makeText(app, "请先在设置中下载 " + OcrModelManager.displayName(model), Toast.LENGTH_LONG).show();
             return;
         }
-
-        final boolean allowFallback = engineMode == 0;
-        try {
-            DiagnosticLog.i(app, "PPOCRV6", "launch image=" + source.getWidth() + "x" + source.getHeight()
-                    + " fallback=" + allowFallback);
-            PaddleOcrBridge.recognize(app, source, new PaddleOcrBridge.Callback() {
-                @Override public void onSuccess(String text, List<String> blocks, long totalMs,
-                                                int lineCount, float averageConfidence) {
-                    String full = text == null ? "" : text.trim();
-                    List<String> safeBlocks = blocks == null ? List.of() : blocks;
-                    DiagnosticLog.i(app, "PPOCRV6", "success chars=" + full.length()
-                            + " lines=" + lineCount + " blocks=" + safeBlocks.size()
-                            + " avgConf=" + String.format(java.util.Locale.US, "%.3f", averageConfidence)
-                            + " totalMs=" + totalMs);
-                    if (full.isBlank()) {
-                        if (allowFallback) {
-                            DiagnosticLog.i(app, "PPOCRV6", "empty -> ML Kit fallback");
-                            startMlKitPipeline(app, service, source, anchor, "ppocrv6_empty");
-                        } else {
-                            if (service != null) service.onCircleFinished("ppocrv6_empty");
-                            Toast.makeText(app, "PP-OCRv6 未识别到文字", Toast.LENGTH_SHORT).show();
-                        }
-                        return;
-                    }
-                    if (service != null) service.onOcrResults(Math.max(1, safeBlocks.size()));
-                    if (!ResultTextActivity.show(app, full, safeBlocks, source, anchor)) {
-                        ResultOverlay.show(app, full, safeBlocks, source, anchor);
-                    }
+        DiagnosticLog.i(app, "PPOCRV6", "launch model=" + model + " image=" + source.getWidth() + "x" + source.getHeight());
+        PaddleOcrBridge.recognize(app, source, model, new PaddleOcrBridge.Callback() {
+            @Override public void onSuccess(String text, List<String> blocks, long totalMs, int lineCount, float averageConfidence) {
+                PaddleResult now = new PaddleResult(text, blocks, averageConfidence);
+                DiagnosticLog.i(app, "PPOCRV6", "success model=" + model + " chars=" + now.text.length()
+                        + " lines=" + lineCount + " avgConf=" + String.format(java.util.Locale.US, "%.3f", averageConfidence)
+                        + " totalMs=" + totalMs);
+                if (now.text.isBlank()) {
+                    if (previous != null && !previous.text.isBlank()) { showPaddleResult(app, service, source, anchor, previous); return; }
+                    if (auto) { startMlKitPipeline(app, service, source, anchor, "ppocr_empty"); return; }
+                    if (service != null) service.onCircleFinished("ppocr_empty");
+                    Toast.makeText(app, "未识别到文字", Toast.LENGTH_SHORT).show(); return;
                 }
-
-                @Override public void onFailure(String message) {
-                    DiagnosticLog.i(app, "PPOCRV6", "failure=" + message);
-                    if (allowFallback) {
-                        startMlKitPipeline(app, service, source, anchor, "ppocrv6_failure:" + message);
-                    } else {
-                        if (service != null) service.onCircleFinished("ppocrv6_failure");
-                        Toast.makeText(app, "PP-OCRv6 失败: " + message, Toast.LENGTH_SHORT).show();
-                    }
+                if (auto && model == OcrModelManager.SMALL
+                        && OcrModelManager.isReady(app, OcrModelManager.MEDIUM)
+                        && shouldEscalate(now)) {
+                    DiagnosticLog.i(app, "OCR_ENGINE", "Small low confidence -> Medium");
+                    runPaddle(app, service, source, anchor, OcrModelManager.MEDIUM, true, now);
+                    return;
                 }
-            });
-        } catch (Throwable t) {
-            DiagnosticLog.i(app, "PPOCRV6", "launchFailure=" + t.getClass().getSimpleName()
-                    + ":" + safe(t));
-            if (allowFallback) startMlKitPipeline(app, service, source, anchor, "ppocrv6_launch_failure");
-            else {
-                if (service != null) service.onCircleFinished("ppocrv6_launch_failure");
-                Toast.makeText(app, "PP-OCRv6 启动失败", Toast.LENGTH_SHORT).show();
+                showPaddleResult(app, service, source, anchor, chooseBetter(previous, now));
             }
-        }
+            @Override public void onFailure(String message) {
+                DiagnosticLog.i(app, "PPOCRV6", "failure model=" + model + " " + message);
+                if (previous != null && !previous.text.isBlank()) { showPaddleResult(app, service, source, anchor, previous); return; }
+                if (auto) startMlKitPipeline(app, service, source, anchor, "ppocr_failure:" + message);
+                else {
+                    if (service != null) service.onCircleFinished("ppocr_failure");
+                    Toast.makeText(app, "PP-OCRv6 失败: " + message, Toast.LENGTH_LONG).show();
+                }
+            }
+        });
+    }
+
+    private static boolean shouldEscalate(PaddleResult r) {
+        if (r == null || r.text.isBlank()) return true;
+        if (r.confidence < 0.82f) return true;
+        int meaningful = 0;
+        for (int i=0;i<r.text.length();i++) if (Character.isLetterOrDigit(r.text.charAt(i)) || isCjk(r.text.charAt(i))) meaningful++;
+        return meaningful < 6 || meaningful * 2 < r.text.length();
+    }
+
+    private static PaddleResult chooseBetter(PaddleResult a, PaddleResult b) {
+        if (a == null || a.text.isBlank()) return b;
+        if (b == null || b.text.isBlank()) return a;
+        double sa = a.confidence * 1000.0 + Math.min(300, a.text.length());
+        double sb = b.confidence * 1000.0 + Math.min(300, b.text.length());
+        return sb >= sa ? b : a;
+    }
+
+    private static void showPaddleResult(Context app, FloatService service, Bitmap source, Rect anchor, PaddleResult r) {
+        if (r == null || r.text.isBlank()) { if (service != null) service.onCircleFinished("ppocr_empty"); return; }
+        if (service != null) service.onOcrResults(Math.max(1, r.blocks.size()));
+        if (!ResultTextActivity.show(app, r.text, r.blocks, source, anchor)) ResultOverlay.show(app, r.text, r.blocks, source, anchor);
     }
 
     private static void startMlKitPipeline(Context app, FloatService service,
@@ -147,9 +179,9 @@ public final class OcrEngine {
         try {
             SharedPreferences p = app.getSharedPreferences(FloatSettings.PREF, Context.MODE_PRIVATE);
             Object raw = p.getAll().get(FloatSettings.K_OCR_ENGINE);
-            if (raw instanceof Number) return Math.max(0, Math.min(2, ((Number) raw).intValue()));
+            if (raw instanceof Number) return Math.max(0, Math.min(3, ((Number) raw).intValue()));
             if (raw instanceof String) {
-                try { return Math.max(0, Math.min(2, Integer.parseInt(((String) raw).trim()))); }
+                try { return Math.max(0, Math.min(3, Integer.parseInt(((String) raw).trim()))); }
                 catch (Throwable ignored) { return 0; }
             }
         } catch (Throwable t) {
