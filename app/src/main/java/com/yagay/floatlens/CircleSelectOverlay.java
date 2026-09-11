@@ -218,6 +218,7 @@ public final class CircleSelectOverlay {
                     }
                     closePressed = false;
                     FloatActionMenu.dismiss();
+                    FloatMenuAnchor.clear();
 
                     if (hasTextSelection()) {
                         int handle = hitSelectionHandle(x, y);
@@ -297,13 +298,14 @@ public final class CircleSelectOverlay {
                                 + " range=" + Math.min(startIndex, endIndex) + ".." + Math.max(startIndex, endIndex));
                         invalidate();
                         if (!selected.isBlank()) {
-                            FloatActionMenu.showText(context, selected, () -> {
+                            FloatActionMenu.showTextAt(context, selected, () -> {
                                 if (words.isEmpty()) return;
                                 startIndex = 0;
                                 endIndex = words.size() - 1;
                                 invalidate();
-                                post(() -> FloatActionMenu.showText(context, selectedText(), null));
-                            });
+                                post(() -> FloatActionMenu.showTextAt(
+                                        context, selectedText(), null, selectionScreenRect()));
+                            }, selectionScreenRect());
                         }
                         return true;
                     }
@@ -405,6 +407,26 @@ public final class CircleSelectOverlay {
                     imageRect.right * sx, imageRect.bottom * sy);
         }
 
+        private Rect selectionScreenRect() {
+            if (!hasTextSelection()) return null;
+            int lo = Math.min(startIndex, endIndex);
+            int hi = Math.max(startIndex, endIndex);
+            RectF union = null;
+            for (int i = lo; i <= hi && i < words.size(); i++) {
+                RectF r = toViewRect(words.get(i).bounds());
+                if (union == null) union = new RectF(r);
+                else union.union(r);
+            }
+            if (union == null || union.isEmpty()) return null;
+            int[] loc = new int[2];
+            try { getLocationOnScreen(loc); } catch (Throwable ignored) { return null; }
+            return new Rect(
+                    Math.round(union.left) + loc[0],
+                    Math.round(union.top) + loc[1],
+                    Math.round(union.right) + loc[0],
+                    Math.round(union.bottom) + loc[1]);
+        }
+
         private RectF snapCircleToRectangle() {
             if (circlePoints.size() < 4 || getWidth() <= 0 || getHeight() <= 0) return null;
             float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
@@ -460,6 +482,7 @@ public final class CircleSelectOverlay {
             if (closed) return;
             closed = true;
             FloatActionMenu.dismiss();
+            FloatMenuAnchor.clear();
             removeCallbacks(null);
             try { wm.removeView(this); } catch (Throwable ignored) {}
             try { if (!screenshot.isRecycled()) screenshot.recycle(); } catch (Throwable ignored) {}
