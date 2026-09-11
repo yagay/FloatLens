@@ -17,6 +17,7 @@ import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
@@ -112,9 +113,10 @@ public final class FloatActionMenu {
         });
 
         Rect usable = usableBounds(app, wm);
+        int maxPopupWidth = Math.max(dp(app, 120), usable.width() - dp(app, 16));
         int width = mode == MODE_MAIN
                 ? WindowManager.LayoutParams.WRAP_CONTENT
-                : Math.max(dp(app, 270), Math.min(dp(app, 360), usable.width() - dp(app, 24)));
+                : contentAdaptiveWidth(app, root, mode, maxPopupWidth);
 
         int maxMeasureW = Math.max(dp(app, 46), usable.width() - dp(app, 16));
         int maxMeasureH = Math.max(dp(app, 46), usable.height() - dp(app, 16));
@@ -154,12 +156,55 @@ public final class FloatActionMenu {
                     + " chars=" + text.length()
                     + " anchor=" + (anchor == null ? "none" : anchor.toShortString())
                     + " lockedRow=" + (hasLockedRow() ? lockedTopY : -1)
+                    + " width=" + menuWidth
                     + " pos=" + lp.x + "," + lp.y);
         } catch (Throwable t) {
             DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "show failed=" + t);
             if (mode == MODE_SHARE) launchSystemShare(app, text);
             else if (mode == MODE_PROCESS) launchSystemProcess(app, text);
         }
+    }
+
+    /**
+     * Match Android's compact popup feel: short menus stay narrow, longer labels grow only as needed.
+     * The old implementation forced every submenu to at least 270dp, which made even tiny menus wide.
+     */
+    private static int contentAdaptiveWidth(Context app, View root, int mode, int screenMax) {
+        int min = dp(app, mode == MODE_MORE ? 156 : 188);
+        int cap = Math.min(screenMax, dp(app, mode == MODE_MORE ? 260 : 300));
+        cap = Math.max(min, cap);
+        int desired = widestTextRow(root) + root.getPaddingLeft() + root.getPaddingRight();
+        return clamp(Math.max(min, desired), min, cap);
+    }
+
+    private static int widestTextRow(View view) {
+        int best = 0;
+        if (view instanceof TextView tv) {
+            CharSequence raw = tv.getText();
+            String text = raw == null ? "" : raw.toString();
+            int width = (int) Math.ceil(tv.getPaint().measureText(text))
+                    + tv.getPaddingLeft() + tv.getPaddingRight();
+            Drawable[] drawables = tv.getCompoundDrawables();
+            Drawable left = drawables != null && drawables.length > 0 ? drawables[0] : null;
+            Drawable right = drawables != null && drawables.length > 2 ? drawables[2] : null;
+            if (left != null) {
+                int dw = left.getBounds().width();
+                if (dw <= 0) dw = left.getIntrinsicWidth();
+                width += Math.max(0, dw) + tv.getCompoundDrawablePadding();
+            }
+            if (right != null) {
+                int dw = right.getBounds().width();
+                if (dw <= 0) dw = right.getIntrinsicWidth();
+                width += Math.max(0, dw) + tv.getCompoundDrawablePadding();
+            }
+            best = width;
+        }
+        if (view instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) {
+                best = Math.max(best, widestTextRow(group.getChildAt(i)));
+            }
+        }
+        return best;
     }
 
     private static int[] lockedRowPosition(Context app, Rect usable, int menuWidth) {
