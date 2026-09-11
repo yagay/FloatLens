@@ -1,0 +1,26 @@
+name: Apply External OCR Models
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: contains(github.event.head_commit.message, '[external-ocr-models]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Apply external OCR model patch
+        run: python3 .github/scripts/external_ocr_models_patch.py
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add build.gradle app ppocr-sdk
+          git commit -m "Use separately downloaded PP-OCRv6 models"
+          git push
