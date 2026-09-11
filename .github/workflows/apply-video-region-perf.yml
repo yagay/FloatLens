@@ -1,0 +1,30 @@
+name: Apply Video Region Performance Patch
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Apply patch when requested
+        shell: bash
+        run: |
+          MSG="$(git log -1 --pretty=%B)"
+          if [[ "$MSG" != *"[run-video-region-perf-script]"* ]]; then
+            echo "No patch trigger; exiting."
+            exit 0
+          fi
+          python3 .github/scripts/video_region_perf_patch.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/yagay/floatlens
+          git commit -m "Optimize video region selection hot path"
+          git push
