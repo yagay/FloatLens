@@ -17,7 +17,13 @@ import kotlinx.coroutines.withContext
 /** Java-friendly, process-wide PP-OCRv6 bridge. The model is loaded once and reused. */
 object PaddleOcrBridge {
     interface Callback {
-        fun onSuccess(text: String, blocks: List<String>, totalMs: Long, lineCount: Int)
+        fun onSuccess(
+            text: String,
+            blocks: List<String>,
+            totalMs: Long,
+            lineCount: Int,
+            averageConfidence: Float,
+        )
         fun onFailure(message: String)
     }
 
@@ -42,8 +48,10 @@ object PaddleOcrBridge {
                     item.text.trim().takeIf { it.isNotEmpty() }
                 }
                 val text = blocks.joinToString("\n").trim()
+                val avg = if (result.results.isEmpty()) 0f
+                else result.results.map { it.confidence }.average().toFloat()
                 withContext(Dispatchers.Main) {
-                    callback.onSuccess(text, blocks, result.totalTimeMs, result.lineCount)
+                    callback.onSuccess(text, blocks, result.totalTimeMs, result.lineCount, avg)
                 }
             } catch (t: Throwable) {
                 val msg = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
