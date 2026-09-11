@@ -1,0 +1,99 @@
+name: Import PP-OCRv6 SDK
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  import-sdk:
+    if: contains(github.event.head_commit.message, '[import-ppocrv6]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Import official PaddleOCR Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/PaddleOCR
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/PaddlePaddle/PaddleOCR.git /tmp/PaddleOCR
+          git -C /tmp/PaddleOCR sparse-checkout set deploy/ppocr-android/ppocr-sdk/src/main/java deploy/ppocr-android/ppocr-sdk/proguard-rules.pro
+          rm -rf ppocr-sdk
+          mkdir -p ppocr-sdk/src/main
+          cp -R /tmp/PaddleOCR/deploy/ppocr-android/ppocr-sdk/src/main/java ppocr-sdk/src/main/
+          cp /tmp/PaddleOCR/deploy/ppocr-android/ppocr-sdk/proguard-rules.pro ppocr-sdk/proguard-rules.pro
+          cat > ppocr-sdk/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.library'
+              id 'org.jetbrains.kotlin.android'
+          }
+
+          android {
+              namespace 'com.paddle.ocr'
+              compileSdk 37
+              defaultConfig { minSdk 31 }
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      consumerProguardFiles 'proguard-rules.pro'
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+
+          dependencies {
+              implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.21.1'
+              implementation 'com.quickbirdstudios:opencv:4.5.3'
+              implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+              implementation 'androidx.core:core-ktx:1.17.0'
+          }
+
+          def modelFiles = [
+              [url: 'https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/main/inference.onnx?download=true', path: 'src/main/assets/models/det/inference.onnx', minBytes: 9000000L],
+              [url: 'https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/main/inference.onnx?download=true', path: 'src/main/assets/models/rec/inference.onnx', minBytes: 19000000L],
+              [url: 'https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/main/inference.yml?download=true', path: 'src/main/assets/models/rec/inference.yml', minBytes: 10000L]
+          ]
+
+          tasks.register('preparePpOcrModels') {
+              outputs.files(modelFiles.collect { file(it.path) })
+              doLast {
+                  modelFiles.each { spec ->
+                      File out = file(spec.path)
+                      if (out.exists() && out.length() >= spec.minBytes) return
+                      out.parentFile.mkdirs()
+                      File tmp = new File(out.parentFile, out.name + '.part')
+                      println "Downloading PP-OCRv6 model: ${out.name}"
+                      def conn = new URL(spec.url).openConnection()
+                      conn.setRequestProperty('User-Agent', 'FloatLens-Gradle')
+                      conn.connectTimeout = 30000
+                      conn.readTimeout = 180000
+                      conn.inputStream.withCloseable { input ->
+                          tmp.withOutputStream { output -> input.transferTo(output) }
+                      }
+                      if (tmp.length() < spec.minBytes) {
+                          tmp.delete()
+                          throw new GradleException("Downloaded model too small: ${spec.url}")
+                      }
+                      if (out.exists()) out.delete()
+                      if (!tmp.renameTo(out)) {
+                          out.bytes = tmp.bytes
+                          tmp.delete()
+                      }
+                  }
+              }
+          }
+
+          tasks.named('preBuild').configure { dependsOn 'preparePpOcrModels' }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ppocr-sdk
+          git commit -m "Import official PaddleOCR Android SDK for PP-OCRv6"
+          git push
