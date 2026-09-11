@@ -11,9 +11,11 @@ import android.view.Gravity;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -34,6 +36,11 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
     private long token;
     private Payload payload;
     private boolean ocrRunning;
+    private LinearLayout ocrPanel;
+    private TextView ocrText;
+    private Button ocrButton;
+    private Rect popupUsable;
+    private int popupWidth;
 
     public static boolean show(Context c, Bitmap image, Rect anchor) {
         if (c == null || image == null || image.isRecycled()) return false;
@@ -78,8 +85,10 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
 
     private void buildUi() {
         Rect usable = usableBounds();
+        popupUsable = new Rect(usable);
         int maxW = Math.max(dp(220), usable.width() - dp(MARGIN_DP * 2));
         int width = Math.min(dp(410), maxW);
+        popupWidth = width;
         int maxH = Math.min(dp(430), Math.round(usable.height() * .52f));
         int titleH = dp(38);
         int actionsH = dp(50);
@@ -115,13 +124,38 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
         ImageShareUtils.attachLongPressShare(this, image, payload.image);
         box.addView(image, new LinearLayout.LayoutParams(-1, 0, 1f));
 
+        ocrPanel = new LinearLayout(this);
+        ocrPanel.setOrientation(LinearLayout.VERTICAL);
+        ocrPanel.setVisibility(View.GONE);
+        ocrPanel.setPadding(0, dp(4), 0, dp(4));
+
+        TextView ocrHeading = new TextView(this);
+        ocrHeading.setText("OCR 文字");
+        ocrHeading.setTextColor(0xFFBBBBBB);
+        ocrHeading.setTextSize(13);
+        ocrHeading.setGravity(Gravity.CENTER_VERTICAL);
+        ocrPanel.addView(ocrHeading, new LinearLayout.LayoutParams(-1, dp(26)));
+
+        ScrollView ocrScroll = new ScrollView(this);
+        ocrScroll.setVerticalScrollBarEnabled(true);
+        ocrScroll.setScrollbarFadingEnabled(false);
+        ocrText = new TextView(this);
+        ocrText.setTextColor(Color.WHITE);
+        ocrText.setTextSize(16);
+        ocrText.setTextIsSelectable(true);
+        ocrText.setLongClickable(true);
+        ocrText.setPadding(dp(6), dp(3), dp(6), dp(3));
+        ocrScroll.addView(ocrText, new ScrollView.LayoutParams(-1, -2));
+        ocrPanel.addView(ocrScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        box.addView(ocrPanel, new LinearLayout.LayoutParams(-1, dp(170)));
+
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setGravity(Gravity.CENTER_VERTICAL);
-        Button ocr = button("OCR");
+        ocrButton = button("OCR");
         Button save = button("保存图片");
         Button close = button("关闭");
-        actions.addView(ocr, new LinearLayout.LayoutParams(0, -1, 1));
+        actions.addView(ocrButton, new LinearLayout.LayoutParams(0, -1, 1));
         actions.addView(save, new LinearLayout.LayoutParams(0, -1, 1));
         actions.addView(close, new LinearLayout.LayoutParams(0, -1, 1));
         box.addView(actions, new LinearLayout.LayoutParams(-1, actionsH));
@@ -136,7 +170,7 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
                         + " actionsH=" + actions.getHeight()
                         + " requestedH=" + requestedHeight));
 
-        ocr.setOnClickListener(v -> runOcr(ocr));
+        ocrButton.setOnClickListener(v -> runOcr(ocrButton));
         save.setOnClickListener(v -> ScreenshotController.save(this, payload.image));
         close.setOnClickListener(v -> finishNoAnim());
     }
@@ -149,11 +183,41 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
         Bitmap image = payload.image;
         Rect anchor = payload.anchor == null ? null : new Rect(payload.anchor);
         DiagnosticLog.i(this, "SCREENSHOT_RESULT", "OCR_BUTTON image="
-                + image.getWidth() + "x" + image.getHeight());
-        Toast.makeText(this, "正在识别…", Toast.LENGTH_SHORT).show();
-        // Keep this Activity visible underneath the OCR result. Closing it before preprocessing made
-        // a slow/failing OCR pass look like the button did nothing and also removed useful context.
+                + image.getWidth() + "x" + image.getHeight() + " mode=inline");
+
+        ResultTextActivity.captureNextForImage(image, (text, blocks) -> runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed() || payload == null || payload.image != image) return;
+            ocrRunning = false;
+            button.setEnabled(true);
+            button.setText("重新识别");
+            showInlineOcr(text);
+        }));
+
+        button.postDelayed(() -> {
+            if (!ocrRunning) return;
+            ResultTextActivity.clearInlineForImage(image);
+            ocrRunning = false;
+            button.setEnabled(true);
+            button.setText("OCR");
+            DiagnosticLog.i(this, "SCREENSHOT_RESULT", "OCR_INLINE_TIMEOUT");
+        }, 12000L);
+
         OcrEngine.recognize(getApplicationContext(), image, anchor);
+    }
+
+    private void showInlineOcr(String text) {
+        if (ocrPanel == null || ocrText == null) return;
+        String value = text == null ? "" : text.trim();
+        ocrText.setText(value.isEmpty() ? "未识别到文字" : value);
+        ocrPanel.setVisibility(View.VISIBLE);
+
+        Rect usable = popupUsable == null ? usableBounds() : new Rect(popupUsable);
+        int expandedH = Math.min(dp(610), Math.round(usable.height() * .72f));
+        expandedH = Math.max(dp(360), expandedH);
+        positionWindow(usable, popupWidth > 0 ? popupWidth : Math.min(dp(410), usable.width()),
+                expandedH, payload == null ? null : payload.anchor);
+        DiagnosticLog.i(this, "SCREENSHOT_RESULT", "OCR_INLINE chars=" + value.length()
+                + " expandedH=" + expandedH);
     }
 
     private void positionWindow(Rect usable, int width, int height, Rect anchor) {
@@ -244,6 +308,9 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
     }
 
     @Override protected void onDestroy() {
+        if (payload != null && payload.image != null) {
+            ResultTextActivity.clearInlineForImage(payload.image);
+        }
         if (token != 0L) PENDING.remove(token);
         super.onDestroy();
     }

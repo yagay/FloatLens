@@ -67,8 +67,55 @@ public final class ResultTextActivity extends AppCompatActivity {
     private boolean circleFinished;
     private ActionMode activeBlockActionMode;
 
+    public interface InlineResultSink {
+        void onResult(String text, List<String> blocks);
+    }
+
+    private static final Object INLINE_LOCK = new Object();
+    private static Bitmap inlineImage;
+    private static InlineResultSink inlineSink;
+
+    public static void captureNextForImage(Bitmap image, InlineResultSink sink) {
+        synchronized (INLINE_LOCK) {
+            inlineImage = image;
+            inlineSink = sink;
+        }
+    }
+
+    public static void clearInlineForImage(Bitmap image) {
+        synchronized (INLINE_LOCK) {
+            if (inlineImage == image) {
+                inlineImage = null;
+                inlineSink = null;
+            }
+        }
+    }
+
+    private static InlineResultSink takeInlineSink(Bitmap image) {
+        synchronized (INLINE_LOCK) {
+            if (inlineSink == null || inlineImage != image) return null;
+            InlineResultSink sink = inlineSink;
+            inlineImage = null;
+            inlineSink = null;
+            return sink;
+        }
+    }
+
     public static boolean show(Context c, String text, List<String> blocks, Bitmap image, Rect anchor) {
         if (c == null) return false;
+        InlineResultSink inline = takeInlineSink(image);
+        if (inline != null) {
+            try {
+                String value = text == null ? "" : text;
+                List<String> safeBlocks = blocks == null ? List.of() : new ArrayList<>(blocks);
+                inline.onResult(value, safeBlocks);
+                DiagnosticLog.i(c, "RESULT_TEXT_ACTIVITY", "INLINE chars=" + value.length()
+                        + " blocks=" + safeBlocks.size());
+                return true;
+            } catch (Throwable t) {
+                DiagnosticLog.i(c, "RESULT_TEXT_ACTIVITY", "INLINE_FAILED " + t);
+            }
+        }
         long token = NEXT_TOKEN.getAndIncrement();
         Payload p = new Payload(text, blocks, image, anchor);
         PENDING.put(token, p);
