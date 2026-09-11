@@ -35,28 +35,46 @@ public final class FloatActionMenu {
     private static final int MODE_SHARE = 1;
     private static final int MODE_PROCESS = 2;
     private static final int MODE_MORE = 3;
+    private static final int NO_POSITION = Integer.MIN_VALUE;
 
     private static WindowManager activeWm;
     private static View activeView;
+    private static int activeCenterX = NO_POSITION;
+    private static int activeTopY = NO_POSITION;
+    private static int lockedCenterX = NO_POSITION;
+    private static int lockedTopY = NO_POSITION;
 
     public static void showText(Context c, String value, Runnable selectAll) {
+        resetLockedRow();
         FloatMenuAnchor.clear();
         show(c, value, selectAll, MODE_MAIN);
     }
 
     public static void showTextAt(Context c, String value, Runnable selectAll, Rect anchor) {
+        resetLockedRow();
         FloatMenuAnchor.set(anchor);
         show(c, value, selectAll, MODE_MAIN);
     }
 
     public static void showShareTargets(Context c, String value) {
+        resetLockedRow();
         FloatMenuAnchor.clear();
         show(c, value, null, MODE_SHARE);
     }
 
     public static void showProcessTargets(Context c, String value) {
+        resetLockedRow();
         FloatMenuAnchor.clear();
         show(c, value, null, MODE_PROCESS);
+    }
+
+    /** Keep submenus/back navigation attached to the row where the main toolbar first appeared. */
+    private static void showOnCurrentRow(Context c, String value, Runnable selectAll, int mode) {
+        if (!hasLockedRow() && activeCenterX != NO_POSITION && activeTopY != NO_POSITION) {
+            lockedCenterX = activeCenterX;
+            lockedTopY = activeTopY;
+        }
+        show(c, value, selectAll, mode);
     }
 
     private static synchronized void show(Context c, String value, Runnable selectAll, int mode) {
@@ -108,7 +126,10 @@ public final class FloatActionMenu {
         int menuWidth = width == WindowManager.LayoutParams.WRAP_CONTENT
                 ? Math.max(dp(app, 46), root.getMeasuredWidth()) : width;
         int menuHeight = Math.max(dp(app, 46), root.getMeasuredHeight());
-        int[] pos = menuPosition(app, usable, FloatMenuAnchor.current(), menuWidth, menuHeight);
+
+        int[] pos = hasLockedRow()
+                ? lockedRowPosition(app, usable, menuWidth)
+                : menuPosition(app, usable, FloatMenuAnchor.current(), menuWidth, menuHeight);
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 width,
@@ -126,16 +147,31 @@ public final class FloatActionMenu {
             wm.addView(root, lp);
             activeWm = wm;
             activeView = root;
+            activeCenterX = lp.x + menuWidth / 2;
+            activeTopY = lp.y;
             Rect anchor = FloatMenuAnchor.current();
             DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "show system-style mode=" + mode
                     + " chars=" + text.length()
                     + " anchor=" + (anchor == null ? "none" : anchor.toShortString())
+                    + " lockedRow=" + (hasLockedRow() ? lockedTopY : -1)
                     + " pos=" + lp.x + "," + lp.y);
         } catch (Throwable t) {
             DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "show failed=" + t);
             if (mode == MODE_SHARE) launchSystemShare(app, text);
             else if (mode == MODE_PROCESS) launchSystemProcess(app, text);
         }
+    }
+
+    private static int[] lockedRowPosition(Context app, Rect usable, int menuWidth) {
+        int margin = dp(app, 8);
+        int minX = usable.left + margin;
+        int maxX = Math.max(minX, usable.right - margin - menuWidth);
+        int minY = usable.top + margin;
+        // Preserve the original toolbar row. Only clamp enough to keep that row itself visible.
+        int maxRowTop = Math.max(minY, usable.bottom - margin - dp(app, 46));
+        int x = clamp(lockedCenterX - menuWidth / 2, minX, maxX);
+        int y = clamp(lockedTopY, minY, maxRowTop);
+        return new int[]{x, y};
     }
 
     private static int[] menuPosition(Context app, Rect usable, Rect anchor,
@@ -216,8 +252,8 @@ public final class FloatActionMenu {
             Toast.makeText(app, "已复制", Toast.LENGTH_SHORT).show();
             dismiss();
         });
-        share.setOnClickListener(v -> show(app, text, selectAll, MODE_SHARE));
-        more.setOnClickListener(v -> show(app, text, selectAll, MODE_MORE));
+        share.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_SHARE));
+        more.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_MORE));
     }
 
     private static int mainCustomCount(Runnable selectAll, int size) {
@@ -230,7 +266,7 @@ public final class FloatActionMenu {
         root.setPadding(dp(app, 4), dp(app, 4), dp(app, 4), dp(app, 4));
         TextView back = menuRow(app, "‹   返回", null, palette);
         root.addView(back, new LinearLayout.LayoutParams(-1, dp(app, 46)));
-        back.setOnClickListener(v -> show(app, text, selectAll, MODE_MAIN));
+        back.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_MAIN));
 
         List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
         int skip = mainCustomCount(selectAll, customs.size());
@@ -246,7 +282,7 @@ public final class FloatActionMenu {
 
         TextView process = menuRow(app, "打开 / 处理", null, palette);
         root.addView(process, new LinearLayout.LayoutParams(-1, dp(app, 46)));
-        process.setOnClickListener(v -> show(app, text, selectAll, MODE_PROCESS));
+        process.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_PROCESS));
     }
 
     private static void launchCustom(Context app, CustomMenuActionStore.Item item, String text) {
@@ -263,7 +299,7 @@ public final class FloatActionMenu {
                 null, palette);
         back.setTypeface(back.getTypeface(), android.graphics.Typeface.BOLD);
         root.addView(back, new LinearLayout.LayoutParams(-1, dp(app, 46)));
-        back.setOnClickListener(v -> show(app, text, selectAll, MODE_MAIN));
+        back.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_MAIN));
 
         PackageManager pm = app.getPackageManager();
         Intent base = mode == MODE_SHARE
@@ -446,9 +482,20 @@ public final class FloatActionMenu {
         WindowManager wm = activeWm;
         activeView = null;
         activeWm = null;
+        activeCenterX = NO_POSITION;
+        activeTopY = NO_POSITION;
         if (v != null && wm != null) {
             try { wm.removeView(v); } catch (Throwable ignored) {}
         }
+    }
+
+    private static boolean hasLockedRow() {
+        return lockedCenterX != NO_POSITION && lockedTopY != NO_POSITION;
+    }
+
+    private static void resetLockedRow() {
+        lockedCenterX = NO_POSITION;
+        lockedTopY = NO_POSITION;
     }
 
     private static Rect usableBounds(Context c, WindowManager wm) {
