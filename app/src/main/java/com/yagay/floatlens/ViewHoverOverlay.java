@@ -7,7 +7,6 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
-import android.graphics.RectF;
 import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.View;
@@ -18,14 +17,17 @@ import java.util.Collections;
 /**
  * Non-touchable FV-style selection display layer.
  *
- * The original FloatIconView remains the only touch owner. After FV's move-idle trigger this layer
- * starts at the current selection hotspot. While the finger is still down, a small pointer marker
- * follows that hotspot. If the finger moves meaningfully away from the trigger point, selection
- * switches from single-View hit testing to a live rectangular region. ACTION_UP captures the live
- * region; if no region was drawn, the current TEXT / image / ROOT View candidate is used instead.
+ * Selection/hit testing is intentionally independent from the visual overlay. That matters on
+ * video surfaces: keeping a full-screen translucent application overlay alive and invalidating it
+ * for every MOVE can force extra GPU composition and make playback/dragging stutter. We therefore
+ * keep hit testing headless whenever the current target is ROOT/near-fullscreen, and only attach
+ * the full-screen highlight layer when a smaller candidate or a real region rectangle needs to be
+ * drawn.
  */
 public final class ViewHoverOverlay {
-    private static final long TREE_REFRESH_MS = 120L;
+    private static final long TREE_REFRESH_MS = 300L;
+    private static final long POINT_SCAN_MIN_MS = 24L;
+    private static final int LARGE_TARGET_PERCENT = 72;
 
     private final Context context;
     private final WindowManager wm;
@@ -54,9 +56,15 @@ public final class ViewHoverOverlay {
     /** Compatibility no-op: visual screenshot candidates are no longer used for View selection. */
     public void setScreenSnapshot(Bitmap bitmap, Rect displayBounds) {}
 
+    /** Start hit testing without creating a full-screen overlay surface yet. */
     public void begin() {
+        if (accessibility == null) return;
+        refreshAccessibilityTree(true);
+    }
+
+    private void ensureView() {
         if (accessibility == null || view != null) return;
-        view = new HoverView(context);
+        HoverView next = new HoverView(context);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -68,23 +76,32 @@ public final class ViewHoverOverlay {
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
         try {
-            wm.addView(view, lp);
-            refreshAccessibilityTree(true);
+            wm.addView(next, lp);
+            view = next;
+            DiagnosticLog.i(context, "VIEW_HOVER", "visual_attach");
         } catch (Throwable t) {
-            view = null;
             DiagnosticLog.i(context, "VIEW_HOVER", "add failed=" + t);
+        }
+    }
+
+    /** Remove only the expensive visual surface; keep cached candidates and selection state. */
+    private void detachView() {
+        if (view != null) {
+            try { wm.removeView(view); } catch (Throwable ignored) {}
+            view = null;
+            DiagnosticLog.i(context, "VIEW_HOVER", "visual_detach");
         }
     }
 
     /** Start FV same-touch direct selection at the current transformed selection hotspot. */
     public void beginDirect(float selectionX, float selectionY) {
-        if (view == null) begin();
+        begin();
         directStartX = selectionX;
         directStartY = selectionY;
         directRegionMode = false;
         directRegion.setEmpty();
-        if (view != null) view.setDirectState(selectionX, selectionY, false, directRegion);
         update(selectionX, selectionY);
+        if (view != null) view.setDirectState(false, directRegion);
         DiagnosticLog.i(context, "FV_REGION", "START x=" + Math.round(selectionX)
                 + " y=" + Math.round(selectionY) + " slop=" + Math.round(regionStartSlopPx));
     }
@@ -94,8 +111,7 @@ public final class ViewHoverOverlay {
      * from the trigger point becomes a region gesture; tiny motion keeps normal View hit testing.
      */
     public void updateDirect(float selectionX, float selectionY) {
-        if (view == null) begin();
-        if (view == null) return;
+        if (accessibility == null) return;
         if (Float.isNaN(directStartX) || Float.isNaN(directStartY)) {
             beginDirect(selectionX, selectionY);
             return;
@@ -107,7 +123,8 @@ public final class ViewHoverOverlay {
             directRegionMode = true;
             current = null;
             confirmed = false;
-            view.setCandidate(null);
+            ensureView();
+            if (view != null) view.setCandidate(null);
             DiagnosticLog.i(context, "FV_REGION", "ENTER dx=" + Math.round(dx)
                     + " dy=" + Math.round(dy));
         }
@@ -117,24 +134,26 @@ public final class ViewHoverOverlay {
             int t = Math.round(Math.min(directStartY, selectionY));
             int r = Math.round(Math.max(directStartX, selectionX));
             int b = Math.round(Math.max(directStartY, selectionY));
-            directRegion.set(l, t, r, b);
-            view.setDirectState(selectionX, selectionY, true, directRegion);
+            if (directRegion.left != l || directRegion.top != t
+                    || directRegion.right != r || directRegion.bottom != b) {
+                directRegion.set(l, t, r, b);
+                ensureView();
+                if (view != null) view.setDirectState(true, directRegion);
+            }
         } else {
-            view.setDirectState(selectionX, selectionY, false, directRegion);
             update(selectionX, selectionY);
+            if (view != null) view.setDirectState(false, directRegion);
         }
     }
 
     /** Normal point-based View hit testing used before a direct region gesture takes over. */
     public void update(float selectionX, float selectionY) {
         if (accessibility == null) return;
-        if (view == null) begin();
-        if (view == null) return;
 
         long now = SystemClock.uptimeMillis();
         float dx = Float.isNaN(lastX) ? 999f : selectionX - lastX;
         float dy = Float.isNaN(lastY) ? 999f : selectionY - lastY;
-        if (now - lastScanAt < 20L && dx * dx + dy * dy < 9f) return;
+        if (now - lastScanAt < POINT_SCAN_MIN_MS && dx * dx + dy * dy < 9f) return;
         lastScanAt = now;
         lastX = selectionX;
         lastY = selectionY;
@@ -144,18 +163,41 @@ public final class ViewHoverOverlay {
         if (!sameCandidate(current, next)) {
             current = next;
             confirmed = false;
-            view.setCandidate(next);
-            view.setConfirmed(false);
+            if (shouldRenderCandidate(next)) {
+                ensureView();
+                if (view != null) {
+                    view.setCandidate(next);
+                    view.setConfirmed(false);
+                }
+            } else {
+                // ROOT/fullscreen video/image targets still participate in hit testing and release,
+                // but do not keep a full-screen translucent overlay surface over the video.
+                detachView();
+            }
             if (next != null) {
                 DiagnosticLog.i(context, "VIEW_HOVER", "source=" + next.source()
                         + " type=" + next.type() + " screenBounds=" + next.bounds()
                         + " depth=" + next.depth() + " textLen=" + next.text().length()
-                        + " class=" + next.className() + " id=" + next.viewId());
+                        + " class=" + next.className() + " id=" + next.viewId()
+                        + " visual=" + shouldRenderCandidate(next));
             } else {
                 DiagnosticLog.i(context, "VIEW_HOVER", "candidate=null selection="
                         + Math.round(selectionX) + "," + Math.round(selectionY));
             }
         }
+    }
+
+    private boolean shouldRenderCandidate(ScreenCandidate candidate) {
+        if (candidate == null || candidate.type() == ScreenCandidate.Type.ROOT) return false;
+        Rect b = candidate.bounds();
+        if (b == null || b.isEmpty()) return false;
+        Rect screen;
+        try { screen = accessibility.screenBounds(); }
+        catch (Throwable t) { return true; }
+        if (screen == null || screen.isEmpty()) return true;
+        long screenArea = (long) screen.width() * screen.height();
+        long area = (long) b.width() * b.height();
+        return screenArea <= 0 || area * 100L < screenArea * LARGE_TARGET_PERCENT;
     }
 
     private void refreshAccessibilityTree(boolean force) {
@@ -173,6 +215,7 @@ public final class ViewHoverOverlay {
 
     public void setConfirmed(boolean value) {
         confirmed = value && current != null;
+        if (confirmed && shouldRenderCandidate(current)) ensureView();
         if (view != null) view.setConfirmed(confirmed);
     }
 
@@ -230,8 +273,7 @@ public final class ViewHoverOverlay {
     public ScreenCandidate currentCandidate() { return current; }
 
     private void close() {
-        if (view != null) try { wm.removeView(view); } catch (Throwable ignored) {}
-        view = null;
+        detachView();
         current = null;
         confirmed = false;
         directRegionMode = false;
@@ -254,15 +296,12 @@ public final class ViewHoverOverlay {
         private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint regionFill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint regionBorder = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint pointerFill = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint pointerBorder = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint label = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final int[] overlayLocation = new int[2];
         private ScreenCandidate candidate;
         private boolean confirmed;
         private boolean directRegionMode;
         private final Rect directRegion = new Rect();
-        private float pointerX = Float.NaN, pointerY = Float.NaN;
         private int lastLoggedOriginX = Integer.MIN_VALUE;
         private int lastLoggedOriginY = Integer.MIN_VALUE;
 
@@ -277,11 +316,6 @@ public final class ViewHoverOverlay {
             regionBorder.setStyle(Paint.Style.STROKE);
             regionBorder.setColor(Color.WHITE);
             regionBorder.setStrokeWidth(dp(2.5f));
-            pointerFill.setStyle(Paint.Style.FILL);
-            pointerFill.setColor(0xDD1976D2);
-            pointerBorder.setStyle(Paint.Style.STROKE);
-            pointerBorder.setColor(Color.WHITE);
-            pointerBorder.setStrokeWidth(dp(2));
             label.setColor(Color.WHITE);
             label.setTextSize(dp(14));
             label.setShadowLayer(dp(3), 0, dp(1), Color.BLACK);
@@ -289,15 +323,32 @@ public final class ViewHoverOverlay {
         }
 
         void setCandidate(ScreenCandidate c) { candidate = c; invalidate(); }
-        void setConfirmed(boolean value) { confirmed = value; updatePaints(); invalidate(); }
-
-        void setDirectState(float screenX, float screenY, boolean regionMode, Rect screenRegion) {
-            pointerX = screenX;
-            pointerY = screenY;
-            directRegionMode = regionMode;
-            if (screenRegion == null) directRegion.setEmpty();
-            else directRegion.set(screenRegion);
+        void setConfirmed(boolean value) {
+            if (confirmed == value) return;
+            confirmed = value;
+            updatePaints();
             invalidate();
+        }
+
+        /**
+         * No pointer is drawn in this fullscreen layer; the real 15dp probe lives in
+         * FvProbePointOverlay. Therefore non-region MOVE events must not invalidate the whole
+         * screen. Only a region-mode transition or changed rectangle requires a redraw.
+         */
+        void setDirectState(boolean regionMode, Rect screenRegion) {
+            boolean changed = directRegionMode != regionMode;
+            if (regionMode) {
+                Rect next = screenRegion == null ? new Rect() : screenRegion;
+                if (!directRegion.equals(next)) {
+                    directRegion.set(next);
+                    changed = true;
+                }
+            } else if (!directRegion.isEmpty()) {
+                directRegion.setEmpty();
+                changed = true;
+            }
+            directRegionMode = regionMode;
+            if (changed) invalidate();
         }
 
         private void updatePaints() {
@@ -343,8 +394,6 @@ public final class ViewHoverOverlay {
                     c.drawText(text, x, y, label);
                 }
             }
-            // Probe indicator is rendered by the single stateful FvActionHintOverlay.
-            // This fullscreen layer only draws View/region selection bounds.
         }
 
         private float dp(float v) { return v * getResources().getDisplayMetrics().density; }
