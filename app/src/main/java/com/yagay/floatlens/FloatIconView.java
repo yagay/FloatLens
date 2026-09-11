@@ -3,10 +3,11 @@ package com.yagay.floatlens;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.Paint;
 import android.graphics.ImageDecoder;
-import android.graphics.drawable.Drawable;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.drawable.AnimatedImageDrawable;
+import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
@@ -14,8 +15,9 @@ import android.os.SystemClock;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
-import java.util.List;
+
 import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Floating icon touch engine modelled from FV FooViewService$c3.onTouch.
@@ -66,6 +68,13 @@ public class FloatIconView extends View {
     private float lastSelectionRawX = Float.NaN, lastSelectionRawY = Float.NaN;
     private float directTimerAnchorX = Float.NaN, directTimerAnchorY = Float.NaN;
     private ViewSelectionEngine selectionEngine;
+
+    // FV FooViewService.D4() reads the active FloatIconView's current WindowManager x/y. Keep the
+    // exact temporary-follow trajectory here so the 24dp operation hint is tied to the owner icon,
+    // never to circle_focus.
+    private boolean fvWindowKnown;
+    private int fvWindowStartX, fvWindowStartY;
+    private int fvWindowX, fvWindowY;
 
     private final Runnable slideRunnable = new Runnable() {
         public void run() {
@@ -119,6 +128,33 @@ public class FloatIconView extends View {
     }
 
     public void refreshSettings() { fs = new FloatSettings(getContext()); loadCustomIcon(); invalidate(); }
+
+    /** Current owner-window rectangle used by FV FooViewService.D4()-style hint positioning. */
+    RectF currentFvWindowBounds() {
+        if (!fvWindowKnown) beginFvWindowTracking();
+        int w = Math.max(1, getWidth() > 0 ? getWidth() : getMeasuredWidth());
+        int h = Math.max(1, getHeight() > 0 ? getHeight() : getMeasuredHeight());
+        return new RectF(fvWindowX, fvWindowY, fvWindowX + w, fvWindowY + h);
+    }
+
+    private void beginFvWindowTracking() {
+        int[] loc = new int[2];
+        try {
+            getLocationOnScreen(loc);
+            fvWindowStartX = fvWindowX = loc[0];
+            fvWindowStartY = fvWindowY = loc[1];
+            fvWindowKnown = true;
+        } catch (Throwable ignored) {
+            fvWindowKnown = false;
+        }
+    }
+
+    private void updateFvWindowTracking(int dxFromDown, int dyFromDown) {
+        if (!fvWindowKnown) beginFvWindowTracking();
+        if (!fvWindowKnown) return;
+        fvWindowX = fvWindowStartX + dxFromDown;
+        fvWindowY = fvWindowStartY + dyFromDown;
+    }
 
     @Override protected void onDetachedFromWindow() {
         cancelDirectSelectionTimer();
@@ -195,7 +231,8 @@ public class FloatIconView extends View {
                 if(circleActive)CircleLiveController.cancel("new_down");
                 FloatService service=FloatService.get();
                 positionMoveMode=service!=null&&service.isPositionMoveArmed();
-                selectionEngine=positionMoveMode?null:new ViewSelectionEngine(getContext());
+                beginFvWindowTracking();
+                selectionEngine=positionMoveMode?null:new ViewSelectionEngine(getContext(), this);
                 selectionTookOver=false;
                 circleActive=false;
                 longPressActionTriggered=false;
@@ -248,6 +285,7 @@ public class FloatIconView extends View {
                 if(positionMoveMode){
                     if((moveDx!=0||moveDy!=0)&&dist>=dp(1.5f)){
                         if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","explicit position move started");}
+                        updateFvWindowTracking(moveDx, moveDy);
                         cb.onMove(moveDx,moveDy);
                         session.moved=true;
                         session.phase=GestureSession.Phase.ICON_DRAG;
@@ -258,6 +296,14 @@ public class FloatIconView extends View {
                 if(longPressActionTriggered) return true;
 
                 if(directSelectionActive){
+                    // FV FooViewService$c3.onTouch keeps calling FloatIconView.c0() while the
+                    // selection layer is active. The compact owner therefore continues following
+                    // the same pointer stream; D4() reads this moved owner window for its hint.
+                    if ((moveDx!=0||moveDy!=0) && followStarted) {
+                        updateFvWindowTracking(moveDx, moveDy);
+                        cb.onMove(moveDx, moveDy);
+                        session.moved=true;
+                    }
                     if(selectionEngine!=null)selectionEngine.updateDirect(rx,ry);
                     return true;
                 }
@@ -271,6 +317,7 @@ public class FloatIconView extends View {
 
                 if ((moveDx!=0||moveDy!=0) && dist>=dp(1.5f)) {
                     if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","fvTemporaryFollowStart distance="+Math.round(dist));}
+                    updateFvWindowTracking(moveDx, moveDy);
                     cb.onMove(moveDx,moveDy);
                     session.moved=true;
                 }
@@ -429,6 +476,7 @@ public class FloatIconView extends View {
         directSelectionActive=false;
         positionMoveMode=false;
         followStarted=false;
+        fvWindowKnown=false;
         lastSelectionRawX=lastSelectionRawY=Float.NaN;
         session.reset();
         invalidate();
