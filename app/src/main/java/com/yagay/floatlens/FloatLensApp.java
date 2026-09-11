@@ -39,8 +39,8 @@ public final class FloatLensApp extends Application implements Application.Activ
             } else if (activity instanceof ResultTextActivity
                     && !(tv instanceof Button) && tv.isClickable()
                     && tv.getText() != null && !tv.getText().toString().isBlank()) {
-                tv.setOnClickListener(v -> FloatActionMenu.showText(
-                        activity, tv.getText().toString(), null));
+                tv.setOnClickListener(v -> FloatActionMenu.showTextAt(
+                        activity, tv.getText().toString(), null, FloatMenuAnchor.forView(tv)));
             }
         }
         if (view instanceof ViewGroup group) {
@@ -78,6 +78,7 @@ public final class FloatLensApp extends Application implements Application.Activ
 
         @Override public void onDestroyActionMode(ActionMode mode) {
             lastValue = "";
+            FloatMenuAnchor.clear();
         }
 
         private void showIfChanged(boolean force) {
@@ -88,18 +89,21 @@ public final class FloatLensApp extends Application implements Application.Activ
             textView.post(() -> {
                 String current = selectedText(textView);
                 if (current.isEmpty()) return;
-                FloatActionMenu.showText(activity, current, () -> {
+                FloatActionMenu.showTextAt(activity, current, () -> {
                     try {
                         CharSequence raw = textView.getText();
                         if (raw instanceof Spannable span && span.length() > 0) {
                             Selection.setSelection(span, 0, span.length());
                             textView.post(() -> {
                                 String all = selectedText(textView);
-                                if (!all.isEmpty()) FloatActionMenu.showText(activity, all, null);
+                                if (!all.isEmpty()) {
+                                    FloatActionMenu.showTextAt(activity, all, null,
+                                            FloatMenuAnchor.forTextSelection(textView));
+                                }
                             });
                         }
                     } catch (Throwable ignored) {}
-                });
+                }, FloatMenuAnchor.forTextSelection(textView));
             });
         }
     }
@@ -114,8 +118,14 @@ public final class FloatLensApp extends Application implements Application.Activ
         return lo < hi ? tv.getText().subSequence(lo, hi).toString().trim() : "";
     }
 
-    @Override public void onActivityPaused(Activity activity) { FloatActionMenu.dismiss(); }
-    @Override public void onActivityDestroyed(Activity activity) { FloatActionMenu.dismiss(); }
+    @Override public void onActivityPaused(Activity activity) {
+        FloatActionMenu.dismiss();
+        FloatMenuAnchor.clear();
+    }
+    @Override public void onActivityDestroyed(Activity activity) {
+        FloatActionMenu.dismiss();
+        FloatMenuAnchor.clear();
+    }
     @Override public void onActivityCreated(Activity activity, Bundle state) {}
     @Override public void onActivityStarted(Activity activity) {}
     @Override public void onActivityStopped(Activity activity) {}
