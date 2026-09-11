@@ -25,7 +25,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,16 +44,7 @@ public final class FloatActionMenu {
     }
 
     public static void showShareTargets(Context c, String value) {
-        if (c == null) return;
-        Context app = c.getApplicationContext();
-        String text = value == null ? "" : value.trim();
-        if (text.isEmpty()) return;
-        if (TargetMenuStore.isCustomized(app, TargetMenuStore.MODE_SHARE)) {
-            show(app, text, null, MODE_SHARE);
-        } else {
-            dismiss();
-            launchSystemShare(app, text);
-        }
+        show(c, value, null, MODE_SHARE);
     }
 
     public static void showProcessTargets(Context c, String value) {
@@ -65,15 +55,9 @@ public final class FloatActionMenu {
         if (c == null) return;
         String text = value == null ? "" : value.trim();
         if (text.isEmpty()) return;
+        dismiss();
 
         Context app = c.getApplicationContext();
-        if (mode == MODE_SHARE && !TargetMenuStore.isCustomized(app, TargetMenuStore.MODE_SHARE)) {
-            dismiss();
-            launchSystemShare(app, text);
-            return;
-        }
-
-        dismiss();
         WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
         if (wm == null) return;
         Palette palette = Palette.from(app);
@@ -175,14 +159,7 @@ public final class FloatActionMenu {
             Toast.makeText(app, "已复制", Toast.LENGTH_SHORT).show();
             dismiss();
         });
-        share.setOnClickListener(v -> {
-            if (TargetMenuStore.isCustomized(app, TargetMenuStore.MODE_SHARE)) {
-                show(app, text, selectAll, MODE_SHARE);
-            } else {
-                dismiss();
-                launchSystemShare(app, text);
-            }
-        });
+        share.setOnClickListener(v -> show(app, text, selectAll, MODE_SHARE));
         more.setOnClickListener(v -> show(app, text, selectAll, MODE_MORE));
     }
 
@@ -290,28 +267,29 @@ public final class FloatActionMenu {
         });
     }
 
+    /** Keep Android as the source of targets; FloatLens only layers its saved ordering/hide rules. */
     private static List<ResolveInfo> applyTargetCustomization(Context app, String mode,
                                                               List<ResolveInfo> resolved) {
-        PackageManager pm = app.getPackageManager();
-        if (!TargetMenuStore.isCustomized(app, mode)) {
-            resolved.sort(Comparator.comparing(ri -> {
-                try {
-                    CharSequence s = ri.loadLabel(pm);
-                    return s == null ? ri.activityInfo.name : s.toString();
-                } catch (Throwable ignored) {
-                    return ri.activityInfo.name;
-                }
-            }, String.CASE_INSENSITIVE_ORDER));
-            return resolved;
-        }
+        if (!TargetMenuStore.isCustomized(app, mode)) return resolved;
 
+        PackageManager pm = app.getPackageManager();
         Map<String, ResolveInfo> byComponent = new HashMap<>();
+        ArrayList<TargetMenuStore.Item> systemItems = new ArrayList<>();
         for (ResolveInfo ri : resolved) {
             if (ri == null || ri.activityInfo == null) continue;
-            byComponent.put(ri.activityInfo.packageName + "|" + ri.activityInfo.name, ri);
+            String key = ri.activityInfo.packageName + "|" + ri.activityInfo.name;
+            byComponent.put(key, ri);
+            CharSequence label;
+            try { label = ri.loadLabel(pm); }
+            catch (Throwable ignored) { label = ri.activityInfo.name; }
+            systemItems.add(new TargetMenuStore.Item(
+                    label == null ? ri.activityInfo.name : label.toString(),
+                    ri.activityInfo.packageName,
+                    ri.activityInfo.name));
         }
+
         ArrayList<ResolveInfo> ordered = new ArrayList<>();
-        for (TargetMenuStore.Item item : TargetMenuStore.load(app, mode)) {
+        for (TargetMenuStore.Item item : TargetMenuStore.mergeWithSystem(app, mode, systemItems)) {
             ResolveInfo ri = byComponent.get(item.key());
             if (ri != null) ordered.add(ri);
         }
