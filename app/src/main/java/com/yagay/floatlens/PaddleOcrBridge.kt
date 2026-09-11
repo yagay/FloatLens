@@ -39,7 +39,8 @@ object PaddleOcrBridge {
                 val avg = if (result.results.isEmpty()) 0f else result.results.map { it.confidence }.average().toFloat()
                 withContext(Dispatchers.Main) { callback.onSuccess(text, blocks, result.totalTimeMs, result.lineCount, avg) }
             } catch (t: Throwable) {
-                val msg = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
+                val msg = describeThrowable(t)
+                DiagnosticLog.i(app, "PPOCRV6_BRIDGE", "failure model=$model $msg")
                 withContext(Dispatchers.Main) { callback.onFailure(msg) }
             }
         }
@@ -79,7 +80,30 @@ object PaddleOcrBridge {
                 recConfigAssetPath = OcrModelManager.ymlFile(context, model).absolutePath,
             )
             synchronized(engines) { engines[model] = created }
+            DiagnosticLog.i(
+                context,
+                "PPOCRV6_BRIDGE",
+                "loaded model=$model coldLoadMs=${created.coldLoadTimeMs} detBytes=${OcrModelManager.detFile(context, model).length()} recBytes=${OcrModelManager.recFile(context, model).length()}",
+            )
             created
         }
+    }
+
+    private fun describeThrowable(t: Throwable): String {
+        val parts = mutableListOf<String>()
+        var current: Throwable? = t
+        var depth = 0
+        while (current != null && depth < 8) {
+            val name = current.javaClass.simpleName.ifBlank { current.javaClass.name }
+            val message = current.message
+                ?.replace(Regex("\\s+"), " ")
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            val part = if (message == null) name else "$name: $message"
+            if (parts.lastOrNull() != part) parts.add(part)
+            current = current.cause
+            depth++
+        }
+        return parts.joinToString(" <- ").take(900).ifBlank { t.javaClass.name }
     }
 }

@@ -17,6 +17,7 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -89,7 +90,8 @@ public final class OcrEngine {
             Toast.makeText(app, "请先在设置中下载 " + OcrModelManager.displayName(model), Toast.LENGTH_LONG).show();
             return;
         }
-        DiagnosticLog.i(app, "PPOCRV6", "launch model=" + model + " image=" + source.getWidth() + "x" + source.getHeight());
+        DiagnosticLog.i(app, "PPOCRV6", "launch model=" + model + " languages=" + OcrLanguages.get(app)
+                + " image=" + source.getWidth() + "x" + source.getHeight());
         PaddleOcrBridge.recognize(app, source, model, new PaddleOcrBridge.Callback() {
             @Override public void onSuccess(String text, List<String> blocks, long totalMs, int lineCount, float averageConfidence) {
                 PaddleResult now = new PaddleResult(text, blocks, averageConfidence);
@@ -149,23 +151,26 @@ public final class OcrEngine {
                                            Bitmap source, Rect anchor, String reason) {
         try {
             DiagnosticLog.i(app, "OCR_INIT", "MLKit begin reason=" + reason);
-            int type = readOcrTypeSafely(app);
-            DiagnosticLog.i(app, "OCR_INIT", "read_type_ok type=" + type);
+            Set<String> languages = OcrLanguages.get(app);
+            boolean chinese = OcrLanguages.chineseEnabled(languages);
+            boolean english = OcrLanguages.englishEnabled(languages);
+            if (!chinese && !english) {
+                languages = OcrLanguages.all();
+                chinese = true;
+                english = true;
+            }
+            DiagnosticLog.i(app, "OCR_INIT", "languages=" + languages
+                    + " chinese=" + chinese + " english=" + english);
 
             ArrayList<PassSpec> plan = new ArrayList<>();
-            if (type == 1) {
-                plan.add(new PassSpec("latin-original", OcrImagePreprocessor.MODE_ORIGINAL, false));
-                plan.add(new PassSpec("latin-enhanced", OcrImagePreprocessor.MODE_ENHANCED, false));
-                plan.add(new PassSpec("latin-mono", OcrImagePreprocessor.MODE_MONO, false));
-            } else {
-                plan.add(new PassSpec("zh-original", OcrImagePreprocessor.MODE_ORIGINAL, true));
-                plan.add(new PassSpec("latin-original", OcrImagePreprocessor.MODE_ORIGINAL, false));
-                plan.add(new PassSpec("zh-enhanced", OcrImagePreprocessor.MODE_ENHANCED, true));
-                plan.add(new PassSpec("latin-enhanced", OcrImagePreprocessor.MODE_ENHANCED, false));
-                plan.add(new PassSpec("zh-mono", OcrImagePreprocessor.MODE_MONO, true));
-            }
+            if (chinese) plan.add(new PassSpec("zh-original", OcrImagePreprocessor.MODE_ORIGINAL, true));
+            if (english) plan.add(new PassSpec("latin-original", OcrImagePreprocessor.MODE_ORIGINAL, false));
+            if (chinese) plan.add(new PassSpec("zh-enhanced", OcrImagePreprocessor.MODE_ENHANCED, true));
+            if (english) plan.add(new PassSpec("latin-enhanced", OcrImagePreprocessor.MODE_ENHANCED, false));
+            if (chinese) plan.add(new PassSpec("zh-mono", OcrImagePreprocessor.MODE_MONO, true));
+            if (english) plan.add(new PassSpec("latin-mono", OcrImagePreprocessor.MODE_MONO, false));
 
-            DiagnosticLog.i(app, "OCR_PIPELINE", "start MLKit serial-safe type=" + type
+            DiagnosticLog.i(app, "OCR_PIPELINE", "start MLKit serial-safe languages=" + languages
                     + " source=" + source.getWidth() + "x" + source.getHeight()
                     + " passes=" + plan.size() + " reason=" + reason);
             new RunState(app, service, source, anchor, plan).next();
@@ -188,27 +193,6 @@ public final class OcrEngine {
             DiagnosticLog.i(app, "OCR_ENGINE", "read fallback=" + safe(t));
         }
         return 0;
-    }
-
-    private static int readOcrTypeSafely(Context app) {
-        try {
-            SharedPreferences p = app.getSharedPreferences(FloatSettings.PREF, Context.MODE_PRIVATE);
-            Object raw = p.getAll().get(FloatSettings.K_OCR_TYPE);
-            if (raw instanceof Number) return clampType(((Number) raw).intValue());
-            if (raw instanceof String) {
-                try { return clampType(Integer.parseInt(((String) raw).trim())); }
-                catch (Throwable ignored) { return 0; }
-            }
-            if (raw instanceof Boolean) return ((Boolean) raw) ? 1 : 0;
-        } catch (Throwable t) {
-            DiagnosticLog.i(app, "OCR_INIT", "read_type_fallback " + t.getClass().getSimpleName()
-                    + ":" + safe(t));
-        }
-        return 0;
-    }
-
-    private static int clampType(int value) {
-        return value == 1 ? 1 : 0;
     }
 
     private static final class RunState {
@@ -345,14 +329,20 @@ public final class OcrEngine {
         MAIN.post(() -> {
             TextRecognizer client = null;
             try {
+                Set<String> languages = OcrLanguages.get(app);
+                boolean useChinese = OcrLanguages.chineseEnabled(languages);
                 DiagnosticLog.i(app, "OCR_FALLBACK", "start reason=" + reason
+                        + " languages=" + languages
                         + " image=" + source.getWidth() + "x" + source.getHeight());
-                client = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
+                client = useChinese
+                        ? TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build())
+                        : TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
                 TextRecognizer finalClient = client;
+                String passName = useChinese ? "fallback-zh-original" : "fallback-latin-original";
                 client.process(InputImage.fromBitmap(source, 0))
                         .addOnSuccessListener(text -> {
                             try {
-                                Candidate result = candidate("fallback-zh-original", text);
+                                Candidate result = candidate(passName, text);
                                 DiagnosticLog.i(app, "OCR_FALLBACK", "success chars="
                                         + result.full.length() + " blocks=" + result.blocks.size());
                                 if (result.full.isBlank()) {

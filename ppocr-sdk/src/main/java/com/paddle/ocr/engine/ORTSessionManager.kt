@@ -21,6 +21,7 @@ import android.content.Context
 import com.paddle.ocr.EngineConfig
 import com.paddle.ocr.model.OCRError
 import java.io.File
+import java.io.FileNotFoundException
 import java.nio.FloatBuffer
 
 class ORTSessionManager(
@@ -44,30 +45,24 @@ class ORTSessionManager(
         }
         try {
             val ortEnv = env ?: throw OCRError.ModelLoadFailed("OCR", Exception("Environment not initialized"))
-            val detBytes = readModelAsset(detAssetPath)
-            val recBytes = readModelAsset(recAssetPath)
+            detSession = createModelSession(ortEnv, detAssetPath, opts, "detection")
             try {
-                detSession = ortEnv.createSession(detBytes, opts)
-            } catch (t: Throwable) {
-                throw OCRError.ModelLoadFailed("detection", t)
-            }
-            try {
-                recSession = ortEnv.createSession(recBytes, opts)
+                recSession = createModelSession(ortEnv, recAssetPath, opts, "recognition")
             } catch (t: Throwable) {
                 detSession?.close()
                 detSession = null
-                throw OCRError.ModelLoadFailed("recognition", t)
+                throw t
             }
 
             detInputName = try {
                 detSession!!.inputNames.iterator().next()
             } catch (t: Throwable) {
-                throw OCRError.ModelLoadFailed("detection", t)
+                throw OCRError.ModelLoadFailed("detection input", t)
             }
             recInputName = try {
                 recSession!!.inputNames.iterator().next()
             } catch (t: Throwable) {
-                throw OCRError.ModelLoadFailed("recognition", t)
+                throw OCRError.ModelLoadFailed("recognition input", t)
             }
             coldLoadTimeMs = System.currentTimeMillis() - loadStart
         } finally {
@@ -105,13 +100,33 @@ class ORTSessionManager(
         }
     }
 
-    private fun readModelAsset(assetPath: String): ByteArray {
+    /**
+     * For downloaded models, let ONNX Runtime map/read the model from its file
+     * path directly. The previous implementation first copied the complete
+     * model into a ByteArray, which caused a large transient memory spike — in
+     * particular for the ~60–77 MB PP-OCRv6 Medium files.
+     */
+    private fun createModelSession(
+        ortEnv: OrtEnvironment,
+        modelPath: String,
+        opts: OrtSession.SessionOptions,
+        modelName: String,
+    ): OrtSession {
         return try {
-            val file = File(assetPath)
-            if (file.isAbsolute && file.isFile) file.readBytes()
-            else context.assets.open(assetPath).use { it.readBytes() }
+            val file = File(modelPath)
+            if (file.isAbsolute) {
+                if (!file.isFile || file.length() <= 0L) {
+                    throw FileNotFoundException("$modelPath (missing or empty)")
+                }
+                ortEnv.createSession(file.absolutePath, opts)
+            } else {
+                val bytes = context.assets.open(modelPath).use { it.readBytes() }
+                if (bytes.isEmpty()) throw FileNotFoundException("$modelPath (empty asset)")
+                ortEnv.createSession(bytes, opts)
+            }
         } catch (t: Throwable) {
-            throw OCRError.ModelNotFound(assetPath, t)
+            if (t is OCRError.ModelLoadFailed) throw t
+            throw OCRError.ModelLoadFailed(modelName, t)
         }
     }
 

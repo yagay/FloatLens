@@ -14,11 +14,38 @@
 
 package com.paddle.ocr.model
 
+private fun causeDetail(cause: Throwable?): String {
+    if (cause == null) return "unknown cause"
+    var current: Throwable? = cause
+    var best = ""
+    var depth = 0
+    while (current != null && depth < 8) {
+        val name = current.javaClass.simpleName.ifBlank { current.javaClass.name }
+        val message = current.message
+            ?.replace(Regex("\\s+"), " ")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        best = if (message == null) name else "$name: $message"
+        current = current.cause
+        depth++
+    }
+    return best.take(500)
+}
+
 sealed class OCRError(message: String, cause: Throwable? = null) : Exception(message, cause) {
-    class ModelNotFound(modelPath: String, cause: Throwable? = null) : OCRError("Model not found: $modelPath", cause)
-    class ModelLoadFailed(modelName: String, cause: Throwable) : OCRError("Failed to load $modelName model", cause)
-    class ConfigParseFailed(path: String, cause: Throwable? = null) : OCRError("Failed to parse config: $path", cause)
+    class ModelNotFound(modelPath: String, cause: Throwable? = null) :
+        OCRError("Model not found: $modelPath${if (cause == null) "" else " (${causeDetail(cause)})"}", cause)
+
+    class ModelLoadFailed(modelName: String, cause: Throwable) :
+        OCRError("Failed to load $modelName model: ${causeDetail(cause)}", cause)
+
+    class ConfigParseFailed(path: String, cause: Throwable? = null) :
+        OCRError("Failed to parse config: $path${if (cause == null) "" else " (${causeDetail(cause)})"}", cause)
+
     class InvalidImage : OCRError("Input image is empty or invalid")
-    class InferenceFailed(stage: String, cause: Throwable) : OCRError("Inference failed at stage '$stage'", cause)
+
+    class InferenceFailed(stage: String, cause: Throwable) :
+        OCRError("Inference failed at stage '$stage': ${causeDetail(cause)}", cause)
+
     class DecodeError(message: String, cause: Throwable? = null) : OCRError(message, cause)
 }

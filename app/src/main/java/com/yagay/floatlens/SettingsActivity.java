@@ -72,7 +72,7 @@ public class SettingsActivity extends AppCompatActivity {
             err.setPadding(0, dp(8), 0, dp(8));
             root.addView(err);
         }
-        ocrTypeSpinner(root);
+        ocrLanguageMultiSelect(root);
 
         title(root, "环境与显示");
         check(root, "键盘出现时避让悬浮图标", FloatSettings.K_IME_AVOID, fs.imeAvoid());
@@ -246,14 +246,44 @@ public class SettingsActivity extends AppCompatActivity {
         remove.setOnClickListener(v -> { try { OcrModelManager.delete(this, model); } catch (Throwable ignored) {} refresh.run(); });
     }
 
-    private void ocrTypeSpinner(LinearLayout r) {
-        TextView t = new TextView(this); t.setText("ML Kit 识别语言 / ocr_type"); r.addView(t);
-        String[] labels = {"中文 + 拉丁", "拉丁文字"};
-        Spinner s = new Spinner(this); s.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels)); s.setSelection(fs.ocrType());
-        s.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
-            public void onItemSelected(android.widget.AdapterView<?> p, android.view.View v, int pos, long id) { fs.prefs().edit().putInt(FloatSettings.K_OCR_TYPE, pos).apply(); }
-            public void onNothingSelected(android.widget.AdapterView<?> p) {}
-        }); r.addView(s);
+    private void ocrLanguageMultiSelect(LinearLayout r) {
+        TextView title = new TextView(this);
+        title.setText("OCR 识别语言（可多选） / ocr_languages_v2");
+        r.addView(title);
+
+        TextView note = new TextView(this);
+        note.setText("简体中文和繁體中文共用中文识别器；PP-OCRv6 使用同一套多语言模型。至少选择一种语言。");
+        note.setPadding(0, dp(4), 0, dp(4));
+        r.addView(note);
+
+        java.util.Set<String> selected = new java.util.HashSet<>(OcrLanguages.get(this));
+        CheckBox simplified = ocrLanguageCheck("简体中文", OcrLanguages.ZH_HANS, selected);
+        CheckBox traditional = ocrLanguageCheck("繁體中文", OcrLanguages.ZH_HANT, selected);
+        CheckBox english = ocrLanguageCheck("English", OcrLanguages.ENGLISH, selected);
+        r.addView(simplified);
+        r.addView(traditional);
+        r.addView(english);
     }
+
+    private CheckBox ocrLanguageCheck(String label, String code, java.util.Set<String> selected) {
+        CheckBox box = new CheckBox(this);
+        box.setText(label);
+        box.setTag(code);
+        box.setChecked(selected.contains(code));
+        box.setOnCheckedChangeListener((button, checked) -> {
+            String lang = String.valueOf(button.getTag());
+            if (checked) selected.add(lang); else selected.remove(lang);
+            if (selected.isEmpty()) {
+                selected.add(lang);
+                button.setChecked(true);
+                Toast.makeText(SettingsActivity.this, "至少选择一种 OCR 语言", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            OcrLanguages.save(SettingsActivity.this, selected);
+            DiagnosticLog.i(SettingsActivity.this, "OCR_LANG", "selected=" + selected);
+        });
+        return box;
+    }
+
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 }
