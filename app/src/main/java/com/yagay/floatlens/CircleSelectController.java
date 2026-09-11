@@ -23,7 +23,7 @@ public final class CircleSelectController {
         }
 
         DiagnosticLog.i(app, "CIRCLE_SELECT", "capture begin gen=" + gen);
-        MAIN.postDelayed(() -> ScreenshotController.captureRawFrame(app, bitmap -> {
+        MAIN.postDelayed(() -> CircleSelectFrame.capture(app, bitmap -> {
             synchronized (CircleSelectController.class) {
                 if (gen != generation) {
                     if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();

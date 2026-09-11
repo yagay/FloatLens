@@ -37,22 +37,28 @@ public final class CircleSelectOverlay {
         dismissActive("replace");
         Context app = c.getApplicationContext();
         WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
+        Rect contentBounds = CircleSelectFrame.contentBounds(app);
+        Rect displayBounds = CircleSelectFrame.displayBounds(app);
         WorkspaceView view = new WorkspaceView(app, wm, screenshot, onClosed);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.MATCH_PARENT,
+                Math.max(1, contentBounds.width()),
+                Math.max(1, contentBounds.height()),
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
+        lp.x = contentBounds.left - displayBounds.left;
+        lp.y = contentBounds.top - displayBounds.top;
         try {
             wm.addView(view, lp);
             active = view;
             view.startSpatialOcr();
             DiagnosticLog.i(app, "CIRCLE_SELECT", "overlay shown "
-                    + screenshot.getWidth() + "x" + screenshot.getHeight());
+                    + screenshot.getWidth() + "x" + screenshot.getHeight()
+                    + " bounds=" + contentBounds.toShortString()
+                    + " offset=" + lp.x + "," + lp.y);
             return true;
         } catch (Throwable t) {
             DiagnosticLog.i(app, "CIRCLE_SELECT", "overlay add failed=" + t);
