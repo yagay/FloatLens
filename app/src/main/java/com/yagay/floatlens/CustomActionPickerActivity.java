@@ -1,6 +1,5 @@
 package com.yagay.floatlens;
 
-import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
@@ -21,6 +20,7 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -28,7 +28,7 @@ import java.util.Set;
 
 /** Picker that discovers custom text-menu actions either by app or by intent type. */
 public final class CustomActionPickerActivity extends AppCompatActivity {
-    private final PackageManager pm() { return getPackageManager(); }
+    private PackageManager pm() { return getPackageManager(); }
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -80,10 +80,10 @@ public final class CustomActionPickerActivity extends AppCompatActivity {
         root.addView(note);
 
         List<ApplicationInfo> apps;
-        try { apps = pm().getInstalledApplications(PackageManager.ApplicationInfoFlags.of(0)); }
-        catch (Throwable ignored) { apps = pm().getInstalledApplications(0); }
+        try { apps = new ArrayList<>(pm().getInstalledApplications(0)); }
+        catch (Throwable t) { apps = new ArrayList<>(); }
         apps.removeIf(a -> a == null || !a.enabled || getPackageName().equals(a.packageName));
-        apps.sort(Comparator.comparing(a -> appLabel(a), String.CASE_INSENSITIVE_ORDER));
+        apps.sort(Comparator.comparing(this::appLabel, String.CASE_INSENSITIVE_ORDER));
         for (ApplicationInfo app : apps) {
             String label = appLabel(app);
             Drawable icon = null;
@@ -118,10 +118,10 @@ public final class CustomActionPickerActivity extends AppCompatActivity {
         }
 
         try {
-            PackageInfo pi = pm().getPackageInfo(pkg, PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES));
+            PackageInfo pi = pm().getPackageInfo(pkg, PackageManager.GET_ACTIVITIES);
             if (pi.activities != null) {
-                ArrayList<ActivityInfo> acts = new ArrayList<>(List.of(pi.activities));
-                acts.sort(Comparator.comparing(a -> activityLabel(a), String.CASE_INSENSITIVE_ORDER));
+                ArrayList<ActivityInfo> acts = new ArrayList<>(Arrays.asList(pi.activities));
+                acts.sort(Comparator.comparing(this::activityLabel, String.CASE_INSENSITIVE_ORDER));
                 for (ActivityInfo ai : acts) {
                     if (!canDirectLaunch(ai)) continue;
                     String key = CustomMenuActionStore.TYPE_ACTIVITY + "|" + ai.packageName + "|" + ai.name;
@@ -130,20 +130,7 @@ public final class CustomActionPickerActivity extends AppCompatActivity {
                             appIcon(pkg), ai.packageName, ai.name, CustomMenuActionStore.TYPE_ACTIVITY));
                 }
             }
-        } catch (Throwable t) {
-            try {
-                PackageInfo pi = pm().getPackageInfo(pkg, PackageManager.GET_ACTIVITIES);
-                if (pi.activities != null) {
-                    for (ActivityInfo ai : pi.activities) {
-                        if (!canDirectLaunch(ai)) continue;
-                        String key = CustomMenuActionStore.TYPE_ACTIVITY + "|" + ai.packageName + "|" + ai.name;
-                        if (!seen.add(key)) continue;
-                        all.add(new Discovered(activityLabel(ai), "直接打开入口 · " + shortClass(ai.name),
-                                appIcon(pkg), ai.packageName, ai.name, CustomMenuActionStore.TYPE_ACTIVITY));
-                    }
-                }
-            } catch (Throwable ignored) {}
-        }
+        } catch (Throwable ignored) {}
 
         if (all.isEmpty()) {
             TextView empty = text("没有发现可从 FloatLens 调用的入口", 15);
@@ -207,18 +194,13 @@ public final class CustomActionPickerActivity extends AppCompatActivity {
         return checkSelfPermission(ai.permission) == PackageManager.PERMISSION_GRANTED;
     }
 
+    @SuppressWarnings("deprecation")
     private List<ResolveInfo> query(Intent intent) {
         try {
-            List<ResolveInfo> list = pm().queryIntentActivities(intent,
-                    PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY));
+            List<ResolveInfo> list = pm().queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY);
             return list == null ? new ArrayList<>() : new ArrayList<>(list);
-        } catch (Throwable ignored) {
-            try {
-                List<ResolveInfo> list = pm().queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY);
-                return list == null ? new ArrayList<>() : new ArrayList<>(list);
-            } catch (Throwable t) {
-                return new ArrayList<>();
-            }
+        } catch (Throwable t) {
+            return new ArrayList<>();
         }
     }
 
@@ -344,7 +326,7 @@ public final class CustomActionPickerActivity extends AppCompatActivity {
     }
 
     @Override public void onBackPressed() {
-        showHome();
+        finish();
     }
 
     private static final class Discovered {
