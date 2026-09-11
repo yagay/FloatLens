@@ -7,24 +7,22 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
-import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.WindowManager;
 import java.util.Collections;
+import java.util.List;
 
 /**
  * Non-touchable FV-style selection display layer.
  *
- * Hit testing is independent from the visual overlay. Small candidates use one translucent
- * fullscreen drawing surface. ROOT/near-fullscreen candidates use the lightweight four-edge frame
- * so whole-screen Views remain visibly selectable without keeping a fullscreen translucent surface
- * over video playback.
+ * A complete Accessibility candidate tree is captured once when dragging starts. Pointer MOVE then
+ * performs rectangle hit testing only. Small candidates use one translucent drawing surface;
+ * ROOT/near-fullscreen candidates use the lightweight four-edge frame so whole-screen Views remain
+ * visibly selectable without keeping a fullscreen translucent surface over video playback.
  */
 public final class ViewHoverOverlay {
-    private static final long TREE_REFRESH_MS = 300L;
-    private static final long POINT_SCAN_MIN_MS = 32L;
     private static final int LARGE_TARGET_PERCENT = 72;
 
     private final Context context;
@@ -36,8 +34,6 @@ public final class ViewHoverOverlay {
     private FvRegionFrameOverlay regionFrame;
     private ScreenCandidate current;
     private boolean confirmed;
-    private long lastScanAt;
-    private long lastTreeScanAt;
     private float lastX = Float.NaN, lastY = Float.NaN;
     private float directStartX = Float.NaN, directStartY = Float.NaN;
     private boolean directRegionMode;
@@ -55,9 +51,36 @@ public final class ViewHoverOverlay {
     /** Compatibility no-op: visual screenshot candidates are no longer used for View selection. */
     public void setScreenSnapshot(Bitmap bitmap, Rect displayBounds) {}
 
-    /** Start hit testing without creating a full-screen overlay surface yet. */
+    /**
+     * FV-style arming: snapshot and prepare the whole Accessibility tree once before MOVE hit tests.
+     * This intentionally happens before FloatLens adds its own highlight overlay.
+     */
     public void begin() {
-        // Point-specific collection happens in update(); avoid a whole-tree scan just for arming.
+        refreshAccessibilityTree();
+    }
+
+    private void ensureTreeCache() {
+        if (!model.isEmpty()) return;
+        refreshAccessibilityTree();
+    }
+
+    private void refreshAccessibilityTree() {
+        if (accessibility == null) return;
+        try {
+            model.setAccessibility(AccessibilityCandidateCollector.collect(accessibility));
+            List<ScreenCandidate> cached = model.accessibilityCandidates();
+            int broad = 0;
+            int viewCount = 0;
+            for (ScreenCandidate c : cached) {
+                if (c.type() == ScreenCandidate.Type.VIEW) viewCount++;
+                if (c.type() == ScreenCandidate.Type.ROOT || c.fullscreenLike()) broad++;
+            }
+            DiagnosticLog.i(context, "FV_TREE_CACHE", "READY total=" + cached.size()
+                    + " view=" + viewCount + " broad=" + broad);
+        } catch (Throwable t) {
+            DiagnosticLog.i(context, "FV_TREE_CACHE", "refresh failed=" + t);
+            model.setAccessibility(Collections.emptyList());
+        }
     }
 
     private void ensureView() {
@@ -98,9 +121,9 @@ public final class ViewHoverOverlay {
         }
     }
 
-    /** Start FV same-touch direct selection at the current transformed selection hotspot. */
+    /** Start FV same-touch direct selection without rebuilding the already cached View tree. */
     public void beginDirect(float selectionX, float selectionY) {
-        begin();
+        ensureTreeCache();
         directStartX = selectionX;
         directStartY = selectionY;
         directRegionMode = false;
@@ -151,25 +174,16 @@ public final class ViewHoverOverlay {
         }
     }
 
-    /** Normal point-based View hit testing used before a direct region gesture takes over. */
+    /**
+     * MOVE-time View hit testing. The Accessibility tree is NOT traversed here: selection is a
+     * contains(x,y) lookup against the candidate snapshot prepared by begin().
+     */
     public void update(float selectionX, float selectionY) {
         if (accessibility == null) return;
-
-        long now = SystemClock.uptimeMillis();
-        float dx = Float.isNaN(lastX) ? 999f : selectionX - lastX;
-        float dy = Float.isNaN(lastY) ? 999f : selectionY - lastY;
-        if (now - lastScanAt < POINT_SCAN_MIN_MS && dx * dx + dy * dy < 9f) return;
-        lastScanAt = now;
+        ensureTreeCache();
         lastX = selectionX;
         lastY = selectionY;
 
-        try {
-            model.setAccessibility(AccessibilityCandidateCollector.collectAtPoint(
-                    accessibility, selectionX, selectionY));
-        } catch (Throwable t) {
-            DiagnosticLog.i(context, "FV_TREE", "point refresh failed=" + t);
-            model.setAccessibility(Collections.emptyList());
-        }
         ScreenCandidate next = model.selectAt(selectionX, selectionY);
         if (!sameCandidate(current, next)) {
             current = next;
@@ -182,8 +196,7 @@ public final class ViewHoverOverlay {
                     view.setConfirmed(false);
                 }
             } else {
-                // Keep ROOT/large View selection visible with the lightweight edge frame instead of
-                // a fullscreen translucent surface. This is both FV-like and video friendly.
+                // Large/fullscreen Views remain visible through a cheap four-edge frame.
                 detachView();
                 if (next != null) {
                     if (regionFrame == null) regionFrame = new FvRegionFrameOverlay(context);
@@ -193,14 +206,16 @@ public final class ViewHoverOverlay {
                 }
             }
             if (next != null) {
-                DiagnosticLog.i(context, "VIEW_HOVER", "source=" + next.source()
+                DiagnosticLog.i(context, "VIEW_HOVER", "cacheHit=true source=" + next.source()
                         + " type=" + next.type() + " screenBounds=" + next.bounds()
                         + " depth=" + next.depth() + " textLen=" + next.text().length()
                         + " class=" + next.className() + " id=" + next.viewId()
+                        + " fullscreenLike=" + next.fullscreenLike()
                         + " visual=" + shouldRenderCandidate(next));
             } else {
-                DiagnosticLog.i(context, "VIEW_HOVER", "candidate=null selection="
-                        + Math.round(selectionX) + "," + Math.round(selectionY));
+                DiagnosticLog.i(context, "VIEW_HOVER", "cacheHit=false selection="
+                        + Math.round(selectionX) + "," + Math.round(selectionY)
+                        + " cached=" + model.size());
             }
         }
     }
@@ -216,19 +231,6 @@ public final class ViewHoverOverlay {
         long screenArea = (long) screen.width() * screen.height();
         long area = (long) b.width() * b.height();
         return screenArea <= 0 || area * 100L < screenArea * LARGE_TARGET_PERCENT;
-    }
-
-    private void refreshAccessibilityTree(boolean force) {
-        long now = SystemClock.uptimeMillis();
-        if (!force && now - lastTreeScanAt < TREE_REFRESH_MS
-                && !model.accessibilityCandidates().isEmpty()) return;
-        lastTreeScanAt = now;
-        try {
-            model.setAccessibility(AccessibilityCandidateCollector.collect(accessibility));
-        } catch (Throwable t) {
-            DiagnosticLog.i(context, "FV_TREE", "refresh failed=" + t);
-            model.setAccessibility(Collections.emptyList());
-        }
     }
 
     public void setConfirmed(boolean value) {
@@ -302,7 +304,6 @@ public final class ViewHoverOverlay {
         directStartX = directStartY = Float.NaN;
         model.setAccessibility(Collections.emptyList());
         model.setVisual(Collections.emptyList());
-        lastScanAt = lastTreeScanAt = 0L;
         lastX = lastY = Float.NaN;
     }
 
@@ -406,7 +407,8 @@ public final class ViewHoverOverlay {
                 if (Rect.intersects(localFrame, r)) {
                     c.drawRect(r, fill);
                     c.drawRect(r, border);
-                    String base = candidate.type() == ScreenCandidate.Type.ROOT ? "整屏 View" : candidate.label();
+                    String base = (candidate.type() == ScreenCandidate.Type.ROOT || candidate.fullscreenLike())
+                            ? "整屏 View" : candidate.label();
                     String text = confirmed ? "已锁定 · " + base : base;
                     float x = Math.max(dp(8), Math.min(r.left, getWidth() - dp(180)));
                     float y = r.top > dp(28) ? r.top - dp(8)

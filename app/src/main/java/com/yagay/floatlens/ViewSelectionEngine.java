@@ -9,10 +9,8 @@ import android.view.MotionEvent;
 /**
  * FV-style same-touch selection engine.
  *
- * Two independent FV visual layers are preserved:
- * 1) the 15dp red/yellow circle_focus probe whose centre is the exact hit-test point;
- * 2) the View highlight layer, which follows MOVE immediately; the delayed 400ms transition only
- *    changes the probe/state into DIRECT selection and reveals the operation hint.
+ * The Accessibility tree is cached before FloatLens adds its own probe/highlight windows. MOVE then
+ * updates the red/yellow probe and performs only cached rectangle hit testing.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
@@ -60,12 +58,16 @@ public final class ViewSelectionEngine {
     }
 
     /**
-     * Moving state: RED probe plus live View hit-testing/highlight. This is deliberately active
-     * before the 400ms dwell timer fires, matching FV where the View under circle_focus is visible
-     * while the icon is still moving.
+     * Moving state: cache the target App's full Accessibility tree BEFORE attaching our own probe,
+     * then show the RED exact-point probe and update the cached View highlight.
      */
     public PointF showProbe(float rawX, float rawY) {
         PointF transformed = pointTransformer.transformRaw(rawX, rawY);
+
+        // Important for fullscreen/root Views: do not let FloatLens' own probe/highlight overlay
+        // become the active accessibility window before the initial complete-tree snapshot.
+        if (accessibility != null) ensureHoverOverlay();
+
         ensureProbe();
         if (probeOverlay != null) probeOverlay.setTracking();
         hideOperationHint();
@@ -73,10 +75,7 @@ public final class ViewSelectionEngine {
         selectionX = shown.x;
         selectionY = shown.y;
 
-        if (accessibility != null) {
-            ensureHoverOverlay();
-            if (overlay != null) overlay.update(selectionX, selectionY);
-        }
+        if (overlay != null) overlay.update(selectionX, selectionY);
         return shown;
     }
 
@@ -85,7 +84,7 @@ public final class ViewSelectionEngine {
         hideOperationHint();
     }
 
-    /** Delayed move-idle state: keep the existing highlight, turn probe YELLOW and enter DIRECT. */
+    /** Delayed move-idle state: keep the cached/highlighted target and enter DIRECT. */
     public boolean activateDirect(float rawX, float rawY) {
         if (accessibility == null) return false;
         if (state == State.DIRECT) {
@@ -142,7 +141,6 @@ public final class ViewSelectionEngine {
 
     /**
      * Same-touch ACTION_UP. The operation shown by the FV 24dp hint is the operation executed.
-     * This avoids the old ambiguous "recognize" release path where everything looked like OCR.
      */
     public boolean finishDirect(float rawX, float rawY) {
         if (state != State.DIRECT) {
@@ -247,7 +245,8 @@ public final class ViewSelectionEngine {
         if (!next.available()) return;
         next.begin();
         overlay = next;
-        DiagnosticLog.i(context, "FV_SELECT", "HOVER_ARM live=true");
+        DiagnosticLog.i(context, "FV_SELECT", "HOVER_ARM cache=true beforeProbe="
+                + (probeOverlay == null));
     }
 
     private void closeVisuals() {

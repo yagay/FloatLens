@@ -7,11 +7,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Position-only selection model.
+ * FV-style cached hit-test model.
  *
- * TEXT, NON_TEXT(image/icon) and generic VIEW candidates are selectable. Near-fullscreen VIEW/ROOT
- * candidates are retained as final fallback so a whole-page View never beats a more specific child
- * at the same point. No semantic score or clickable priority participates in selection.
+ * Candidate ordering is prepared once when a complete Accessibility tree snapshot is installed.
+ * MOVE then only walks that cached list and returns the first rectangle containing the pointer.
+ * Whole-page/ROOT candidates stay at the end so a more specific child wins at the same point.
  */
 public final class ScreenSelectionModel {
     private final ArrayList<ScreenCandidate> accessibility = new ArrayList<>();
@@ -22,6 +22,24 @@ public final class ScreenSelectionModel {
         for (ScreenCandidate c : dedupe(items)) {
             if (isAcceptedType(c)) accessibility.add(c);
         }
+
+        // FV prepares/cleans its candidate collections before pointer hit testing. Do the same here:
+        // specific rectangles first, broad/fullscreen rectangles last. List.sort is stable, so equal
+        // geometry/depth candidates preserve collector/window order.
+        accessibility.sort((a, b) -> {
+            boolean aBroad = isBroad(a);
+            boolean bBroad = isBroad(b);
+            if (aBroad != bBroad) return aBroad ? 1 : -1;
+
+            int byDepth = Integer.compare(b.depth(), a.depth());
+            if (byDepth != 0) return byDepth;
+
+            long aa = area(a.bounds());
+            long ba = area(b.bounds());
+            int byArea = Long.compare(aa, ba);
+            if (byArea != 0) return byArea;
+            return 0;
+        });
     }
 
     /** Kept for source compatibility; visual candidates are intentionally ignored. */
@@ -35,36 +53,17 @@ public final class ScreenSelectionModel {
         return new ArrayList<>();
     }
 
+    public boolean isEmpty() { return accessibility.isEmpty(); }
+    public int size() { return accessibility.size(); }
+
+    /** MOVE-time path: cached rectangle contains() only; no tree walk and no per-MOVE ranking. */
     public ScreenCandidate selectAccessibilityAt(float x, float y) {
         final int px = Math.round(x), py = Math.round(y);
-        ScreenCandidate best = null;
-        ScreenCandidate rootFallback = null;
-
         for (ScreenCandidate c : accessibility) {
-            if (!isAcceptedType(c)) continue;
             Rect r = c.bounds();
-            if (r.isEmpty() || !r.contains(px, py)) continue;
-
-            if (c.type() == ScreenCandidate.Type.ROOT || c.fullscreenLike()) {
-                // Whole-page Views are deliberately last. If several windows expose one, keep the
-                // geometrically/depth-wise most specific candidate only for fallback.
-                if (rootFallback == null
-                        || c.depth() > rootFallback.depth()
-                        || (c.depth() == rootFallback.depth()
-                        && moreSpecific(r, rootFallback.bounds()))) {
-                    rootFallback = c;
-                }
-                continue;
-            }
-
-            // Normal TEXT/NON_TEXT/VIEW selection remains pure geometry/tree position.
-            if (best == null
-                    || c.depth() > best.depth()
-                    || (c.depth() == best.depth() && moreSpecific(r, best.bounds()))) {
-                best = c;
-            }
+            if (!r.isEmpty() && r.contains(px, py)) return c;
         }
-        return best != null ? best : rootFallback;
+        return null;
     }
 
     public ScreenCandidate selectAt(float x, float y) {
@@ -82,16 +81,12 @@ public final class ScreenSelectionModel {
                 || c.type() == ScreenCandidate.Type.ROOT);
     }
 
-    private boolean moreSpecific(Rect candidate, Rect current) {
-        if (candidate == null || candidate.isEmpty()) return false;
-        if (current == null || current.isEmpty()) return true;
-        if (current.contains(candidate) && !candidate.equals(current)) return true;
-        if (candidate.contains(current) && !candidate.equals(current)) return false;
-        return area(candidate) < area(current);
+    private boolean isBroad(ScreenCandidate c) {
+        return c != null && (c.type() == ScreenCandidate.Type.ROOT || c.fullscreenLike());
     }
 
     private long area(Rect r) {
-        return (long) r.width() * r.height();
+        return r == null ? 0L : (long) r.width() * r.height();
     }
 
     private List<ScreenCandidate> dedupe(List<ScreenCandidate> in) {
