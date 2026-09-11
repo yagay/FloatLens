@@ -8,6 +8,7 @@ import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.Region;
 import android.hardware.HardwareBuffer;
+import android.os.SystemClock;
 import android.view.Display;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
@@ -21,7 +22,9 @@ import java.util.function.Consumer;
 
 public class LensAccessibilityService extends AccessibilityService {
     private static volatile LensAccessibilityService s;
+    private static final long ENV_INSPECT_MIN_MS = 180L;
     private volatile EnvironmentState env = new EnvironmentState("", false, 0, true, false, false);
+    private long lastEnvironmentInspectAt;
 
     @Override protected void onServiceConnected(){
         super.onServiceConnected();
@@ -45,16 +48,34 @@ public class LensAccessibilityService extends AccessibilityService {
 
     @Override public void onAccessibilityEvent(AccessibilityEvent e) {
         try {
-            String top = env.topPackage();
+            String oldTop = env.topPackage();
+            String top = oldTop;
             if (e != null && e.getPackageName() != null) {
                 String pkg=e.getPackageName().toString();
                 if (!pkg.equals(getPackageName()) && !pkg.equals("com.android.systemui")) top=pkg;
             }
-            env = inspect(top);
+            boolean topChanged = !top.equals(oldTop);
+            long now = SystemClock.uptimeMillis();
+            if (!topChanged && now - lastEnvironmentInspectAt < ENV_INSPECT_MIN_MS) return;
+            lastEnvironmentInspectAt = now;
+            EnvironmentState next = inspect(top);
+            if (sameEnvironment(env, next)) return;
+            env = next;
             publishEnvironment();
         } catch (Throwable t) {
             DiagnosticLog.i(this,"ACCESSIBILITY","event failed="+t);
         }
+    }
+
+    private boolean sameEnvironment(EnvironmentState a, EnvironmentState b) {
+        if (a == b) return true;
+        if (a == null || b == null) return false;
+        return a.topPackage().equals(b.topPackage())
+                && a.imeVisible() == b.imeVisible()
+                && a.imeTopPx() == b.imeTopPx()
+                && a.statusBarVisible() == b.statusBarVisible()
+                && a.notificationExpanded() == b.notificationExpanded()
+                && a.fullscreen() == b.fullscreen();
     }
 
     private EnvironmentState inspect(String top) {

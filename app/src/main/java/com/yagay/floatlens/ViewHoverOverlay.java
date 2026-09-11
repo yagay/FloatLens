@@ -26,7 +26,7 @@ import java.util.Collections;
  */
 public final class ViewHoverOverlay {
     private static final long TREE_REFRESH_MS = 300L;
-    private static final long POINT_SCAN_MIN_MS = 24L;
+    private static final long POINT_SCAN_MIN_MS = 32L;
     private static final int LARGE_TARGET_PERCENT = 72;
 
     private final Context context;
@@ -35,6 +35,7 @@ public final class ViewHoverOverlay {
     private final ScreenSelectionModel model = new ScreenSelectionModel();
     private final float regionStartSlopPx;
     private HoverView view;
+    private FvRegionFrameOverlay regionFrame;
     private ScreenCandidate current;
     private boolean confirmed;
     private long lastScanAt;
@@ -58,8 +59,7 @@ public final class ViewHoverOverlay {
 
     /** Start hit testing without creating a full-screen overlay surface yet. */
     public void begin() {
-        if (accessibility == null) return;
-        refreshAccessibilityTree(true);
+        // Point-specific collection happens in update(); avoid a whole-tree scan just for arming.
     }
 
     private void ensureView() {
@@ -123,9 +123,9 @@ public final class ViewHoverOverlay {
             directRegionMode = true;
             current = null;
             confirmed = false;
-            ensureView();
-            if (view != null) view.setCandidate(null);
-            DiagnosticLog.i(context, "FV_REGION", "ENTER dx=" + Math.round(dx)
+            detachView();
+            if (regionFrame == null) regionFrame = new FvRegionFrameOverlay(context);
+            DiagnosticLog.i(context, "FV_REGION", "ENTER lightweight-frame dx=" + Math.round(dx)
                     + " dy=" + Math.round(dy));
         }
 
@@ -137,8 +137,8 @@ public final class ViewHoverOverlay {
             if (directRegion.left != l || directRegion.top != t
                     || directRegion.right != r || directRegion.bottom != b) {
                 directRegion.set(l, t, r, b);
-                ensureView();
-                if (view != null) view.setDirectState(true, directRegion);
+                if (regionFrame == null) regionFrame = new FvRegionFrameOverlay(context);
+                regionFrame.show(directRegion);
             }
         } else {
             update(selectionX, selectionY);
@@ -158,7 +158,13 @@ public final class ViewHoverOverlay {
         lastX = selectionX;
         lastY = selectionY;
 
-        refreshAccessibilityTree(false);
+        try {
+            model.setAccessibility(AccessibilityCandidateCollector.collectAtPoint(
+                    accessibility, selectionX, selectionY));
+        } catch (Throwable t) {
+            DiagnosticLog.i(context, "FV_TREE", "point refresh failed=" + t);
+            model.setAccessibility(Collections.emptyList());
+        }
         ScreenCandidate next = model.selectAt(selectionX, selectionY);
         if (!sameCandidate(current, next)) {
             current = next;
@@ -274,6 +280,8 @@ public final class ViewHoverOverlay {
 
     private void close() {
         detachView();
+        if (regionFrame != null) regionFrame.close();
+        regionFrame = null;
         current = null;
         confirmed = false;
         directRegionMode = false;

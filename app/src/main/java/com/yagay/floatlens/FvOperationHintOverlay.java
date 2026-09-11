@@ -29,6 +29,9 @@ public final class FvOperationHintOverlay {
     private final WindowManager.LayoutParams lp;
     private boolean attached;
     private boolean visible;
+    private boolean framePosted;
+    private int targetX,targetY;
+    private final Runnable applyMove = this::applyPendingMove;
     private Mode mode = Mode.SCREENSHOT;
 
     public FvOperationHintOverlay(Context c) {
@@ -77,32 +80,36 @@ public final class FvOperationHintOverlay {
             view.setMode(next);
         }
 
-        lp.x = Math.round(gestureLeftSide
+        targetX = Math.round(gestureLeftSide
                 ? iconBounds.left + iconBounds.width()
                 : iconBounds.left - sizePx);
-        lp.y = Math.round(iconBounds.top - sizePx);
+        targetY = Math.round(iconBounds.top - sizePx);
 
         if (attached) {
-            try {
-                wm.updateViewLayout(view, lp);
-                if (!visible) {
-                    visible = true;
-                    view.setVisibility(View.VISIBLE);
-                }
-            } catch (Throwable t) {
-                DiagnosticLog.i(context, "FV_OP_HINT", "move failed=" + t);
-            }
+            if (!visible) { visible = true; view.setVisibility(View.VISIBLE); }
+            if (!framePosted) { framePosted = true; view.postOnAnimation(applyMove); }
         }
         DiagnosticLog.i(context, "FV_OP_HINT", "mode=" + mode
-                + " pos=" + lp.x + "," + lp.y
+                + " pos=" + targetX + "," + targetY
                 + " icon=" + Math.round(iconBounds.left) + "," + Math.round(iconBounds.top)
                 + "-" + Math.round(iconBounds.right) + "," + Math.round(iconBounds.bottom)
                 + " side=" + (gestureLeftSide ? "L" : "R"));
     }
 
+    private void applyPendingMove() {
+        framePosted = false;
+        if (!attached) return;
+        if (lp.x == targetX && lp.y == targetY) return;
+        lp.x = targetX; lp.y = targetY;
+        try { wm.updateViewLayout(view, lp); }
+        catch (Throwable t) { DiagnosticLog.i(context, "FV_OP_HINT", "move failed=" + t); }
+    }
+
     public void hide() {
         if (!attached) return;
         visible = false;
+        framePosted = false;
+        try { view.removeCallbacks(applyMove); } catch (Throwable ignored) {}
         view.setVisibility(View.INVISIBLE);
         lp.x = -sizePx;
         try { wm.updateViewLayout(view, lp); } catch (Throwable ignored) {}
@@ -110,6 +117,8 @@ public final class FvOperationHintOverlay {
 
     public void close() {
         visible = false;
+        framePosted = false;
+        try { view.removeCallbacks(applyMove); } catch (Throwable ignored) {}
         if (attached) {
             try { wm.removeView(view); } catch (Throwable ignored) {}
         }

@@ -61,6 +61,82 @@ public final class AccessibilityCandidateCollector {
         return filtered;
     }
 
+    public static List<ScreenCandidate> collectAtPoint(LensAccessibilityService service, float x, float y) {
+        ArrayList<ScreenCandidate> out = new ArrayList<>();
+        if (service == null) return out;
+        Rect screen = service.screenBounds();
+        int px = Math.round(x), py = Math.round(y);
+        int[] count = {0};
+        try {
+            List<AccessibilityWindowInfo> windows = service.getWindows();
+            if (windows != null) {
+                for (int wi = 0; wi < windows.size(); wi++) {
+                    AccessibilityWindowInfo w = windows.get(wi);
+                    if (w == null) continue;
+                    Rect wr = new Rect();
+                    try { w.getBoundsInScreen(wr); } catch (Throwable ignored) {}
+                    if (!wr.isEmpty() && !wr.contains(px, py)) continue;
+                    AccessibilityNodeInfo root = null;
+                    try { root = w.getRoot(); } catch (Throwable ignored) {}
+                    if (root == null || service.getPackageName().equals(nodePackage(root))) continue;
+                    collectNodeAtPoint(service, root, screen, px, py, 0, count, out);
+                    if (count[0] > 2200) break;
+                }
+            }
+            AccessibilityNodeInfo active = null;
+            try { active = service.getRootInActiveWindow(); } catch (Throwable ignored) {}
+            if (active != null && !service.getPackageName().equals(nodePackage(active))) {
+                collectNodeAtPoint(service, active, screen, px, py, 0, count, out);
+            }
+        } catch (Throwable t) {
+            DiagnosticLog.i(service, "FV_TREE", "point collect failed=" + t);
+        }
+        return CandidateGeometryFilter.filter(out, screen);
+    }
+
+    private static void collectNodeAtPoint(LensAccessibilityService service, AccessibilityNodeInfo n,
+                                           Rect screen, int px, int py, int depth, int[] count,
+                                           List<ScreenCandidate> out) {
+        if (n == null || depth > 80 || count[0]++ > 2200) return;
+        try { if (!n.isVisibleToUser()) return; } catch (Throwable ignored) {}
+        Rect r = new Rect();
+        try { n.getBoundsInScreen(r); } catch (Throwable t) { return; }
+        if (r.isEmpty()) return;
+        Rect clipped = new Rect(r);
+        if (screen != null && !screen.isEmpty() && !clipped.intersect(screen)) return;
+        if (!clipped.contains(px, py)) return;
+
+        String cls = safeClass(n);
+        String id = safeId(n);
+        String pkg = nodePackage(n);
+        CharSequence ownText = firstNonBlank(
+                safeText(n), safeContentDescription(n), safeHint(n), safeStateDescription(n));
+        boolean image = isImageCandidate(service, n, clipped, cls, id);
+        boolean fullscreen = isFullscreenLike(clipped, screen);
+        if (image) {
+            out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.NON_TEXT,
+                    ScreenCandidate.Source.ACCESSIBILITY,
+                    ownText == null ? "" : ownText.toString().trim(), cls, id, pkg, depth, false,
+                    safeClickable(n), safeEditable(n), safeFocusable(n), true));
+        } else if (ownText != null) {
+            out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.TEXT,
+                    ScreenCandidate.Source.ACCESSIBILITY, ownText.toString().trim(), cls, id, pkg,
+                    depth, false, safeClickable(n), safeEditable(n), safeFocusable(n), false));
+        } else if (fullscreen) {
+            out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.ROOT,
+                    ScreenCandidate.Source.ACCESSIBILITY, "", cls, id, pkg, depth, true,
+                    safeClickable(n), safeEditable(n), safeFocusable(n), false));
+        }
+
+        int children = Math.min(300, safeChildCount(n));
+        for (int i = 0; i < children; i++) {
+            AccessibilityNodeInfo child = null;
+            try { child = n.getChild(i); } catch (Throwable ignored) {}
+            if (child != null) collectNodeAtPoint(service, child, screen, px, py,
+                    depth + 1, count, out);
+        }
+    }
+
     private static void collectNode(LensAccessibilityService service, AccessibilityNodeInfo n,
                                     Rect screen, int depth, int[] count, List<ScreenCandidate> out) {
         if (n == null || depth > 80 || count[0]++ > 6500) return;

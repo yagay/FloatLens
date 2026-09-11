@@ -29,6 +29,7 @@ public final class SelectionPointTransformer {
     private float startIconTop;
     private boolean gestureLeftSide;
     private boolean initialized;
+    private final Rect gestureScreen = new Rect();
     private long lastLogAt;
 
     public SelectionPointTransformer(Context c, float iconWidth, float iconHeight) {
@@ -51,7 +52,8 @@ public final class SelectionPointTransformer {
         startIconLeft = downRawX - touchOffsetX;
         startIconTop = downRawY - touchOffsetY;
 
-        Rect screen = screenBounds();
+        Rect screen = currentScreenBounds();
+        gestureScreen.set(screen);
         gestureLeftSide = screen.isEmpty()
                 || startIconLeft + iconWidth / 2f < screen.exactCenterX();
         initialized = true;
@@ -91,7 +93,7 @@ public final class SelectionPointTransformer {
     public PointF transformRaw(float rawX, float rawY) {
         ensureInitializedFallback();
 
-        Rect screen = screenBounds();
+        Rect screen = gestureScreen;
         float lead = dp(FV_EDGE_LEAD_DP);
         float edgeSpan = dp(FV_EDGE_SPAN_DP);
         float helperInset = dp(FV_Y_HELPER_INSET_DP);
@@ -131,7 +133,8 @@ public final class SelectionPointTransformer {
 
     private void ensureInitializedFallback() {
         if (initialized) return;
-        Rect screen = screenBounds();
+        Rect screen = currentScreenBounds();
+        gestureScreen.set(screen);
         touchOffsetX = iconWidth / 2f;
         touchOffsetY = iconHeight / 2f;
         downRawX = screen.isEmpty() ? iconWidth / 2f : screen.exactCenterX();
@@ -161,7 +164,7 @@ public final class SelectionPointTransformer {
 
     private float dp(float value) { return value * density; }
 
-    private Rect screenBounds() {
+    private Rect currentScreenBounds() {
         try {
             WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
             return new Rect(wm.getCurrentWindowMetrics().getBounds());

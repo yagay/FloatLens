@@ -31,6 +31,9 @@ public final class FvProbePointOverlay {
     private final WindowManager.LayoutParams lp;
     private boolean attached;
     private boolean visible;
+    private boolean framePosted;
+    private int targetX,targetY;
+    private final Runnable applyMove = this::applyPendingMove;
     private State state = State.TRACKING_RED;
 
     public FvProbePointOverlay(Context c) {
@@ -86,30 +89,34 @@ public final class FvProbePointOverlay {
     /** Mirrors FooViewService.e4(Point): O.x=p.x-Q/2, O.y=p.y-Q/2. */
     public PointF showAt(float screenX, float screenY) {
         if (!attached) attachHidden();
-        lp.x = Math.round(screenX - sizePx / 2f);
-        lp.y = Math.round(screenY - sizePx / 2f);
+        targetX = Math.round(screenX - sizePx / 2f);
+        targetY = Math.round(screenY - sizePx / 2f);
         if (attached) {
-            try {
-                wm.updateViewLayout(view, lp);
-                if (!visible) {
-                    visible = true;
-                    view.setVisibility(View.VISIBLE);
-                }
-            } catch (Throwable t) {
-                DiagnosticLog.i(context, "FV_PROBE_VIEW", "move failed=" + t);
-            }
+            if (!visible) { visible = true; view.setVisibility(View.VISIBLE); }
+            if (!framePosted) { framePosted = true; view.postOnAnimation(applyMove); }
         }
-        float cx = lp.x + sizePx / 2f;
-        float cy = lp.y + sizePx / 2f;
+        float cx = targetX + sizePx / 2f;
+        float cy = targetY + sizePx / 2f;
         DiagnosticLog.i(context, "FV_PROBE_VIEW", "MOVE centre=" + Math.round(cx) + ","
-                + Math.round(cy) + " window=" + lp.x + "," + lp.y + " state=" + state);
+                + Math.round(cy) + " window=" + targetX + "," + targetY + " state=" + state);
         return new PointF(cx, cy);
+    }
+
+    private void applyPendingMove() {
+        framePosted = false;
+        if (!attached) return;
+        if (lp.x == targetX && lp.y == targetY) return;
+        lp.x = targetX; lp.y = targetY;
+        try { wm.updateViewLayout(view, lp); }
+        catch (Throwable t) { DiagnosticLog.i(context, "FV_PROBE_VIEW", "move failed=" + t); }
     }
 
     /** Mirrors FV F3(): hide the ImageView and move its tiny Window off-screen. */
     public void hide() {
         if (!attached) return;
         visible = false;
+        framePosted = false;
+        try { view.removeCallbacks(applyMove); } catch (Throwable ignored) {}
         view.setVisibility(View.INVISIBLE);
         lp.x = -sizePx;
         try { wm.updateViewLayout(view, lp); } catch (Throwable ignored) {}
@@ -118,6 +125,8 @@ public final class FvProbePointOverlay {
 
     public void close() {
         visible = false;
+        framePosted = false;
+        try { view.removeCallbacks(applyMove); } catch (Throwable ignored) {}
         if (attached) {
             try { wm.removeView(view); } catch (Throwable ignored) {}
         }

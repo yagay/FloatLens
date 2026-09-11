@@ -23,6 +23,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private boolean manualHidden,screenshotHidden,appHidden,lockHidden,fullscreenHidden;
     private boolean imeVisible,notificationExpanded,statusBarVisible=true;
     private boolean positionMoveArmed;
+    private boolean primaryMoveUpdatePosted,secondaryMoveUpdatePosted;
     private String topPackage=""; private int imeTopPx; private Integer imeRestoreY;
     private float lastActionX,lastActionY;
     public static FloatService get(){return instance;}
@@ -58,10 +59,10 @@ public class FloatService extends Service implements android.content.SharedPrefe
                 if(!originReady[0]){origin[0]=lp.x;origin[1]=lp.y;originReady[0]=true;}
                 lp.x=origin[0]+dxFromDown;
                 lp.y=origin[1]+dyFromDown;
-                safeUpdate(mirrored?secondary:primary,lp);
+                scheduleMoveUpdate(mirrored?secondary:primary,lp);
                 if(!mirrored&&secondary!=null&&secondaryLp!=null){
                     secondaryLp.y=(mirrorOriginReady[0]?mirrorOrigin[1]:origin[1])+dyFromDown;
-                    safeUpdate(secondary,secondaryLp);
+                    scheduleMoveUpdate(secondary,secondaryLp);
                 }
             }
             @Override public void onRelease(boolean moved){
@@ -98,30 +99,19 @@ public class FloatService extends Service implements android.content.SharedPrefe
                 if(directExpanded[0])return;
                 View icon=mirrored?secondary:primary;
                 if(icon==null)return;
-                directWindow[0]=lp.x;directWindow[1]=lp.y;directWindow[2]=lp.width;directWindow[3]=lp.height;
                 directExpanded[0]=true;
-
                 View other=mirrored?primary:secondary;
                 if(other!=null){otherVisibility[0]=other.getVisibility();other.setVisibility(View.INVISIBLE);}
-
-                lp.x=0;lp.y=0;
-                lp.width=WindowManager.LayoutParams.MATCH_PARENT;
-                lp.height=WindowManager.LayoutParams.MATCH_PARENT;
-                safeUpdate(icon,lp);
-                DiagnosticLog.i(FloatService.this,"FV_DIRECT","expand same icon fullscreen saved="
-                        +directWindow[0]+","+directWindow[1]+" "+directWindow[2]+"x"+directWindow[3]);
+                DiagnosticLog.i(FloatService.this,"FV_DIRECT","keep compact touch owner window="
+                        +lp.x+","+lp.y+" "+lp.width+"x"+lp.height);
             }
 
             @Override public void onDirectSelectionEnd(){
                 if(!directExpanded[0])return;
-                View icon=mirrored?secondary:primary;
-                lp.x=directWindow[0];lp.y=directWindow[1];lp.width=directWindow[2];lp.height=directWindow[3];
-                safeUpdate(icon,lp);
-
                 View other=mirrored?primary:secondary;
                 if(other!=null)other.setVisibility(otherVisibility[0]);
                 directExpanded[0]=false;
-                DiagnosticLog.i(FloatService.this,"FV_DIRECT","restore icon window="
+                DiagnosticLog.i(FloatService.this,"FV_DIRECT","compact touch owner end window="
                         +lp.x+","+lp.y+" "+lp.width+"x"+lp.height);
             }
         });
@@ -182,7 +172,23 @@ public class FloatService extends Service implements android.content.SharedPrefe
     @Override public void onSharedPreferenceChanged(android.content.SharedPreferences p,String key){refreshAppearance();}
     @Override public void onConfigurationChanged(Configuration c){persistPosition();super.onConfigurationChanged(c);imeRestoreY=null;removeIcons();fs=new FloatSettings(this);show();}
     private void registerScreenReceiver(){screenReceiver=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){updateLockVisibility();}};IntentFilter f=new IntentFilter();f.addAction(Intent.ACTION_SCREEN_OFF);f.addAction(Intent.ACTION_SCREEN_ON);f.addAction(Intent.ACTION_USER_PRESENT);if(Build.VERSION.SDK_INT>=33)registerReceiver(screenReceiver,f,Context.RECEIVER_NOT_EXPORTED);else registerReceiver(screenReceiver,f);}
-    private void removeIcons(){trail.end();removeWakeViews();if(primary!=null)try{wm.removeView(primary);}catch(Throwable ignored){}if(secondary!=null)try{wm.removeView(secondary);}catch(Throwable ignored){}primary=secondary=null;primaryLp=secondaryLp=null;}
+    private void removeIcons(){primaryMoveUpdatePosted=secondaryMoveUpdatePosted=false;trail.end();removeWakeViews();if(primary!=null)try{wm.removeView(primary);}catch(Throwable ignored){}if(secondary!=null)try{wm.removeView(secondary);}catch(Throwable ignored){}primary=secondary=null;primaryLp=secondaryLp=null;}
+    private void scheduleMoveUpdate(View v,WindowManager.LayoutParams lp){
+        if(v==null)return;
+        if(v==primary){
+            if(primaryMoveUpdatePosted)return;
+            primaryMoveUpdatePosted=true;
+            v.postOnAnimation(()->{primaryMoveUpdatePosted=false;if(v==primary)safeUpdate(v,lp);});
+            return;
+        }
+        if(v==secondary){
+            if(secondaryMoveUpdatePosted)return;
+            secondaryMoveUpdatePosted=true;
+            v.postOnAnimation(()->{secondaryMoveUpdatePosted=false;if(v==secondary)safeUpdate(v,lp);});
+            return;
+        }
+        safeUpdate(v,lp);
+    }
     private void safeUpdate(View v,WindowManager.LayoutParams lp){if(v==null)return;try{wm.updateViewLayout(v,lp);}catch(Throwable ignored){}}
     @Override public void onDestroy(){persistPosition();if(circleState!=null)circleState.finish("service_destroy");removeIcons();try{fs.prefs().unregisterOnSharedPreferenceChangeListener(this);}catch(Throwable ignored){}if(screenReceiver!=null)try{unregisterReceiver(screenReceiver);}catch(Throwable ignored){}if(instance==this)instance=null;super.onDestroy();}
     @Override public IBinder onBind(Intent i){return null;}
