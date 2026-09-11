@@ -40,14 +40,22 @@ public final class FloatActionMenu {
     private static View activeView;
 
     public static void showText(Context c, String value, Runnable selectAll) {
+        FloatMenuAnchor.clear();
+        show(c, value, selectAll, MODE_MAIN);
+    }
+
+    public static void showTextAt(Context c, String value, Runnable selectAll, Rect anchor) {
+        FloatMenuAnchor.set(anchor);
         show(c, value, selectAll, MODE_MAIN);
     }
 
     public static void showShareTargets(Context c, String value) {
+        FloatMenuAnchor.clear();
         show(c, value, null, MODE_SHARE);
     }
 
     public static void showProcessTargets(Context c, String value) {
+        FloatMenuAnchor.clear();
         show(c, value, null, MODE_PROCESS);
     }
 
@@ -89,6 +97,19 @@ public final class FloatActionMenu {
         int width = mode == MODE_MAIN
                 ? WindowManager.LayoutParams.WRAP_CONTENT
                 : Math.max(dp(app, 270), Math.min(dp(app, 360), usable.width() - dp(app, 24)));
+
+        int maxMeasureW = Math.max(dp(app, 46), usable.width() - dp(app, 16));
+        int maxMeasureH = Math.max(dp(app, 46), usable.height() - dp(app, 16));
+        int widthSpec = width == WindowManager.LayoutParams.WRAP_CONTENT
+                ? View.MeasureSpec.makeMeasureSpec(maxMeasureW, View.MeasureSpec.AT_MOST)
+                : View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY);
+        int heightSpec = View.MeasureSpec.makeMeasureSpec(maxMeasureH, View.MeasureSpec.AT_MOST);
+        root.measure(widthSpec, heightSpec);
+        int menuWidth = width == WindowManager.LayoutParams.WRAP_CONTENT
+                ? Math.max(dp(app, 46), root.getMeasuredWidth()) : width;
+        int menuHeight = Math.max(dp(app, 46), root.getMeasuredHeight());
+        int[] pos = menuPosition(app, usable, FloatMenuAnchor.current(), menuWidth, menuHeight);
+
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 width,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -98,20 +119,56 @@ public final class FloatActionMenu {
                         | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 android.graphics.PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-        lp.x = 0;
-        lp.y = usable.top + dp(app, 52);
+        lp.gravity = Gravity.TOP | Gravity.START;
+        lp.x = pos[0];
+        lp.y = pos[1];
         try {
             wm.addView(root, lp);
             activeWm = wm;
             activeView = root;
+            Rect anchor = FloatMenuAnchor.current();
             DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "show system-style mode=" + mode
-                    + " chars=" + text.length());
+                    + " chars=" + text.length()
+                    + " anchor=" + (anchor == null ? "none" : anchor.toShortString())
+                    + " pos=" + lp.x + "," + lp.y);
         } catch (Throwable t) {
             DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "show failed=" + t);
             if (mode == MODE_SHARE) launchSystemShare(app, text);
             else if (mode == MODE_PROCESS) launchSystemProcess(app, text);
         }
+    }
+
+    private static int[] menuPosition(Context app, Rect usable, Rect anchor,
+                                      int menuWidth, int menuHeight) {
+        int margin = dp(app, 8);
+        int gap = dp(app, 8);
+        int minX = usable.left + margin;
+        int maxX = Math.max(minX, usable.right - margin - menuWidth);
+        int minY = usable.top + margin;
+        int maxY = Math.max(minY, usable.bottom - margin - menuHeight);
+
+        if (anchor == null || anchor.isEmpty()) {
+            int x = clamp(usable.centerX() - menuWidth / 2, minX, maxX);
+            int y = clamp(usable.top + dp(app, 52), minY, maxY);
+            return new int[]{x, y};
+        }
+
+        int x = clamp(anchor.centerX() - menuWidth / 2, minX, maxX);
+        int above = anchor.top - gap - menuHeight;
+        int below = anchor.bottom + gap;
+        int y;
+        if (above >= minY) {
+            y = above;
+        } else if (below <= maxY) {
+            y = below;
+        } else {
+            int roomAbove = Math.max(0, anchor.top - minY);
+            int roomBelow = Math.max(0, usable.bottom - margin - anchor.bottom);
+            y = roomBelow >= roomAbove
+                    ? clamp(below, minY, maxY)
+                    : clamp(above, minY, maxY);
+        }
+        return new int[]{x, y};
     }
 
     private static void buildMainToolbar(Context app, LinearLayout root, String text,
@@ -407,6 +464,11 @@ public final class FloatActionMenu {
         } catch (Throwable ignored) {}
         return new Rect(0, 0, c.getResources().getDisplayMetrics().widthPixels,
                 c.getResources().getDisplayMetrics().heightPixels);
+    }
+
+    private static int clamp(int value, int min, int max) {
+        if (max < min) return min;
+        return Math.max(min, Math.min(max, value));
     }
 
     private static int dp(Context c, int v) {
