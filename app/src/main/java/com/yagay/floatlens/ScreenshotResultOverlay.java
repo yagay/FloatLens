@@ -13,7 +13,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-/** Dedicated screenshot result window. It never invokes OCR. */
+/** Dedicated screenshot fallback overlay. OCR is explicit via the result button only. */
 public final class ScreenshotResultOverlay {
     private static final int MARGIN_DP = 12;
     private static final int GAP_DP = 10;
@@ -59,8 +59,10 @@ public final class ScreenshotResultOverlay {
         LinearLayout actions = new LinearLayout(app);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setGravity(Gravity.CENTER_VERTICAL);
+        Button ocr = button(app, "OCR");
         Button save = button(app, "保存图片");
         Button close = button(app, "关闭");
+        actions.addView(ocr, new LinearLayout.LayoutParams(0, -1, 1));
         actions.addView(save, new LinearLayout.LayoutParams(0, -1, 1));
         actions.addView(close, new LinearLayout.LayoutParams(0, -1, 1));
         box.addView(actions, new LinearLayout.LayoutParams(-1, actionsH));
@@ -86,6 +88,11 @@ public final class ScreenshotResultOverlay {
             return;
         }
 
+        ocr.setOnClickListener(v -> {
+            try { wm.removeView(box); } catch (Throwable ignored) {}
+            DiagnosticLog.i(app, "SCREENSHOT_RESULT", "OCR_BUTTON fallbackOverlay");
+            OcrEngine.recognize(app, image, selected);
+        });
         save.setOnClickListener(v -> ScreenshotController.save(app, image));
         close.setOnClickListener(v -> {
             try { wm.removeView(box); } catch (Throwable ignored) {}
