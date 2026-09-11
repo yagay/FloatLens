@@ -1,9 +1,6 @@
 package com.yagay.floatlens;
 
-import android.content.ClipData;
-import android.content.ClipboardManager;
 import android.content.Context;
-import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -17,7 +14,6 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
-import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -25,10 +21,8 @@ import java.util.List;
 /**
  * Frozen-screen Circle Select workspace.
  *
- * Touch a recognized OCR word to select it directly on the screenshot, drag across more words to
- * extend the selection, or drag either selection handle to refine the range. Starting on empty
- * space enters free-form circle selection. On release the rough gesture snaps to a padded rectangle
- * before the rectangular crop is sent through the normal OcrEngine.
+ * OCR words stay directly selectable on the frozen screenshot. FloatLens owns the text action
+ * menu, while a rough free-hand gesture snaps to a padded rectangle before OCR.
  */
 public final class CircleSelectOverlay {
     private static WorkspaceView active;
@@ -83,13 +77,6 @@ public final class CircleSelectOverlay {
         private static final int MODE_START_HANDLE = 2;
         private static final int MODE_END_HANDLE = 3;
         private static final int MODE_CIRCLE = 4;
-
-        private static final int ACTION_NONE = 0;
-        private static final int ACTION_COPY = 1;
-        private static final int ACTION_SHARE = 2;
-        private static final int ACTION_ALL = 3;
-        private static final int ACTION_CLOSE = 4;
-
         private static final long RECT_SNAP_PREVIEW_MS = 170L;
 
         private final Context context;
@@ -107,7 +94,6 @@ public final class CircleSelectOverlay {
         private final ArrayList<PointF> circlePoints = new ArrayList<>();
         private final RectF snappedCircleRect = new RectF();
         private final RectF closeRect = new RectF();
-        private final RectF[] actionRects = {new RectF(), new RectF(), new RectF()};
 
         private List<SpatialOcrEngine.Word> words = List.of();
         private boolean ocrReady;
@@ -116,7 +102,7 @@ public final class CircleSelectOverlay {
         private int mode = MODE_NONE;
         private int startIndex = -1;
         private int endIndex = -1;
-        private int pressedAction = ACTION_NONE;
+        private boolean closePressed;
 
         WorkspaceView(Context c, WindowManager wm, Bitmap screenshot, Runnable onClosed) {
             super(c);
@@ -179,7 +165,6 @@ public final class CircleSelectOverlay {
                     canvas.drawRoundRect(toViewRect(words.get(i).bounds()), dp(2), dp(2), selectedPaint);
                 }
                 drawHandles(canvas, lo, hi);
-                drawToolbar(canvas);
             }
 
             if (circlePoints.size() > 1) {
@@ -212,20 +197,6 @@ public final class CircleSelectOverlay {
             c.drawText("×", closeRect.centerX(), closeRect.centerY() + dp(7), p);
         }
 
-        private void drawToolbar(Canvas c) {
-            float top = dp(54);
-            float left = dp(14);
-            float h = dp(42);
-            float gap = dp(7);
-            float w = Math.min(dp(88), (getWidth() - dp(28) - gap * 2) / 3f);
-            String[] labels = {"复制", "分享", "全选"};
-            for (int i = 0; i < 3; i++) {
-                actionRects[i].set(left + i * (w + gap), top, left + i * (w + gap) + w, top + h);
-                c.drawRoundRect(actionRects[i], dp(12), dp(12), toolbarPaint);
-                c.drawText(labels[i], actionRects[i].centerX(), actionRects[i].centerY() + dp(5), toolbarTextPaint);
-            }
-        }
-
         private void drawHandles(Canvas c, int lo, int hi) {
             if (lo < 0 || hi < 0 || lo >= words.size() || hi >= words.size()) return;
             RectF first = toViewRect(words.get(lo).bounds());
@@ -242,15 +213,11 @@ public final class CircleSelectOverlay {
                 case MotionEvent.ACTION_DOWN -> {
                     snappedCircleRect.setEmpty();
                     if (closeRect.contains(x, y)) {
-                        pressedAction = ACTION_CLOSE;
+                        closePressed = true;
                         return true;
                     }
-                    int action = hitToolbar(x, y);
-                    if (action != ACTION_NONE) {
-                        pressedAction = action;
-                        return true;
-                    }
-                    pressedAction = ACTION_NONE;
+                    closePressed = false;
+                    FloatActionMenu.dismiss();
 
                     if (hasTextSelection()) {
                         int handle = hitSelectionHandle(x, y);
@@ -278,7 +245,7 @@ public final class CircleSelectOverlay {
                 }
 
                 case MotionEvent.ACTION_MOVE -> {
-                    if (pressedAction != ACTION_NONE) return true;
+                    if (closePressed) return true;
                     if (mode == MODE_TEXT || mode == MODE_START_HANDLE || mode == MODE_END_HANDLE) {
                         int hit = findWordAt(x, y);
                         if (hit >= 0) {
@@ -300,11 +267,9 @@ public final class CircleSelectOverlay {
                 }
 
                 case MotionEvent.ACTION_UP -> {
-                    if (pressedAction != ACTION_NONE) {
-                        int action = pressedAction;
-                        pressedAction = ACTION_NONE;
-                        if (action == ACTION_CLOSE && closeRect.contains(x, y)) close("user_close");
-                        else if (action != ACTION_CLOSE && hitToolbar(x, y) == action) performToolbar(action);
+                    if (closePressed) {
+                        closePressed = false;
+                        if (closeRect.contains(x, y)) close("user_close");
                         return true;
                     }
 
@@ -331,6 +296,15 @@ public final class CircleSelectOverlay {
                         DiagnosticLog.i(context, "CIRCLE_TEXT", "selected chars=" + selected.length()
                                 + " range=" + Math.min(startIndex, endIndex) + ".." + Math.max(startIndex, endIndex));
                         invalidate();
+                        if (!selected.isBlank()) {
+                            FloatActionMenu.showText(context, selected, () -> {
+                                if (words.isEmpty()) return;
+                                startIndex = 0;
+                                endIndex = words.size() - 1;
+                                invalidate();
+                                post(() -> FloatActionMenu.showText(context, selectedText(), null));
+                            });
+                        }
                         return true;
                     }
                     mode = MODE_NONE;
@@ -338,7 +312,7 @@ public final class CircleSelectOverlay {
                 }
 
                 case MotionEvent.ACTION_CANCEL -> {
-                    pressedAction = ACTION_NONE;
+                    closePressed = false;
                     mode = MODE_NONE;
                     circlePoints.clear();
                     snappedCircleRect.setEmpty();
@@ -347,42 +321,6 @@ public final class CircleSelectOverlay {
                 }
             }
             return true;
-        }
-
-        private int hitToolbar(float x, float y) {
-            if (!hasTextSelection()) return ACTION_NONE;
-            if (actionRects[0].contains(x, y)) return ACTION_COPY;
-            if (actionRects[1].contains(x, y)) return ACTION_SHARE;
-            if (actionRects[2].contains(x, y)) return ACTION_ALL;
-            return ACTION_NONE;
-        }
-
-        private void performToolbar(int action) {
-            if (action == ACTION_ALL) {
-                if (!words.isEmpty()) {
-                    startIndex = 0;
-                    endIndex = words.size() - 1;
-                    invalidate();
-                }
-                return;
-            }
-            String value = selectedText();
-            if (value.isBlank()) return;
-            if (action == ACTION_COPY) {
-                ClipboardManager cm = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
-                if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("FloatLens", value));
-                Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show();
-            } else if (action == ACTION_SHARE) {
-                Intent send = new Intent(Intent.ACTION_SEND)
-                        .setType("text/plain")
-                        .putExtra(Intent.EXTRA_TEXT, value);
-                try {
-                    context.startActivity(Intent.createChooser(send, "分享文字")
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-                } catch (Throwable t) {
-                    Toast.makeText(context, "无法分享文字", Toast.LENGTH_SHORT).show();
-                }
-            }
         }
 
         private int hitSelectionHandle(float x, float y) {
@@ -467,7 +405,6 @@ public final class CircleSelectOverlay {
                     imageRect.right * sx, imageRect.bottom * sy);
         }
 
-        /** Convert the rough free-hand path to a stable padded axis-aligned rectangle. */
         private RectF snapCircleToRectangle() {
             if (circlePoints.size() < 4 || getWidth() <= 0 || getHeight() <= 0) return null;
             float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
@@ -481,9 +418,6 @@ public final class CircleSelectOverlay {
             float w = maxX - minX;
             float h = maxY - minY;
             if (w < dp(24) || h < dp(24)) return null;
-
-            // Small padding avoids chopping glyphs/objects when the user's finger traces very close
-            // to their edges. Scale it slightly with the selection, but keep it predictable.
             float padding = Math.max(dp(6), Math.min(dp(18), Math.min(w, h) * 0.08f));
             float left = Math.max(0f, minX - padding);
             float top = Math.max(0f, minY - padding);
@@ -508,7 +442,6 @@ public final class CircleSelectOverlay {
             OcrEngine.recognize(context, crop);
         }
 
-        /** Crop the snapped rectangle itself; no free-form white mask is applied. */
         private Bitmap createRectangularCrop(RectF viewRect) {
             if (viewRect == null || viewRect.isEmpty() || getWidth() <= 0 || getHeight() <= 0) return null;
             float sx = screenshot.getWidth() / (float) getWidth();
@@ -526,6 +459,7 @@ public final class CircleSelectOverlay {
         void close(String reason) {
             if (closed) return;
             closed = true;
+            FloatActionMenu.dismiss();
             removeCallbacks(null);
             try { wm.removeView(this); } catch (Throwable ignored) {}
             try { if (!screenshot.isRecycled()) screenshot.recycle(); } catch (Throwable ignored) {}

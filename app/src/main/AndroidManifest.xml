@@ -10,9 +10,13 @@
             <action android:name="android.intent.action.PROCESS_TEXT" />
             <data android:mimeType="text/plain" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="text/plain" />
+        </intent>
     </queries>
 
-    <application android:theme="@style/Theme.FloatLens" android:label="FloatLens" android:description="@string/app_description" android:allowBackup="false" android:supportsRtl="true">
+    <application android:name=".FloatLensApp" android:theme="@style/Theme.FloatLens" android:label="FloatLens" android:description="@string/app_description" android:allowBackup="false" android:supportsRtl="true">
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
