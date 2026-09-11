@@ -19,12 +19,6 @@ import java.util.Locale;
 import java.util.function.Consumer;
 
 public final class ScreenshotController {
-    // WindowManager.removeView() returns before SurfaceFlinger necessarily presents the frame with
-    // FloatLens' selection/probe/hint surfaces gone. FV's captured runtime behavior leaves roughly
-    // 140-160ms between hiding the helper surfaces and the final region frame, so bound captures
-    // use the same settle window to keep size text / white frames / probes out of the screenshot.
-    private static final long OVERLAY_SETTLE_DELAY_MS = 160L;
-
     public static void capture(Context c, boolean region) {
         getBitmap(c, b -> { if (region) RegionOverlay.show(c, b, false); else save(c, b); });
     }
@@ -138,9 +132,8 @@ public final class ScreenshotController {
         boolean hideIcon = !fs.keepInScreenshot() && service != null;
         if (hideIcon) service.setScreenshotHidden(true);
 
-        long settleDelay = Math.max(OVERLAY_SETTLE_DELAY_MS, hideIcon ? 100L : 0L);
-        DiagnosticLog.i(app, "CAPTURE_SETTLE", "bounds=" + screenBounds
-                + " delayMs=" + settleDelay + " hideIcon=" + hideIcon);
+        // Selection/probe/hint teardown is owned by ViewSelectionEngine, matching FV m2/g.
+        // This helper has no region-specific settle delay of its own.
         new Handler(Looper.getMainLooper()).postDelayed(() -> captureNow(app, fs, raw -> {
             try {
                 Bitmap crop = cropToScreenBounds(app, raw, screenBounds);
@@ -154,7 +147,7 @@ public final class ScreenshotController {
         }, t -> {
             restoreIcon(service, hideIcon);
             Toast.makeText(app, "截图失败: " + safeMessage(t), Toast.LENGTH_LONG).show();
-        }), settleDelay);
+        }), hideIcon ? 100L : 0L);
     }
 
     private static Bitmap cropToScreenBounds(Context app, Bitmap raw, Rect screenBounds) {
