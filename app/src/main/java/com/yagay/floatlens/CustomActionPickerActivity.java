@@ -1,5 +1,6 @@
 package com.yagay.floatlens;
 
+import android.content.ClipData;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
@@ -8,6 +9,7 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
+import android.view.DragEvent;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -51,25 +53,133 @@ public final class CustomActionPickerActivity extends AppCompatActivity {
 
         List<CustomMenuActionStore.Item> items = CustomMenuActionStore.load(this);
         TextView current = text("已加入菜单（" + items.size() + "）", 18);
-        current.setPadding(0, dp(22), 0, dp(8));
+        current.setPadding(0, dp(22), 0, dp(4));
         root.addView(current);
+
+        TextView orderHint = text("长按 ≡ 拖动排序；也可以用 ↑ / ↓ 精确移动。最上面的项目会优先显示在浮动菜单主栏。", 13);
+        orderHint.setAlpha(.72f);
+        orderHint.setPadding(0, 0, 0, dp(8));
+        root.addView(orderHint);
+
         if (items.isEmpty()) {
             TextView empty = text("还没有自定义菜单项", 14);
             empty.setAlpha(.7f);
             root.addView(empty);
         } else {
-            for (CustomMenuActionStore.Item item : items) {
-                Drawable icon = appIcon(item.packageName);
-                String sub = CustomMenuActionStore.typeLabel(item.type);
-                View row = row(item.label, sub, icon, () -> {
-                    CustomMenuActionStore.remove(this, item.id);
-                    Toast.makeText(this, "已移除", Toast.LENGTH_SHORT).show();
-                    showHome();
-                }, "移除");
-                root.addView(row);
+            LinearLayout sortable = new LinearLayout(this);
+            sortable.setOrientation(LinearLayout.VERTICAL);
+            sortable.setTag("custom-sort-list");
+            sortable.setOnDragListener((v, event) -> onSortDrag(sortable, event));
+            for (int i = 0; i < items.size(); i++) {
+                sortable.addView(sortableRow(items.get(i), i, items.size()));
             }
+            root.addView(sortable);
         }
         setPage(root);
+    }
+
+    private View sortableRow(CustomMenuActionStore.Item item, int index, int total) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(2), dp(5), dp(2), dp(5));
+        row.setTag(item.id);
+
+        TextView handle = text("≡", 24);
+        handle.setGravity(Gravity.CENTER);
+        handle.setContentDescription("长按拖动排序");
+        handle.setOnLongClickListener(v -> {
+            ClipData clip = ClipData.newPlainText("FloatLens action", item.id);
+            return row.startDragAndDrop(clip, new View.DragShadowBuilder(row), item.id, 0);
+        });
+        row.addView(handle, new LinearLayout.LayoutParams(dp(40), dp(54)));
+
+        Drawable icon = appIcon(item.packageName);
+        if (icon != null) {
+            ImageView iv = new ImageView(this);
+            iv.setImageDrawable(icon);
+            int s = dp(36);
+            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(s, s);
+            ip.setMarginEnd(dp(10));
+            row.addView(iv, ip);
+        }
+
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        TextView title = text(item.label, 15);
+        title.setSingleLine(true);
+        texts.addView(title);
+        TextView sub = text(CustomMenuActionStore.typeLabel(item.type), 12);
+        sub.setAlpha(.65f);
+        sub.setSingleLine(true);
+        texts.addView(sub);
+        row.addView(texts, new LinearLayout.LayoutParams(0, dp(54), 1));
+
+        TextView up = sortButton("↑", index > 0);
+        up.setContentDescription("上移");
+        up.setOnClickListener(v -> {
+            if (CustomMenuActionStore.move(this, item.id, -1)) showHome();
+        });
+        row.addView(up, new LinearLayout.LayoutParams(dp(38), dp(44)));
+
+        TextView down = sortButton("↓", index < total - 1);
+        down.setContentDescription("下移");
+        down.setOnClickListener(v -> {
+            if (CustomMenuActionStore.move(this, item.id, 1)) showHome();
+        });
+        row.addView(down, new LinearLayout.LayoutParams(dp(38), dp(44)));
+
+        TextView remove = sortButton("×", true);
+        remove.setContentDescription("移除");
+        remove.setOnClickListener(v -> {
+            CustomMenuActionStore.remove(this, item.id);
+            Toast.makeText(this, "已移除", Toast.LENGTH_SHORT).show();
+            showHome();
+        });
+        row.addView(remove, new LinearLayout.LayoutParams(dp(40), dp(44)));
+        return row;
+    }
+
+    private boolean onSortDrag(LinearLayout list, DragEvent event) {
+        switch (event.getAction()) {
+            case DragEvent.ACTION_DRAG_STARTED:
+                return event.getLocalState() instanceof String;
+            case DragEvent.ACTION_DRAG_LOCATION:
+                return true;
+            case DragEvent.ACTION_DROP: {
+                Object state = event.getLocalState();
+                if (!(state instanceof String id)) return false;
+                int target = dropIndexForY(list, event.getY());
+                CustomMenuActionStore.moveTo(this, id, target);
+                showHome();
+                return true;
+            }
+            case DragEvent.ACTION_DRAG_ENDED:
+                return true;
+            default:
+                return true;
+        }
+    }
+
+    private int dropIndexForY(LinearLayout list, float y) {
+        int count = list.getChildCount();
+        if (count <= 1) return 0;
+        for (int i = 0; i < count; i++) {
+            View child = list.getChildAt(i);
+            float midpoint = (child.getTop() + child.getBottom()) / 2f;
+            if (y < midpoint) return i;
+        }
+        return count - 1;
+    }
+
+    private TextView sortButton(String value, boolean enabled) {
+        TextView tv = text(value, 20);
+        tv.setGravity(Gravity.CENTER);
+        tv.setEnabled(enabled);
+        tv.setAlpha(enabled ? 1f : .28f);
+        tv.setClickable(enabled);
+        tv.setFocusable(enabled);
+        return tv;
     }
 
     private void showApps() {
