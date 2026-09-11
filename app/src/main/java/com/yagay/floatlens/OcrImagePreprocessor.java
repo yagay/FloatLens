@@ -6,44 +6,37 @@ import android.graphics.Color;
 import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
 import android.graphics.Paint;
+import android.graphics.Rect;
 
-import java.util.ArrayList;
-import java.util.List;
-
-/**
- * Prepares screen-capture crops for OCR. Small UI text benefits strongly from being presented to
- * ML Kit with enough pixels per glyph, while padding avoids clipping first/last characters.
- */
+/** Low-memory, on-demand OCR image preparation for screen-capture crops. */
 final class OcrImagePreprocessor {
-    private static final int MAX_DIMENSION = 3200;
-    private static final long MAX_PIXELS = 6_000_000L;
+    private static final int MAX_DIMENSION = 2400;
+    private static final long MAX_PIXELS = 3_000_000L;
 
-    record Variant(String name, Bitmap bitmap, boolean owned) {}
+    enum Mode { ORIGINAL, ENHANCED, MONO }
 
-    static List<Variant> build(Bitmap source) {
-        ArrayList<Variant> out = new ArrayList<>();
+    record Prepared(String name, Bitmap bitmap, boolean owned) {}
+
+    static Prepared prepare(Bitmap source, Mode mode) {
         if (source == null || source.isRecycled() || source.getWidth() <= 0 || source.getHeight() <= 0) {
-            return out;
+            return null;
         }
-        out.add(new Variant("original", source, false));
+        if (mode == Mode.ORIGINAL) return new Prepared("original", source, false);
 
         float scale = chooseScale(source.getWidth(), source.getHeight());
-        Bitmap enhanced = render(source, scale, false);
-        if (enhanced != null) out.add(new Variant("enhanced", enhanced, true));
-
-        Bitmap mono = render(source, scale, true);
-        if (mono != null) out.add(new Variant("mono", mono, true));
-        return out;
+        Bitmap rendered = render(source, scale, mode == Mode.MONO);
+        if (rendered == null) return null;
+        return new Prepared(mode == Mode.MONO ? "mono" : "enhanced", rendered, true);
     }
 
     private static float chooseScale(int w, int h) {
         int shortSide = Math.min(w, h);
         float wanted;
-        if (shortSide < 90) wanted = 3.2f;
-        else if (shortSide < 160) wanted = 2.7f;
-        else if (shortSide < 260) wanted = 2.15f;
-        else if (shortSide < 420) wanted = 1.6f;
-        else wanted = 1.25f;
+        if (shortSide < 90) wanted = 3.0f;
+        else if (shortSide < 160) wanted = 2.5f;
+        else if (shortSide < 260) wanted = 2.0f;
+        else if (shortSide < 420) wanted = 1.55f;
+        else wanted = 1.2f;
 
         float byDimension = Math.min(MAX_DIMENSION / (float) Math.max(1, w),
                 MAX_DIMENSION / (float) Math.max(1, h));
@@ -52,35 +45,35 @@ final class OcrImagePreprocessor {
     }
 
     private static Bitmap render(Bitmap source, float scale, boolean mono) {
+        Bitmap out = null;
         try {
             int sw = Math.max(1, Math.round(source.getWidth() * scale));
             int sh = Math.max(1, Math.round(source.getHeight() * scale));
-            int pad = Math.max(12, Math.min(42, Math.round(14f * scale)));
+            int pad = Math.max(8, Math.min(28, Math.round(10f * scale)));
             int outW = sw + pad * 2;
             int outH = sh + pad * 2;
-            if ((long) outW * outH > MAX_PIXELS + 600_000L) return null;
+            if ((long) outW * outH > MAX_PIXELS + 250_000L) return null;
 
-            Bitmap out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
+            out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
             Canvas canvas = new Canvas(out);
-            int bg = estimateBackground(source);
-            canvas.drawColor(bg);
+            canvas.drawColor(estimateBackground(source));
 
             Paint p = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
             ColorMatrix cm = new ColorMatrix();
             if (mono) {
                 cm.setSaturation(0f);
-                ColorMatrix contrast = contrast(1.38f);
-                cm.postConcat(contrast);
+                cm.postConcat(contrast(1.28f));
             } else {
-                cm.setSaturation(0.72f);
-                ColorMatrix contrast = contrast(1.18f);
-                cm.postConcat(contrast);
+                cm.setSaturation(0.82f);
+                cm.postConcat(contrast(1.14f));
             }
             p.setColorFilter(new ColorMatrixColorFilter(cm));
-            canvas.drawBitmap(source, null,
-                    new android.graphics.Rect(pad, pad, pad + sw, pad + sh), p);
+            canvas.drawBitmap(source, null, new Rect(pad, pad, pad + sw, pad + sh), p);
             return out;
         } catch (Throwable t) {
+            if (out != null && !out.isRecycled()) {
+                try { out.recycle(); } catch (Throwable ignored) {}
+            }
             return null;
         }
     }
@@ -104,19 +97,19 @@ final class OcrImagePreprocessor {
                     b.getPixel(Math.max(0, w - 1), Math.max(0, h - 1))
             };
             float luma = 0f;
-            for (int c : px) luma += 0.2126f * Color.red(c) + 0.7152f * Color.green(c) + 0.0722f * Color.blue(c);
+            for (int c : px) {
+                luma += 0.2126f * Color.red(c) + 0.7152f * Color.green(c) + 0.0722f * Color.blue(c);
+            }
             return luma / px.length >= 128f ? Color.WHITE : Color.BLACK;
         } catch (Throwable ignored) {
             return Color.WHITE;
         }
     }
 
-    static void recycleOwned(List<Variant> variants) {
-        if (variants == null) return;
-        for (Variant v : variants) {
-            if (v == null || !v.owned() || v.bitmap() == null || v.bitmap().isRecycled()) continue;
-            try { v.bitmap().recycle(); } catch (Throwable ignored) {}
-        }
+    static void recycle(Prepared prepared) {
+        if (prepared == null || !prepared.owned() || prepared.bitmap() == null
+                || prepared.bitmap().isRecycled()) return;
+        try { prepared.bitmap().recycle(); } catch (Throwable ignored) {}
     }
 
     private OcrImagePreprocessor() {}
