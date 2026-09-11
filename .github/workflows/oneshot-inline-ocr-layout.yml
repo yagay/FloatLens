@@ -1,0 +1,65 @@
+name: One-shot Inline OCR Layout Patch
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: contains(github.event.head_commit.message, '[run-inline-ocr-layout-patch]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Patch screenshot inline OCR layout
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/yagay/floatlens/ScreenshotResultActivity.java')
+          s = p.read_text()
+
+          s = s.replace('import android.os.Bundle;\n', 'import android.os.Bundle;\nimport android.text.Layout;\nimport android.text.StaticLayout;\nimport android.text.TextPaint;\n')
+
+          old = '''    private LinearLayout ocrPanel;\n    private TextView ocrText;\n    private Button ocrButton;\n    private Rect popupUsable;\n    private int popupWidth;\n'''
+          new = '''    private LinearLayout ocrPanel;\n    private TextView ocrText;\n    private Button ocrButton;\n    private ImageView resultImage;\n    private Rect popupUsable;\n    private int popupWidth;\n    private int compactImageHeight;\n'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif new not in s:
+              raise SystemExit('fields marker missing')
+
+          old = '''        desiredImageH = clamp(desiredImageH, dp(72),\n                Math.max(dp(72), maxH - titleH - actionsH - verticalPadding));\n        int height = Math.min(maxH, titleH + actionsH + desiredImageH + verticalPadding);\n'''
+          new = '''        desiredImageH = clamp(desiredImageH, dp(72),\n                Math.max(dp(72), maxH - titleH - actionsH - verticalPadding));\n        compactImageHeight = desiredImageH;\n        int height = Math.min(maxH, titleH + actionsH + desiredImageH + verticalPadding);\n'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif new not in s:
+              raise SystemExit('image height marker missing')
+
+          old = '''        ImageView image = new ImageView(this);\n        image.setImageBitmap(payload.image);\n        image.setAdjustViewBounds(false);\n        image.setScaleType(ImageView.ScaleType.FIT_CENTER);\n        ImageShareUtils.attachLongPressShare(this, image, payload.image);\n        box.addView(image, new LinearLayout.LayoutParams(-1, 0, 1f));\n'''
+          new = '''        resultImage = new ImageView(this);\n        resultImage.setImageBitmap(payload.image);\n        resultImage.setAdjustViewBounds(false);\n        resultImage.setScaleType(ImageView.ScaleType.FIT_CENTER);\n        ImageShareUtils.attachLongPressShare(this, resultImage, payload.image);\n        box.addView(resultImage, new LinearLayout.LayoutParams(-1, 0, 1f));\n'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif new not in s:
+              raise SystemExit('image view marker missing')
+
+          s = s.replace('+ " imageH=" + image.getHeight()\n', '+ " imageH=" + resultImage.getHeight()\n')
+
+          old = '''    private void showInlineOcr(String text) {\n        if (ocrPanel == null || ocrText == null) return;\n        String value = text == null ? "" : text.trim();\n        ocrText.setText(value.isEmpty() ? "未识别到文字" : value);\n        ocrPanel.setVisibility(View.VISIBLE);\n\n        Rect usable = popupUsable == null ? usableBounds() : new Rect(popupUsable);\n        int expandedH = Math.min(dp(610), Math.round(usable.height() * .72f));\n        expandedH = Math.max(dp(360), expandedH);\n        positionWindow(usable, popupWidth > 0 ? popupWidth : Math.min(dp(410), usable.width()),\n                expandedH, payload == null ? null : payload.anchor);\n        DiagnosticLog.i(this, "SCREENSHOT_RESULT", "OCR_INLINE chars=" + value.length()\n                + " expandedH=" + expandedH);\n    }\n'''
+          new = '''    private void showInlineOcr(String text) {\n        if (ocrPanel == null || ocrText == null || resultImage == null) return;\n        String value = text == null ? "" : text.trim();\n        String shown = value.isEmpty() ? "未识别到文字" : value;\n        ocrText.setText(shown);\n        ocrPanel.setVisibility(View.VISIBLE);\n\n        Rect usable = popupUsable == null ? usableBounds() : new Rect(popupUsable);\n        int width = popupWidth > 0 ? popupWidth : Math.min(dp(410), usable.width());\n        int maxTotalH = Math.min(dp(610), Math.round(usable.height() * .72f));\n        int titleH = dp(38);\n        int actionsH = dp(50);\n        int verticalPadding = dp(16);\n        int headingH = dp(26);\n        int panelPad = dp(8);\n\n        // Once OCR is visible, the screenshot is a compact fixed-height preview. The old weight=1\n        // image region consumed all extra window height and FIT_CENTER exposed that as blank space.\n        int imageH = clamp(compactImageHeight, dp(88), dp(210));\n        int innerTextW = Math.max(dp(120), width - dp(40));\n        int desiredTextH = estimateTextHeight(shown, innerTextW);\n\n        int fixedWithoutText = titleH + actionsH + verticalPadding + imageH + headingH + panelPad;\n        int availableTextH = Math.max(dp(56), maxTotalH - fixedWithoutText);\n        int textH = clamp(desiredTextH, dp(56), Math.min(dp(220), availableTextH));\n        int panelH = headingH + textH + panelPad;\n        int expandedH = fixedWithoutText + textH;\n\n        LinearLayout.LayoutParams imageLp = new LinearLayout.LayoutParams(-1, imageH);\n        imageLp.weight = 0f;\n        resultImage.setLayoutParams(imageLp);\n        ocrPanel.setLayoutParams(new LinearLayout.LayoutParams(-1, panelH));\n\n        positionWindow(usable, width, expandedH, payload == null ? null : payload.anchor);\n        DiagnosticLog.i(this, "SCREENSHOT_RESULT", "OCR_INLINE chars=" + value.length()\n                + " imageH=" + imageH + " textH=" + textH + " panelH=" + panelH\n                + " expandedH=" + expandedH);\n    }\n\n    private int estimateTextHeight(String value, int widthPx) {\n        String safe = value == null || value.isEmpty() ? " " : value;\n        TextPaint paint = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);\n        paint.setTextSize(16f * getResources().getDisplayMetrics().scaledDensity);\n        try {\n            StaticLayout layout = StaticLayout.Builder.obtain(safe, 0, safe.length(), paint,\n                            Math.max(1, widthPx))\n                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)\n                    .setIncludePad(true)\n                    .setLineSpacing(0f, 1f)\n                    .build();\n            return Math.max(dp(40), layout.getHeight() + dp(10));\n        } catch (Throwable ignored) {\n            int approxCharsPerLine = Math.max(8, widthPx / Math.max(1, dp(9)));\n            int lines = Math.max(1, (safe.length() + approxCharsPerLine - 1) / approxCharsPerLine);\n            return dp(Math.min(220, 10 + lines * 22));\n        }\n    }\n'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif new not in s:
+              raise SystemExit('showInlineOcr marker missing')
+
+          p.write_text(s)
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/yagay/floatlens/ScreenshotResultActivity.java
+          git commit -m "Remove blank space from inline OCR popup"
+          git push
