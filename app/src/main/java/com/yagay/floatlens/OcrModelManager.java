@@ -14,6 +14,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+/** File-only manager for separately downloaded OCR models. It deliberately has no Paddle/ORT references. */
 public final class OcrModelManager {
     public static final int SMALL = 1;
     public static final int MEDIUM = 2;
@@ -32,8 +33,27 @@ public final class OcrModelManager {
         void onFailure(String message);
     }
 
-    private record Spec(String name, String detUrl, String recUrl, String ymlUrl,
-                        long detMin, long recMin, long estimatedTotal) {}
+    /** Plain class instead of a Java record to avoid record-runtime/desugaring edge cases on Android 12/13. */
+    private static final class Spec {
+        final String name;
+        final String detUrl;
+        final String recUrl;
+        final String ymlUrl;
+        final long detMin;
+        final long recMin;
+        final long estimatedTotal;
+
+        Spec(String name, String detUrl, String recUrl, String ymlUrl,
+             long detMin, long recMin, long estimatedTotal) {
+            this.name = name;
+            this.detUrl = detUrl;
+            this.recUrl = recUrl;
+            this.ymlUrl = ymlUrl;
+            this.detMin = detMin;
+            this.recMin = recMin;
+            this.estimatedTotal = estimatedTotal;
+        }
+    }
 
     private static Spec spec(int model) {
         if (model == MEDIUM) return new Spec(
@@ -59,20 +79,26 @@ public final class OcrModelManager {
     public static File ymlFile(Context c, int model) { return new File(dir(c, model), "rec/inference.yml"); }
 
     public static boolean isReady(Context c, int model) {
-        Spec s = spec(model);
-        File d = detFile(c, model), r = recFile(c, model), y = ymlFile(c, model);
-        return d.isFile() && d.length() >= s.detMin()
-                && r.isFile() && r.length() >= s.recMin()
-                && y.isFile() && y.length() >= 4_000L;
+        try {
+            Spec s = spec(model);
+            File d = detFile(c, model), r = recFile(c, model), y = ymlFile(c, model);
+            return d.isFile() && d.length() >= s.detMin
+                    && r.isFile() && r.length() >= s.recMin
+                    && y.isFile() && y.length() >= 4_000L;
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     public static boolean isDownloading(int model) {
         synchronized (DOWNLOADING) { return DOWNLOADING.contains(model); }
     }
 
-    public static long installedBytes(Context c, int model) { return size(dir(c, model)); }
-    public static long estimatedBytes(int model) { return spec(model).estimatedTotal(); }
-    public static String displayName(int model) { return spec(model).name(); }
+    public static long installedBytes(Context c, int model) {
+        try { return size(dir(c, model)); } catch (Throwable ignored) { return 0L; }
+    }
+    public static long estimatedBytes(int model) { return spec(model).estimatedTotal; }
+    public static String displayName(int model) { return spec(model).name; }
 
     public static void download(Context c, int model, Callback cb) {
         Context app = c.getApplicationContext();
@@ -87,14 +113,14 @@ public final class OcrModelManager {
             Spec sp = spec(model);
             try {
                 File root = dir(app, model);
-                root.mkdirs();
-                long total = sp.estimatedTotal();
+                if (!root.exists() && !root.mkdirs()) throw new IllegalStateException("无法创建模型目录");
+                long total = sp.estimatedTotal;
                 long[] doneBase = {0L};
-                downloadOne(sp.detUrl(), detFile(app, model), sp.detMin(), doneBase, total, "检测模型", cb);
+                downloadOne(sp.detUrl, detFile(app, model), sp.detMin, doneBase, total, "检测模型", cb);
                 doneBase[0] += detFile(app, model).length();
-                downloadOne(sp.recUrl(), recFile(app, model), sp.recMin(), doneBase, total, "识别模型", cb);
+                downloadOne(sp.recUrl, recFile(app, model), sp.recMin, doneBase, total, "识别模型", cb);
                 doneBase[0] += recFile(app, model).length();
-                downloadOne(sp.ymlUrl(), ymlFile(app, model), 4_000L, doneBase, total, "字符配置", cb);
+                downloadOne(sp.ymlUrl, ymlFile(app, model), 4_000L, doneBase, total, "字符配置", cb);
                 if (!isReady(app, model)) throw new IllegalStateException("下载完成但模型校验失败");
                 DiagnosticLog.i(app, "OCR_MODEL", "download success model=" + model
                         + " bytes=" + installedBytes(app, model));
@@ -110,7 +136,8 @@ public final class OcrModelManager {
 
     private static void downloadOne(String url, File out, long minBytes, long[] base,
                                     long total, String stage, Callback cb) throws Exception {
-        out.getParentFile().mkdirs();
+        File parent = out.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) throw new IllegalStateException("无法创建 " + stage + " 目录");
         File part = new File(out.getAbsolutePath() + ".part");
         long existing = part.isFile() ? part.length() : 0L;
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
@@ -146,10 +173,14 @@ public final class OcrModelManager {
         if (!part.renameTo(out)) throw new IllegalStateException("无法保存 " + stage);
     }
 
+    /** Delete only files here; OCR runtime is intentionally not loaded from SettingsActivity. */
     public static void delete(Context c, int model) {
-        PaddleOcrBridge.releaseModel(model);
-        deleteRecursively(dir(c, model));
-        DiagnosticLog.i(c, "OCR_MODEL", "deleted model=" + model);
+        try {
+            deleteRecursively(dir(c, model));
+            DiagnosticLog.i(c, "OCR_MODEL", "deleted model=" + model);
+        } catch (Throwable t) {
+            DiagnosticLog.i(c, "OCR_MODEL", "delete failure model=" + model + " " + safe(t));
+        }
     }
 
     private static void deleteRecursively(File f) {
@@ -167,7 +198,9 @@ public final class OcrModelManager {
         if (children != null) for (File child : children) n += size(child);
         return n;
     }
-    private static void fail(Callback cb, String msg) { MAIN.post(() -> cb.onFailure(msg)); }
+    private static void fail(Callback cb, String msg) {
+        if (cb != null) MAIN.post(() -> cb.onFailure(msg));
+    }
     private static String safe(Throwable t) {
         if (t == null) return "unknown";
         String m = t.getMessage();
