@@ -1,0 +1,64 @@
+plugins {
+    id 'com.android.library'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.paddle.ocr'
+    compileSdk 37
+    defaultConfig { minSdk 31 }
+    buildTypes {
+        release {
+            minifyEnabled false
+            consumerProguardFiles 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.21.1'
+    implementation 'com.quickbirdstudios:opencv:4.5.3'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+    implementation 'androidx.core:core-ktx:1.17.0'
+}
+
+def modelFiles = [
+    [url: 'https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/main/inference.onnx?download=true', path: 'src/main/assets/models/det/inference.onnx', minBytes: 9000000L],
+    [url: 'https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/main/inference.onnx?download=true', path: 'src/main/assets/models/rec/inference.onnx', minBytes: 19000000L],
+    [url: 'https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/main/inference.yml?download=true', path: 'src/main/assets/models/rec/inference.yml', minBytes: 10000L]
+]
+
+tasks.register('preparePpOcrModels') {
+    outputs.files(modelFiles.collect { file(it.path) })
+    doLast {
+        modelFiles.each { spec ->
+            File out = file(spec.path)
+            if (out.exists() && out.length() >= spec.minBytes) return
+            out.parentFile.mkdirs()
+            File tmp = new File(out.parentFile, out.name + '.part')
+            println "Downloading PP-OCRv6 model: ${out.name}"
+            def conn = new URL(spec.url).openConnection()
+            conn.setRequestProperty('User-Agent', 'FloatLens-Gradle')
+            conn.connectTimeout = 30000
+            conn.readTimeout = 180000
+            conn.inputStream.withCloseable { input ->
+                tmp.withOutputStream { output -> input.transferTo(output) }
+            }
+            if (tmp.length() < spec.minBytes) {
+                tmp.delete()
+                throw new GradleException("Downloaded model too small: ${spec.url}")
+            }
+            if (out.exists()) out.delete()
+            if (!tmp.renameTo(out)) {
+                out.bytes = tmp.bytes
+                tmp.delete()
+            }
+        }
+    }
+}
+
+tasks.named('preBuild').configure { dependsOn 'preparePpOcrModels' }
