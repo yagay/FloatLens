@@ -80,7 +80,7 @@ public class FloatIconView extends View {
     public FloatIconView(Context c, Callback cb) {
         super(c);
         this.cb = cb;
-        // FV's q re-arm anchor is about 3dp, not Android's usually larger generic touch slop.
+        // FV q uses a 3dp per-axis dwell box, not Euclidean distance / generic touch slop.
         directRearmSlopPx = Math.max(1f,
                 FV_DIRECT_MOVE_START_DP * getResources().getDisplayMetrics().density);
         directSelectionRunnable = () -> {
@@ -106,7 +106,7 @@ public class FloatIconView extends View {
                     + FV_DIRECT_SELECT_DELAY_MS + "ms raw=" + Math.round(lastSelectionRawX)
                     + "," + Math.round(lastSelectionRawY)
                     + " anchor=" + Math.round(directTimerAnchorX) + "," + Math.round(directTimerAnchorY)
-                    + " rearmSlopPx=" + Math.round(directRearmSlopPx));
+                    + " axisSlopPx=" + Math.round(directRearmSlopPx));
             if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
             invalidate();
         };
@@ -207,7 +207,7 @@ public class FloatIconView extends View {
                 if(selectionEngine!=null&&selectionEngine.available())selectionEngine.dispatchTouchEvent(e);
                 DiagnosticLog.i(getContext(), "STATE", "DOWN begin="+Math.round(rx)+","+Math.round(ry)
                         +" fvDirectAvailable="+(selectionEngine!=null&&selectionEngine.available())
-                        +" directRearmSlopPx="+Math.round(directRearmSlopPx)
+                        +" directAxisSlopPx="+Math.round(directRearmSlopPx)
                         +" positionMove="+positionMoveMode);
                 invalidate();
 
@@ -356,9 +356,9 @@ public class FloatIconView extends View {
     }
 
     /**
-     * Mirrors the observed FV q scheduling behavior: tiny MOVE jitter does not rearm the 400 ms
-     * runnable. Only displacement beyond FV's ~3dp anchor does. The already-posted q can therefore
-     * fire while the same finger remains down and while circle_focus continues to follow MOVE.
+     * Mirrors FV FooViewService$c3 q scheduling: the 400ms dwell timer is re-armed only when the
+     * pointer leaves a +/-3dp box around the current anchor on either axis. Small diagonal jitter
+     * therefore does not accidentally cross a Euclidean-radius threshold and postpone selection.
      */
     private void armOrRearmDirectSelection(float rawX, float rawY) {
         lastSelectionRawX = rawX;
@@ -371,21 +371,21 @@ public class FloatIconView extends View {
             handler.removeCallbacks(directSelectionRunnable);
             handler.postDelayed(directSelectionRunnable, FV_DIRECT_SELECT_DELAY_MS);
             DiagnosticLog.i(getContext(), "FV_DIRECT", "ARM anchor="+Math.round(rawX)+","+Math.round(rawY)
-                    +" delay="+FV_DIRECT_SELECT_DELAY_MS+" slopPx="+Math.round(directRearmSlopPx));
+                    +" delay="+FV_DIRECT_SELECT_DELAY_MS+" axisSlopPx="+Math.round(directRearmSlopPx));
             return;
         }
 
         float dx = rawX - directTimerAnchorX;
         float dy = rawY - directTimerAnchorY;
-        if (dx * dx + dy * dy < directRearmSlopPx * directRearmSlopPx) return;
+        if (Math.abs(dx) <= directRearmSlopPx && Math.abs(dy) <= directRearmSlopPx) return;
 
         handler.removeCallbacks(directSelectionRunnable);
         directTimerAnchorX = rawX;
         directTimerAnchorY = rawY;
         handler.postDelayed(directSelectionRunnable, FV_DIRECT_SELECT_DELAY_MS);
         DiagnosticLog.i(getContext(), "FV_DIRECT", "REARM anchor="+Math.round(rawX)+","+Math.round(rawY)
-                +" moved="+Math.round((float)Math.sqrt(dx*dx+dy*dy))
-                +" slopPx="+Math.round(directRearmSlopPx));
+                +" dx="+Math.round(dx)+" dy="+Math.round(dy)
+                +" axisSlopPx="+Math.round(directRearmSlopPx));
     }
 
     private void finish(long now, boolean cancelled) {
