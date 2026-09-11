@@ -10,6 +10,7 @@ import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.TextView;
 
 /** Installs FloatLens' own selection menu on selectable text inside FloatLens activities. */
@@ -32,8 +33,15 @@ public final class FloatLensApp extends Application implements Application.Activ
 
     private void installRecursive(Activity activity, View view) {
         if (view == null) return;
-        if (view instanceof TextView tv && tv.isTextSelectable()) {
-            tv.setCustomSelectionActionModeCallback(new FloatSelectionCallback(activity, tv));
+        if (view instanceof TextView tv) {
+            if (tv.isTextSelectable()) {
+                tv.setCustomSelectionActionModeCallback(new FloatSelectionCallback(activity, tv));
+            } else if (activity instanceof ResultTextActivity
+                    && !(tv instanceof Button) && tv.isClickable()
+                    && tv.getText() != null && !tv.getText().toString().isBlank()) {
+                tv.setOnClickListener(v -> FloatActionMenu.showText(
+                        activity, tv.getText().toString(), null));
+            }
         }
         if (view instanceof ViewGroup group) {
             for (int i = 0; i < group.getChildCount(); i++) {
