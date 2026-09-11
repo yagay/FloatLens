@@ -27,7 +27,8 @@ import java.util.List;
  *
  * Touch a recognized OCR word to select it directly on the screenshot, drag across more words to
  * extend the selection, or drag either selection handle to refine the range. Starting on empty
- * space enters free-form circle selection and sends that masked crop through the normal OcrEngine.
+ * space enters free-form circle selection. On release the rough gesture snaps to a padded rectangle
+ * before the rectangular crop is sent through the normal OcrEngine.
  */
 public final class CircleSelectOverlay {
     private static WorkspaceView active;
@@ -89,6 +90,8 @@ public final class CircleSelectOverlay {
         private static final int ACTION_ALL = 3;
         private static final int ACTION_CLOSE = 4;
 
+        private static final long RECT_SNAP_PREVIEW_MS = 170L;
+
         private final Context context;
         private final WindowManager wm;
         private final Bitmap screenshot;
@@ -102,12 +105,14 @@ public final class CircleSelectOverlay {
         private final Paint toolbarPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint toolbarTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final ArrayList<PointF> circlePoints = new ArrayList<>();
+        private final RectF snappedCircleRect = new RectF();
         private final RectF closeRect = new RectF();
         private final RectF[] actionRects = {new RectF(), new RectF(), new RectF()};
 
         private List<SpatialOcrEngine.Word> words = List.of();
         private boolean ocrReady;
         private boolean closed;
+        private boolean circleResolving;
         private int mode = MODE_NONE;
         private int startIndex = -1;
         private int endIndex = -1;
@@ -184,10 +189,16 @@ public final class CircleSelectOverlay {
                 canvas.drawPath(p, linePaint);
             }
 
+            if (!snappedCircleRect.isEmpty()) {
+                canvas.drawRoundRect(snappedCircleRect, dp(8), dp(8), selectedPaint);
+                canvas.drawRoundRect(snappedCircleRect, dp(8), dp(8), linePaint);
+            }
+
             String status;
-            if (!ocrReady) status = "正在识别图片文字… · 空白处可直接圈选";
-            else if (words.isEmpty()) status = "未检测到可选文字 · 在空白处圈选识别";
-            else status = "点按/拖动图片文字直接选择 · 空白处圈选";
+            if (circleResolving) status = "已自动吸附为矩形…";
+            else if (!ocrReady) status = "正在识别图片文字… · 空白处可直接圈选";
+            else if (words.isEmpty()) status = "未检测到可选文字 · 圈画松手自动变为矩形";
+            else status = "点按/拖动图片文字直接选择 · 圈画自动吸附矩形";
             canvas.drawText(status, dp(16), dp(34), textPaint);
             drawClose(canvas);
         }
@@ -225,9 +236,11 @@ public final class CircleSelectOverlay {
 
         @Override public boolean onTouchEvent(MotionEvent e) {
             if (closed) return true;
+            if (circleResolving) return true;
             float x = e.getX(), y = e.getY();
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN -> {
+                    snappedCircleRect.setEmpty();
                     if (closeRect.contains(x, y)) {
                         pressedAction = ACTION_CLOSE;
                         return true;
@@ -297,14 +310,17 @@ public final class CircleSelectOverlay {
 
                     if (mode == MODE_CIRCLE) {
                         circlePoints.add(new PointF(x, y));
-                        Bitmap crop = createMaskedCrop();
+                        RectF snapped = snapCircleToRectangle();
                         circlePoints.clear();
                         mode = MODE_NONE;
-                        if (crop != null) {
-                            DiagnosticLog.i(context, "CIRCLE_SELECT", "free circle -> OCR "
-                                    + crop.getWidth() + "x" + crop.getHeight());
-                            close("circle_ocr");
-                            OcrEngine.recognize(context, crop);
+                        if (snapped != null) {
+                            snappedCircleRect.set(snapped);
+                            circleResolving = true;
+                            invalidate();
+                            DiagnosticLog.i(context, "CIRCLE_SELECT", "circle snap rect="
+                                    + Math.round(snapped.left) + "," + Math.round(snapped.top) + "-"
+                                    + Math.round(snapped.right) + "," + Math.round(snapped.bottom));
+                            postDelayed(() -> finishSnappedCircle(new RectF(snapped)), RECT_SNAP_PREVIEW_MS);
                         } else invalidate();
                         return true;
                     }
@@ -325,6 +341,7 @@ public final class CircleSelectOverlay {
                     pressedAction = ACTION_NONE;
                     mode = MODE_NONE;
                     circlePoints.clear();
+                    snappedCircleRect.setEmpty();
                     invalidate();
                     return true;
                 }
@@ -450,49 +467,66 @@ public final class CircleSelectOverlay {
                     imageRect.right * sx, imageRect.bottom * sy);
         }
 
-        private Bitmap createMaskedCrop() {
+        /** Convert the rough free-hand path to a stable padded axis-aligned rectangle. */
+        private RectF snapCircleToRectangle() {
             if (circlePoints.size() < 4 || getWidth() <= 0 || getHeight() <= 0) return null;
             float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
             float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
             for (PointF p : circlePoints) {
-                minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
-                maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+                minX = Math.min(minX, p.x);
+                minY = Math.min(minY, p.y);
+                maxX = Math.max(maxX, p.x);
+                maxY = Math.max(maxY, p.y);
             }
-            if (maxX - minX < dp(24) || maxY - minY < dp(24)) return null;
+            float w = maxX - minX;
+            float h = maxY - minY;
+            if (w < dp(24) || h < dp(24)) return null;
 
+            // Small padding avoids chopping glyphs/objects when the user's finger traces very close
+            // to their edges. Scale it slightly with the selection, but keep it predictable.
+            float padding = Math.max(dp(6), Math.min(dp(18), Math.min(w, h) * 0.08f));
+            float left = Math.max(0f, minX - padding);
+            float top = Math.max(0f, minY - padding);
+            float right = Math.min(getWidth(), maxX + padding);
+            float bottom = Math.min(getHeight(), maxY + padding);
+            if (right - left < dp(24) || bottom - top < dp(24)) return null;
+            return new RectF(left, top, right, bottom);
+        }
+
+        private void finishSnappedCircle(RectF viewRect) {
+            if (closed) return;
+            Bitmap crop = createRectangularCrop(viewRect);
+            circleResolving = false;
+            snappedCircleRect.setEmpty();
+            if (crop == null) {
+                invalidate();
+                return;
+            }
+            DiagnosticLog.i(context, "CIRCLE_SELECT", "snapped rectangle -> OCR "
+                    + crop.getWidth() + "x" + crop.getHeight());
+            close("circle_rect_ocr");
+            OcrEngine.recognize(context, crop);
+        }
+
+        /** Crop the snapped rectangle itself; no free-form white mask is applied. */
+        private Bitmap createRectangularCrop(RectF viewRect) {
+            if (viewRect == null || viewRect.isEmpty() || getWidth() <= 0 || getHeight() <= 0) return null;
             float sx = screenshot.getWidth() / (float) getWidth();
             float sy = screenshot.getHeight() / (float) getHeight();
-            int left = clamp(Math.round(minX * sx), 0, screenshot.getWidth() - 1);
-            int top = clamp(Math.round(minY * sy), 0, screenshot.getHeight() - 1);
-            int right = clamp(Math.round(maxX * sx), left + 1, screenshot.getWidth());
-            int bottom = clamp(Math.round(maxY * sy), top + 1, screenshot.getHeight());
-            int w = right - left, h = bottom - top;
+            int left = clamp((int) Math.floor(viewRect.left * sx), 0, screenshot.getWidth() - 1);
+            int top = clamp((int) Math.floor(viewRect.top * sy), 0, screenshot.getHeight() - 1);
+            int right = clamp((int) Math.ceil(viewRect.right * sx), left + 1, screenshot.getWidth());
+            int bottom = clamp((int) Math.ceil(viewRect.bottom * sy), top + 1, screenshot.getHeight());
+            int w = right - left;
+            int h = bottom - top;
             if (w <= 1 || h <= 1) return null;
-
-            Bitmap crop = Bitmap.createBitmap(screenshot, left, top, w, h);
-            Bitmap masked = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-            Canvas canvas = new Canvas(masked);
-            canvas.drawColor(Color.WHITE);
-            Path path = new Path();
-            boolean first = true;
-            for (PointF p : circlePoints) {
-                float px = p.x * sx - left;
-                float py = p.y * sy - top;
-                if (first) { path.moveTo(px, py); first = false; }
-                else path.lineTo(px, py);
-            }
-            path.close();
-            canvas.save();
-            canvas.clipPath(path);
-            canvas.drawBitmap(crop, 0, 0, null);
-            canvas.restore();
-            crop.recycle();
-            return masked;
+            return Bitmap.createBitmap(screenshot, left, top, w, h);
         }
 
         void close(String reason) {
             if (closed) return;
             closed = true;
+            removeCallbacks(null);
             try { wm.removeView(this); } catch (Throwable ignored) {}
             try { if (!screenshot.isRecycled()) screenshot.recycle(); } catch (Throwable ignored) {}
             CircleSelectOverlay.onClosed(this);
