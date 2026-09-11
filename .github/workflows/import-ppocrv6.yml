@@ -21,7 +21,7 @@ jobs:
           set -euo pipefail
           rm -rf /tmp/PaddleOCR
           git clone --depth 1 --filter=blob:none --sparse https://github.com/PaddlePaddle/PaddleOCR.git /tmp/PaddleOCR
-          git -C /tmp/PaddleOCR sparse-checkout set deploy/ppocr-android/ppocr-sdk/src/main/java deploy/ppocr-android/ppocr-sdk/proguard-rules.pro
+          git -C /tmp/PaddleOCR sparse-checkout set deploy/ppocr-android/ppocr-sdk
           rm -rf ppocr-sdk
           mkdir -p ppocr-sdk/src/main
           cp -R /tmp/PaddleOCR/deploy/ppocr-android/ppocr-sdk/src/main/java ppocr-sdk/src/main/
