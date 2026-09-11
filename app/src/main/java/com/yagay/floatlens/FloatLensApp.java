@@ -3,6 +3,8 @@ package com.yagay.floatlens;
 import android.app.Activity;
 import android.app.Application;
 import android.os.Bundle;
+import android.text.Selection;
+import android.text.Spannable;
 import android.view.ActionMode;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -25,8 +27,7 @@ public final class FloatLensApp extends Application implements Application.Activ
 
     private void install(Activity activity) {
         if (activity == null || activity.getWindow() == null) return;
-        View decor = activity.getWindow().getDecorView();
-        installRecursive(activity, decor);
+        installRecursive(activity, activity.getWindow().getDecorView());
     }
 
     private void installRecursive(Activity activity, View view) {
@@ -81,11 +82,14 @@ public final class FloatLensApp extends Application implements Application.Activ
                 if (current.isEmpty()) return;
                 FloatActionMenu.showText(activity, current, () -> {
                     try {
-                        textView.selectAll();
-                        textView.post(() -> {
-                            String all = selectedText(textView);
-                            if (!all.isEmpty()) FloatActionMenu.showText(activity, all, null);
-                        });
+                        CharSequence raw = textView.getText();
+                        if (raw instanceof Spannable span && span.length() > 0) {
+                            Selection.setSelection(span, 0, span.length());
+                            textView.post(() -> {
+                                String all = selectedText(textView);
+                                if (!all.isEmpty()) FloatActionMenu.showText(activity, all, null);
+                            });
+                        }
                     } catch (Throwable ignored) {}
                 });
             });
