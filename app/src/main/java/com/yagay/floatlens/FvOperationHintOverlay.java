@@ -13,12 +13,12 @@ import android.view.WindowManager;
 /**
  * FV's independent 24dp operation-state hint (FooViewService.y/z, D4/s3 and m2/g.E).
  *
- * This is deliberately separate from the 15dp red/yellow circle_focus probe. The probe is the
- * exact selection point; this window only tells the user what the current target will do on release:
- * extract text, capture a View/image, or capture a rectangular/screen region.
- *
- * FV updates this hint from the moving compact-icon bounds on every MOVE. The operation icon may
- * change between TEXT / IMAGE / SCREENSHOT and its window follows the temporary icon trajectory.
+ * This window is independent from circle_focus. FV FooViewService.D4() positions it from the
+ * active FloatIconView WindowManager x/y every time D4 runs:
+ *   y = iconY - 24dp
+ *   left-side icon  -> x = iconX + iconWidth
+ *   right-side icon -> x = iconX - 24dp
+ * D4 then updates the WindowManager layout immediately; the + probe uses a separate window/point.
  */
 public final class FvOperationHintOverlay {
     public enum Mode { TEXT, IMAGE, SCREENSHOT }
@@ -32,9 +32,6 @@ public final class FvOperationHintOverlay {
     private final WindowManager.LayoutParams lp;
     private boolean attached;
     private boolean visible;
-    private boolean framePosted;
-    private int targetX, targetY;
-    private final Runnable applyMove = this::applyPendingMove;
     private Mode mode = Mode.SCREENSHOT;
 
     public FvOperationHintOverlay(Context c) {
@@ -70,59 +67,46 @@ public final class FvOperationHintOverlay {
         }
     }
 
-    /** Recompute from the current compact-icon bounds on every MOVE, matching FV. */
-    public void show(Mode next, RectF iconBounds, boolean gestureLeftSide) {
-        if (iconBounds == null) return;
+    /** Exact clean-room equivalent of FV FooViewService.D4(int) positioning. */
+    public void show(Mode next, RectF iconBounds, boolean leftSideIcon) {
+        if (iconBounds == null || iconBounds.isEmpty()) return;
         if (!attached) attachHidden();
+        if (!attached) return;
+
         if (next == null) next = Mode.SCREENSHOT;
         if (mode != next) {
             mode = next;
             view.setMode(next);
         }
 
-        int nextX = Math.round(gestureLeftSide
-                ? iconBounds.left + iconBounds.width()
-                : iconBounds.left - sizePx);
+        int nextX = Math.round(leftSideIcon ? iconBounds.right : iconBounds.left - sizePx);
         int nextY = Math.round(iconBounds.top - sizePx);
-        boolean moved = nextX != targetX || nextY != targetY;
-        targetX = nextX;
-        targetY = nextY;
+        boolean layoutChanged = lp.x != nextX || lp.y != nextY;
+        lp.x = nextX;
+        lp.y = nextY;
 
-        if (attached) {
-            if (!visible) {
-                visible = true;
-                view.setVisibility(View.VISIBLE);
-            }
-            if ((moved || lp.x != targetX || lp.y != targetY) && !framePosted) {
-                framePosted = true;
-                view.postOnAnimation(applyMove);
+        if (!visible) {
+            visible = true;
+            view.setVisibility(View.VISIBLE);
+        }
+        if (layoutChanged) {
+            try {
+                wm.updateViewLayout(view, lp);
+            } catch (Throwable t) {
+                DiagnosticLog.i(context, "FV_OP_HINT", "move failed=" + t);
             }
         }
+
         DiagnosticLog.i(context, "FV_OP_HINT", "mode=" + mode
-                + " pos=" + targetX + "," + targetY
-                + " icon=" + Math.round(iconBounds.left) + "," + Math.round(iconBounds.top)
+                + " pos=" + lp.x + "," + lp.y
+                + " owner=" + Math.round(iconBounds.left) + "," + Math.round(iconBounds.top)
                 + "-" + Math.round(iconBounds.right) + "," + Math.round(iconBounds.bottom)
-                + " side=" + (gestureLeftSide ? "L" : "R"));
-    }
-
-    private void applyPendingMove() {
-        framePosted = false;
-        if (!attached) return;
-        if (lp.x == targetX && lp.y == targetY) return;
-        lp.x = targetX;
-        lp.y = targetY;
-        try {
-            wm.updateViewLayout(view, lp);
-        } catch (Throwable t) {
-            DiagnosticLog.i(context, "FV_OP_HINT", "move failed=" + t);
-        }
+                + " side=" + (leftSideIcon ? "L" : "R"));
     }
 
     public void hide() {
         if (!attached) return;
         visible = false;
-        framePosted = false;
-        try { view.removeCallbacks(applyMove); } catch (Throwable ignored) {}
         view.setVisibility(View.INVISIBLE);
         lp.x = -sizePx;
         try { wm.updateViewLayout(view, lp); } catch (Throwable ignored) {}
@@ -130,8 +114,6 @@ public final class FvOperationHintOverlay {
 
     public void close() {
         visible = false;
-        framePosted = false;
-        try { view.removeCallbacks(applyMove); } catch (Throwable ignored) {}
         if (attached) {
             try { wm.removeView(view); } catch (Throwable ignored) {}
         }
