@@ -6,15 +6,18 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
-import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -24,11 +27,12 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
-/** FloatLens-owned text action menu and explicit app picker. */
+/** FloatLens-owned text action menu styled like Android's floating text toolbar. */
 public final class FloatActionMenu {
     private static final int MODE_MAIN = 0;
     private static final int MODE_SHARE = 1;
     private static final int MODE_PROCESS = 2;
+    private static final int MODE_MORE = 3;
 
     private static WindowManager activeWm;
     private static View activeView;
@@ -54,66 +58,23 @@ public final class FloatActionMenu {
         Context app = c.getApplicationContext();
         WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
         if (wm == null) return;
+        Palette palette = Palette.from(app);
 
         LinearLayout root = new LinearLayout(app);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(app, 12), dp(app, 10), dp(app, 12), dp(app, 10));
-        root.setBackgroundColor(0xF5222326);
-        root.setElevation(dp(app, 14));
+        root.setBackground(rounded(palette.surface, dp(app, mode == MODE_MAIN ? 24 : 20)));
+        root.setElevation(dp(app, 10));
+        root.setClipToOutline(true);
         root.setClickable(true);
 
-        LinearLayout header = new LinearLayout(app);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = new TextView(app);
-        title.setText(mode == MODE_SHARE ? "分享到" : mode == MODE_PROCESS ? "打开 / 处理" : "FloatLens");
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(16);
-        Button close = button(app, "×");
-        header.addView(title, new LinearLayout.LayoutParams(0, dp(app, 40), 1));
-        header.addView(close, new LinearLayout.LayoutParams(dp(app, 44), dp(app, 40)));
-        root.addView(header, new LinearLayout.LayoutParams(-1, dp(app, 40)));
-
-        TextView preview = new TextView(app);
-        preview.setText(text);
-        preview.setTextColor(0xFFDDDDDD);
-        preview.setTextSize(14);
-        preview.setMaxLines(2);
-        preview.setPadding(dp(app, 4), 0, dp(app, 4), dp(app, 8));
-        root.addView(preview, new LinearLayout.LayoutParams(-1, -2));
-
         if (mode == MODE_MAIN) {
-            LinearLayout row = new LinearLayout(app);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            Button copy = button(app, "复制");
-            Button share = button(app, "分享");
-            Button process = button(app, "打开/处理");
-            row.addView(copy, new LinearLayout.LayoutParams(0, dp(app, 46), 1));
-            row.addView(share, new LinearLayout.LayoutParams(0, dp(app, 46), 1));
-            row.addView(process, new LinearLayout.LayoutParams(0, dp(app, 46), 1));
-            if (selectAll != null) {
-                Button all = button(app, "全选");
-                row.addView(all, new LinearLayout.LayoutParams(0, dp(app, 46), 1));
-                all.setOnClickListener(v -> {
-                    try { selectAll.run(); } catch (Throwable ignored) {}
-                    dismiss();
-                });
-            }
-            root.addView(row, new LinearLayout.LayoutParams(-1, dp(app, 46)));
-            copy.setOnClickListener(v -> {
-                ClipboardManager cm = (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
-                if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("FloatLens", text));
-                Toast.makeText(app, "已复制", Toast.LENGTH_SHORT).show();
-                dismiss();
-            });
-            share.setOnClickListener(v -> show(app, text, null, MODE_SHARE));
-            process.setOnClickListener(v -> show(app, text, null, MODE_PROCESS));
+            buildMainToolbar(app, root, text, selectAll, palette);
+        } else if (mode == MODE_MORE) {
+            buildMoreMenu(app, root, text, selectAll, palette);
         } else {
-            addTargets(app, root, text, mode);
+            buildTargetMenu(app, root, text, selectAll, mode, palette);
         }
 
-        close.setOnClickListener(v -> dismiss());
         root.setOnTouchListener((v, e) -> {
             if (e.getActionMasked() == MotionEvent.ACTION_OUTSIDE) {
                 dismiss();
@@ -123,7 +84,9 @@ public final class FloatActionMenu {
         });
 
         Rect usable = usableBounds(app, wm);
-        int width = Math.max(dp(app, 260), Math.min(dp(app, 430), usable.width() - dp(app, 20)));
+        int width = mode == MODE_MAIN
+                ? WindowManager.LayoutParams.WRAP_CONTENT
+                : Math.max(dp(app, 270), Math.min(dp(app, 360), usable.width() - dp(app, 24)));
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 width,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -133,14 +96,15 @@ public final class FloatActionMenu {
                         | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 android.graphics.PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.TOP | Gravity.START;
-        lp.x = usable.left + Math.max(0, (usable.width() - width) / 2);
-        lp.y = usable.top + dp(app, 54);
+        lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+        lp.x = 0;
+        lp.y = usable.top + dp(app, 52);
         try {
             wm.addView(root, lp);
             activeWm = wm;
             activeView = root;
-            DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "show mode=" + mode + " chars=" + text.length());
+            DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "show system-style mode=" + mode
+                    + " chars=" + text.length());
         } catch (Throwable t) {
             DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "show failed=" + t);
             if (mode == MODE_SHARE) launchSystemShare(app, text);
@@ -148,7 +112,70 @@ public final class FloatActionMenu {
         }
     }
 
-    private static void addTargets(Context app, LinearLayout root, String text, int mode) {
+    private static void buildMainToolbar(Context app, LinearLayout root, String text,
+                                         Runnable selectAll, Palette palette) {
+        LinearLayout row = new LinearLayout(app);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(app, 2), dp(app, 2), dp(app, 2), dp(app, 2));
+
+        TextView copy = action(app, "复制", palette, 58);
+        TextView share = action(app, "分享", palette, 58);
+        row.addView(copy, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
+        row.addView(share, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
+
+        if (selectAll != null) {
+            TextView all = action(app, "全选", palette, 58);
+            row.addView(all, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
+            all.setOnClickListener(v -> {
+                try { selectAll.run(); } catch (Throwable ignored) {}
+                dismiss();
+            });
+        }
+
+        TextView more = action(app, "⋮", palette, 46);
+        more.setTextSize(24);
+        row.addView(more, new LinearLayout.LayoutParams(dp(app, 46), dp(app, 46)));
+        root.addView(row);
+
+        copy.setOnClickListener(v -> {
+            ClipboardManager cm = (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("FloatLens", text));
+            Toast.makeText(app, "已复制", Toast.LENGTH_SHORT).show();
+            dismiss();
+        });
+        share.setOnClickListener(v -> show(app, text, selectAll, MODE_SHARE));
+        more.setOnClickListener(v -> show(app, text, selectAll, MODE_MORE));
+    }
+
+    private static void buildMoreMenu(Context app, LinearLayout root, String text,
+                                      Runnable selectAll, Palette palette) {
+        root.setPadding(dp(app, 4), dp(app, 4), dp(app, 4), dp(app, 4));
+        TextView back = menuRow(app, "‹   返回", null, palette);
+        TextView process = menuRow(app, "打开 / 处理", null, palette);
+        TextView system = menuRow(app, "系统处理菜单", null, palette);
+        root.addView(back, new LinearLayout.LayoutParams(-1, dp(app, 46)));
+        root.addView(process, new LinearLayout.LayoutParams(-1, dp(app, 46)));
+        root.addView(system, new LinearLayout.LayoutParams(-1, dp(app, 46)));
+        back.setOnClickListener(v -> show(app, text, selectAll, MODE_MAIN));
+        process.setOnClickListener(v -> show(app, text, selectAll, MODE_PROCESS));
+        system.setOnClickListener(v -> {
+            dismiss();
+            launchSystemProcess(app, text);
+        });
+    }
+
+    private static void buildTargetMenu(Context app, LinearLayout root, String text,
+                                        Runnable selectAll, int mode, Palette palette) {
+        root.setPadding(dp(app, 4), dp(app, 4), dp(app, 4), dp(app, 4));
+
+        TextView back = menuRow(app,
+                mode == MODE_SHARE ? "‹   分享到" : "‹   打开 / 处理",
+                null, palette);
+        back.setTypeface(back.getTypeface(), android.graphics.Typeface.BOLD);
+        root.addView(back, new LinearLayout.LayoutParams(-1, dp(app, 46)));
+        back.setOnClickListener(v -> show(app, text, selectAll, MODE_MAIN));
+
         PackageManager pm = app.getPackageManager();
         Intent base = mode == MODE_SHARE
                 ? new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
@@ -172,31 +199,27 @@ public final class FloatActionMenu {
         }, String.CASE_INSENSITIVE_ORDER));
 
         ScrollView scroll = new ScrollView(app);
+        scroll.setFillViewport(false);
+        scroll.setVerticalScrollBarEnabled(resolved.size() > 6);
         LinearLayout list = new LinearLayout(app);
         list.setOrientation(LinearLayout.VERTICAL);
         if (resolved.isEmpty()) {
             TextView none = new TextView(app);
             none.setText(mode == MODE_SHARE ? "没有找到可分享的应用" : "没有找到可处理文字的应用");
-            none.setTextColor(0xFFCCCCCC);
-            none.setPadding(dp(app, 8), dp(app, 10), dp(app, 8), dp(app, 10));
-            list.addView(none);
+            none.setTextColor(palette.secondaryText);
+            none.setTextSize(14);
+            none.setGravity(Gravity.CENTER_VERTICAL);
+            none.setPadding(dp(app, 16), 0, dp(app, 16), 0);
+            list.addView(none, new LinearLayout.LayoutParams(-1, dp(app, 48)));
         } else {
             for (ResolveInfo ri : resolved) {
                 CharSequence label;
                 try { label = ri.loadLabel(pm); }
                 catch (Throwable ignored) { label = ri.activityInfo.name; }
-                Button target = button(app, label == null ? ri.activityInfo.name : label.toString());
-                target.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-                target.setAllCaps(false);
-                try {
-                    Drawable icon = ri.loadIcon(pm);
-                    if (icon != null) {
-                        int s = dp(app, 26);
-                        icon.setBounds(0, 0, s, s);
-                        target.setCompoundDrawablePadding(dp(app, 10));
-                        target.setCompoundDrawables(icon, null, null, null);
-                    }
-                } catch (Throwable ignored) {}
+                Drawable icon = null;
+                try { icon = ri.loadIcon(pm); } catch (Throwable ignored) {}
+                TextView target = menuRow(app,
+                        label == null ? ri.activityInfo.name : label.toString(), icon, palette);
                 target.setOnClickListener(v -> launchExplicit(app, base, ri));
                 list.addView(target, new LinearLayout.LayoutParams(-1, dp(app, 50)));
             }
@@ -205,13 +228,64 @@ public final class FloatActionMenu {
         int visibleRows = Math.min(Math.max(1, resolved.size()), 6);
         root.addView(scroll, new LinearLayout.LayoutParams(-1, dp(app, 50 * visibleRows)));
 
-        Button system = button(app, mode == MODE_SHARE ? "系统分享菜单" : "系统处理菜单");
+        TextView system = menuRow(app,
+                mode == MODE_SHARE ? "系统分享菜单" : "系统处理菜单",
+                null, palette);
         root.addView(system, new LinearLayout.LayoutParams(-1, dp(app, 46)));
         system.setOnClickListener(v -> {
             dismiss();
             if (mode == MODE_SHARE) launchSystemShare(app, text);
             else launchSystemProcess(app, text);
         });
+    }
+
+    private static TextView action(Context c, String text, Palette palette, int minWidthDp) {
+        TextView tv = new TextView(c);
+        tv.setText(text);
+        tv.setTextColor(palette.primaryText);
+        tv.setTextSize(14);
+        tv.setGravity(Gravity.CENTER);
+        tv.setMinWidth(dp(c, minWidthDp));
+        tv.setPadding(dp(c, 10), 0, dp(c, 10), 0);
+        tv.setBackground(ripple(palette.ripple));
+        tv.setClickable(true);
+        tv.setFocusable(true);
+        return tv;
+    }
+
+    private static TextView menuRow(Context c, String text, Drawable icon, Palette palette) {
+        TextView tv = new TextView(c);
+        tv.setText(text);
+        tv.setTextColor(palette.primaryText);
+        tv.setTextSize(14);
+        tv.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        tv.setPadding(dp(c, 14), 0, dp(c, 14), 0);
+        tv.setBackground(ripple(palette.ripple));
+        tv.setClickable(true);
+        tv.setFocusable(true);
+        tv.setSingleLine(true);
+        if (icon != null) {
+            int s = dp(c, 24);
+            icon.setBounds(0, 0, s, s);
+            tv.setCompoundDrawablePadding(dp(c, 12));
+            tv.setCompoundDrawables(icon, null, null, null);
+        }
+        return tv;
+    }
+
+    private static Drawable rounded(int color, float radius) {
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(color);
+        gd.setCornerRadius(radius);
+        return gd;
+    }
+
+    private static Drawable ripple(int color) {
+        ColorStateList ripple = ColorStateList.valueOf(color);
+        GradientDrawable content = new GradientDrawable();
+        content.setColor(Color.TRANSPARENT);
+        content.setCornerRadius(999f);
+        return new RippleDrawable(ripple, content, null);
     }
 
     private static void launchExplicit(Context app, Intent base, ResolveInfo ri) {
@@ -262,17 +336,6 @@ public final class FloatActionMenu {
         }
     }
 
-    private static Button button(Context c, String text) {
-        Button b = new Button(c);
-        b.setText(text);
-        b.setTextColor(Color.WHITE);
-        b.setTextSize(13);
-        b.setMinHeight(0);
-        b.setMinimumHeight(0);
-        b.setPadding(dp(c, 8), 0, dp(c, 8), 0);
-        return b;
-    }
-
     private static Rect usableBounds(Context c, WindowManager wm) {
         try {
             var metrics = wm.getCurrentWindowMetrics();
@@ -290,6 +353,27 @@ public final class FloatActionMenu {
 
     private static int dp(Context c, int v) {
         return Math.round(v * c.getResources().getDisplayMetrics().density);
+    }
+
+    private static final class Palette {
+        final int surface;
+        final int primaryText;
+        final int secondaryText;
+        final int ripple;
+
+        Palette(int surface, int primaryText, int secondaryText, int ripple) {
+            this.surface = surface;
+            this.primaryText = primaryText;
+            this.secondaryText = secondaryText;
+            this.ripple = ripple;
+        }
+
+        static Palette from(Context c) {
+            int night = c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+            boolean dark = night == Configuration.UI_MODE_NIGHT_YES;
+            if (dark) return new Palette(0xFF2B2B2B, 0xFFF5F5F5, 0xFFB8B8B8, 0x33FFFFFF);
+            return new Palette(0xFFF8F8F8, 0xFF202124, 0xFF5F6368, 0x22000000);
+        }
     }
 
     private FloatActionMenu() {}
