@@ -70,6 +70,16 @@ public class MainActivity extends AppCompatActivity {
         customMenu.setOnClickListener(v -> startActivity(new Intent(this, CustomActionPickerActivity.class)));
         root.addView(customMenu);
 
+        Button shareMenu = button("自定义分享菜单");
+        shareMenu.setOnClickListener(v -> startActivity(new Intent(this, TargetMenuPickerActivity.class)
+                .putExtra(TargetMenuPickerActivity.EXTRA_MODE, TargetMenuStore.MODE_SHARE)));
+        root.addView(shareMenu);
+
+        Button processMenu = button("自定义打开 / 处理菜单");
+        processMenu.setOnClickListener(v -> startActivity(new Intent(this, TargetMenuPickerActivity.class)
+                .putExtra(TargetMenuPickerActivity.EXTRA_MODE, TargetMenuStore.MODE_PROCESS)));
+        root.addView(processMenu);
+
         Button exportLog = button("导出 FV 诊断日志");
         exportLog.setOnClickListener(v -> {
             String text=DiagnosticLog.read(this);
