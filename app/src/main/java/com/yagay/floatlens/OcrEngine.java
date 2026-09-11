@@ -1,6 +1,7 @@
 package com.yagay.floatlens;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.os.Handler;
@@ -19,7 +20,7 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** High-accuracy OCR with sequential low-memory preprocessing and recognition passes. */
+/** High-accuracy OCR with sequential low-memory preprocessing and a safe legacy fallback. */
 public final class OcrEngine {
     private static final ExecutorService PREP_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "FloatLens-OCR-Prep");
@@ -49,24 +50,53 @@ public final class OcrEngine {
             return;
         }
 
-        FloatSettings fs = new FloatSettings(app);
-        ArrayList<PassSpec> plan = new ArrayList<>();
-        if (fs.ocrType() == 1) {
-            plan.add(new PassSpec("latin-original", OcrImagePreprocessor.Mode.ORIGINAL, false));
-            plan.add(new PassSpec("latin-enhanced", OcrImagePreprocessor.Mode.ENHANCED, false));
-            plan.add(new PassSpec("latin-mono", OcrImagePreprocessor.Mode.MONO, false));
-        } else {
-            plan.add(new PassSpec("zh-original", OcrImagePreprocessor.Mode.ORIGINAL, true));
-            plan.add(new PassSpec("latin-original", OcrImagePreprocessor.Mode.ORIGINAL, false));
-            plan.add(new PassSpec("zh-enhanced", OcrImagePreprocessor.Mode.ENHANCED, true));
-            plan.add(new PassSpec("latin-enhanced", OcrImagePreprocessor.Mode.ENHANCED, false));
-            plan.add(new PassSpec("zh-mono", OcrImagePreprocessor.Mode.MONO, true));
-        }
+        try {
+            DiagnosticLog.i(app, "OCR_INIT", "read_type_begin");
+            int type = readOcrTypeSafely(app);
+            DiagnosticLog.i(app, "OCR_INIT", "read_type_ok type=" + type);
 
-        DiagnosticLog.i(app, "OCR_PIPELINE", "start highAccuracy=serial type=" + fs.ocrType()
-                + " source=" + b.getWidth() + "x" + b.getHeight()
-                + " passes=" + plan.size());
-        new RunState(app, service, b, resultAnchor, plan).next();
+            ArrayList<PassSpec> plan = new ArrayList<>();
+            if (type == 1) {
+                plan.add(new PassSpec("latin-original", OcrImagePreprocessor.MODE_ORIGINAL, false));
+                plan.add(new PassSpec("latin-enhanced", OcrImagePreprocessor.MODE_ENHANCED, false));
+                plan.add(new PassSpec("latin-mono", OcrImagePreprocessor.MODE_MONO, false));
+            } else {
+                plan.add(new PassSpec("zh-original", OcrImagePreprocessor.MODE_ORIGINAL, true));
+                plan.add(new PassSpec("latin-original", OcrImagePreprocessor.MODE_ORIGINAL, false));
+                plan.add(new PassSpec("zh-enhanced", OcrImagePreprocessor.MODE_ENHANCED, true));
+                plan.add(new PassSpec("latin-enhanced", OcrImagePreprocessor.MODE_ENHANCED, false));
+                plan.add(new PassSpec("zh-mono", OcrImagePreprocessor.MODE_MONO, true));
+            }
+
+            DiagnosticLog.i(app, "OCR_PIPELINE", "start highAccuracy=serial-safe type=" + type
+                    + " source=" + b.getWidth() + "x" + b.getHeight()
+                    + " passes=" + plan.size());
+            new RunState(app, service, b, resultAnchor, plan).next();
+        } catch (Throwable t) {
+            DiagnosticLog.i(app, "OCR_INIT_FAIL", t.getClass().getName() + ":" + safe(t));
+            runFallback(app, service, b, resultAnchor, "init_failure");
+        }
+    }
+
+    private static int readOcrTypeSafely(Context app) {
+        try {
+            SharedPreferences p = app.getSharedPreferences(FloatSettings.PREF, Context.MODE_PRIVATE);
+            Object raw = p.getAll().get(FloatSettings.K_OCR_TYPE);
+            if (raw instanceof Number) return clampType(((Number) raw).intValue());
+            if (raw instanceof String) {
+                try { return clampType(Integer.parseInt(((String) raw).trim())); }
+                catch (Throwable ignored) { return 0; }
+            }
+            if (raw instanceof Boolean) return ((Boolean) raw) ? 1 : 0;
+        } catch (Throwable t) {
+            DiagnosticLog.i(app, "OCR_INIT", "read_type_fallback " + t.getClass().getSimpleName()
+                    + ":" + safe(t));
+        }
+        return 0;
+    }
+
+    private static int clampType(int value) {
+        return value == 1 ? 1 : 0;
     }
 
     private static final class RunState {
@@ -92,7 +122,13 @@ public final class OcrEngine {
                 return;
             }
             PassSpec spec = plan.get(index++);
-            PREP_EXECUTOR.execute(() -> prepareAndRun(spec));
+            try {
+                PREP_EXECUTOR.execute(() -> prepareAndRun(spec));
+            } catch (Throwable t) {
+                DiagnosticLog.i(app, "OCR_EXECUTOR_FAIL", spec.name + " "
+                        + t.getClass().getSimpleName() + ":" + safe(t));
+                runFallback(app, service, source, anchor, "executor_failure");
+            }
         }
 
         private void prepareAndRun(PassSpec spec) {
@@ -102,16 +138,26 @@ public final class OcrEngine {
                 return;
             }
 
-            DiagnosticLog.i(app, "OCR_PREP", spec.name + " begin mode=" + spec.mode);
-            OcrImagePreprocessor.Prepared prepared = OcrImagePreprocessor.prepare(source, spec.mode);
-            if (prepared == null || prepared.bitmap() == null || prepared.bitmap().isRecycled()) {
+            OcrImagePreprocessor.Prepared prepared;
+            try {
+                DiagnosticLog.i(app, "OCR_PREP", spec.name + " begin mode="
+                        + OcrImagePreprocessor.modeName(spec.mode));
+                prepared = OcrImagePreprocessor.prepare(source, spec.mode);
+            } catch (Throwable t) {
+                DiagnosticLog.i(app, "OCR_PREP", spec.name + " exception="
+                        + t.getClass().getSimpleName() + ":" + safe(t));
+                next();
+                return;
+            }
+
+            if (prepared == null || prepared.bitmap == null || prepared.bitmap.isRecycled()) {
                 DiagnosticLog.i(app, "OCR_PREP", spec.name + " failed; skip");
                 next();
                 return;
             }
             DiagnosticLog.i(app, "OCR_PREP", spec.name + " ready="
-                    + prepared.bitmap().getWidth() + "x" + prepared.bitmap().getHeight()
-                    + " owned=" + prepared.owned());
+                    + prepared.bitmap.getWidth() + "x" + prepared.bitmap.getHeight()
+                    + " owned=" + prepared.owned);
 
             TextRecognizer client = null;
             try {
@@ -120,7 +166,7 @@ public final class OcrEngine {
                         : TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
                 TextRecognizer finalClient = client;
                 DiagnosticLog.i(app, "OCR_PASS", spec.name + " launch");
-                client.process(InputImage.fromBitmap(prepared.bitmap(), 0))
+                client.process(InputImage.fromBitmap(prepared.bitmap, 0))
                         .addOnSuccessListener(t -> {
                             try {
                                 Candidate candidate = candidate(spec.name, t);
@@ -146,7 +192,8 @@ public final class OcrEngine {
             } catch (Throwable t) {
                 if (client != null) try { client.close(); } catch (Throwable ignored) {}
                 OcrImagePreprocessor.recycle(prepared);
-                DiagnosticLog.i(app, "OCR_PASS", spec.name + " launchFailure=" + safe(t));
+                DiagnosticLog.i(app, "OCR_PASS", spec.name + " launchFailure="
+                        + t.getClass().getSimpleName() + ":" + safe(t));
                 next();
             }
         }
@@ -175,6 +222,54 @@ public final class OcrEngine {
                 ResultOverlay.show(app, best.full, best.blocks, source, anchor);
             }
         }
+    }
+
+    private static void runFallback(Context app, FloatService service, Bitmap source, Rect anchor,
+                                    String reason) {
+        if (source == null || source.isRecycled()) {
+            if (service != null) service.onCircleFinished("ocr_fallback_invalid");
+            return;
+        }
+        MAIN.post(() -> {
+            TextRecognizer client = null;
+            try {
+                DiagnosticLog.i(app, "OCR_FALLBACK", "start reason=" + reason
+                        + " image=" + source.getWidth() + "x" + source.getHeight());
+                client = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
+                TextRecognizer finalClient = client;
+                client.process(InputImage.fromBitmap(source, 0))
+                        .addOnSuccessListener(text -> {
+                            try {
+                                Candidate result = candidate("fallback-zh-original", text);
+                                DiagnosticLog.i(app, "OCR_FALLBACK", "success chars="
+                                        + result.full.length() + " blocks=" + result.blocks.size());
+                                if (result.full.isBlank()) {
+                                    if (service != null) service.onCircleFinished("ocr_fallback_empty");
+                                    Toast.makeText(app, "未识别到文字", Toast.LENGTH_SHORT).show();
+                                    return;
+                                }
+                                if (service != null) service.onOcrResults(result.blocks.size());
+                                if (!ResultTextActivity.show(app, result.full, result.blocks, source, anchor)) {
+                                    ResultOverlay.show(app, result.full, result.blocks, source, anchor);
+                                }
+                            } finally {
+                                try { finalClient.close(); } catch (Throwable ignored) {}
+                            }
+                        })
+                        .addOnFailureListener(e -> {
+                            DiagnosticLog.i(app, "OCR_FALLBACK", "failure=" + safe(e));
+                            try { finalClient.close(); } catch (Throwable ignored) {}
+                            if (service != null) service.onCircleFinished("ocr_fallback_failure");
+                            Toast.makeText(app, "OCR失败", Toast.LENGTH_SHORT).show();
+                        });
+            } catch (Throwable t) {
+                if (client != null) try { client.close(); } catch (Throwable ignored) {}
+                DiagnosticLog.i(app, "OCR_FALLBACK", "launchFailure="
+                        + t.getClass().getSimpleName() + ":" + safe(t));
+                if (service != null) service.onCircleFinished("ocr_fallback_launch_failure");
+                Toast.makeText(app, "OCR失败", Toast.LENGTH_SHORT).show();
+            }
+        });
     }
 
     private static Candidate candidate(String passName, Text text) {
@@ -245,7 +340,17 @@ public final class OcrEngine {
         return m == null || m.isBlank() ? t.getClass().getSimpleName() : m;
     }
 
-    private record PassSpec(String name, OcrImagePreprocessor.Mode mode, boolean chinese) {}
+    private static final class PassSpec {
+        final String name;
+        final int mode;
+        final boolean chinese;
+
+        PassSpec(String name, int mode, boolean chinese) {
+            this.name = name;
+            this.mode = mode;
+            this.chinese = chinese;
+        }
+    }
 
     private static final class Candidate {
         final String passName;
