@@ -10,23 +10,41 @@ import android.graphics.Rect;
 
 /** Low-memory, on-demand OCR image preparation for screen-capture crops. */
 final class OcrImagePreprocessor {
+    static final int MODE_ORIGINAL = 0;
+    static final int MODE_ENHANCED = 1;
+    static final int MODE_MONO = 2;
+
     private static final int MAX_DIMENSION = 2400;
     private static final long MAX_PIXELS = 3_000_000L;
 
-    enum Mode { ORIGINAL, ENHANCED, MONO }
+    static final class Prepared {
+        final String name;
+        final Bitmap bitmap;
+        final boolean owned;
 
-    record Prepared(String name, Bitmap bitmap, boolean owned) {}
+        Prepared(String name, Bitmap bitmap, boolean owned) {
+            this.name = name;
+            this.bitmap = bitmap;
+            this.owned = owned;
+        }
+    }
 
-    static Prepared prepare(Bitmap source, Mode mode) {
+    static Prepared prepare(Bitmap source, int mode) {
         if (source == null || source.isRecycled() || source.getWidth() <= 0 || source.getHeight() <= 0) {
             return null;
         }
-        if (mode == Mode.ORIGINAL) return new Prepared("original", source, false);
+        if (mode == MODE_ORIGINAL) return new Prepared("original", source, false);
 
         float scale = chooseScale(source.getWidth(), source.getHeight());
-        Bitmap rendered = render(source, scale, mode == Mode.MONO);
+        Bitmap rendered = render(source, scale, mode == MODE_MONO);
         if (rendered == null) return null;
-        return new Prepared(mode == Mode.MONO ? "mono" : "enhanced", rendered, true);
+        return new Prepared(mode == MODE_MONO ? "mono" : "enhanced", rendered, true);
+    }
+
+    static String modeName(int mode) {
+        if (mode == MODE_MONO) return "MONO";
+        if (mode == MODE_ENHANCED) return "ENHANCED";
+        return "ORIGINAL";
     }
 
     private static float chooseScale(int w, int h) {
@@ -107,9 +125,9 @@ final class OcrImagePreprocessor {
     }
 
     static void recycle(Prepared prepared) {
-        if (prepared == null || !prepared.owned() || prepared.bitmap() == null
-                || prepared.bitmap().isRecycled()) return;
-        try { prepared.bitmap().recycle(); } catch (Throwable ignored) {}
+        if (prepared == null || !prepared.owned || prepared.bitmap == null
+                || prepared.bitmap.isRecycled()) return;
+        try { prepared.bitmap.recycle(); } catch (Throwable ignored) {}
     }
 
     private OcrImagePreprocessor() {}
