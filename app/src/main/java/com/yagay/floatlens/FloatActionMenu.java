@@ -123,6 +123,18 @@ public final class FloatActionMenu {
         TextView copy = action(app, "复制", palette, 58);
         row.addView(copy, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
 
+        if (selectAll != null) {
+            TextView all = action(app, "全选", palette, 58);
+            row.addView(all, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
+            all.setOnClickListener(v -> {
+                try { selectAll.run(); } catch (Throwable ignored) {}
+                dismiss();
+            });
+        }
+
+        TextView share = action(app, "分享", palette, 58);
+        row.addView(share, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
+
         List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
         int customLimit = mainCustomCount(selectAll, customs.size());
         for (int i = 0; i < customLimit; i++) {
@@ -133,18 +145,6 @@ public final class FloatActionMenu {
             custom.setSingleLine(true);
             row.addView(custom, new LinearLayout.LayoutParams(dp(app, 78), dp(app, 46)));
             custom.setOnClickListener(v -> launchCustom(app, item, text));
-        }
-
-        TextView share = action(app, "分享", palette, 58);
-        row.addView(share, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
-
-        if (selectAll != null) {
-            TextView all = action(app, "全选", palette, 58);
-            row.addView(all, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
-            all.setOnClickListener(v -> {
-                try { selectAll.run(); } catch (Throwable ignored) {}
-                dismiss();
-            });
         }
 
         TextView more = action(app, "⋮", palette, 46);
