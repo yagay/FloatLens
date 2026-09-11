@@ -20,7 +20,9 @@ android {
 
 dependencies {
     implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.24.3'
-    implementation 'com.quickbirdstudios:opencv:4.5.3'
+    // Use the OpenCV Team's official Android AAR. The old QuickBird 4.5.3 artifact
+    // has known runtime loading problems on some Android versions.
+    implementation 'org.opencv:opencv:4.12.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
     implementation 'androidx.core:core-ktx:1.17.0'
 }

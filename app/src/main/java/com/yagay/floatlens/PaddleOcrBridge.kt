@@ -62,7 +62,12 @@ object PaddleOcrBridge {
         synchronized(engines) { engines[model] }?.let { return it }
         return initMutex.withLock {
             synchronized(engines) { engines[model] }?.let { return@withLock it }
-            if (!OpenCVUtils.init(context)) throw IllegalStateException("OpenCV 初始化失败")
+            if (!OpenCVUtils.init(context)) {
+                val detail = OpenCVUtils.lastError()?.takeIf { it.isNotBlank() } ?: "unknown native loader error"
+                DiagnosticLog.i(context, "PPOCRV6_BRIDGE", "opencv_init_failed detail=$detail")
+                throw IllegalStateException("OpenCV 初始化失败: $detail")
+            }
+            DiagnosticLog.i(context, "PPOCRV6_BRIDGE", "opencv_init_ok")
             if (!OcrModelManager.isReady(context, model)) throw IllegalStateException("model_not_downloaded")
             val config = PaddleOCRConfig(
                 detThresh = 0.20f,
