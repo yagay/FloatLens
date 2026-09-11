@@ -17,8 +17,8 @@ import android.view.WindowManager;
  * exact selection point; this window only tells the user what the current target will do on release:
  * extract text, capture a View/image, or capture a rectangular/screen region.
  *
- * FloatLens keeps the hint at the first position chosen for the current gesture. Target/highlight
- * rectangles may continue moving, but the popup itself does not follow them.
+ * FV updates this hint from the moving compact-icon bounds on every MOVE. The operation icon may
+ * change between TEXT / IMAGE / SCREENSHOT and its window follows the temporary icon trajectory.
  */
 public final class FvOperationHintOverlay {
     public enum Mode { TEXT, IMAGE, SCREENSHOT }
@@ -33,8 +33,7 @@ public final class FvOperationHintOverlay {
     private boolean attached;
     private boolean visible;
     private boolean framePosted;
-    private boolean positionLocked;
-    private int targetX,targetY;
+    private int targetX, targetY;
     private final Runnable applyMove = this::applyPendingMove;
     private Mode mode = Mode.SCREENSHOT;
 
@@ -71,10 +70,7 @@ public final class FvOperationHintOverlay {
         }
     }
 
-    /**
-     * Choose the popup position once per gesture. Subsequent calls may change the operation icon,
-     * but never move the popup as the selection region/View changes.
-     */
+    /** Recompute from the current compact-icon bounds on every MOVE, matching FV. */
     public void show(Mode next, RectF iconBounds, boolean gestureLeftSide) {
         if (iconBounds == null) return;
         if (!attached) attachHidden();
@@ -84,39 +80,48 @@ public final class FvOperationHintOverlay {
             view.setMode(next);
         }
 
-        if (!positionLocked) {
-            targetX = Math.round(gestureLeftSide
-                    ? iconBounds.left + iconBounds.width()
-                    : iconBounds.left - sizePx);
-            targetY = Math.round(iconBounds.top - sizePx);
-            positionLocked = true;
-            DiagnosticLog.i(context, "FV_OP_HINT", "LOCK pos=" + targetX + "," + targetY
-                    + " side=" + (gestureLeftSide ? "L" : "R"));
-        }
+        int nextX = Math.round(gestureLeftSide
+                ? iconBounds.left + iconBounds.width()
+                : iconBounds.left - sizePx);
+        int nextY = Math.round(iconBounds.top - sizePx);
+        boolean moved = nextX != targetX || nextY != targetY;
+        targetX = nextX;
+        targetY = nextY;
 
         if (attached) {
-            if (!visible) { visible = true; view.setVisibility(View.VISIBLE); }
-            if (!framePosted) { framePosted = true; view.postOnAnimation(applyMove); }
+            if (!visible) {
+                visible = true;
+                view.setVisibility(View.VISIBLE);
+            }
+            if ((moved || lp.x != targetX || lp.y != targetY) && !framePosted) {
+                framePosted = true;
+                view.postOnAnimation(applyMove);
+            }
         }
         DiagnosticLog.i(context, "FV_OP_HINT", "mode=" + mode
-                + " fixedPos=" + targetX + "," + targetY
-                + " locked=" + positionLocked);
+                + " pos=" + targetX + "," + targetY
+                + " icon=" + Math.round(iconBounds.left) + "," + Math.round(iconBounds.top)
+                + "-" + Math.round(iconBounds.right) + "," + Math.round(iconBounds.bottom)
+                + " side=" + (gestureLeftSide ? "L" : "R"));
     }
 
     private void applyPendingMove() {
         framePosted = false;
         if (!attached) return;
         if (lp.x == targetX && lp.y == targetY) return;
-        lp.x = targetX; lp.y = targetY;
-        try { wm.updateViewLayout(view, lp); }
-        catch (Throwable t) { DiagnosticLog.i(context, "FV_OP_HINT", "move failed=" + t); }
+        lp.x = targetX;
+        lp.y = targetY;
+        try {
+            wm.updateViewLayout(view, lp);
+        } catch (Throwable t) {
+            DiagnosticLog.i(context, "FV_OP_HINT", "move failed=" + t);
+        }
     }
 
     public void hide() {
         if (!attached) return;
         visible = false;
         framePosted = false;
-        positionLocked = false;
         try { view.removeCallbacks(applyMove); } catch (Throwable ignored) {}
         view.setVisibility(View.INVISIBLE);
         lp.x = -sizePx;
@@ -126,7 +131,6 @@ public final class FvOperationHintOverlay {
     public void close() {
         visible = false;
         framePosted = false;
-        positionLocked = false;
         try { view.removeCallbacks(applyMove); } catch (Throwable ignored) {}
         if (attached) {
             try { wm.removeView(view); } catch (Throwable ignored) {}
