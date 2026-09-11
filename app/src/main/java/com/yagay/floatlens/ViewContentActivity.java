@@ -36,10 +36,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * Direct Accessibility View-content result. This is intentionally separate from OCR results so the
- * UI never labels extracted Accessibility text as OCR.
- */
+/** Direct Accessibility View-content result, separate from OCR results. */
 public final class ViewContentActivity extends AppCompatActivity {
     private static final String EXTRA_TOKEN = "view_result_token";
     private static final AtomicLong NEXT = new AtomicLong(1L);
@@ -82,7 +79,6 @@ public final class ViewContentActivity extends AppCompatActivity {
         w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
         w.setDimAmount(0f);
-        // Anchor/usable bounds are screen coordinates, so use the full-screen WindowManager coordinate space.
         w.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
         setFinishOnTouchOutside(true);
         buildUi();
@@ -140,13 +136,15 @@ public final class ViewContentActivity extends AppCompatActivity {
 
         scroll.addView(body);
         int bodyH = clamp(desired, dp(70), bodyMax);
-        // Only the middle body may shrink/scroll. Keep the bottom action row pinned and visible.
         box.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
+        boolean hasImage = payload.image != null && !payload.image.isRecycled();
+        Button ocr = hasImage ? button("OCR") : null;
         Button copy = button("复制全部");
         Button close = button("关闭");
+        if (ocr != null) actions.addView(ocr, new LinearLayout.LayoutParams(0, -1, 1));
         actions.addView(copy, new LinearLayout.LayoutParams(0, -1, 1));
         actions.addView(close, new LinearLayout.LayoutParams(0, -1, 1));
         box.addView(actions, new LinearLayout.LayoutParams(-1, actionH));
@@ -155,10 +153,21 @@ public final class ViewContentActivity extends AppCompatActivity {
         int height = Math.min(maxHeight, titleH + actionH + bodyH + dp(18));
         positionWindow(usable, width, height, payload.anchor);
         DiagnosticLog.i(this, "RESULT_LAYOUT", "VIEW pinnedActions=true requestedBody=" + bodyH
-                + " popupH=" + height);
+                + " popupH=" + height + " ocrButton=" + hasImage);
 
+        if (ocr != null) ocr.setOnClickListener(v -> runOcr());
         copy.setOnClickListener(v -> copy(payload.text));
         close.setOnClickListener(v -> finishNoAnim());
+    }
+
+    private void runOcr() {
+        if (payload == null || payload.image == null || payload.image.isRecycled()) return;
+        Bitmap image = payload.image;
+        Rect anchor = payload.anchor == null ? null : new Rect(payload.anchor);
+        DiagnosticLog.i(this, "VIEW_CONTENT", "OCR_BUTTON image="
+                + image.getWidth() + "x" + image.getHeight());
+        finishNoAnim();
+        OcrEngine.recognize(getApplicationContext(), image, anchor);
     }
 
     private EditText selectableText(String value) {
