@@ -25,7 +25,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/** Lets the user choose, hide and reorder targets shown by FloatLens share/process menus. */
+/** Lets the user customize FloatLens share/process targets without replacing the system sharesheet by default. */
 public final class TargetMenuPickerActivity extends AppCompatActivity {
     public static final String EXTRA_MODE = "mode";
 
@@ -40,6 +40,12 @@ public final class TargetMenuPickerActivity extends AppCompatActivity {
 
     private void showManager() {
         boolean customized = TargetMenuStore.isCustomized(this, mode);
+
+        if (isShare() && !customized) {
+            showSystemShareMode();
+            return;
+        }
+
         List<TargetMenuStore.Item> items = customized
                 ? TargetMenuStore.load(this, mode)
                 : discoverItems();
@@ -47,19 +53,20 @@ public final class TargetMenuPickerActivity extends AppCompatActivity {
         LinearLayout root = page(isShare() ? "自定义分享菜单" : "自定义打开 / 处理菜单");
         TextView note = text(customized
                 ? "当前使用自定义列表。长按 ≡ 拖动排序，也可以用 ↑ / ↓ 调整；× 可隐藏目标。"
-                : "当前使用自动列表。第一次排序或隐藏后会保存为自定义列表。", 14);
+                : "当前使用自动处理列表。第一次排序或隐藏后会保存为自定义列表。", 14);
         note.setPadding(0, 0, 0, dp(10));
         root.addView(note);
 
-        Button add = button("添加已隐藏的应用");
+        Button add = button(isShare() ? "添加分享应用" : "添加处理应用");
         add.setOnClickListener(v -> showAdd());
         root.addView(add);
 
-        Button reset = button("恢复自动列表");
+        Button reset = button(isShare() ? "恢复系统分享菜单" : "恢复自动列表");
         reset.setEnabled(customized);
         reset.setOnClickListener(v -> {
             TargetMenuStore.reset(this, mode);
-            Toast.makeText(this, "已恢复自动列表", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, isShare() ? "已恢复 Android 系统分享菜单" : "已恢复自动列表",
+                    Toast.LENGTH_SHORT).show();
             showManager();
         });
         root.addView(reset);
@@ -69,7 +76,7 @@ public final class TargetMenuPickerActivity extends AppCompatActivity {
         root.addView(current);
 
         if (items.isEmpty()) {
-            TextView empty = text("当前没有目标；仍可在菜单底部使用“更多应用…”打开系统选择器。", 14);
+            TextView empty = text("当前没有目标；仍可在菜单底部使用系统兜底入口。", 14);
             empty.setAlpha(.72f);
             root.addView(empty);
         } else {
@@ -81,6 +88,35 @@ public final class TargetMenuPickerActivity extends AppCompatActivity {
             }
             root.addView(sortable);
         }
+        setPage(root);
+    }
+
+    private void showSystemShareMode() {
+        LinearLayout root = page("分享菜单");
+        TextView note = text(
+                "当前使用 Android 系统 Sharesheet。FloatLens 不再单独读取、复制或重新排序系统分享目标；应用顺序、联系人推荐和系统推荐全部由 Android 自己决定。",
+                14);
+        note.setPadding(0, 0, 0, dp(12));
+        root.addView(note);
+
+        Button preview = button("预览系统分享菜单");
+        preview.setOnClickListener(v -> FloatActionMenu.launchSystemShare(this, "FloatLens"));
+        root.addView(preview);
+
+        Button custom = button("启用 FloatLens 自定义分享菜单");
+        custom.setOnClickListener(v -> {
+            TargetMenuStore.save(this, mode, discoverItems());
+            Toast.makeText(this, "已启用自定义分享菜单", Toast.LENGTH_SHORT).show();
+            showManager();
+        });
+        root.addView(custom);
+
+        TextView explain = text(
+                "只有启用自定义后，FloatLens 才会建立自己的分享目标列表，届时可以隐藏和排序。恢复系统分享菜单后会再次完全交给 Android。",
+                13);
+        explain.setAlpha(.72f);
+        explain.setPadding(0, dp(14), 0, 0);
+        root.addView(explain);
         setPage(root);
     }
 
@@ -145,6 +181,10 @@ public final class TargetMenuPickerActivity extends AppCompatActivity {
     }
 
     private void showAdd() {
+        if (isShare() && !TargetMenuStore.isCustomized(this, mode)) {
+            TargetMenuStore.save(this, mode, discoverItems());
+        }
+
         List<TargetMenuStore.Item> discovered = discoverItems();
         List<TargetMenuStore.Item> current = TargetMenuStore.isCustomized(this, mode)
                 ? TargetMenuStore.load(this, mode) : discoverItems();
