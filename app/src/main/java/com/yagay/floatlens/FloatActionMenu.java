@@ -124,8 +124,8 @@ public final class FloatActionMenu {
         row.addView(copy, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
 
         List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
-        int customLimit = selectAll != null ? 1 : 2;
-        for (int i = 0; i < Math.min(customLimit, customs.size()); i++) {
+        int customLimit = mainCustomCount(selectAll, customs.size());
+        for (int i = 0; i < customLimit; i++) {
             CustomMenuActionStore.Item item = customs.get(i);
             TextView custom = action(app, item.label, palette, 72);
             custom.setMaxWidth(dp(app, 88));
@@ -162,6 +162,11 @@ public final class FloatActionMenu {
         more.setOnClickListener(v -> show(app, text, selectAll, MODE_MORE));
     }
 
+    private static int mainCustomCount(Runnable selectAll, int size) {
+        int max = selectAll != null ? 1 : 2;
+        return Math.min(max, Math.max(0, size));
+    }
+
     private static void buildMoreMenu(Context app, LinearLayout root, String text,
                                       Runnable selectAll, Palette palette) {
         root.setPadding(dp(app, 4), dp(app, 4), dp(app, 4), dp(app, 4));
@@ -169,7 +174,10 @@ public final class FloatActionMenu {
         root.addView(back, new LinearLayout.LayoutParams(-1, dp(app, 46)));
         back.setOnClickListener(v -> show(app, text, selectAll, MODE_MAIN));
 
-        for (CustomMenuActionStore.Item item : CustomMenuActionStore.load(app)) {
+        List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
+        int skip = mainCustomCount(selectAll, customs.size());
+        for (int i = skip; i < customs.size(); i++) {
+            CustomMenuActionStore.Item item = customs.get(i);
             Drawable icon = null;
             try { icon = app.getPackageManager().getApplicationIcon(item.packageName); }
             catch (Throwable ignored) {}
