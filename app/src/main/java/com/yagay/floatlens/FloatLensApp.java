@@ -6,15 +6,23 @@ import android.os.Bundle;
 import android.text.Selection;
 import android.text.Spannable;
 import android.view.ActionMode;
+import android.view.Gravity;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.TextView;
 
+import java.util.Map;
+import java.util.WeakHashMap;
+
 /** Installs FloatLens' own selection menu on selectable text inside FloatLens activities. */
 public final class FloatLensApp extends Application implements Application.ActivityLifecycleCallbacks {
+    /** Keeps result popups centered even when their content/height changes after creation. */
+    private final Map<Activity, View.OnLayoutChangeListener> resultCenterLocks = new WeakHashMap<>();
+
     @Override public void onCreate() {
         super.onCreate();
         registerActivityLifecycleCallbacks(this);
@@ -22,13 +30,67 @@ public final class FloatLensApp extends Application implements Application.Activ
 
     @Override public void onActivityResumed(Activity activity) {
         install(activity);
+        installResultCenterLock(activity);
         View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
-        if (decor != null) decor.post(() -> install(activity));
+        if (decor != null) decor.post(() -> {
+            install(activity);
+            centerResultWindow(activity);
+        });
     }
 
     private void install(Activity activity) {
         if (activity == null || activity.getWindow() == null) return;
         installRecursive(activity, activity.getWindow().getDecorView());
+    }
+
+    /**
+     * Result windows used to follow their source View/OCR anchor. Keep all of them in the screen
+     * center instead. The layout listener re-applies CENTER after dynamic changes such as expanding
+     * the screenshot result with inline OCR text.
+     */
+    private void installResultCenterLock(Activity activity) {
+        if (!isResultActivity(activity) || activity.getWindow() == null) return;
+        View decor = activity.getWindow().getDecorView();
+        if (decor == null) return;
+
+        synchronized (resultCenterLocks) {
+            if (resultCenterLocks.containsKey(activity)) {
+                centerResultWindow(activity);
+                return;
+            }
+            View.OnLayoutChangeListener listener = (v, left, top, right, bottom,
+                    oldLeft, oldTop, oldRight, oldBottom) ->
+                    v.post(() -> centerResultWindow(activity));
+            resultCenterLocks.put(activity, listener);
+            decor.addOnLayoutChangeListener(listener);
+        }
+        centerResultWindow(activity);
+    }
+
+    private boolean isResultActivity(Activity activity) {
+        return activity instanceof ResultTextActivity
+                || activity instanceof ViewContentActivity
+                || activity instanceof ViewImageResultActivity
+                || activity instanceof ScreenshotResultActivity;
+    }
+
+    private void centerResultWindow(Activity activity) {
+        if (!isResultActivity(activity) || activity.getWindow() == null
+                || activity.isFinishing() || activity.isDestroyed()) return;
+        try {
+            WindowManager.LayoutParams lp = activity.getWindow().getAttributes();
+            if (lp.gravity == Gravity.CENTER && lp.x == 0 && lp.y == 0) return;
+            lp.gravity = Gravity.CENTER;
+            lp.x = 0;
+            lp.y = 0;
+            activity.getWindow().setAttributes(lp);
+            DiagnosticLog.i(activity, "RESULT_CENTER", "locked center "
+                    + activity.getClass().getSimpleName()
+                    + " size=" + lp.width + "x" + lp.height);
+        } catch (Throwable t) {
+            DiagnosticLog.i(activity, "RESULT_CENTER", "failed "
+                    + activity.getClass().getSimpleName() + " " + t);
+        }
     }
 
     private void installRecursive(Activity activity, View view) {
@@ -122,10 +184,22 @@ public final class FloatLensApp extends Application implements Application.Activ
         FloatActionMenu.dismiss();
         FloatMenuAnchor.clear();
     }
+
     @Override public void onActivityDestroyed(Activity activity) {
         FloatActionMenu.dismiss();
         FloatMenuAnchor.clear();
+        if (activity != null && activity.getWindow() != null) {
+            View decor = activity.getWindow().getDecorView();
+            View.OnLayoutChangeListener listener;
+            synchronized (resultCenterLocks) {
+                listener = resultCenterLocks.remove(activity);
+            }
+            if (decor != null && listener != null) {
+                try { decor.removeOnLayoutChangeListener(listener); } catch (Throwable ignored) {}
+            }
+        }
     }
+
     @Override public void onActivityCreated(Activity activity, Bundle state) {}
     @Override public void onActivityStarted(Activity activity) {}
     @Override public void onActivityStopped(Activity activity) {}
