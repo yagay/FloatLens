@@ -11,8 +11,8 @@ import android.view.MotionEvent;
  *
  * Two independent FV visual layers are preserved:
  * 1) the 15dp red/yellow circle_focus probe whose centre is the exact hit-test point;
- * 2) the 24dp operation-state hint which tells the user whether release will extract text,
- *    capture a View/image, or capture a screenshot region.
+ * 2) the View highlight layer, which follows MOVE immediately; the delayed 400ms transition only
+ *    changes the probe/state into DIRECT selection and reveals the operation hint.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
@@ -59,7 +59,11 @@ public final class ViewSelectionEngine {
         }
     }
 
-    /** Moving state: only the RED exact-point probe is shown. */
+    /**
+     * Moving state: RED probe plus live View hit-testing/highlight. This is deliberately active
+     * before the 400ms dwell timer fires, matching FV where the View under circle_focus is visible
+     * while the icon is still moving.
+     */
     public PointF showProbe(float rawX, float rawY) {
         PointF transformed = pointTransformer.transformRaw(rawX, rawY);
         ensureProbe();
@@ -68,6 +72,11 @@ public final class ViewSelectionEngine {
         PointF shown = showProbeAt(transformed);
         selectionX = shown.x;
         selectionY = shown.y;
+
+        if (accessibility != null) {
+            ensureHoverOverlay();
+            if (overlay != null) overlay.update(selectionX, selectionY);
+        }
         return shown;
     }
 
@@ -76,9 +85,7 @@ public final class ViewSelectionEngine {
         hideOperationHint();
     }
 
-    /**
-     * Delayed move-idle state: the probe turns YELLOW and FV's separate operation hint appears.
-     */
+    /** Delayed move-idle state: keep the existing highlight, turn probe YELLOW and enter DIRECT. */
     public boolean activateDirect(float rawX, float rawY) {
         if (accessibility == null) return false;
         if (state == State.DIRECT) {
@@ -86,14 +93,14 @@ public final class ViewSelectionEngine {
             return true;
         }
 
-        overlay = new ViewHoverOverlay(context);
-        if (!overlay.available()) {
+        ensureHoverOverlay();
+        if (overlay == null || !overlay.available()) {
+            if (overlay != null) overlay.cancel();
             overlay = null;
             hideProbe();
             return false;
         }
 
-        overlay.begin();
         state = State.DIRECT;
 
         ensureProbe();
@@ -213,7 +220,6 @@ public final class ViewSelectionEngine {
         if (candidate.type() == ScreenCandidate.Type.NON_TEXT) {
             return FvOperationHintOverlay.Mode.IMAGE;
         }
-        // ROOT/fullscreen container is FV's screen-capture fallback.
         return FvOperationHintOverlay.Mode.SCREENSHOT;
     }
 
@@ -233,6 +239,15 @@ public final class ViewSelectionEngine {
 
     private void ensureProbe() {
         if (probeOverlay == null) probeOverlay = new FvProbePointOverlay(context);
+    }
+
+    private void ensureHoverOverlay() {
+        if (overlay != null || accessibility == null) return;
+        ViewHoverOverlay next = new ViewHoverOverlay(context);
+        if (!next.available()) return;
+        next.begin();
+        overlay = next;
+        DiagnosticLog.i(context, "FV_SELECT", "HOVER_ARM live=true");
     }
 
     private void closeVisuals() {
