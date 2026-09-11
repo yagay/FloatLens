@@ -9,9 +9,9 @@ import java.util.Map;
 /**
  * Position-only selection model.
  *
- * TEXT and NON_TEXT(image/icon) candidates are normal selectable targets. Near-fullscreen ROOT
- * candidates are retained only as final fallback: they can never beat a text/image candidate at the
- * same point. No semantic score or clickable priority participates in selection.
+ * TEXT, NON_TEXT(image/icon) and generic VIEW candidates are selectable. Near-fullscreen VIEW/ROOT
+ * candidates are retained as final fallback so a whole-page View never beats a more specific child
+ * at the same point. No semantic score or clickable priority participates in selection.
  */
 public final class ScreenSelectionModel {
     private final ArrayList<ScreenCandidate> accessibility = new ArrayList<>();
@@ -46,8 +46,8 @@ public final class ScreenSelectionModel {
             if (r.isEmpty() || !r.contains(px, py)) continue;
 
             if (c.type() == ScreenCandidate.Type.ROOT || c.fullscreenLike()) {
-                // Fullscreen Views are deliberately last. If several windows expose a fullscreen
-                // root, keep the geometrically/depth-wise most specific one only for fallback.
+                // Whole-page Views are deliberately last. If several windows expose one, keep the
+                // geometrically/depth-wise most specific candidate only for fallback.
                 if (rootFallback == null
                         || c.depth() > rootFallback.depth()
                         || (c.depth() == rootFallback.depth()
@@ -57,7 +57,7 @@ public final class ScreenSelectionModel {
                 continue;
             }
 
-            // Normal TEXT/NON_TEXT selection remains pure geometry/tree position.
+            // Normal TEXT/NON_TEXT/VIEW selection remains pure geometry/tree position.
             if (best == null
                     || c.depth() > best.depth()
                     || (c.depth() == best.depth() && moreSpecific(r, best.bounds()))) {
@@ -78,6 +78,7 @@ public final class ScreenSelectionModel {
     private boolean isAcceptedType(ScreenCandidate c) {
         return c != null && (c.type() == ScreenCandidate.Type.TEXT
                 || c.type() == ScreenCandidate.Type.NON_TEXT
+                || c.type() == ScreenCandidate.Type.VIEW
                 || c.type() == ScreenCandidate.Type.ROOT);
     }
 

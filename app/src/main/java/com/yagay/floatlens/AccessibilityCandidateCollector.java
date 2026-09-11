@@ -8,16 +8,17 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Strict FV-style candidate collector for FloatLens.
+ * FV-style accessibility candidate collector.
  *
- * User-visible candidates are deliberately narrow:
- *  1) TEXT: a node with its own visible text/contentDescription/hint/stateDescription;
- *  2) NON_TEXT: a node that is explicitly image/icon-like by class or resource id;
- *  3) ROOT: a near-fullscreen View used only as the final fallback when no TEXT/NON_TEXT target
- *     exists at the current point.
+ * Candidate classes:
+ *  1) TEXT: node with visible text/contentDescription/hint/stateDescription;
+ *  2) NON_TEXT: explicit image/icon-like node;
+ *  3) VIEW: ordinary View rectangle exposed by accessibility, especially nodes with a resource id,
+ *     WebView/SurfaceView/TextureView/android.view.View, and whole-page Views;
+ *  4) ROOT: last-resort near-fullscreen fallback when no better View identity is exposed.
  *
- * Ordinary layout/container/clickable/focusable nodes remain traversal-only. This keeps useless
- * controls out of selection while restoring the fullscreen-View fallback present in FV-like flows.
+ * This matches FV more closely than the old text/image-only collector: an ordinary View does not
+ * need text or image semantics to be selectable.
  */
 public final class AccessibilityCandidateCollector {
     private AccessibilityCandidateCollector() {}
@@ -44,8 +45,6 @@ public final class AccessibilityCandidateCollector {
                 }
             }
 
-            // Launcher implementations sometimes expose a richer node tree through the active root
-            // when an overlay exists. It is collected as a second tree source and deduped below.
             AccessibilityNodeInfo active = null;
             try { active = service.getRootInActiveWindow(); } catch (Throwable ignored) {}
             if (active != null && !service.getPackageName().equals(nodePackage(active))) {
@@ -56,7 +55,7 @@ public final class AccessibilityCandidateCollector {
         }
 
         List<ScreenCandidate> filtered = CandidateGeometryFilter.filter(out, screen);
-        DiagnosticLog.i(service, "FV_TREE", "text/image/root raw=" + out.size()
+        DiagnosticLog.i(service, "FV_TREE", "text/image/view/root raw=" + out.size()
                 + " filtered=" + filtered.size());
         return filtered;
     }
@@ -113,6 +112,8 @@ public final class AccessibilityCandidateCollector {
                 safeText(n), safeContentDescription(n), safeHint(n), safeStateDescription(n));
         boolean image = isImageCandidate(service, n, clipped, cls, id);
         boolean fullscreen = isFullscreenLike(clipped, screen);
+        boolean genericView = isGenericViewCandidate(service, clipped, cls, id, fullscreen);
+
         if (image) {
             out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.NON_TEXT,
                     ScreenCandidate.Source.ACCESSIBILITY,
@@ -122,6 +123,10 @@ public final class AccessibilityCandidateCollector {
             out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.TEXT,
                     ScreenCandidate.Source.ACCESSIBILITY, ownText.toString().trim(), cls, id, pkg,
                     depth, false, safeClickable(n), safeEditable(n), safeFocusable(n), false));
+        } else if (genericView) {
+            out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.VIEW,
+                    ScreenCandidate.Source.ACCESSIBILITY, "", cls, id, pkg, depth, fullscreen,
+                    safeClickable(n), safeEditable(n), safeFocusable(n), false));
         } else if (fullscreen) {
             out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.ROOT,
                     ScreenCandidate.Source.ACCESSIBILITY, "", cls, id, pkg, depth, true,
@@ -156,9 +161,8 @@ public final class AccessibilityCandidateCollector {
 
         boolean image = isImageCandidate(service, n, clipped, cls, id);
         boolean fullscreen = isFullscreenLike(clipped, screen);
+        boolean genericView = isGenericViewCandidate(service, clipped, cls, id, fullscreen);
 
-        // A real image/text target always keeps its normal type, even when it happens to fill the
-        // screen. ROOT is only for otherwise-uninteresting near-fullscreen Views.
         if (image) {
             out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.NON_TEXT,
                     ScreenCandidate.Source.ACCESSIBILITY,
@@ -170,6 +174,11 @@ public final class AccessibilityCandidateCollector {
                     ScreenCandidate.Source.ACCESSIBILITY,
                     ownText.toString().trim(), cls, id, pkg, depth, false,
                     safeClickable(n), safeEditable(n), safeFocusable(n), false));
+        } else if (genericView) {
+            out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.VIEW,
+                    ScreenCandidate.Source.ACCESSIBILITY,
+                    "", cls, id, pkg, depth, fullscreen,
+                    safeClickable(n), safeEditable(n), safeFocusable(n), false));
         } else if (fullscreen) {
             out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.ROOT,
                     ScreenCandidate.Source.ACCESSIBILITY,
@@ -177,8 +186,6 @@ public final class AccessibilityCandidateCollector {
                     safeClickable(n), safeEditable(n), safeFocusable(n), false));
         }
 
-        // Every ordinary node remains traversal-only. ROOT above is the sole exception and is
-        // deliberately deferred by ScreenSelectionModel until no TEXT/NON_TEXT candidate matches.
         int children = Math.min(300, safeChildCount(n));
         for (int i = 0; i < children; i++) {
             AccessibilityNodeInfo child = null;
@@ -216,6 +223,25 @@ public final class AccessibilityCandidateCollector {
                 || containsToken(v, "picture");
 
         return imageClass || imageId;
+    }
+
+    /** FV keeps ordinary View rectangles instead of requiring text/image semantics. */
+    private static boolean isGenericViewCandidate(LensAccessibilityService service,
+                                                   Rect r, String cls, String id,
+                                                   boolean fullscreen) {
+        if (r == null || r.isEmpty()) return false;
+        float density = service.getResources().getDisplayMetrics().density;
+        int min = Math.max(1, Math.round(20f * density));
+        if (r.width() < min || r.height() < min) return false;
+
+        if (id != null && !id.isBlank()) return true;
+        if (fullscreen) return true;
+
+        String c = cls == null ? "" : cls.toLowerCase(Locale.ROOT);
+        return c.equals("android.view.view")
+                || c.contains("webview")
+                || c.contains("surfaceview")
+                || c.contains("textureview");
     }
 
     private static boolean isFullscreenLike(Rect r, Rect screen) {

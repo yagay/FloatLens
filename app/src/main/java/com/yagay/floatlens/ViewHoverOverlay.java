@@ -17,12 +17,10 @@ import java.util.Collections;
 /**
  * Non-touchable FV-style selection display layer.
  *
- * Selection/hit testing is intentionally independent from the visual overlay. That matters on
- * video surfaces: keeping a full-screen translucent application overlay alive and invalidating it
- * for every MOVE can force extra GPU composition and make playback/dragging stutter. We therefore
- * keep hit testing headless whenever the current target is ROOT/near-fullscreen, and only attach
- * the full-screen highlight layer when a smaller candidate or a real region rectangle needs to be
- * drawn.
+ * Hit testing is independent from the visual overlay. Small candidates use one translucent
+ * fullscreen drawing surface. ROOT/near-fullscreen candidates use the lightweight four-edge frame
+ * so whole-screen Views remain visibly selectable without keeping a fullscreen translucent surface
+ * over video playback.
  */
 public final class ViewHoverOverlay {
     private static final long TREE_REFRESH_MS = 300L;
@@ -90,6 +88,13 @@ public final class ViewHoverOverlay {
             try { wm.removeView(view); } catch (Throwable ignored) {}
             view = null;
             DiagnosticLog.i(context, "VIEW_HOVER", "visual_detach");
+        }
+    }
+
+    private void closeLargeCandidateFrame() {
+        if (regionFrame != null && !directRegionMode) {
+            regionFrame.close();
+            regionFrame = null;
         }
     }
 
@@ -170,15 +175,22 @@ public final class ViewHoverOverlay {
             current = next;
             confirmed = false;
             if (shouldRenderCandidate(next)) {
+                closeLargeCandidateFrame();
                 ensureView();
                 if (view != null) {
                     view.setCandidate(next);
                     view.setConfirmed(false);
                 }
             } else {
-                // ROOT/fullscreen video/image targets still participate in hit testing and release,
-                // but do not keep a full-screen translucent overlay surface over the video.
+                // Keep ROOT/large View selection visible with the lightweight edge frame instead of
+                // a fullscreen translucent surface. This is both FV-like and video friendly.
                 detachView();
+                if (next != null) {
+                    if (regionFrame == null) regionFrame = new FvRegionFrameOverlay(context);
+                    regionFrame.show(next.bounds());
+                } else {
+                    closeLargeCandidateFrame();
+                }
             }
             if (next != null) {
                 DiagnosticLog.i(context, "VIEW_HOVER", "source=" + next.source()
@@ -240,7 +252,7 @@ public final class ViewHoverOverlay {
 
     /**
      * FV same-touch ACTION_UP. A dragged region wins over the single View candidate. This prevents
-     * an underlying fullscreen ROOT from swallowing a deliberate region drag.
+     * an underlying fullscreen View from swallowing a deliberate region drag.
      */
     public boolean finishDirect() {
         if (directRegionMode && directRegion.width() >= 2 && directRegion.height() >= 2) {
@@ -261,6 +273,7 @@ public final class ViewHoverOverlay {
         if (b.isEmpty()) return false;
         if (picked.type() != ScreenCandidate.Type.TEXT
                 && picked.type() != ScreenCandidate.Type.NON_TEXT
+                && picked.type() != ScreenCandidate.Type.VIEW
                 && picked.type() != ScreenCandidate.Type.ROOT) return false;
 
         ScreenshotController.captureBoundsForViewCandidate(
