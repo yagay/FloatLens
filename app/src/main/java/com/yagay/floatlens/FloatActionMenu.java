@@ -26,7 +26,9 @@ import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /** FloatLens-owned text action menu styled like Android's floating text toolbar. */
 public final class FloatActionMenu {
@@ -187,14 +189,8 @@ public final class FloatActionMenu {
         }
 
         TextView process = menuRow(app, "打开 / 处理", null, palette);
-        TextView system = menuRow(app, "系统处理菜单", null, palette);
         root.addView(process, new LinearLayout.LayoutParams(-1, dp(app, 46)));
-        root.addView(system, new LinearLayout.LayoutParams(-1, dp(app, 46)));
         process.setOnClickListener(v -> show(app, text, selectAll, MODE_PROCESS));
-        system.setOnClickListener(v -> {
-            dismiss();
-            launchSystemProcess(app, text);
-        });
     }
 
     private static void launchCustom(Context app, CustomMenuActionStore.Item item, String text) {
@@ -224,16 +220,12 @@ public final class FloatActionMenu {
         try { resolved = pm.queryIntentActivities(base, PackageManager.MATCH_DEFAULT_ONLY); }
         catch (Throwable t) { resolved = new ArrayList<>(); }
         if (resolved == null) resolved = new ArrayList<>();
+        resolved = new ArrayList<>(resolved);
         resolved.removeIf(ri -> ri == null || ri.activityInfo == null
                 || app.getPackageName().equals(ri.activityInfo.packageName));
-        resolved.sort(Comparator.comparing(ri -> {
-            try {
-                CharSequence s = ri.loadLabel(pm);
-                return s == null ? ri.activityInfo.name : s.toString();
-            } catch (Throwable ignored) {
-                return ri.activityInfo.name;
-            }
-        }, String.CASE_INSENSITIVE_ORDER));
+
+        String targetMode = mode == MODE_SHARE ? TargetMenuStore.MODE_SHARE : TargetMenuStore.MODE_PROCESS;
+        resolved = applyTargetCustomization(app, targetMode, resolved);
 
         ScrollView scroll = new ScrollView(app);
         scroll.setFillViewport(false);
@@ -242,7 +234,7 @@ public final class FloatActionMenu {
         list.setOrientation(LinearLayout.VERTICAL);
         if (resolved.isEmpty()) {
             TextView none = new TextView(app);
-            none.setText(mode == MODE_SHARE ? "没有找到可分享的应用" : "没有找到可处理文字的应用");
+            none.setText(mode == MODE_SHARE ? "当前没有已启用的分享应用" : "当前没有已启用的处理应用");
             none.setTextColor(palette.secondaryText);
             none.setTextSize(14);
             none.setGravity(Gravity.CENTER_VERTICAL);
@@ -265,15 +257,43 @@ public final class FloatActionMenu {
         int visibleRows = Math.min(Math.max(1, resolved.size()), 6);
         root.addView(scroll, new LinearLayout.LayoutParams(-1, dp(app, 50 * visibleRows)));
 
-        TextView system = menuRow(app,
-                mode == MODE_SHARE ? "系统分享菜单" : "系统处理菜单",
+        TextView moreApps = menuRow(app,
+                mode == MODE_SHARE ? "更多分享应用…" : "更多处理应用…",
                 null, palette);
-        root.addView(system, new LinearLayout.LayoutParams(-1, dp(app, 46)));
-        system.setOnClickListener(v -> {
+        root.addView(moreApps, new LinearLayout.LayoutParams(-1, dp(app, 46)));
+        moreApps.setOnClickListener(v -> {
             dismiss();
             if (mode == MODE_SHARE) launchSystemShare(app, text);
             else launchSystemProcess(app, text);
         });
+    }
+
+    private static List<ResolveInfo> applyTargetCustomization(Context app, String mode,
+                                                              List<ResolveInfo> resolved) {
+        PackageManager pm = app.getPackageManager();
+        if (!TargetMenuStore.isCustomized(app, mode)) {
+            resolved.sort(Comparator.comparing(ri -> {
+                try {
+                    CharSequence s = ri.loadLabel(pm);
+                    return s == null ? ri.activityInfo.name : s.toString();
+                } catch (Throwable ignored) {
+                    return ri.activityInfo.name;
+                }
+            }, String.CASE_INSENSITIVE_ORDER));
+            return resolved;
+        }
+
+        Map<String, ResolveInfo> byComponent = new HashMap<>();
+        for (ResolveInfo ri : resolved) {
+            if (ri == null || ri.activityInfo == null) continue;
+            byComponent.put(ri.activityInfo.packageName + "|" + ri.activityInfo.name, ri);
+        }
+        ArrayList<ResolveInfo> ordered = new ArrayList<>();
+        for (TargetMenuStore.Item item : TargetMenuStore.load(app, mode)) {
+            ResolveInfo ri = byComponent.get(item.key());
+            if (ri != null) ordered.add(ri);
+        }
+        return ordered;
     }
 
     private static TextView action(Context c, String text, Palette palette, int minWidthDp) {
