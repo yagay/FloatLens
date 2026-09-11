@@ -9,47 +9,68 @@ import java.util.Map;
 /**
  * FV-style cached hit-test model.
  *
- * FV does not treat every Accessibility rectangle as one flat depth-ranked list. Text/editable
- * semantics and ordinary/non-text Views are prepared as different candidate classes before pointer
- * hit testing. Keep that distinction here: a deeper empty wrapper must not hide usable text exposed
- * by a containing Accessibility candidate.
+ * Reverse engineering of fooView 1.6.4 shows that its selection overlay does not flatten every
+ * Accessibility rectangle into one global depth-ranked list. FooAccessibilityService prepares
+ * semantic lists first, and o1/n1#getSelectedRect() walks those lists in order and returns the first
+ * candidate whose rectangle contains the pointer. FooAccessibilityService#c1() prepares each list
+ * by putting contained/smaller overlapping rectangles before broader ones.
  *
- * The full Accessibility snapshot is still prepared only once. MOVE performs cached rectangle
- * contains() tests only; it never walks the live Accessibility tree.
+ * FloatLens keeps the same important invariants here:
+ *  - text semantics are tested before empty/non-text Views;
+ *  - near-fullscreen TEXT remains a valid text target (only ROOT is a last-resort bucket);
+ *  - each semantic bucket is geometry-prepared before MOVE starts;
+ *  - MOVE performs cached contains(x,y) checks only and never walks the live Accessibility tree.
  */
 public final class ScreenSelectionModel {
     private final ArrayList<ScreenCandidate> accessibility = new ArrayList<>();
+    private final ArrayList<ScreenCandidate> text = new ArrayList<>();
+    private final ArrayList<ScreenCandidate> editable = new ArrayList<>();
+    private final ArrayList<ScreenCandidate> nonText = new ArrayList<>();
+    private final ArrayList<ScreenCandidate> view = new ArrayList<>();
+    private final ArrayList<ScreenCandidate> root = new ArrayList<>();
 
     public void setAccessibility(List<ScreenCandidate> items) {
         accessibility.clear();
+        text.clear();
+        editable.clear();
+        nonText.clear();
+        view.clear();
+        root.clear();
         if (items == null) return;
+
         for (ScreenCandidate c : dedupe(items)) {
-            if (isAcceptedType(c)) accessibility.add(c);
+            if (!isAcceptedType(c)) continue;
+            if (c.type() == ScreenCandidate.Type.ROOT) {
+                root.add(c);
+            } else if (c.hasText() || c.type() == ScreenCandidate.Type.TEXT) {
+                text.add(c);
+            } else if (c.editable()) {
+                editable.add(c);
+            } else if (c.type() == ScreenCandidate.Type.NON_TEXT || c.iconLike()) {
+                nonText.add(c);
+            } else {
+                view.add(c);
+            }
         }
 
-        // FV-style prepared candidate groups:
-        //   text -> editable -> explicit non-text -> ordinary view -> root/fallback.
-        // Within a group, a specific/deeper rectangle wins, while whole-page candidates remain a
-        // last resort. This fixes cases where a text-bearing parent contains a deeper empty View
-        // wrapper (common in Compose/custom layouts and feeds).
-        accessibility.sort((a, b) -> {
-            boolean aBroad = isBroad(a);
-            boolean bBroad = isBroad(b);
-            if (aBroad != bBroad) return aBroad ? 1 : -1;
+        replacePrepared(text);
+        replacePrepared(editable);
+        replacePrepared(nonText);
+        replacePrepared(view);
+        replacePrepared(root);
 
-            int byGroup = Integer.compare(candidateGroup(a), candidateGroup(b));
-            if (byGroup != 0) return byGroup;
-
-            int byDepth = Integer.compare(b.depth(), a.depth());
-            if (byDepth != 0) return byDepth;
-
-            int byArea = Long.compare(area(a.bounds()), area(b.bounds()));
-            if (byArea != 0) return byArea;
-            return 0;
-        });
+        // Matches the meaningful part of FV's getSelectedRect() ordering for the normal selection
+        // path: usable text is resolved before ordinary non-text candidates. Empty editable nodes are
+        // kept as a separate fallback class, and FloatLens' generic VIEW extension remains behind FV
+        // semantic candidates instead of being allowed to hide them by depth.
+        accessibility.addAll(text);
+        accessibility.addAll(editable);
+        accessibility.addAll(nonText);
+        accessibility.addAll(view);
+        accessibility.addAll(root);
     }
 
-    /** Kept for source compatibility; visual candidates are intentionally ignored. */
+    /** Kept for source compatibility; visual screenshot candidates are intentionally ignored. */
     public void setVisual(List<ScreenCandidate> items) {}
 
     public List<ScreenCandidate> accessibilityCandidates() {
@@ -63,7 +84,7 @@ public final class ScreenSelectionModel {
     public boolean isEmpty() { return accessibility.isEmpty(); }
     public int size() { return accessibility.size(); }
 
-    /** MOVE-time path: cached rectangle contains() only; no tree walk and no per-MOVE live ranking. */
+    /** FV MOVE-time behavior: first prepared candidate containing the pointer wins. */
     public ScreenCandidate selectAccessibilityAt(float x, float y) {
         final int px = Math.round(x), py = Math.round(y);
         for (ScreenCandidate c : accessibility) {
@@ -81,15 +102,54 @@ public final class ScreenSelectionModel {
         return false;
     }
 
-    private int candidateGroup(ScreenCandidate c) {
-        if (c == null) return 5;
-        // hasText() is intentionally checked in addition to Type.TEXT so text exposed by a custom
-        // class is never demoted merely because its Android class is not TextView.
-        if (c.hasText() || c.type() == ScreenCandidate.Type.TEXT) return 0;
-        if (c.editable()) return 1;
-        if (c.type() == ScreenCandidate.Type.NON_TEXT || c.iconLike()) return 2;
-        if (c.type() == ScreenCandidate.Type.VIEW) return 3;
-        return 4;
+    private void replacePrepared(ArrayList<ScreenCandidate> bucket) {
+        if (bucket.size() < 2) return;
+        ArrayList<ScreenCandidate> prepared = fvPrepare(bucket);
+        bucket.clear();
+        bucket.addAll(prepared);
+    }
+
+    /**
+     * Clean-room equivalent of the ordering behavior observed in FV FooAccessibilityService#c1().
+     * Exact duplicate rectangles are ignored. A candidate contained by an existing candidate is
+     * inserted before it. For partially overlapping candidates, the smaller rectangle is inserted
+     * before the larger one. Unrelated candidates preserve traversal order.
+     */
+    private ArrayList<ScreenCandidate> fvPrepare(List<ScreenCandidate> input) {
+        ArrayList<ScreenCandidate> out = new ArrayList<>();
+        for (ScreenCandidate candidate : input) {
+            if (candidate == null || candidate.bounds().isEmpty()) continue;
+            Rect next = candidate.bounds();
+            boolean add = true;
+            int insertAt = -1;
+
+            for (int i = 0; i < out.size(); i++) {
+                Rect existing = out.get(i).bounds();
+                if (existing.equals(next)) {
+                    add = false;
+                    break;
+                }
+                if (contains(existing, next)) {
+                    insertAt = i;
+                    break;
+                }
+                if (Rect.intersects(existing, next) && area(next) < area(existing)) {
+                    insertAt = i;
+                    break;
+                }
+            }
+
+            if (!add) continue;
+            if (insertAt < 0) out.add(candidate);
+            else out.add(insertAt, candidate);
+        }
+        return out;
+    }
+
+    private boolean contains(Rect outer, Rect inner) {
+        return outer != null && inner != null
+                && outer.left <= inner.left && outer.top <= inner.top
+                && outer.right >= inner.right && outer.bottom >= inner.bottom;
     }
 
     private boolean isAcceptedType(ScreenCandidate c) {
@@ -99,12 +159,8 @@ public final class ScreenSelectionModel {
                 || c.type() == ScreenCandidate.Type.ROOT);
     }
 
-    private boolean isBroad(ScreenCandidate c) {
-        return c != null && (c.type() == ScreenCandidate.Type.ROOT || c.fullscreenLike());
-    }
-
     private long area(Rect r) {
-        return r == null ? 0L : (long) r.width() * r.height();
+        return r == null ? 0L : (long) Math.max(0, r.width()) * Math.max(0, r.height());
     }
 
     private List<ScreenCandidate> dedupe(List<ScreenCandidate> in) {

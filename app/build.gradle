@@ -10,8 +10,8 @@ android {
         applicationId 'com.yagay.floatlens'
         minSdk 31
         targetSdk 37
-        versionCode 110
-        versionName '3.0.58'
+        versionCode 111
+        versionName '3.0.59'
         ndk {
             // FloatLens targets modern Android phones; keep only the ABI actually used on current devices.
             abiFilters 'arm64-v8a'
