@@ -103,6 +103,43 @@ public final class CustomMenuActionStore {
         save(c, items);
     }
 
+    /** Move one item by a relative delta. Returns true only when the order changed. */
+    public static boolean move(Context c, String id, int delta) {
+        if (c == null || id == null || delta == 0) return false;
+        List<Item> items = load(c);
+        int from = indexOf(items, id);
+        if (from < 0) return false;
+        int to = Math.max(0, Math.min(items.size() - 1, from + delta));
+        if (from == to) return false;
+        Item item = items.remove(from);
+        items.add(to, item);
+        save(c, items);
+        return true;
+    }
+
+    /** Move one item to an absolute index, used by drag-and-drop sorting. */
+    public static boolean moveTo(Context c, String id, int targetIndex) {
+        if (c == null || id == null) return false;
+        List<Item> items = load(c);
+        int from = indexOf(items, id);
+        if (from < 0 || items.isEmpty()) return false;
+        int to = Math.max(0, Math.min(items.size() - 1, targetIndex));
+        if (from == to) return false;
+        Item item = items.remove(from);
+        if (to > items.size()) to = items.size();
+        items.add(to, item);
+        save(c, items);
+        return true;
+    }
+
+    private static int indexOf(List<Item> items, String id) {
+        if (items == null || id == null) return -1;
+        for (int i = 0; i < items.size(); i++) {
+            if (id.equals(items.get(i).id)) return i;
+        }
+        return -1;
+    }
+
     private static void save(Context c, List<Item> items) {
         JSONArray a = new JSONArray();
         if (items != null) for (Item item : items) a.put(item.toJson());
