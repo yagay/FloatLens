@@ -45,7 +45,16 @@ public final class FloatActionMenu {
     }
 
     public static void showShareTargets(Context c, String value) {
-        show(c, value, null, MODE_SHARE);
+        if (c == null) return;
+        Context app = c.getApplicationContext();
+        String text = value == null ? "" : value.trim();
+        if (text.isEmpty()) return;
+        if (TargetMenuStore.isCustomized(app, TargetMenuStore.MODE_SHARE)) {
+            show(app, text, null, MODE_SHARE);
+        } else {
+            dismiss();
+            launchSystemShare(app, text);
+        }
     }
 
     public static void showProcessTargets(Context c, String value) {
@@ -56,9 +65,15 @@ public final class FloatActionMenu {
         if (c == null) return;
         String text = value == null ? "" : value.trim();
         if (text.isEmpty()) return;
-        dismiss();
 
         Context app = c.getApplicationContext();
+        if (mode == MODE_SHARE && !TargetMenuStore.isCustomized(app, TargetMenuStore.MODE_SHARE)) {
+            dismiss();
+            launchSystemShare(app, text);
+            return;
+        }
+
+        dismiss();
         WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
         if (wm == null) return;
         Palette palette = Palette.from(app);
@@ -160,7 +175,14 @@ public final class FloatActionMenu {
             Toast.makeText(app, "已复制", Toast.LENGTH_SHORT).show();
             dismiss();
         });
-        share.setOnClickListener(v -> show(app, text, selectAll, MODE_SHARE));
+        share.setOnClickListener(v -> {
+            if (TargetMenuStore.isCustomized(app, TargetMenuStore.MODE_SHARE)) {
+                show(app, text, selectAll, MODE_SHARE);
+            } else {
+                dismiss();
+                launchSystemShare(app, text);
+            }
+        });
         more.setOnClickListener(v -> show(app, text, selectAll, MODE_MORE));
     }
 
@@ -258,7 +280,7 @@ public final class FloatActionMenu {
         root.addView(scroll, new LinearLayout.LayoutParams(-1, dp(app, 50 * visibleRows)));
 
         TextView moreApps = menuRow(app,
-                mode == MODE_SHARE ? "更多分享应用…" : "更多处理应用…",
+                mode == MODE_SHARE ? "系统分享菜单…" : "更多处理应用…",
                 null, palette);
         root.addView(moreApps, new LinearLayout.LayoutParams(-1, dp(app, 46)));
         moreApps.setOnClickListener(v -> {
@@ -359,7 +381,7 @@ public final class FloatActionMenu {
         }
     }
 
-    private static void launchSystemShare(Context app, String text) {
+    static void launchSystemShare(Context app, String text) {
         try {
             Intent share = new Intent(Intent.ACTION_SEND)
                     .setType("text/plain")
