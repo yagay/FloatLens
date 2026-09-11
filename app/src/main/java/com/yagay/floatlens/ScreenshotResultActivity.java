@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Pure screenshot/image result hosted by a normal Activity window.
- * This keeps the Android sharesheet above the result popup instead of below a TYPE_APPLICATION_OVERLAY.
+ * This keeps Android system UI (sharesheet / OCR result activity) above the result popup.
  */
 public final class ScreenshotResultActivity extends AppCompatActivity {
     private static final String EXTRA_TOKEN = "screenshot_result_token";
@@ -114,16 +114,16 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
         image.setAdjustViewBounds(false);
         image.setScaleType(ImageView.ScaleType.FIT_CENTER);
         ImageShareUtils.attachLongPressShare(this, image, payload.image);
-        // The image is the only flexible area. Dialog decor/OEM insets may reduce the real
-        // content viewport below the requested Window height; using weight here guarantees
-        // that the fixed action row remains visible and only the image shrinks.
+        // The image is the only flexible area. Keep the fixed action row visible on every ROM.
         box.addView(image, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setGravity(Gravity.CENTER_VERTICAL);
+        Button ocr = button("OCR");
         Button save = button("保存图片");
         Button close = button("关闭");
+        actions.addView(ocr, new LinearLayout.LayoutParams(0, -1, 1));
         actions.addView(save, new LinearLayout.LayoutParams(0, -1, 1));
         actions.addView(close, new LinearLayout.LayoutParams(0, -1, 1));
         box.addView(actions, new LinearLayout.LayoutParams(-1, actionsH));
@@ -138,8 +138,19 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
                         + " actionsH=" + actions.getHeight()
                         + " requestedH=" + requestedHeight));
 
+        ocr.setOnClickListener(v -> runOcr());
         save.setOnClickListener(v -> ScreenshotController.save(this, payload.image));
         close.setOnClickListener(v -> finishNoAnim());
+    }
+
+    private void runOcr() {
+        if (payload == null || payload.image == null || payload.image.isRecycled()) return;
+        Bitmap image = payload.image;
+        Rect anchor = payload.anchor == null ? null : new Rect(payload.anchor);
+        DiagnosticLog.i(this, "SCREENSHOT_RESULT", "OCR_BUTTON image="
+                + image.getWidth() + "x" + image.getHeight());
+        finishNoAnim();
+        OcrEngine.recognize(getApplicationContext(), image, anchor);
     }
 
     private void positionWindow(Rect usable, int width, int height, Rect anchor) {
