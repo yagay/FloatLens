@@ -7,9 +7,13 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
-/** Persistent ordered targets for FloatLens share/process submenus. */
+/** Persistent FloatLens ordering/hide rules layered on top of current system-resolved targets. */
 public final class TargetMenuStore {
     public static final String MODE_SHARE = "share";
     public static final String MODE_PROCESS = "process";
@@ -66,6 +70,37 @@ public final class TargetMenuStore {
         return out;
     }
 
+    /**
+     * Apply the user's FloatLens order/hide rules to a fresh system-resolved target list.
+     * Existing ordered items stay where the user placed them; newly discovered system targets
+     * are appended in the order returned by Android; removed/uninstalled targets disappear.
+     */
+    public static List<Item> mergeWithSystem(Context c, String mode, List<Item> systemItems) {
+        ArrayList<Item> system = new ArrayList<>();
+        if (systemItems != null) system.addAll(systemItems);
+        if (!isCustomized(c, mode)) return system;
+
+        Set<String> hidden = loadHidden(c, mode);
+        Map<String, Item> current = new HashMap<>();
+        for (Item item : system) {
+            if (item != null) current.put(item.key(), item);
+        }
+
+        ArrayList<Item> out = new ArrayList<>();
+        Set<String> added = new HashSet<>();
+        for (Item saved : load(c, mode)) {
+            if (saved == null || hidden.contains(saved.key())) continue;
+            Item live = current.get(saved.key());
+            if (live != null && added.add(live.key())) out.add(live);
+        }
+        for (Item live : system) {
+            if (live == null || hidden.contains(live.key())) continue;
+            if (added.add(live.key())) out.add(live);
+        }
+        return out;
+    }
+
+    /** Save only FloatLens ordering. Hidden targets are kept separately. */
     public static void save(Context c, String mode, List<Item> items) {
         JSONArray a = new JSONArray();
         if (items != null) for (Item item : items) a.put(item.toJson());
@@ -79,20 +114,34 @@ public final class TargetMenuStore {
         prefs(c).edit()
                 .putBoolean(customizedKey(mode), false)
                 .remove(itemsKey(mode))
+                .remove(hiddenKey(mode))
                 .apply();
     }
 
     public static boolean remove(Context c, String mode, String key) {
+        if (key == null || key.isBlank()) return false;
         List<Item> items = load(c, mode);
         boolean changed = items.removeIf(i -> i.key().equals(key));
-        if (changed) save(c, mode, items);
-        return changed;
+        Set<String> hidden = loadHidden(c, mode);
+        boolean hiddenChanged = hidden.add(key);
+        save(c, mode, items);
+        saveHidden(c, mode, hidden);
+        return changed || hiddenChanged;
     }
 
     public static boolean add(Context c, String mode, Item item) {
         if (item == null || item.packageName.isBlank() || item.className.isBlank()) return false;
+        Set<String> hidden = loadHidden(c, mode);
+        boolean wasHidden = hidden.remove(item.key());
+        if (wasHidden) saveHidden(c, mode, hidden);
+
         List<Item> items = load(c, mode);
-        for (Item old : items) if (old.key().equals(item.key())) return false;
+        for (Item old : items) {
+            if (old.key().equals(item.key())) {
+                if (!isCustomized(c, mode)) save(c, mode, items);
+                return wasHidden;
+            }
+        }
         items.add(item);
         save(c, mode, items);
         return true;
@@ -124,6 +173,18 @@ public final class TargetMenuStore {
         return true;
     }
 
+    public static boolean isHidden(Context c, String mode, String key) {
+        return key != null && loadHidden(c, mode).contains(key);
+    }
+
+    private static Set<String> loadHidden(Context c, String mode) {
+        return new HashSet<>(prefs(c).getStringSet(hiddenKey(mode), new HashSet<>()));
+    }
+
+    private static void saveHidden(Context c, String mode, Set<String> hidden) {
+        prefs(c).edit().putStringSet(hiddenKey(mode), new HashSet<>(hidden)).apply();
+    }
+
     private static int indexOf(List<Item> items, String key) {
         if (items == null || key == null) return -1;
         for (int i = 0; i < items.size(); i++) if (key.equals(items.get(i).key())) return i;
@@ -132,6 +193,10 @@ public final class TargetMenuStore {
 
     private static String itemsKey(String mode) {
         return "items_" + safeMode(mode);
+    }
+
+    private static String hiddenKey(String mode) {
+        return "hidden_" + safeMode(mode);
     }
 
     private static String customizedKey(String mode) {
