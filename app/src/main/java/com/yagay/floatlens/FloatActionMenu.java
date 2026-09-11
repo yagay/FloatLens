@@ -13,6 +13,7 @@ import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -120,8 +121,21 @@ public final class FloatActionMenu {
         row.setPadding(dp(app, 2), dp(app, 2), dp(app, 2), dp(app, 2));
 
         TextView copy = action(app, "复制", palette, 58);
-        TextView share = action(app, "分享", palette, 58);
         row.addView(copy, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
+
+        List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
+        int customLimit = selectAll != null ? 1 : 2;
+        for (int i = 0; i < Math.min(customLimit, customs.size()); i++) {
+            CustomMenuActionStore.Item item = customs.get(i);
+            TextView custom = action(app, item.label, palette, 72);
+            custom.setMaxWidth(dp(app, 88));
+            custom.setEllipsize(TextUtils.TruncateAt.END);
+            custom.setSingleLine(true);
+            row.addView(custom, new LinearLayout.LayoutParams(dp(app, 78), dp(app, 46)));
+            custom.setOnClickListener(v -> launchCustom(app, item, text));
+        }
+
+        TextView share = action(app, "分享", palette, 58);
         row.addView(share, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
 
         if (selectAll != null) {
@@ -152,17 +166,32 @@ public final class FloatActionMenu {
                                       Runnable selectAll, Palette palette) {
         root.setPadding(dp(app, 4), dp(app, 4), dp(app, 4), dp(app, 4));
         TextView back = menuRow(app, "‹   返回", null, palette);
+        root.addView(back, new LinearLayout.LayoutParams(-1, dp(app, 46)));
+        back.setOnClickListener(v -> show(app, text, selectAll, MODE_MAIN));
+
+        for (CustomMenuActionStore.Item item : CustomMenuActionStore.load(app)) {
+            Drawable icon = null;
+            try { icon = app.getPackageManager().getApplicationIcon(item.packageName); }
+            catch (Throwable ignored) {}
+            TextView custom = menuRow(app, item.label, icon, palette);
+            root.addView(custom, new LinearLayout.LayoutParams(-1, dp(app, 48)));
+            custom.setOnClickListener(v -> launchCustom(app, item, text));
+        }
+
         TextView process = menuRow(app, "打开 / 处理", null, palette);
         TextView system = menuRow(app, "系统处理菜单", null, palette);
-        root.addView(back, new LinearLayout.LayoutParams(-1, dp(app, 46)));
         root.addView(process, new LinearLayout.LayoutParams(-1, dp(app, 46)));
         root.addView(system, new LinearLayout.LayoutParams(-1, dp(app, 46)));
-        back.setOnClickListener(v -> show(app, text, selectAll, MODE_MAIN));
         process.setOnClickListener(v -> show(app, text, selectAll, MODE_PROCESS));
         system.setOnClickListener(v -> {
             dismiss();
             launchSystemProcess(app, text);
         });
+    }
+
+    private static void launchCustom(Context app, CustomMenuActionStore.Item item, String text) {
+        dismiss();
+        CustomMenuActionStore.launch(app, item, text);
     }
 
     private static void buildTargetMenu(Context app, LinearLayout root, String text,
@@ -264,6 +293,7 @@ public final class FloatActionMenu {
         tv.setClickable(true);
         tv.setFocusable(true);
         tv.setSingleLine(true);
+        tv.setEllipsize(TextUtils.TruncateAt.END);
         if (icon != null) {
             int s = dp(c, 24);
             icon.setBounds(0, 0, s, s);
