@@ -62,6 +62,7 @@ public class SettingsActivity extends AppCompatActivity {
         check(root, "OCR 显示原选区图片 / ocr_result_show_image", FloatSettings.K_OCR_SHOW_IMAGE, fs.ocrShowImage());
         check(root, "OCR 显示文字 / ocr_result_show_text", FloatSettings.K_OCR_SHOW_TEXT, fs.ocrShowText());
         check(root, "OCR 结果折叠 / ocr_result_show_text_collapse", FloatSettings.K_OCR_COLLAPSE, fs.ocrCollapse());
+        ocrEngineSpinner(root);
         ocrTypeSpinner(root);
 
         title(root, "环境与显示");
@@ -167,8 +168,27 @@ public class SettingsActivity extends AppCompatActivity {
         String[] labels={"圆角", "方形", "圆角增强"}; Spinner s=new Spinner(this); s.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels)); s.setSelection(fs.lineStyle());
         s.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){ public void onItemSelected(android.widget.AdapterView<?> p, android.view.View v,int pos,long id){fs.prefs().edit().putInt(FloatSettings.K_LINE_STYLE,pos).apply();} public void onNothingSelected(android.widget.AdapterView<?> p){} }); r.addView(s);
     }
+    private void ocrEngineSpinner(LinearLayout r) {
+        TextView t = new TextView(this); t.setText("OCR 引擎 / ocr_engine_mode"); r.addView(t);
+        String[] labels = {
+                "自动：PP-OCRv6 高精度优先，失败回退 ML Kit",
+                "PP-OCRv6 高精度（纯本地）",
+                "ML Kit 快速"
+        };
+        Spinner s = new Spinner(this);
+        s.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
+        s.setSelection(fs.ocrEngineMode());
+        s.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            public void onItemSelected(android.widget.AdapterView<?> p, android.view.View v, int pos, long id) {
+                fs.prefs().edit().putInt(FloatSettings.K_OCR_ENGINE, pos).apply();
+            }
+            public void onNothingSelected(android.widget.AdapterView<?> p) {}
+        });
+        r.addView(s);
+    }
+
     private void ocrTypeSpinner(LinearLayout r) {
-        TextView t = new TextView(this); t.setText("OCR 引擎 / ocr_type"); r.addView(t);
+        TextView t = new TextView(this); t.setText("ML Kit 识别语言 / ocr_type"); r.addView(t);
         String[] labels = {"中文 + 拉丁", "拉丁文字"};
         Spinner s = new Spinner(this); s.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels)); s.setSelection(fs.ocrType());
         s.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
