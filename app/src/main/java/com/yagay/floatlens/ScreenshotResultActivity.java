@@ -7,6 +7,9 @@ import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
+import android.text.Layout;
+import android.text.StaticLayout;
+import android.text.TextPaint;
 import android.view.Gravity;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -39,8 +42,10 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
     private LinearLayout ocrPanel;
     private TextView ocrText;
     private Button ocrButton;
+    private ImageView resultImage;
     private Rect popupUsable;
     private int popupWidth;
+    private int compactImageHeight;
 
     public static boolean show(Context c, Bitmap image, Rect anchor) {
         if (c == null || image == null || image.isRecycled()) return false;
@@ -99,6 +104,7 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
                 / (float) Math.max(1, payload.image.getWidth())));
         desiredImageH = clamp(desiredImageH, dp(72),
                 Math.max(dp(72), maxH - titleH - actionsH - verticalPadding));
+        compactImageHeight = desiredImageH;
         int height = Math.min(maxH, titleH + actionsH + desiredImageH + verticalPadding);
         int minHeight = titleH + actionsH + dp(64) + verticalPadding;
         height = Math.max(Math.min(maxH, minHeight), height);
@@ -117,12 +123,12 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
         title.setGravity(Gravity.CENTER_VERTICAL);
         box.addView(title, new LinearLayout.LayoutParams(-1, titleH));
 
-        ImageView image = new ImageView(this);
-        image.setImageBitmap(payload.image);
-        image.setAdjustViewBounds(false);
-        image.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        ImageShareUtils.attachLongPressShare(this, image, payload.image);
-        box.addView(image, new LinearLayout.LayoutParams(-1, 0, 1f));
+        resultImage = new ImageView(this);
+        resultImage.setImageBitmap(payload.image);
+        resultImage.setAdjustViewBounds(false);
+        resultImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        ImageShareUtils.attachLongPressShare(this, resultImage, payload.image);
+        box.addView(resultImage, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         ocrPanel = new LinearLayout(this);
         ocrPanel.setOrientation(LinearLayout.VERTICAL);
@@ -166,7 +172,7 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
         box.post(() -> DiagnosticLog.i(this, "SCREENSHOT_RESULT_LAYOUT",
                 "root=" + box.getWidth() + "x" + box.getHeight()
                         + " titleH=" + title.getHeight()
-                        + " imageH=" + image.getHeight()
+                        + " imageH=" + resultImage.getHeight()
                         + " actionsH=" + actions.getHeight()
                         + " requestedH=" + requestedHeight));
 
@@ -206,18 +212,61 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
     }
 
     private void showInlineOcr(String text) {
-        if (ocrPanel == null || ocrText == null) return;
+        if (ocrPanel == null || ocrText == null || resultImage == null) return;
         String value = text == null ? "" : text.trim();
-        ocrText.setText(value.isEmpty() ? "未识别到文字" : value);
+        String shown = value.isEmpty() ? "未识别到文字" : value;
+        ocrText.setText(shown);
         ocrPanel.setVisibility(View.VISIBLE);
 
         Rect usable = popupUsable == null ? usableBounds() : new Rect(popupUsable);
-        int expandedH = Math.min(dp(610), Math.round(usable.height() * .72f));
-        expandedH = Math.max(dp(360), expandedH);
-        positionWindow(usable, popupWidth > 0 ? popupWidth : Math.min(dp(410), usable.width()),
-                expandedH, payload == null ? null : payload.anchor);
+        int width = popupWidth > 0 ? popupWidth : Math.min(dp(410), usable.width());
+        int maxTotalH = Math.min(dp(610), Math.round(usable.height() * .72f));
+        int titleH = dp(38);
+        int actionsH = dp(50);
+        int verticalPadding = dp(16);
+        int headingH = dp(26);
+        int panelPad = dp(8);
+
+        // Once OCR is visible, the screenshot is a compact fixed-height preview. The old weight=1
+        // image region consumed all extra window height and FIT_CENTER exposed that as blank space.
+        int imageH = clamp(compactImageHeight, dp(88), dp(210));
+        int innerTextW = Math.max(dp(120), width - dp(40));
+        int desiredTextH = estimateTextHeight(shown, innerTextW);
+
+        int fixedWithoutText = titleH + actionsH + verticalPadding + imageH + headingH + panelPad;
+        int availableTextH = Math.max(dp(56), maxTotalH - fixedWithoutText);
+        int textH = clamp(desiredTextH, dp(56), Math.min(dp(220), availableTextH));
+        int panelH = headingH + textH + panelPad;
+        int expandedH = fixedWithoutText + textH;
+
+        LinearLayout.LayoutParams imageLp = new LinearLayout.LayoutParams(-1, imageH);
+        imageLp.weight = 0f;
+        resultImage.setLayoutParams(imageLp);
+        ocrPanel.setLayoutParams(new LinearLayout.LayoutParams(-1, panelH));
+
+        positionWindow(usable, width, expandedH, payload == null ? null : payload.anchor);
         DiagnosticLog.i(this, "SCREENSHOT_RESULT", "OCR_INLINE chars=" + value.length()
+                + " imageH=" + imageH + " textH=" + textH + " panelH=" + panelH
                 + " expandedH=" + expandedH);
+    }
+
+    private int estimateTextHeight(String value, int widthPx) {
+        String safe = value == null || value.isEmpty() ? " " : value;
+        TextPaint paint = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
+        paint.setTextSize(16f * getResources().getDisplayMetrics().scaledDensity);
+        try {
+            StaticLayout layout = StaticLayout.Builder.obtain(safe, 0, safe.length(), paint,
+                            Math.max(1, widthPx))
+                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                    .setIncludePad(true)
+                    .setLineSpacing(0f, 1f)
+                    .build();
+            return Math.max(dp(40), layout.getHeight() + dp(10));
+        } catch (Throwable ignored) {
+            int approxCharsPerLine = Math.max(8, widthPx / Math.max(1, dp(9)));
+            int lines = Math.max(1, (safe.length() + approxCharsPerLine - 1) / approxCharsPerLine);
+            return dp(Math.min(220, 10 + lines * 22));
+        }
     }
 
     private void positionWindow(Rect usable, int width, int height, Rect anchor) {
