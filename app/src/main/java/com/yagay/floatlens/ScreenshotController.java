@@ -60,7 +60,7 @@ public final class ScreenshotController {
                 "View OCR 失败，改用自由圈选", true);
     }
 
-    /** FV screenshot operation. This path never invokes OCR. */
+    /** FV screenshot operation. This path never invokes OCR automatically. */
     public static void captureBoundsForRegion(Context c, Rect screenBounds) {
         if (screenBounds == null || screenBounds.isEmpty()) return;
         Context app = c.getApplicationContext();
@@ -75,8 +75,8 @@ public final class ScreenshotController {
     }
 
     /**
-     * FV text/View operation. Accessibility text is extracted directly and shown as View content,
-     * never as an OCR result. A textless View is a View-image capture instead.
+     * FV text/View operation. Accessibility text is extracted directly and shown as View content.
+     * The captured image stays available so the user may explicitly run OCR from the result popup.
      */
     public static void captureBoundsForViewCandidate(Context c, Rect screenBounds,
                                                      ViewNodeCandidate candidate, String directText) {
@@ -92,17 +92,18 @@ public final class ScreenshotController {
                 DiagnosticLog.i(app, "VIEW_EXTRACT", "direct Accessibility text chars=" + text.length()
                         + " bounds=" + bounds);
                 if (!ViewContentActivity.show(app, text, crop, bounds)) {
-                    // Emergency fallback only; no OCR engine is called.
                     ResultOverlay.show(app, text, java.util.List.of(text), crop, bounds);
                 }
             } else {
                 DiagnosticLog.i(app, "VIEW_SCREENSHOT", "no Accessibility text; show cropped View bounds=" + bounds);
-                ResultOverlay.showVisual(app, crop, candidate, bounds);
+                if (!ViewImageResultActivity.show(app, crop, candidate, bounds)) {
+                    ResultOverlay.showVisual(app, crop, candidate, bounds);
+                }
             }
         }, "View 截图失败", false);
     }
 
-    /** FV image/View operation. This path never invokes OCR. */
+    /** FV image/View operation. OCR is available only as an explicit result-window button. */
     public static void captureBoundsForVisualCandidate(Context c, Rect screenBounds, ViewNodeCandidate candidate) {
         if (screenBounds == null || screenBounds.isEmpty()) return;
         Context app = c.getApplicationContext();
@@ -110,7 +111,9 @@ public final class ScreenshotController {
         captureBounds(app, bounds, crop -> {
             DiagnosticLog.i(app, "VIEW_SCREENSHOT", "visual candidate crop="
                     + crop.getWidth() + "x" + crop.getHeight() + " bounds=" + bounds);
-            ResultOverlay.showVisual(app, crop, candidate, bounds);
+            if (!ViewImageResultActivity.show(app, crop, candidate, bounds)) {
+                ResultOverlay.showVisual(app, crop, candidate, bounds);
+            }
         }, "View 截图失败", false);
     }
 
