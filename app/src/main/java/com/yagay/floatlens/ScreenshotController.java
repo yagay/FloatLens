@@ -19,6 +19,12 @@ import java.util.Locale;
 import java.util.function.Consumer;
 
 public final class ScreenshotController {
+    // WindowManager.removeView() returns before SurfaceFlinger necessarily presents the frame with
+    // FloatLens' selection/probe/hint surfaces gone. Bound captures therefore always wait briefly
+    // after the selection layer has been closed, otherwise the region size label / white frame can
+    // leak into Accessibility or root screenshots on fast devices.
+    private static final long OVERLAY_SETTLE_DELAY_MS = 96L;
+
     public static void capture(Context c, boolean region) {
         getBitmap(c, b -> { if (region) RegionOverlay.show(c, b, false); else save(c, b); });
     }
@@ -131,6 +137,10 @@ public final class ScreenshotController {
         FloatService service = FloatService.get();
         boolean hideIcon = !fs.keepInScreenshot() && service != null;
         if (hideIcon) service.setScreenshotHidden(true);
+
+        long settleDelay = Math.max(OVERLAY_SETTLE_DELAY_MS, hideIcon ? 100L : 0L);
+        DiagnosticLog.i(app, "CAPTURE_SETTLE", "bounds=" + screenBounds
+                + " delayMs=" + settleDelay + " hideIcon=" + hideIcon);
         new Handler(Looper.getMainLooper()).postDelayed(() -> captureNow(app, fs, raw -> {
             try {
                 Bitmap crop = cropToScreenBounds(app, raw, screenBounds);
@@ -144,7 +154,7 @@ public final class ScreenshotController {
         }, t -> {
             restoreIcon(service, hideIcon);
             Toast.makeText(app, "截图失败: " + safeMessage(t), Toast.LENGTH_LONG).show();
-        }), hideIcon ? 100L : 0L);
+        }), settleDelay);
     }
 
     private static Bitmap cropToScreenBounds(Context app, Bitmap raw, Rect screenBounds) {
