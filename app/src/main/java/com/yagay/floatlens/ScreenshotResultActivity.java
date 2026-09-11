@@ -15,6 +15,7 @@ import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 
@@ -22,10 +23,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * Pure screenshot/image result hosted by a normal Activity window.
- * This keeps Android system UI (sharesheet / OCR result activity) above the result popup.
- */
+/** Pure screenshot/image result hosted by a normal Activity window. */
 public final class ScreenshotResultActivity extends AppCompatActivity {
     private static final String EXTRA_TOKEN = "screenshot_result_token";
     private static final AtomicLong NEXT = new AtomicLong(1L);
@@ -35,6 +33,7 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
 
     private long token;
     private Payload payload;
+    private boolean ocrRunning;
 
     public static boolean show(Context c, Bitmap image, Rect anchor) {
         if (c == null || image == null || image.isRecycled()) return false;
@@ -114,7 +113,6 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
         image.setAdjustViewBounds(false);
         image.setScaleType(ImageView.ScaleType.FIT_CENTER);
         ImageShareUtils.attachLongPressShare(this, image, payload.image);
-        // The image is the only flexible area. Keep the fixed action row visible on every ROM.
         box.addView(image, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         LinearLayout actions = new LinearLayout(this);
@@ -138,18 +136,23 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
                         + " actionsH=" + actions.getHeight()
                         + " requestedH=" + requestedHeight));
 
-        ocr.setOnClickListener(v -> runOcr());
+        ocr.setOnClickListener(v -> runOcr(ocr));
         save.setOnClickListener(v -> ScreenshotController.save(this, payload.image));
         close.setOnClickListener(v -> finishNoAnim());
     }
 
-    private void runOcr() {
-        if (payload == null || payload.image == null || payload.image.isRecycled()) return;
+    private void runOcr(Button button) {
+        if (ocrRunning || payload == null || payload.image == null || payload.image.isRecycled()) return;
+        ocrRunning = true;
+        button.setEnabled(false);
+        button.setText("识别中…");
         Bitmap image = payload.image;
         Rect anchor = payload.anchor == null ? null : new Rect(payload.anchor);
         DiagnosticLog.i(this, "SCREENSHOT_RESULT", "OCR_BUTTON image="
                 + image.getWidth() + "x" + image.getHeight());
-        finishNoAnim();
+        Toast.makeText(this, "正在识别…", Toast.LENGTH_SHORT).show();
+        // Keep this Activity visible underneath the OCR result. Closing it before preprocessing made
+        // a slow/failing OCR pass look like the button did nothing and also removed useful context.
         OcrEngine.recognize(getApplicationContext(), image, anchor);
     }
 
