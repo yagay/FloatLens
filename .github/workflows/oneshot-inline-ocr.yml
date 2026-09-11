@@ -69,7 +69,6 @@ jobs:
           elif new_run not in s:
               raise SystemExit('Screenshot runOcr marker missing')
 
-          # Avoid stale one-shot result target when closing the screenshot popup.
           old_destroy = '''    @Override protected void onDestroy() {\n        if (token != 0L) PENDING.remove(token);\n        super.onDestroy();\n    }\n'''
           new_destroy = '''    @Override protected void onDestroy() {\n        if (payload != null && payload.image != null) {\n            ResultTextActivity.clearInlineForImage(payload.image);\n        }\n        if (token != 0L) PENDING.remove(token);\n        super.onDestroy();\n    }\n'''
           if old_destroy in s:
