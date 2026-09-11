@@ -20,10 +20,10 @@ import java.util.function.Consumer;
 
 public final class ScreenshotController {
     // WindowManager.removeView() returns before SurfaceFlinger necessarily presents the frame with
-    // FloatLens' selection/probe/hint surfaces gone. Bound captures therefore always wait briefly
-    // after the selection layer has been closed, otherwise the region size label / white frame can
-    // leak into Accessibility or root screenshots on fast devices.
-    private static final long OVERLAY_SETTLE_DELAY_MS = 96L;
+    // FloatLens' selection/probe/hint surfaces gone. FV's captured runtime behavior leaves roughly
+    // 140-160ms between hiding the helper surfaces and the final region frame, so bound captures
+    // use the same settle window to keep size text / white frames / probes out of the screenshot.
+    private static final long OVERLAY_SETTLE_DELAY_MS = 160L;
 
     public static void capture(Context c, boolean region) {
         getBitmap(c, b -> { if (region) RegionOverlay.show(c, b, false); else save(c, b); });
