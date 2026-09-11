@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
     <queries>
         <intent>
@@ -13,6 +14,10 @@
         <intent>
             <action android:name="android.intent.action.SEND" />
             <data android:mimeType="text/plain" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
         </intent>
     </queries>
 
@@ -30,6 +35,7 @@
         <activity android:name=".ViewContentActivity" android:theme="@style/Theme.FloatLens.ResultText" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" />
         <activity android:name=".ViewImageResultActivity" android:theme="@style/Theme.FloatLens.ResultText" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" />
         <activity android:name=".ScreenshotResultActivity" android:theme="@style/Theme.FloatLens.ResultText" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" />
+        <activity android:name=".CustomActionPickerActivity" android:exported="false" />
         <activity android:name=".SettingsActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
