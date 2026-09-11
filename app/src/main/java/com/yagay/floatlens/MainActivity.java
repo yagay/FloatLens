@@ -66,6 +66,10 @@ public class MainActivity extends AppCompatActivity {
         settings.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
         root.addView(settings);
 
+        Button customMenu = button("自定义文字操作菜单");
+        customMenu.setOnClickListener(v -> startActivity(new Intent(this, CustomActionPickerActivity.class)));
+        root.addView(customMenu);
+
         Button exportLog = button("导出 FV 诊断日志");
         exportLog.setOnClickListener(v -> {
             String text=DiagnosticLog.read(this);
