@@ -4,6 +4,8 @@ import android.content.Context;
 import android.graphics.PointF;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.MotionEvent;
 
 /**
@@ -15,9 +17,13 @@ import android.view.MotionEvent;
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
 
+    // FV m2/g posts its region action 5ms after the selection/helper windows are removed.
+    private static final long FV_RELEASE_ACTION_DELAY_MS = 5L;
+
     private final Context context;
     private final LensAccessibilityService accessibility;
     private final SelectionPointTransformer pointTransformer;
+    private final FloatIconView ownerIcon;
 
     private ViewHoverOverlay overlay;
     private FvProbePointOverlay probeOverlay;
@@ -26,8 +32,13 @@ public final class ViewSelectionEngine {
     private float selectionX = Float.NaN, selectionY = Float.NaN;
 
     public ViewSelectionEngine(Context c) {
+        this(c, null);
+    }
+
+    public ViewSelectionEngine(Context c, FloatIconView ownerIcon) {
         context = c.getApplicationContext();
         accessibility = LensAccessibilityService.get();
+        this.ownerIcon = ownerIcon;
         FloatSettings fs = new FloatSettings(context);
         float px = fs.sizeDp() * context.getResources().getDisplayMetrics().density;
         pointTransformer = new SelectionPointTransformer(context, px, px);
@@ -140,7 +151,9 @@ public final class ViewSelectionEngine {
     }
 
     /**
-     * Same-touch ACTION_UP. The operation shown by the FV 24dp hint is the operation executed.
+     * Same-touch ACTION_UP. Mirrors FV m2/g: snapshot the selection, remove every helper window,
+     * then post the actual region action 5ms later. No screenshot-specific compositor delay lives
+     * in ScreenshotController.
      */
     public boolean finishDirect(float rawX, float rawY) {
         if (state != State.DIRECT) {
@@ -149,42 +162,51 @@ public final class ViewSelectionEngine {
         }
         updateDirect(rawX, rawY);
 
-        boolean region = overlay != null && overlay.isRegionMode();
-        ScreenCandidate candidate = overlay == null ? null : overlay.currentCandidate();
-        FvOperationHintOverlay.Mode op = currentOperationMode();
-        boolean result = false;
+        final boolean region = overlay != null && overlay.isRegionMode();
+        final ScreenCandidate candidate = overlay == null ? null : overlay.currentCandidate();
+        final FvOperationHintOverlay.Mode op = currentOperationMode();
+        final Rect bounds;
+        final ViewNodeCandidate view;
+        final String text;
 
-        if (overlay != null) {
-            if (op == FvOperationHintOverlay.Mode.SCREENSHOT) {
-                Rect bounds = region ? overlay.currentRegion()
-                        : candidate == null ? new Rect() : candidate.bounds();
-                overlay.cancel();
-                if (!bounds.isEmpty()) {
+        if (op == FvOperationHintOverlay.Mode.SCREENSHOT) {
+            bounds = region && overlay != null ? overlay.currentRegion()
+                    : candidate == null ? new Rect() : candidate.bounds();
+            view = null;
+            text = "";
+        } else if (candidate != null && !candidate.bounds().isEmpty()) {
+            bounds = candidate.bounds();
+            view = candidate.toViewNodeCandidate();
+            text = candidate.hasText() ? candidate.text() : "";
+        } else {
+            bounds = new Rect();
+            view = null;
+            text = "";
+        }
+
+        // FV removes m2/g and its helper windows before the delayed action callback runs.
+        if (overlay != null) overlay.cancel();
+        overlay = null;
+        state = State.IDLE;
+        closeVisuals();
+
+        final boolean result = !bounds.isEmpty();
+        if (result) {
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                if (op == FvOperationHintOverlay.Mode.SCREENSHOT) {
                     ScreenshotController.captureBoundsForRegion(context, bounds);
-                    result = true;
-                }
-            } else if (candidate != null && !candidate.bounds().isEmpty()) {
-                Rect bounds = candidate.bounds();
-                ViewNodeCandidate view = candidate.toViewNodeCandidate();
-                String text = candidate.hasText() ? candidate.text() : "";
-                overlay.cancel();
-                if (op == FvOperationHintOverlay.Mode.TEXT) {
+                } else if (op == FvOperationHintOverlay.Mode.TEXT) {
                     ScreenshotController.captureBoundsForViewCandidate(context, bounds, view, text);
                 } else {
                     ScreenshotController.captureBoundsForVisualCandidate(context, bounds, view);
                 }
-                result = true;
-            } else {
-                overlay.cancel();
-            }
+            }, FV_RELEASE_ACTION_DELAY_MS);
         }
 
         DiagnosticLog.i(context, "FV_SELECT", "DIRECT_UP region=" + region
                 + " target=" + (candidate != null) + " result=" + result + " focusHit="
-                + Math.round(selectionX) + "," + Math.round(selectionY) + " op=" + op);
-        overlay = null;
-        state = State.IDLE;
-        closeVisuals();
+                + Math.round(selectionX) + "," + Math.round(selectionY) + " op=" + op
+                + " fvDelayMs=" + FV_RELEASE_ACTION_DELAY_MS);
         return result;
     }
 
@@ -227,7 +249,14 @@ public final class ViewSelectionEngine {
             return;
         }
         if (operationOverlay == null) operationOverlay = new FvOperationHintOverlay(context);
-        RectF icon = pointTransformer.iconBoundsForRaw(rawX, rawY);
+
+        // FV FooViewService.D4() reads the active FloatIconView's current WindowManager x/y.
+        // Use the owner icon's exact temporary-follow window bounds; keep the old transformer only
+        // as a compatibility fallback for callers that do not provide an owner icon.
+        RectF icon = ownerIcon == null ? null : ownerIcon.currentFvWindowBounds();
+        if (icon == null || icon.isEmpty()) {
+            icon = pointTransformer.iconBoundsForRaw(rawX, rawY);
+        }
         operationOverlay.show(currentOperationMode(), icon, pointTransformer.gestureLeftSide());
     }
 
