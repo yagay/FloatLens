@@ -85,19 +85,9 @@ public final class ScreenshotController {
         captureBounds(app, bounds, crop -> {
             DiagnosticLog.i(app, "FV_REGION_CAPTURE", "crop=" + crop.getWidth() + "x" + crop.getHeight()
                     + " bounds=" + bounds);
-            boolean overlayShown = ScreenshotResultOverlay.show(app, crop, bounds);
-            DiagnosticLog.i(app, "FV_REGION_CAPTURE", "result overlay shown=" + overlayShown);
-            if (overlayShown) {
-                OverlayShadeCoordinator.cleanup(app, shadeState.expandedAtCapture(),
-                        "screenshot_result", collapsed -> DiagnosticLog.i(app, "SCREENSHOT_RESULT",
-                                "background shade cleanup collapsed=" + collapsed));
-                return;
-            }
-
-            ResultReadyCoordinator.Ticket ticket = ResultReadyCoordinator.arm(
-                    app, shadeState, "fv_region_result_fallback");
-            if (!ScreenshotResultActivity.show(app, crop, bounds)) {
-                ResultReadyCoordinator.cancel(ticket, app, "result_activity_start_failed");
+            boolean shown = ResultSurfaceRouter.showCapturedScreenshot(app, crop, bounds, shadeState);
+            DiagnosticLog.i(app, "FV_REGION_CAPTURE", "result shown=" + shown);
+            if (!shown) {
                 DiagnosticLog.i(app, "FV_REGION_CAPTURE",
                         "all result surfaces failed; save image as final fallback");
                 save(app, crop);
