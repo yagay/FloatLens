@@ -12,11 +12,7 @@ import android.view.WindowManager;
 
 /** FloatLens probe point; geometry follows the behavior observed in FV m2/g. */
 public final class FlProbePointOverlay {
-    public enum State { TRACKING_RED, READY_YELLOW }
-
     private static final float FL_PROBE_SIZE_DP = 15f;
-    private static final int FL_TRACKING_RED = 0xFFFF0000;
-    private static final int FL_READY_YELLOW = 0xFFFFFF00;
 
     private final Context context;
     private final FlOverlayWindowHost windowHost;
@@ -26,7 +22,7 @@ public final class FlProbePointOverlay {
     private boolean attached;
     private boolean visible;
     private int targetX, targetY;
-    private State state = State.TRACKING_RED;
+    private SelectionVisualState state = SelectionVisualState.TRACKING;
 
     public FlProbePointOverlay(Context c) {
         context = c.getApplicationContext();
@@ -50,12 +46,12 @@ public final class FlProbePointOverlay {
         lp.y = 0;
     }
 
-    public void setTracking() { setState(State.TRACKING_RED); }
-    public void setReady() { setState(State.READY_YELLOW); }
-    public State state() { return state; }
+    public void setTracking() { setVisualState(SelectionVisualState.TRACKING); }
+    public void setReady() { setVisualState(SelectionVisualState.READY); }
+    public SelectionVisualState state() { return state; }
 
-    private void setState(State next) {
-        if (next == null) next = State.TRACKING_RED;
+    public void setVisualState(SelectionVisualState next) {
+        if (next == null) next = SelectionVisualState.TRACKING;
         if (state == next) return;
         state = next;
         view.setState(next);
@@ -113,7 +109,7 @@ public final class FlProbePointOverlay {
 
     private static final class ProbeView extends View {
         private final Paint plus = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private State state = State.TRACKING_RED;
+        private SelectionVisualState state = SelectionVisualState.TRACKING;
 
         ProbeView(Context c) {
             super(c);
@@ -130,8 +126,8 @@ public final class FlProbePointOverlay {
             updateColor();
         }
 
-        void setState(State value) {
-            if (value == null) value = State.TRACKING_RED;
+        void setState(SelectionVisualState value) {
+            if (value == null) value = SelectionVisualState.TRACKING;
             if (state == value) return;
             state = value;
             updateColor();
@@ -139,7 +135,7 @@ public final class FlProbePointOverlay {
         }
 
         private void updateColor() {
-            plus.setColor(state == State.READY_YELLOW ? FL_READY_YELLOW : FL_TRACKING_RED);
+            plus.setColor(SelectionVisuals.frameColor(state));
         }
 
         @Override protected void onDraw(Canvas canvas) {
