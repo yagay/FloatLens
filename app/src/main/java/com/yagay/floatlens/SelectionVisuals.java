@@ -6,93 +6,73 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
 
-/** Shared high-contrast drawing rules for every drag-time selection frame. */
+/** Shared FV 1.6.4 drag-selection visuals. */
 final class SelectionVisuals {
-    private static final int OUTER_COLOR = 0xE6000000;
-    private static final int INNER_COLOR = Color.WHITE;
+    /** FV o1/n1.onDraw(): normal selection is red. */
+    static final int FV_ACTIVE_COLOR = 0xFFFF0000;
+    /** FV o1/n1.onDraw(): confirmed/extractable selection is yellow. */
+    static final int FV_CONFIRMED_COLOR = 0xFFFFFF00;
 
-    static int edgeThicknessPx(Context c) {
-        return Math.max(4, Math.round(dp(c, 5f)));
+    static int frameColor(boolean confirmed) {
+        return confirmed ? FV_CONFIRMED_COLOR : FV_ACTIVE_COLOR;
     }
 
-    static int edgeInnerThicknessPx(Context c) {
+    static int edgeThicknessPx(Context c) {
+        // FV calls m5/q.a(2) then uses that as Paint stroke width: exactly 2dp.
         return Math.max(1, Math.round(dp(c, 2f)));
     }
 
-    static void configureFramePaints(Context c, Paint outer, Paint inner, boolean confirmed) {
-        float outerWidth = dp(c, confirmed ? 7f : 5f);
-        float innerWidth = dp(c, confirmed ? 4f : 2f);
-        outer.setAntiAlias(true);
-        outer.setStyle(Paint.Style.STROKE);
-        outer.setColor(OUTER_COLOR);
-        outer.setStrokeWidth(outerWidth);
-        outer.setStrokeJoin(Paint.Join.ROUND);
+    /**
+     * Kept with the old two-Paint signature so callers stay simple, but only one Paint is drawn.
+     * This intentionally matches FV's single STROKE Paint rather than the previous double outline.
+     */
+    static void configureFramePaints(Context c, Paint frame, Paint unused, boolean confirmed) {
+        frame.setAntiAlias(true);
+        frame.setStyle(Paint.Style.STROKE);
+        frame.setColor(frameColor(confirmed));
+        frame.setStrokeWidth(dp(c, 2f));
+        frame.setStrokeJoin(Paint.Join.MITER);
 
-        inner.setAntiAlias(true);
-        inner.setStyle(Paint.Style.STROKE);
-        inner.setColor(INNER_COLOR);
-        inner.setStrokeWidth(innerWidth);
-        inner.setStrokeJoin(Paint.Join.ROUND);
-    }
-
-    static void configureTextPaints(Context c, Paint outline, Paint fill, float sp) {
-        float textSize = sp * c.getResources().getDisplayMetrics().scaledDensity;
-        outline.setAntiAlias(true);
-        outline.setStyle(Paint.Style.STROKE);
-        outline.setStrokeJoin(Paint.Join.ROUND);
-        outline.setStrokeWidth(dp(c, 3f));
-        outline.setColor(OUTER_COLOR);
-        outline.setTextSize(textSize);
-
-        fill.setAntiAlias(true);
-        fill.setStyle(Paint.Style.FILL);
-        fill.setColor(INNER_COLOR);
-        fill.setTextSize(textSize);
-    }
-
-    static void drawFrame(Canvas c, Rect rect, Paint outer, Paint inner) {
-        if (c == null || rect == null || rect.isEmpty()) return;
-        c.drawRect(rect, outer);
-        c.drawRect(rect, inner);
-    }
-
-    static void drawText(Canvas c, String text, float x, float y, Paint outline, Paint fill) {
-        if (c == null || text == null || text.isEmpty()) return;
-        c.drawText(text, x, y, outline);
-        c.drawText(text, x, y, fill);
-    }
-
-    static void configureEdgePaints(Paint outer, Paint inner) {
-        outer.setAntiAlias(false);
-        outer.setStyle(Paint.Style.FILL);
-        outer.setColor(OUTER_COLOR);
-        inner.setAntiAlias(false);
-        inner.setStyle(Paint.Style.FILL);
-        inner.setColor(INNER_COLOR);
-    }
-
-    static void drawEdge(Canvas c, int width, int height, boolean vertical,
-                         int innerThicknessPx, Paint outer, Paint inner) {
-        if (c == null || width <= 0 || height <= 0) return;
-        c.drawRect(0, 0, width, height, outer);
-        if (vertical) {
-            int innerW = Math.max(1, Math.min(width, innerThicknessPx));
-            float left = (width - innerW) / 2f;
-            c.drawRect(left, 0, left + innerW, height, inner);
-        } else {
-            int innerH = Math.max(1, Math.min(height, innerThicknessPx));
-            float top = (height - innerH) / 2f;
-            c.drawRect(0, top, width, top + innerH, inner);
+        if (unused != null) {
+            unused.reset();
+            unused.setColor(Color.TRANSPARENT);
         }
     }
 
-    static void drawHorizontalEdge(Canvas c, int width, int edgeHeight, int innerThicknessPx,
-                                   Paint outer, Paint inner) {
-        if (c == null || width <= 0 || edgeHeight <= 0) return;
-        c.drawRect(0, 0, width, edgeHeight, outer);
-        int innerH = Math.max(1, Math.min(edgeHeight, innerThicknessPx));
-        float top = (edgeHeight - innerH) / 2f;
-        c.drawRect(0, top, width, top + innerH, inner);
+    /** Labels are FloatLens-only helpers; keep them single-layer and unobtrusive. */
+    static void configureTextPaints(Context c, Paint unusedOutline, Paint text, float sp) {
+        if (unusedOutline != null) unusedOutline.reset();
+        text.reset();
+        text.setAntiAlias(true);
+        text.setStyle(Paint.Style.FILL);
+        text.setColor(Color.WHITE);
+        text.setTextSize(sp * c.getResources().getDisplayMetrics().scaledDensity);
+    }
+
+    static void drawFrame(Canvas c, Rect rect, Paint frame, Paint unused) {
+        if (c == null || rect == null || rect.isEmpty()) return;
+        c.drawRect(rect, frame);
+    }
+
+    static void drawText(Canvas c, String text, float x, float y, Paint unusedOutline, Paint fill) {
+        if (c == null || text == null || text.isEmpty()) return;
+        c.drawText(text, x, y, fill);
+    }
+
+    static void configureEdgePaints(Paint frame, Paint unused, boolean confirmed) {
+        frame.reset();
+        frame.setAntiAlias(false);
+        frame.setStyle(Paint.Style.FILL);
+        frame.setColor(frameColor(confirmed));
+        if (unused != null) {
+            unused.reset();
+            unused.setColor(Color.TRANSPARENT);
+        }
+    }
+
+    static void drawEdge(Canvas c, int width, int height, Paint frame) {
+        if (c == null || width <= 0 || height <= 0) return;
+        c.drawRect(0, 0, width, height, frame);
     }
 
     private static float dp(Context c, float value) {
