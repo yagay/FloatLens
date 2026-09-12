@@ -28,6 +28,25 @@ final class ResultSurfaceRouter {
         return ResultActivity.showViewImage(c, image, view, anchor);
     }
 
+    /** Captured screenshot: show frozen overlay first, clean shade in background, Activity only as fallback. */
+    static boolean showCapturedScreenshot(Context c, Bitmap image, Rect anchor,
+                                          FvSystemPanelController.CaptureState shadeState) {
+        Context app = c.getApplicationContext();
+        if (FloatingResultWindow.showScreenshot(app, image, anchor)) {
+            boolean captureExpanded = shadeState != null && shadeState.expandedAtCapture();
+            OverlayShadeCoordinator.cleanup(app, captureExpanded,
+                    "screenshot_result", collapsed -> DiagnosticLog.i(app, "SCREENSHOT_RESULT",
+                            "background shade cleanup collapsed=" + collapsed));
+            return true;
+        }
+
+        ResultReadyCoordinator.Ticket ticket = ResultReadyCoordinator.arm(
+                app, shadeState, "screenshot_activity_fallback");
+        if (ResultActivity.showScreenshot(app, image, anchor)) return true;
+        ResultReadyCoordinator.cancel(ticket, app, "screenshot_activity_start_failed");
+        return false;
+    }
+
     /**
      * View capture path: bootstrap the floating result above SystemUI and let it own shade cleanup.
      * Only if no floating host can attach do we arm the legacy Activity-ready coordinator.
