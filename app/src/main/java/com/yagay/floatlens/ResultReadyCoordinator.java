@@ -9,7 +9,7 @@ import android.view.ViewTreeObserver;
 
 import java.util.concurrent.atomic.AtomicLong;
 
-/** Bridges ResultActivity lifecycle back to the capture state machine. */
+/** Bridges the visible result dialog first frame back to the capture state machine. */
 final class ResultReadyCoordinator {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final AtomicLong NEXT_ID = new AtomicLong(1L);
@@ -28,7 +28,7 @@ final class ResultReadyCoordinator {
         Pending(Ticket ticket, FlSystemPanelController.CaptureState state, String reason) {
             this.ticket = ticket;
             this.state = state;
-            this.reason = reason == null ? "result_activity_shown" : reason;
+            this.reason = reason == null ? "result_dialog_shown" : reason;
             this.armedAt = SystemClock.uptimeMillis();
         }
     }
@@ -65,8 +65,8 @@ final class ResultReadyCoordinator {
                 "cancel id=" + ticket.id + " reason=" + reason);
     }
 
-    static void onResultActivityResumed(Activity activity) {
-        if (!(activity instanceof ResultActivity) || activity.getWindow() == null) return;
+    static void onResultDialogReady(ResultActivity activity, View root) {
+        if (activity == null || root == null) return;
         Pending selected;
         synchronized (LOCK) {
             selected = pending;
@@ -74,23 +74,25 @@ final class ResultReadyCoordinator {
             selected.attached = true;
         }
         final Pending target = selected;
-        View decor = activity.getWindow().getDecorView();
-        if (decor == null) { deliver(activity, target, "no_decor"); return; }
-        DiagnosticLog.i(activity, "RESULT_READY", "resumed id=" + target.ticket.id + " reason=" + target.reason);
-        ViewTreeObserver observer = decor.getViewTreeObserver();
-        if (!observer.isAlive()) { decor.post(() -> deliver(activity, target, "observer_dead")); return; }
+        DiagnosticLog.i(activity, "RESULT_READY", "dialog attached id=" + target.ticket.id
+                + " reason=" + target.reason);
+        ViewTreeObserver observer = root.getViewTreeObserver();
+        if (!observer.isAlive()) {
+            root.post(() -> deliver(activity, target, "dialog_observer_dead"));
+            return;
+        }
         ViewTreeObserver.OnPreDrawListener listener = new ViewTreeObserver.OnPreDrawListener() {
             @Override public boolean onPreDraw() {
                 try {
-                    ViewTreeObserver current = decor.getViewTreeObserver();
+                    ViewTreeObserver current = root.getViewTreeObserver();
                     if (current.isAlive()) current.removeOnPreDrawListener(this);
-                } catch (Throwable ignored) {}
-                decor.postOnAnimation(() -> deliver(activity, target, "first_frame"));
+                } catch (Throwable ignored) { }
+                root.postOnAnimation(() -> deliver(activity, target, "dialog_first_frame"));
                 return true;
             }
         };
         observer.addOnPreDrawListener(listener);
-        decor.invalidate();
+        root.invalidate();
     }
 
     private static void deliver(Activity activity, Pending target, String stage) {
@@ -112,5 +114,5 @@ final class ResultReadyCoordinator {
                 "expire id=" + ticket.id + " reason=" + expired.reason);
     }
 
-    private ResultReadyCoordinator() {}
+    private ResultReadyCoordinator() { }
 }
