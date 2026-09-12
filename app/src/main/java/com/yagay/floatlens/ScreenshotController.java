@@ -103,9 +103,6 @@ public final class ScreenshotController {
             DiagnosticLog.i(app, "FV_REGION_CAPTURE", "crop=" + crop.getWidth() + "x" + crop.getHeight()
                     + " bounds=" + bounds);
 
-            // Primary path now matches Circle Select: the frozen result is attached immediately via
-            // FvOverlayWindowHost (TYPE_ACCESSIBILITY_OVERLAY when accessibility is available), then
-            // the real SystemUI shade is cleaned underneath without blocking the visible result.
             boolean overlayShown = ScreenshotResultOverlay.show(app, crop, bounds);
             DiagnosticLog.i(app, "FV_REGION_CAPTURE", "result overlay shown=" + overlayShown);
             if (overlayShown) {
@@ -116,7 +113,6 @@ public final class ScreenshotController {
                 return;
             }
 
-            // Safe fallback: keep the previous Activity result path if both overlay hosts fail.
             ResultReadyCoordinator.Ticket ticket = ResultReadyCoordinator.arm(
                     app, shadeState, "fv_region_result_fallback");
             if (!ScreenshotResultActivity.show(app, crop, bounds)) {
@@ -132,7 +128,8 @@ public final class ScreenshotController {
 
     /**
      * FV text/View operation. Accessibility text is extracted directly and shown as View content.
-     * The captured image stays available so the user may explicitly run OCR from the result popup.
+     * The result surface now follows the same two-stage host as Circle Select: frozen 2032 first,
+     * then native focusable overlay after shade cleanup.
      */
     public static void captureBoundsForViewCandidate(Context c, Rect screenBounds,
                                                      ViewNodeCandidate candidate, String directText) {
@@ -147,28 +144,21 @@ public final class ScreenshotController {
                     + " bounds=" + bounds + " textLen=" + text.length()
                     + " kind=" + (candidate == null ? "view" : candidate.kind()));
 
-            ResultReadyCoordinator.Ticket ticket = ResultReadyCoordinator.arm(
-                    app, shadeState, "view_result_shown");
-            boolean activityShown;
+            boolean shown;
             if (!text.isEmpty()) {
                 DiagnosticLog.i(app, "VIEW_EXTRACT", "direct Accessibility text chars=" + text.length()
                         + " bounds=" + bounds);
-                activityShown = ViewContentActivity.show(app, text, crop, bounds);
-                if (!activityShown) {
-                    ResultOverlay.show(app, text, java.util.List.of(text), crop, bounds);
-                }
+                shown = ResultSurfaceRouter.showCapturedViewText(
+                        app, text, crop, bounds, shadeState);
             } else {
                 DiagnosticLog.i(app, "VIEW_SCREENSHOT", "no Accessibility text; show cropped View bounds=" + bounds);
-                activityShown = ViewImageResultActivity.show(app, crop, candidate, bounds);
-                if (!activityShown) {
-                    ResultOverlay.showVisual(app, crop, candidate, bounds);
-                }
+                shown = ResultSurfaceRouter.showCapturedViewImage(
+                        app, crop, candidate, bounds, shadeState);
             }
 
-            if (!activityShown) {
-                ResultReadyCoordinator.cancel(ticket, app, "result_activity_start_failed");
-                FvSystemPanelController.onResultReady(
-                        app, shadeState, "view_overlay_shown");
+            if (!shown) {
+                DiagnosticLog.i(app, "VIEW_CAPTURE", "all result surfaces failed");
+                FvSystemPanelController.onResultReady(app, shadeState, "view_result_failed");
             }
         }, "View 截图失败", false);
     }
@@ -183,14 +173,9 @@ public final class ScreenshotController {
         captureBounds(app, bounds, crop -> {
             DiagnosticLog.i(app, "VIEW_SCREENSHOT", "visual candidate crop="
                     + crop.getWidth() + "x" + crop.getHeight() + " bounds=" + bounds);
-
-            ResultReadyCoordinator.Ticket ticket = ResultReadyCoordinator.arm(
-                    app, shadeState, "visual_result_shown");
-            if (!ViewImageResultActivity.show(app, crop, candidate, bounds)) {
-                ResultReadyCoordinator.cancel(ticket, app, "result_activity_start_failed");
-                ResultOverlay.showVisual(app, crop, candidate, bounds);
-                FvSystemPanelController.onResultReady(
-                        app, shadeState, "visual_overlay_shown");
+            if (!ResultSurfaceRouter.showCapturedViewImage(app, crop, candidate, bounds, shadeState)) {
+                DiagnosticLog.i(app, "VIEW_CAPTURE", "visual result surfaces failed");
+                FvSystemPanelController.onResultReady(app, shadeState, "visual_result_failed");
             }
         }, "View 截图失败", false);
     }
