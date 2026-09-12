@@ -130,7 +130,7 @@ public final class ScreenshotResultOverlay {
             @Override public void onSelectionStarted() {
                 FloatActionMenu.dismiss();
                 FloatMenuAnchor.clear();
-                DiagnosticLog.i(session.app, "SCREENSHOT_RESULT", "OCR_SELECTION_DRAG_BEGIN");
+                DiagnosticLog.i(session.app, "SCREENSHOT_RESULT", "OCR_NATIVE_SELECTION_BEGIN");
             }
 
             @Override public void onSelectionChanging() {
@@ -143,7 +143,7 @@ public final class ScreenshotResultOverlay {
                 String value = selectedText == null ? "" : selectedText.trim();
                 if (value.isEmpty()) return;
                 DiagnosticLog.i(session.app, "SCREENSHOT_RESULT",
-                        "OCR_SELECTION_FINISH chars=" + value.length()
+                        "OCR_NATIVE_SELECTION_FINISH chars=" + value.length()
                                 + " anchor=" + (anchorOnScreen == null
                                 ? "none" : anchorOnScreen.toShortString()));
                 FloatActionMenu.showTextAt(session.app, value,
@@ -199,6 +199,20 @@ public final class ScreenshotResultOverlay {
         session.ocrButton.setText("重新识别");
         session.title.setText("区域截图 · OCR");
 
+        // View text uses a normal focusable TYPE_APPLICATION_OVERLAY so Android's framework Editor
+        // can own the real selection handles and magnifier. Once OCR finishes the notification shade
+        // has already been cleaned up, so keeping this result on 2032 is no longer necessary.
+        session.windowLayout.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+        session.windowLayout.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
+        boolean nativeHost = session.host.migrateToApplication(
+                session.box, session.windowLayout, "screenshot_result_ocr_native");
+        DiagnosticLog.i(session.app, "SCREENSHOT_RESULT",
+                "OCR_NATIVE_HOST migrated=" + nativeHost
+                        + " accessibilityHost=" + session.host.isAccessibilityHosted()
+                        + " type=" + session.windowLayout.type
+                        + " flags=0x" + Integer.toHexString(session.windowLayout.flags));
+
         String value = text == null ? "" : text.trim();
         session.selection.setText(value.isEmpty() ? "未识别到文字" : value);
 
@@ -218,7 +232,7 @@ public final class ScreenshotResultOverlay {
         DiagnosticLog.i(session.app, "SCREENSHOT_RESULT", "OCR_INLINE_SHOW chars="
                 + value.length() + " blocks=" + (blocks == null ? 0 : blocks.size())
                 + " imageH=" + newImageH + " panelH=" + panelH
-                + " selectionContainer=true realHandles=true focusableWindow=false"
+                + " nativeViewTextSelection=true frameworkHandles=true frameworkMagnifier=true"
                 + " sameWindow=true pos=center");
     }
 
