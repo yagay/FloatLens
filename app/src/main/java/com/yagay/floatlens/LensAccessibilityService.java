@@ -49,8 +49,12 @@ public class LensAccessibilityService extends AccessibilityService {
         }
         try { refreshHomePackages(); }
         catch (Throwable t) { DiagnosticLog.i(this,"ACCESSIBILITY","home package query failed="+t); }
-        try { publishEnvironment(); }
-        catch (Throwable t) { DiagnosticLog.i(this,"ACCESSIBILITY","publish on connect failed="+t); }
+        try {
+            env=inspect(env.topPackage());
+            publishEnvironment();
+        } catch (Throwable t) {
+            DiagnosticLog.i(this,"ACCESSIBILITY","publish on connect failed="+t);
+        }
         FloatService f=FloatService.get();
         if(f!=null) f.onAccessibilityOverlayHostChanged(true);
     }
@@ -58,6 +62,7 @@ public class LensAccessibilityService extends AccessibilityService {
     @Override public void onDestroy(){
         FloatService f=FloatService.get();
         if(f!=null) f.onAccessibilityOverlayHostChanged(false);
+        FvSystemPanelController.onAccessibilityDisconnected(this);
         if(s==this)s=null;
         super.onDestroy();
     }
@@ -415,7 +420,11 @@ public class LensAccessibilityService extends AccessibilityService {
         out.append(value);
     }
 
-    private void publishEnvironment() { FloatService f=FloatService.get(); if(f!=null) f.onAccessibilityEnvironment(env); }
+    private void publishEnvironment() {
+        FvSystemPanelController.onAccessibilityEnvironment(this, env);
+        FloatService f=FloatService.get();
+        if(f!=null) f.onAccessibilityEnvironment(env);
+    }
     @Override public void onInterrupt() {}
     public static LensAccessibilityService get(){ return s; }
     public static boolean ready(){ return s!=null; }
