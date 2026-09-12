@@ -216,7 +216,6 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
         String value = text == null ? "" : text.trim();
         String shown = value.isEmpty() ? "未识别到文字" : value;
         ocrText.setText(shown);
-        ocrPanel.setVisibility(View.VISIBLE);
 
         Rect usable = popupUsable == null ? usableBounds() : new Rect(popupUsable);
         int width = popupWidth > 0 ? popupWidth : Math.min(dp(410), usable.width());
@@ -243,8 +242,13 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
         imageLp.weight = 0f;
         resultImage.setLayoutParams(imageLp);
         ocrPanel.setLayoutParams(new LinearLayout.LayoutParams(-1, panelH));
+        ocrPanel.setVisibility(View.VISIBLE);
 
-        positionWindow(usable, width, expandedH, payload == null ? null : payload.anchor);
+        // Do not run choosePosition() again when OCR expands. Re-anchoring against the original
+        // screenshot rectangle can select a different side and causes a one-frame visible jump.
+        // Keep the current top-left position and only clamp it if the taller window would leave
+        // the usable display bounds.
+        resizeWindowStable(usable, width, expandedH);
         DiagnosticLog.i(this, "SCREENSHOT_RESULT", "OCR_INLINE chars=" + value.length()
                 + " imageH=" + imageH + " textH=" + textH + " panelH=" + panelH
                 + " expandedH=" + expandedH);
@@ -282,6 +286,30 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
         DiagnosticLog.i(this, "SCREENSHOT_RESULT", "WINDOW size=" + width + "x" + height
                 + " pos=" + lp.x + "," + lp.y
                 + " anchor=" + (anchor == null ? "none" : anchor.toShortString()));
+    }
+
+    /** Resize an already visible popup without re-running the anchor-side selection algorithm. */
+    private void resizeWindowStable(Rect usable, int width, int height) {
+        Window w = getWindow();
+        WindowManager.LayoutParams lp = w.getAttributes();
+        int oldX = lp.x;
+        int oldY = lp.y;
+        int margin = dp(MARGIN_DP);
+        int minX = usable.left + margin;
+        int maxX = Math.max(minX, usable.right - margin - width);
+        int minY = usable.top + margin;
+        int maxY = Math.max(minY, usable.bottom - margin - height);
+
+        lp.width = width;
+        lp.height = height;
+        lp.gravity = Gravity.TOP | Gravity.START;
+        lp.x = clamp(oldX, minX, maxX);
+        lp.y = clamp(oldY, minY, maxY);
+        w.setAttributes(lp);
+
+        DiagnosticLog.i(this, "SCREENSHOT_RESULT", "WINDOW_RESIZE_STABLE size="
+                + width + "x" + height + " pos=" + oldX + "," + oldY
+                + " -> " + lp.x + "," + lp.y);
     }
 
     private int[] choosePosition(Rect usable, Rect anchor, int w, int h) {
