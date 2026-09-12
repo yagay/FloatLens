@@ -17,6 +17,11 @@ final class SelectionVisuals {
         return state == SelectionVisualState.READY ? FL_CONFIRMED_COLOR : FL_ACTIVE_COLOR;
     }
 
+    /** Compatibility for independent selectors not yet migrated to SelectionVisualState. */
+    static int frameColor(boolean confirmed) {
+        return frameColor(confirmed ? SelectionVisualState.READY : SelectionVisualState.TRACKING);
+    }
+
     static int edgeThicknessPx(Context c) {
         // FV calls m5/q.a(2) then uses that as Paint stroke width: exactly 2dp.
         return Math.max(1, Math.round(dp(c, 2f)));
@@ -37,6 +42,11 @@ final class SelectionVisuals {
             unused.reset();
             unused.setColor(Color.TRANSPARENT);
         }
+    }
+
+    static void configureFramePaints(Context c, Paint frame, Paint unused, boolean confirmed) {
+        configureFramePaints(c, frame, unused,
+                confirmed ? SelectionVisualState.READY : SelectionVisualState.TRACKING);
     }
 
     /** Labels are FloatLens-only helpers; keep them single-layer and unobtrusive. */
@@ -68,6 +78,11 @@ final class SelectionVisuals {
             unused.reset();
             unused.setColor(Color.TRANSPARENT);
         }
+    }
+
+    static void configureEdgePaints(Paint frame, Paint unused, boolean confirmed) {
+        configureEdgePaints(frame, unused,
+                confirmed ? SelectionVisualState.READY : SelectionVisualState.TRACKING);
     }
 
     static void drawEdge(Canvas c, int width, int height, Paint frame) {
