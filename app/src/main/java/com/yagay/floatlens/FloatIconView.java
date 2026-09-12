@@ -2,13 +2,7 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.ImageDecoder;
-import android.graphics.Paint;
 import android.graphics.RectF;
-import android.graphics.drawable.AnimatedImageDrawable;
-import android.graphics.drawable.Drawable;
-import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -16,16 +10,14 @@ import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Floating icon touch engine modelled from FV FooViewService$c3.onTouch.
  *
- * FV moves the small icon immediately. Each MOVE derives the target from the gesture-start Window
- * position plus currentRaw-downRaw; it does not integrate rounded per-frame deltas. The independent
- * 15dp circle_focus probe is updated on the same MOVE stream. A ~400ms q Runnable can enter the
- * deeper View-selection state without ever blocking visible movement.
+ * Visual resource loading and slideshow timing live in FloatIconRenderer. This class owns only FV
+ * pointer semantics: immediate temporary-follow movement, 400ms direct-selection dwell, gestures,
+ * long press and explicit position-move mode.
  */
 public class FloatIconView extends View {
     public interface Callback {
@@ -45,9 +37,9 @@ public class FloatIconView extends View {
     private static final long FV_DIRECT_SELECT_DELAY_MS = 400L;
     private static final float FV_DIRECT_MOVE_START_DP = 3f;
 
-    private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final GestureSession session = new GestureSession();
+    private final FloatIconRenderer renderer;
     private FloatSettings fs;
     private final Callback cb;
     private final Runnable directSelectionRunnable;
@@ -55,9 +47,6 @@ public class FloatIconView extends View {
     private long lastTapAt;
     private Runnable longPressRunnable;
     private Runnable singleTapRunnable;
-    private Drawable customDrawable;
-    private final ArrayList<Drawable> slideDrawables = new ArrayList<>();
-    private int slideIndex;
     private boolean followStarted;
     private boolean selectionTookOver;
     private boolean circleActive;
@@ -69,27 +58,14 @@ public class FloatIconView extends View {
     private float directTimerAnchorX = Float.NaN, directTimerAnchorY = Float.NaN;
     private ViewSelectionEngine selectionEngine;
 
-    // FV FooViewService.D4() reads the active FloatIconView's current WindowManager x/y. Keep the
-    // exact temporary-follow trajectory here so the 24dp operation hint is tied to the owner icon,
-    // never to circle_focus.
     private boolean fvWindowKnown;
     private int fvWindowStartX, fvWindowStartY;
     private int fvWindowX, fvWindowY;
 
-    private final Runnable slideRunnable = new Runnable() {
-        public void run() {
-            if (fs.style()==4 && slideDrawables.size()>1) {
-                slideIndex=(slideIndex+1)%slideDrawables.size();
-                invalidate();
-                handler.postDelayed(this, fs.slideIntervalMs());
-            }
-        }
-    };
-
     public FloatIconView(Context c, Callback cb) {
         super(c);
         this.cb = cb;
-        // FV q uses a 3dp per-axis dwell box, not Euclidean distance / generic touch slop.
+        renderer = new FloatIconRenderer(this);
         directRearmSlopPx = Math.max(1f,
                 FV_DIRECT_MOVE_START_DP * getResources().getDisplayMetrics().density);
         directSelectionRunnable = () -> {
@@ -121,13 +97,17 @@ public class FloatIconView extends View {
         };
         DiagnosticLog.init(c);
         fs = new FloatSettings(c);
-        loadCustomIcon();
+        renderer.refresh(fs);
         setClickable(true);
         setFocusable(false);
         setLayerType(LAYER_TYPE_SOFTWARE, null);
     }
 
-    public void refreshSettings() { fs = new FloatSettings(getContext()); loadCustomIcon(); invalidate(); }
+    public void refreshSettings() {
+        fs = new FloatSettings(getContext());
+        renderer.refresh(fs);
+        invalidate();
+    }
 
     /** Current owner-window rectangle used by FV FooViewService.D4()-style hint positioning. */
     RectF currentFvWindowBounds() {
@@ -160,41 +140,15 @@ public class FloatIconView extends View {
         cancelDirectSelectionTimer();
         if(selectionEngine!=null)selectionEngine.cancel();
         if(circleActive)CircleLiveController.cancel("icon_detached");
-        handler.removeCallbacks(slideRunnable);
+        renderer.detach();
         handler.removeCallbacksAndMessages(null);
         super.onDetachedFromWindow();
-    }
-
-    private void loadCustomIcon() {
-        handler.removeCallbacks(slideRunnable); customDrawable = null; slideDrawables.clear(); slideIndex=0;
-        if (fs.style() == 3) {
-            String raw = fs.customIconUri(); if (raw == null || raw.isBlank()) return;
-            try { ImageDecoder.Source src=ImageDecoder.createSource(getContext().getContentResolver(),Uri.parse(raw)); customDrawable=ImageDecoder.decodeDrawable(src); customDrawable.setCallback(this); if(customDrawable instanceof AnimatedImageDrawable a)a.start(); } catch(Throwable ignored){customDrawable=null;}
-        } else if (fs.style() == 4) {
-            String raw=fs.slidePics(); if(raw==null||raw.isBlank())return;
-            for(String u:raw.split("\\|")) { if(u.isBlank())continue; try{Drawable d=ImageDecoder.decodeDrawable(ImageDecoder.createSource(getContext().getContentResolver(),Uri.parse(u))); d.setCallback(this); slideDrawables.add(d);}catch(Throwable ignored){} }
-            if(slideDrawables.size()>1) handler.postDelayed(slideRunnable,fs.slideIntervalMs());
-        }
     }
 
     @Override protected void onDraw(Canvas c) {
         super.onDraw(c);
         if (directSelectionActive) return;
-
-        float w = getWidth(), h = getHeight(), r = Math.min(w, h) * .47f;
-        int style = fs.style();
-        if (style == 3 && customDrawable != null) { customDrawable.setBounds(0, 0, getWidth(), getHeight()); customDrawable.draw(c); return; }
-        if (style == 4 && !slideDrawables.isEmpty()) { Drawable d=slideDrawables.get(Math.min(slideIndex,slideDrawables.size()-1)); d.setBounds(0,0,getWidth(),getHeight()); d.draw(c); return; }
-        boolean pressed = session.phase != GestureSession.Phase.IDLE;
-        if (pressed) r *= .90f;
-        paint.setStyle(Paint.Style.FILL);
-        paint.setColor(style == 1 ? 0xEE202124 : style == 2 ? 0xCCFFFFFF : 0xDD1976D2);
-        c.drawCircle(w / 2f, h / 2f, r, paint);
-        paint.setStrokeWidth(Math.max(3f, w * .07f));
-        paint.setStyle(Paint.Style.STROKE);
-        paint.setColor(style == 2 ? 0xFF1976D2 : Color.WHITE);
-        c.drawCircle(w / 2f, h / 2f, r * .53f, paint);
-        c.drawLine(w * .68f, h * .68f, w * .83f, h * .83f, paint);
+        renderer.draw(c, getWidth(), getHeight(), session.phase != GestureSession.Phase.IDLE);
     }
 
     @Override public boolean onTouchEvent(MotionEvent e) {
@@ -248,8 +202,6 @@ public class FloatIconView extends View {
                         +" positionMove="+positionMoveMode);
                 invalidate();
 
-                // Stationary long press is a normal configurable action. No OCR or region
-                // behavior is hard-coded here; action_long_press is the single source of truth.
                 if(!positionMoveMode){
                     longPressRunnable = () -> {
                         if (!session.multiTouch && !followStarted && session.phase == GestureSession.Phase.DOWN
@@ -275,9 +227,6 @@ public class FloatIconView extends View {
                 session.add(rx, ry, now);
                 if (session.multiTouch) return true;
 
-                // FV uses absolute displacement from DOWN. This also preserves sub-pixel movement:
-                // a sequence of tiny MOVE events eventually moves the icon instead of rounding each
-                // individual frame to zero.
                 int moveDx = Math.round(rx - session.downX);
                 int moveDy = Math.round(ry - session.downY);
                 float dist=session.distance();
@@ -296,9 +245,6 @@ public class FloatIconView extends View {
                 if(longPressActionTriggered) return true;
 
                 if(directSelectionActive){
-                    // FV FooViewService$c3.onTouch keeps calling FloatIconView.c0() while the
-                    // selection layer is active. The compact owner therefore continues following
-                    // the same pointer stream; D4() reads this moved owner window for its hint.
                     if ((moveDx!=0||moveDy!=0) && followStarted) {
                         updateFvWindowTracking(moveDx, moveDy);
                         cb.onMove(moveDx, moveDy);
@@ -323,8 +269,6 @@ public class FloatIconView extends View {
                 }
 
                 if(followStarted && selectionEngine!=null && selectionEngine.available()) {
-                    // FV sends one transformed Point to circle_focus and to the selection layer on
-                    // every MOVE. The 400ms Runnable changes selection state, not movement latency.
                     selectionEngine.showProbe(rx, ry);
                     armOrRearmDirectSelection(rx, ry);
                 }
@@ -402,11 +346,6 @@ public class FloatIconView extends View {
         return true;
     }
 
-    /**
-     * Mirrors FV FooViewService$c3 q scheduling: the 400ms dwell timer is re-armed only when the
-     * pointer leaves a +/-3dp box around the current anchor on either axis. Small diagonal jitter
-     * therefore does not accidentally cross a Euclidean-radius threshold and postpone selection.
-     */
     private void armOrRearmDirectSelection(float rawX, float rawY) {
         lastSelectionRawX = rawX;
         lastSelectionRawY = rawY;
