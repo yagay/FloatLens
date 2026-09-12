@@ -5,11 +5,18 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.text.InputType;
+import android.text.Selection;
+import android.text.Spannable;
+import android.view.ActionMode;
 import android.view.Gravity;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -23,6 +30,7 @@ public final class ScreenshotResultOverlay {
     private static final int TITLE_H_DP = 38;
     private static final int ACTION_H_DP = 50;
     private static final long OCR_INLINE_TIMEOUT_MS = 12_000L;
+    private static final long SELECTION_MENU_DELAY_MS = 180L;
     private static OverlaySession active;
 
     /**
@@ -71,8 +79,6 @@ public final class ScreenshotResultOverlay {
         ImageShareUtils.attachLongPressShare(app, iv, image);
         box.addView(iv, new LinearLayout.LayoutParams(-1, imageH));
 
-        // OCR stays inside the same 2032 result window. It starts hidden, then shares the fixed
-        // content budget with the screenshot image after recognition completes.
         LinearLayout ocrPanel = new LinearLayout(app);
         ocrPanel.setOrientation(LinearLayout.VERTICAL);
         ocrPanel.setVisibility(View.GONE);
@@ -89,15 +95,7 @@ public final class ScreenshotResultOverlay {
         ocrScroll.setFillViewport(false);
         ocrScroll.setVerticalScrollBarEnabled(true);
         ocrScroll.setScrollbarFadingEnabled(false);
-        TextView ocrText = new TextView(app);
-        ocrText.setTextColor(Color.WHITE);
-        ocrText.setTextSize(16);
-        ocrText.setGravity(Gravity.TOP | Gravity.START);
-        ocrText.setPadding(dp(app, 8), dp(app, 5), dp(app, 8), dp(app, 5));
-        ocrText.setTextIsSelectable(true);
-        ocrText.setLongClickable(true);
-        ocrText.setFocusable(true);
-        ocrText.setFocusableInTouchMode(true);
+        SelectionAwareEditText ocrText = selectableText(app);
         ocrScroll.addView(ocrText, new ScrollView.LayoutParams(-1, -2));
         ocrPanel.addView(ocrScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
         box.addView(ocrPanel, new LinearLayout.LayoutParams(-1, 0));
@@ -119,8 +117,6 @@ public final class ScreenshotResultOverlay {
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
-        // Keep the result surface in one stable place. The anchor is retained for OCR source
-        // semantics only; it never moves the popup.
         lp.gravity = Gravity.CENTER;
         lp.x = 0;
         lp.y = 0;
@@ -133,6 +129,8 @@ public final class ScreenshotResultOverlay {
         OverlaySession session = new OverlaySession(app, host, box, image, selected,
                 lp, title, iv, ocrPanel, ocrText, ocr, imageH, height);
         active = session;
+        installSelectionCallbacks(session);
+
         DiagnosticLog.i(app, "SCREENSHOT_RESULT", "SHOW size=" + width + "x" + height
                 + " pos=center"
                 + " anchor=" + (selected == null ? "none" : selected.toShortString())
@@ -145,10 +143,113 @@ public final class ScreenshotResultOverlay {
         return true;
     }
 
+    private static SelectionAwareEditText selectableText(Context app) {
+        SelectionAwareEditText tv = new SelectionAwareEditText(app);
+        tv.setTextColor(Color.WHITE);
+        tv.setTextSize(16);
+        tv.setBackgroundColor(Color.TRANSPARENT);
+        tv.setGravity(Gravity.TOP | Gravity.START);
+        tv.setSingleLine(false);
+        tv.setHorizontallyScrolling(false);
+        tv.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        tv.setKeyListener(null);
+        tv.setCursorVisible(false);
+        tv.setShowSoftInputOnFocus(false);
+        tv.setTextIsSelectable(true);
+        tv.setLongClickable(true);
+        tv.setFocusable(true);
+        tv.setFocusableInTouchMode(true);
+        tv.setSelectAllOnFocus(false);
+        tv.setPadding(dp(app, 8), dp(app, 5), dp(app, 8), dp(app, 5));
+        return tv;
+    }
+
+    private static void installSelectionCallbacks(OverlaySession session) {
+        SelectionAwareEditText tv = session.ocrText;
+        tv.setCustomSelectionActionModeCallback(new ActionMode.Callback() {
+            @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                if (menu != null) menu.clear();
+                session.selectionActionMode = mode;
+                session.selectionGeneration++;
+                tv.post(() -> showSelectionMenu(session));
+                DiagnosticLog.i(session.app, "SCREENSHOT_RESULT",
+                        "OCR_SELECTION_ACTION start=" + tv.getSelectionStart()
+                                + " end=" + tv.getSelectionEnd());
+                return true;
+            }
+
+            @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                if (menu != null) menu.clear();
+                return true;
+            }
+
+            @Override public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                return true;
+            }
+
+            @Override public void onDestroyActionMode(ActionMode mode) {
+                if (session.selectionActionMode == mode) clearSelection(session);
+            }
+        });
+
+        tv.setSelectionChangedListener((start, end) -> {
+            if (session.detached || session.selectionActionMode == null) return;
+            long generation = ++session.selectionGeneration;
+            FloatActionMenu.dismiss();
+            FloatMenuAnchor.clear();
+            tv.postDelayed(() -> {
+                if (session.detached || session.selectionActionMode == null
+                        || generation != session.selectionGeneration) return;
+                showSelectionMenu(session);
+            }, SELECTION_MENU_DELAY_MS);
+        });
+    }
+
+    private static void showSelectionMenu(OverlaySession session) {
+        if (session == null || session.detached || session.selectionActionMode == null) return;
+        String value = selectedText(session.ocrText).trim();
+        if (value.isEmpty()) return;
+        Rect anchor = FloatMenuAnchor.forTextSelection(session.ocrText);
+        DiagnosticLog.i(session.app, "SCREENSHOT_RESULT", "OCR_SELECTION_MENU chars="
+                + value.length() + " anchor=" + (anchor == null ? "none" : anchor.toShortString()));
+        FloatActionMenu.showTextAt(session.app, value, () -> selectAll(session), anchor);
+    }
+
+    private static void selectAll(OverlaySession session) {
+        if (session == null || session.detached) return;
+        try {
+            CharSequence raw = session.ocrText.getText();
+            if (raw instanceof Spannable span && span.length() > 0) {
+                Selection.setSelection(span, 0, span.length());
+                session.ocrText.post(() -> showSelectionMenu(session));
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static String selectedText(EditText tv) {
+        if (tv == null || tv.getText() == null) return "";
+        int a = tv.getSelectionStart();
+        int b = tv.getSelectionEnd();
+        if (a < 0 || b < 0 || a == b) return "";
+        int lo = Math.max(0, Math.min(a, b));
+        int hi = Math.min(tv.length(), Math.max(a, b));
+        return lo < hi ? tv.getText().subSequence(lo, hi).toString() : "";
+    }
+
+    private static void clearSelection(OverlaySession session) {
+        if (session == null) return;
+        session.selectionActionMode = null;
+        session.selectionGeneration++;
+        FloatActionMenu.dismiss();
+        FloatMenuAnchor.clear();
+    }
+
     private static synchronized void beginInlineOcr(OverlaySession session) {
         if (session == null || session.detached || active != session
                 || session.image == null || session.image.isRecycled()) return;
 
+        clearSelection(session);
         long generation = ++session.ocrGeneration;
         session.ocrRunning = true;
         session.ocrButton.setEnabled(false);
@@ -156,9 +257,6 @@ public final class ScreenshotResultOverlay {
         Bitmap image = session.image;
         Rect anchor = session.anchor == null ? null : new Rect(session.anchor);
 
-        // OcrEngine ultimately calls ResultTextActivity.show(). This one-shot sink is consumed by
-        // ResultActivity.showOcr() before any Activity is launched, so the current accessibility
-        // overlay receives the OCR result and remains the only visible window.
         ResultTextActivity.captureNextForImage(image, (text, blocks) -> session.box.post(() ->
                 showInlineOcr(session, generation, text, blocks)));
 
@@ -185,6 +283,7 @@ public final class ScreenshotResultOverlay {
         if (session == null || session.detached || active != session
                 || generation != session.ocrGeneration) return;
 
+        clearSelection(session);
         session.ocrRunning = false;
         session.ocrButton.setEnabled(true);
         session.ocrButton.setText("重新识别");
@@ -193,9 +292,6 @@ public final class ScreenshotResultOverlay {
         String value = text == null ? "" : text.trim();
         session.ocrText.setText(value.isEmpty() ? "未识别到文字" : value);
 
-        // OCR text selection needs a focusable window. Shade cleanup has already been started as soon
-        // as the screenshot result appeared, so it is safe to promote focus when the user explicitly
-        // requests OCR.
         if ((session.windowLayout.flags & WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) != 0) {
             session.windowLayout.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
             boolean updated = session.host.update(session.box, session.windowLayout,
@@ -221,7 +317,7 @@ public final class ScreenshotResultOverlay {
         DiagnosticLog.i(session.app, "SCREENSHOT_RESULT", "OCR_INLINE_SHOW chars="
                 + value.length() + " blocks=" + (blocks == null ? 0 : blocks.size())
                 + " imageH=" + newImageH + " panelH=" + panelH
-                + " sameWindow=true pos=center");
+                + " selectable=true sameWindow=true pos=center");
     }
 
     public static synchronized void dismissActive(String reason) {
@@ -229,13 +325,13 @@ public final class ScreenshotResultOverlay {
         if (session != null) detach(session, reason == null ? "dismiss" : reason, true);
     }
 
-    /** Remove one result surface and cancel any inline OCR that still targets it. */
     private static synchronized boolean detach(OverlaySession session, String reason, boolean recycle) {
         if (session == null || session.detached) return false;
         session.detached = true;
         session.ocrGeneration++;
         if (active == session) active = null;
 
+        clearSelection(session);
         if (session.ocrRunning) {
             ResultTextActivity.clearInlineForImage(session.image);
             OcrEngine.invalidatePending(session.app, "screenshot_result_" + reason);
@@ -287,6 +383,17 @@ public final class ScreenshotResultOverlay {
         return Math.max(min, Math.min(v, max));
     }
 
+    private static final class SelectionAwareEditText extends EditText {
+        interface SelectionListener { void onChanged(int start, int end); }
+        private SelectionListener listener;
+        SelectionAwareEditText(Context context) { super(context); }
+        void setSelectionChangedListener(SelectionListener listener) { this.listener = listener; }
+        @Override protected void onSelectionChanged(int selStart, int selEnd) {
+            super.onSelectionChanged(selStart, selEnd);
+            if (listener != null) listener.onChanged(selStart, selEnd);
+        }
+    }
+
     private static final class OverlaySession {
         final Context app;
         final FvOverlayWindowHost host;
@@ -297,18 +404,20 @@ public final class ScreenshotResultOverlay {
         final TextView title;
         final ImageView imageView;
         final LinearLayout ocrPanel;
-        final TextView ocrText;
+        final SelectionAwareEditText ocrText;
         final Button ocrButton;
         final int initialImageHeight;
         final int windowHeight;
         boolean detached;
         boolean ocrRunning;
         long ocrGeneration;
+        ActionMode selectionActionMode;
+        long selectionGeneration;
 
         OverlaySession(Context app, FvOverlayWindowHost host, LinearLayout box,
                        Bitmap image, Rect anchor, WindowManager.LayoutParams windowLayout,
                        TextView title, ImageView imageView, LinearLayout ocrPanel,
-                       TextView ocrText, Button ocrButton,
+                       SelectionAwareEditText ocrText, Button ocrButton,
                        int initialImageHeight, int windowHeight) {
             this.app = app;
             this.host = host;
