@@ -26,6 +26,11 @@ public final class ViewSelectionEngine {
 
     // FV m2/g posts its region action 5ms after the selection/helper windows are removed.
     private static final long FL_RELEASE_ACTION_DELAY_MS = 5L;
+    // FV FooViewService$c3: after READY, leaving the ±3dp box returns selection visuals to red and
+    // re-arms the ordinary 400ms stability timer. This only drives visual readiness here; release
+    // action semantics remain unchanged.
+    private static final long FL_VISUAL_READY_DELAY_MS = 400L;
+    private static final float FL_VISUAL_READY_AXIS_SLOP_DP = 3f;
 
     private static final ExecutorService TARGET_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "FloatLens-FL-targets");
@@ -38,6 +43,7 @@ public final class ViewSelectionEngine {
     private final SelectionPointTransformer pointTransformer;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final float regionStartSlopPx;
+    private final float visualReadyAxisSlopPx;
 
     /** Optional View/text target layer. It is never required for region screenshot. */
     private ViewHoverOverlay overlay;
@@ -54,6 +60,16 @@ public final class ViewSelectionEngine {
     private float selectionX = Float.NaN, selectionY = Float.NaN;
     private long targetGeneration;
 
+    /** Single owner for FV red TRACKING / yellow READY visual state. */
+    private SelectionVisualState visualState = SelectionVisualState.TRACKING;
+    private float visualReadyAnchorX = Float.NaN, visualReadyAnchorY = Float.NaN;
+    private final Runnable visualReadyRunnable = () -> {
+        if (state != State.DIRECT || Float.isNaN(selectionX) || Float.isNaN(selectionY)) return;
+        visualReadyAnchorX = selectionX;
+        visualReadyAnchorY = selectionY;
+        setVisualState(SelectionVisualState.READY, "stable_400ms");
+    };
+
     public ViewSelectionEngine(Context c) {
         this(c, null);
     }
@@ -66,9 +82,11 @@ public final class ViewSelectionEngine {
         context = c.getApplicationContext();
         accessibility = LensAccessibilityService.get();
         FloatSettings fs = new FloatSettings(context);
-        float px = fs.sizeDp() * context.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
+        float px = fs.sizeDp() * density;
         pointTransformer = new SelectionPointTransformer(context, px, px);
         regionStartSlopPx = Math.max(1f, ViewConfiguration.get(context).getScaledTouchSlop());
+        visualReadyAxisSlopPx = Math.max(1f, FL_VISUAL_READY_AXIS_SLOP_DP * density);
     }
 
     /** FV m2/g.v() is unconditional: region/select mode is not gated by Accessibility. */
@@ -106,9 +124,7 @@ public final class ViewSelectionEngine {
     public PointF showProbe(float rawX, float rawY) {
         PointF transformed = pointTransformer.transformRaw(rawX, rawY);
 
-        ensureProbe();
-        if (probeOverlay != null) probeOverlay.setTracking();
-
+        setVisualState(SelectionVisualState.TRACKING, "free_move");
         PointF shown = showProbeAt(transformed);
         hideOperationHint();
 
@@ -141,9 +157,7 @@ public final class ViewSelectionEngine {
         directRegionMode = false;
         directRegion.setEmpty();
         closeDirectRegionFrame();
-
-        ensureProbe();
-        if (probeOverlay != null) probeOverlay.setReady();
+        cancelVisualReadyTimer();
 
         // Critical FV invariant: visible cross centre == selection Point.
         PointF transformed = pointTransformer.transformRaw(rawX, rawY);
@@ -153,6 +167,12 @@ public final class ViewSelectionEngine {
         directStartX = selectionX;
         directStartY = selectionY;
 
+        // FloatIconView already waited FV's initial 400ms before entering DIRECT, so the selection
+        // is READY immediately here. Subsequent movement beyond ±3dp returns it to TRACKING.
+        visualReadyAnchorX = selectionX;
+        visualReadyAnchorY = selectionY;
+        setVisualState(SelectionVisualState.READY, "direct_enter_after_initial_dwell");
+
         // Show SCREENSHOT operation immediately, before target results exist.
         updateOperationHint();
         prepareTargetsAsync();
@@ -161,19 +181,19 @@ public final class ViewSelectionEngine {
                 + Math.round(rawX) + "," + Math.round(rawY)
                 + " focusHit=" + Math.round(selectionX) + "," + Math.round(selectionY)
                 + " slop=" + Math.round(regionStartSlopPx)
+                + " visualAxisSlopPx=" + Math.round(visualReadyAxisSlopPx)
                 + " accessibilityAsync=" + (accessibility != null));
         return true;
     }
 
     public void updateDirect(float rawX, float rawY) {
         if (state != State.DIRECT) return;
-        ensureProbe();
-        if (probeOverlay != null) probeOverlay.setReady();
 
         PointF transformed = pointTransformer.transformRaw(rawX, rawY);
         PointF shown = showProbeAt(transformed);
         selectionX = shown.x;
         selectionY = shown.y;
+        updateVisualStability(selectionX, selectionY);
 
         if (Float.isNaN(directStartX) || Float.isNaN(directStartY)) {
             directStartX = selectionX;
@@ -191,9 +211,9 @@ public final class ViewSelectionEngine {
             }
             targetGeneration++;
             if (directRegionFrame == null) directRegionFrame = new FlRegionFrameOverlay(context);
-            directRegionFrame.setConfirmed(false);
+            directRegionFrame.setVisualState(visualState);
             DiagnosticLog.i(context, "FL_REGION", "ENTER immediate-frame dx=" + Math.round(dx)
-                    + " dy=" + Math.round(dy));
+                    + " dy=" + Math.round(dy) + " state=" + visualState);
         }
 
         if (directRegionMode) {
@@ -205,7 +225,7 @@ public final class ViewSelectionEngine {
                     || directRegion.right != r || directRegion.bottom != b) {
                 directRegion.set(l, t, r, b);
                 if (directRegionFrame == null) directRegionFrame = new FlRegionFrameOverlay(context);
-                directRegionFrame.setConfirmed(false);
+                directRegionFrame.setVisualState(visualState);
                 directRegionFrame.show(directRegion);
             }
         } else if (overlay != null) {
@@ -257,11 +277,12 @@ public final class ViewSelectionEngine {
 
                 if (overlay != null) overlay.cancel();
                 overlay = ready;
+                overlay.setVisualState(visualState);
                 overlay.update(selectionX, selectionY);
                 updateOperationHint();
                 DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_APPLY gen=" + generation
                         + " elapsedMs=" + (SystemClock.elapsedRealtime() - started)
-                        + " region=false");
+                        + " region=false state=" + visualState);
             });
         });
     }
@@ -275,6 +296,7 @@ public final class ViewSelectionEngine {
         ensureProbe();
         if (probeOverlay == null) return new PointF(Math.round(p.x), Math.round(p.y));
 
+        probeOverlay.setVisualState(visualState);
         PointF shown = probeOverlay.showAt(Math.round(p.x), Math.round(p.y));
         ensurePointerHint();
         if (pointerHintOverlay != null && probeOverlay.isAttached()) {
@@ -317,6 +339,7 @@ public final class ViewSelectionEngine {
         }
 
         targetGeneration++;
+        cancelVisualReadyTimer();
         if (overlay != null) overlay.cancel();
         overlay = null;
         state = State.IDLE;
@@ -324,6 +347,7 @@ public final class ViewSelectionEngine {
         directRegionMode = false;
         directRegion.setEmpty();
         directStartX = directStartY = Float.NaN;
+        resetVisualState();
         closeVisuals();
 
         final boolean result = !bounds.isEmpty();
@@ -342,6 +366,7 @@ public final class ViewSelectionEngine {
         DiagnosticLog.i(context, "FL_SELECT", "DIRECT_UP region=" + region
                 + " target=" + (candidate != null) + " result=" + result + " focusHit="
                 + Math.round(selectionX) + "," + Math.round(selectionY) + " op=" + op
+                + " visualState=" + visualState
                 + " flDelayMs=" + FL_RELEASE_ACTION_DELAY_MS);
         return result;
     }
@@ -357,6 +382,7 @@ public final class ViewSelectionEngine {
     public void cancel() {
         boolean active = state == State.DIRECT;
         targetGeneration++;
+        cancelVisualReadyTimer();
         if (overlay != null) overlay.cancel();
         overlay = null;
         state = State.IDLE;
@@ -365,8 +391,51 @@ public final class ViewSelectionEngine {
         directStartX = directStartY = Float.NaN;
         selectionX = selectionY = Float.NaN;
         closeDirectRegionFrame();
+        resetVisualState();
         closeVisuals();
         if (active) DiagnosticLog.i(context, "FL_SELECT", "DIRECT_CANCEL");
+    }
+
+    private void updateVisualStability(float x, float y) {
+        if (state != State.DIRECT) return;
+        if (Float.isNaN(visualReadyAnchorX) || Float.isNaN(visualReadyAnchorY)) {
+            visualReadyAnchorX = x;
+            visualReadyAnchorY = y;
+            return;
+        }
+
+        float dx = x - visualReadyAnchorX;
+        float dy = y - visualReadyAnchorY;
+        if (Math.abs(dx) <= visualReadyAxisSlopPx && Math.abs(dy) <= visualReadyAxisSlopPx) return;
+
+        setVisualState(SelectionVisualState.TRACKING, "moved_outside_3dp");
+        visualReadyAnchorX = x;
+        visualReadyAnchorY = y;
+        mainHandler.removeCallbacks(visualReadyRunnable);
+        mainHandler.postDelayed(visualReadyRunnable, FL_VISUAL_READY_DELAY_MS);
+        DiagnosticLog.i(context, "FL_SELECTION_VISUAL", "REARM x=" + Math.round(x)
+                + " y=" + Math.round(y) + " dx=" + Math.round(dx) + " dy=" + Math.round(dy)
+                + " axisSlopPx=" + Math.round(visualReadyAxisSlopPx)
+                + " delayMs=" + FL_VISUAL_READY_DELAY_MS);
+    }
+
+    private void setVisualState(SelectionVisualState next, String reason) {
+        if (next == null) next = SelectionVisualState.TRACKING;
+        if (visualState == next) return;
+        visualState = next;
+        if (probeOverlay != null) probeOverlay.setVisualState(next);
+        if (overlay != null) overlay.setVisualState(next);
+        if (directRegionFrame != null) directRegionFrame.setVisualState(next);
+        DiagnosticLog.i(context, "FL_SELECTION_VISUAL", "STATE " + next + " reason=" + reason);
+    }
+
+    private void cancelVisualReadyTimer() {
+        mainHandler.removeCallbacks(visualReadyRunnable);
+    }
+
+    private void resetVisualState() {
+        visualState = SelectionVisualState.TRACKING;
+        visualReadyAnchorX = visualReadyAnchorY = Float.NaN;
     }
 
     private FlPointerOperationHintOverlay.Mode currentOperationMode() {
@@ -407,7 +476,10 @@ public final class ViewSelectionEngine {
     }
 
     private void ensureProbe() {
-        if (probeOverlay == null) probeOverlay = new FlProbePointOverlay(context);
+        if (probeOverlay == null) {
+            probeOverlay = new FlProbePointOverlay(context);
+            probeOverlay.setVisualState(visualState);
+        }
     }
 
     private void ensurePointerHint() {
