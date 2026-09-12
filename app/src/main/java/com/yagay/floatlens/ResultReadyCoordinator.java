@@ -10,11 +10,11 @@ import android.view.ViewTreeObserver;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Bridges ResultActivity lifecycle back to the FV-style capture state machine.
+ * Bridges Activity lifecycle back to the FV-style capture state machine.
  *
  * FV closes the live notification shade only after its frozen/candidate result surface is actually
  * shown. Calling startActivity() is too early: it only schedules an Activity launch. This coordinator
- * arms the next ResultActivity and delivers onResultReady() after its first real draw boundary.
+ * arms the next supported result host and delivers onResultReady() after its first real draw boundary.
  */
 final class ResultReadyCoordinator {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
@@ -88,7 +88,9 @@ final class ResultReadyCoordinator {
     }
 
     static void onResultActivityResumed(Activity activity) {
-        if (!(activity instanceof ResultActivity) || activity.getWindow() == null) return;
+        if (!(activity instanceof ResultActivity)
+                && !(activity instanceof CircleSelectActivity)) return;
+        if (activity.getWindow() == null) return;
 
         Pending selected;
         synchronized (LOCK) {
@@ -105,6 +107,7 @@ final class ResultReadyCoordinator {
         }
 
         DiagnosticLog.i(activity, "RESULT_READY", "resumed id=" + target.ticket.id
+                + " host=" + activity.getClass().getSimpleName()
                 + " reason=" + target.reason);
 
         ViewTreeObserver observer = decor.getViewTreeObserver();
@@ -120,7 +123,7 @@ final class ResultReadyCoordinator {
                     if (current.isAlive()) current.removeOnPreDrawListener(this);
                 } catch (Throwable ignored) {}
 
-                // Run on the following frame. At this point the ResultActivity window has been
+                // Run on the following frame. At this point the host Activity window has been
                 // attached and its first content frame has crossed the draw boundary.
                 decor.postOnAnimation(() -> deliver(activity, target, "first_frame"));
                 return true;
@@ -143,6 +146,7 @@ final class ResultReadyCoordinator {
         long elapsed = Math.max(0L, SystemClock.uptimeMillis() - target.armedAt);
         DiagnosticLog.i(activity, "RESULT_READY", "deliver id=" + target.ticket.id
                 + " stage=" + stage + " elapsedMs=" + elapsed
+                + " host=" + activity.getClass().getSimpleName()
                 + " reason=" + target.reason);
         FvSystemPanelController.onResultReady(activity, target.state, target.reason);
     }
