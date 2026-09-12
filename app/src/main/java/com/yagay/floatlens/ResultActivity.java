@@ -115,31 +115,27 @@ public final class ResultActivity extends AppCompatActivity {
         Window w = getWindow();
         w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-        w.setDimAmount(0f);
-        // ResultActivity is the real native-selection host. Do not opt into LAYOUT_IN_SCREEN here:
-        // the panel already computes geometry from the usable display bounds, and forcing the decor
-        // under system bars can steal space from the fixed bottom action row on OEM dialog windows.
         w.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
-        setFinishOnTouchOutside(true);
+        w.setDimAmount(0f);
+        // The Activity is only a transparent native-selection host. The visible popup geometry is
+        // owned entirely by UnifiedResultPanel's centered card, not by the Window itself.
+        setFinishOnTouchOutside(false);
     }
 
     private void applyWindowLayout() {
         if (panel == null || getWindow() == null) return;
         WindowManager.LayoutParams lp = getWindow().getAttributes();
-        lp.width = panel.width();
-        // Let WindowManager include its decor/insets around the panel. Using the exact panel height
-        // made the bottom OCR / Copy / Save / Close row the first thing clipped on some OEMs when a
-        // screenshot filled the whole content budget.
-        lp.height = WindowManager.LayoutParams.WRAP_CONTENT;
-        lp.gravity = Gravity.CENTER;
+        lp.width = WindowManager.LayoutParams.MATCH_PARENT;
+        lp.height = WindowManager.LayoutParams.MATCH_PARENT;
+        lp.gravity = Gravity.FILL;
         lp.x = 0;
         lp.y = 0;
         getWindow().setAttributes(lp);
         panel.root().requestLayout();
         panel.root().post(() -> DiagnosticLog.i(this, "RESULT_ACTIVITY",
-                "PANEL requested=" + panel.width() + "x" + panel.height()
-                        + " measured=" + panel.root().getWidth() + "x" + panel.root().getHeight()
-                        + " windowHeight=wrap_content mode="
+                "HOST fullscreen measured=" + panel.root().getWidth() + "x" + panel.root().getHeight()
+                        + " card=" + panel.width() + "x" + panel.height()
+                        + " fixedActions=true mode="
                         + (session == null ? "none" : session.mode())));
     }
 
