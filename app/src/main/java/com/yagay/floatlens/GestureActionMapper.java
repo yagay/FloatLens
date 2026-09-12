@@ -15,17 +15,21 @@ public final class GestureActionMapper {
         return switch (code) {
             case GestureCode.TAP -> fs.clickScreenUnderIcon()
                     ? ActionId.CLICK_UNDER
-                    : fs.action(FloatSettings.K_ACTION_CLICK, ActionId.NONE);
-            case GestureCode.UP -> fs.action(FloatSettings.K_ACTION_UP, ActionId.RECENTS);
-            case GestureCode.DOWN -> fs.action(longTier ? FloatSettings.K_ACTION_DOWN_LONG : FloatSettings.K_ACTION_DOWN_SHORT,
-                    longTier ? ActionId.NONE : ActionId.NOTIFICATIONS);
-            case GestureCode.SIDE_SHORT -> fs.action(FloatSettings.K_ACTION_SIDE_SHORT, ActionId.BACK);
-            case GestureCode.SIDE_LONG -> fs.action(FloatSettings.K_ACTION_SIDE_LONG, ActionId.NONE);
-            case GestureCode.ENTER_CIRCLE -> fs.action(FloatSettings.K_ACTION_LONG, ActionId.NONE);
-            case GestureCode.RECOGNIZE -> fs.action(FloatSettings.K_ACTION_RECOGNIZE, ActionId.OCR);
+                    : configured(fs, FloatSettings.K_ACTION_CLICK);
+            case GestureCode.UP -> configured(fs, FloatSettings.K_ACTION_UP);
+            case GestureCode.DOWN -> configured(fs,
+                    longTier ? FloatSettings.K_ACTION_DOWN_LONG : FloatSettings.K_ACTION_DOWN_SHORT);
+            case GestureCode.SIDE_SHORT -> configured(fs, FloatSettings.K_ACTION_SIDE_SHORT);
+            case GestureCode.SIDE_LONG -> configured(fs, FloatSettings.K_ACTION_SIDE_LONG);
+            case GestureCode.ENTER_CIRCLE -> configured(fs, FloatSettings.K_ACTION_LONG);
+            case GestureCode.RECOGNIZE -> configured(fs, FloatSettings.K_ACTION_RECOGNIZE);
             case GestureCode.AI_SCREEN -> ActionId.AI_SCREEN;
             default -> ActionId.NONE;
         };
+    }
+
+    private static String configured(FloatSettings fs, String key) {
+        return fs.action(key, ActionRegistry.defaultForPreference(key));
     }
 
     private GestureActionMapper() {}
