@@ -4,8 +4,6 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Rect;
@@ -13,13 +11,14 @@ import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.text.InputType;
 import android.text.Layout;
+import android.text.Selection;
+import android.text.Spannable;
 import android.text.StaticLayout;
 import android.text.TextPaint;
 import android.view.ActionMode;
 import android.view.Gravity;
 import android.view.Menu;
 import android.view.MenuItem;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -36,18 +35,16 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Unified result host for screenshot, extracted View text/image and OCR text.
  *
- * Keeping all result surfaces in one Activity avoids four independent copies of window placement,
- * payload storage, buttons, selectable text, ActionMode handling and OCR transitions.
+ * All result surfaces share one window implementation, one payload store, one selectable-text
+ * implementation and one text action menu. This replaces the previous four result Activities.
  */
 public final class ResultActivity extends AppCompatActivity {
     private static final int MODE_SCREENSHOT = 1;
@@ -65,15 +62,6 @@ public final class ResultActivity extends AppCompatActivity {
     private static final int TITLE_H_DP = 38;
     private static final int ACTION_H_DP = 50;
     private static final int ROOT_VPAD_DP = 16;
-
-    private static final int MENU_COPY = 0x46540001;
-    private static final int MENU_SHARE = 0x46540002;
-    private static final int MENU_GROUP_PROCESS = 0x46540100;
-    private static final int MENU_PROCESS_BASE = 0x46541000;
-
-    // Keep the framework floating toolbar hidden for the whole handle drag. We explicitly show it
-    // again after the selection has stopped changing instead of trusting the OEM hide timer.
-    private static final long SELECTION_HIDE_HOLD_MS = 10_000L;
     private static final long SELECTION_RESHOW_DELAY_MS = 220L;
 
     public interface InlineResultSink {
@@ -93,7 +81,6 @@ public final class ResultActivity extends AppCompatActivity {
     private LinearLayout ocrPanel;
     private SelectionAwareEditText ocrText;
     private Button ocrButton;
-    private Rect popupUsable;
     private int popupWidth;
     private int compactImageHeight;
 
@@ -103,8 +90,6 @@ public final class ResultActivity extends AppCompatActivity {
     private int lastSelectionEnd = -1;
     private long selectionGeneration;
     private Runnable selectionReshow;
-
-    private ActionMode activeBlockActionMode;
 
     public static boolean showScreenshot(Context c, Bitmap image, Rect anchor) {
         if (c == null || image == null || image.isRecycled()) return false;
@@ -262,7 +247,6 @@ public final class ResultActivity extends AppCompatActivity {
             return;
         }
         Rect usable = usableBounds();
-        popupUsable = new Rect(usable);
         int width = standardWidth(usable);
         popupWidth = width;
         int maxH = standardMaxHeight(usable);
@@ -356,7 +340,6 @@ public final class ResultActivity extends AppCompatActivity {
         String shown = value.isEmpty() ? "未识别到文字" : value;
         ocrText.setText(shown);
 
-        // Keep the outer Activity frame completely fixed. Only redistribute its existing content.
         WindowManager.LayoutParams windowLp = getWindow().getAttributes();
         int stableHeight = windowLp.height > 0 ? windowLp.height : dp(260);
         int stableWidth = windowLp.width > 0 ? windowLp.width
@@ -514,7 +497,7 @@ public final class ResultActivity extends AppCompatActivity {
                 desiredBodyH += dp(31);
                 for (String block : payload.blocks) {
                     TextView tv = blockView(block);
-                    tv.setOnClickListener(v -> showBlockActionMode(tv, block));
+                    tv.setOnClickListener(v -> showBlockMenu(tv, block));
                     body.addView(tv, new LinearLayout.LayoutParams(-1, -2));
                     desiredBodyH += textHeight(block, innerW - dp(16), 16f, 10);
                 }
@@ -551,6 +534,7 @@ public final class ResultActivity extends AppCompatActivity {
         OcrEngine.recognize(getApplicationContext(), image, anchor);
     }
 
+    /** One reusable read-only text surface for screenshot OCR, View text/meta and OCR results. */
     private SelectionAwareEditText selectableText(String value) {
         SelectionAwareEditText tv = new SelectionAwareEditText(this);
         tv.setText(value == null ? "" : value);
@@ -572,43 +556,27 @@ public final class ResultActivity extends AppCompatActivity {
         tv.setSelectAllOnFocus(false);
         tv.setPadding(dp(8), dp(5), dp(8), dp(5));
 
+        // The framework ActionMode is kept only to own selection handles and magnifier. Its menu is
+        // empty; every text action is rendered by the reusable FloatActionMenu.
         tv.setCustomSelectionActionModeCallback(new ActionMode.Callback() {
             @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                if (menu != null) menu.clear();
                 activeSelectionActionMode = mode;
                 activeSelectionText = tv;
                 lastSelectionStart = tv.getSelectionStart();
                 lastSelectionEnd = tv.getSelectionEnd();
-                refreshProcessItems(menu, tv);
+                selectionGeneration++;
+                tv.post(() -> showSelectionMenu(tv));
                 return true;
             }
 
             @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
-                refreshProcessItems(menu, tv);
-                // OEM TextView editors can re-show the toolbar while a handle is moving. If a
-                // selection-change generation is still pending, immediately push it back hidden.
-                if (activeSelectionActionMode == mode && selectionReshow != null) {
-                    postHideSelectionToolbar(tv, mode, selectionGeneration);
-                }
+                if (menu != null) menu.clear();
                 return true;
             }
 
             @Override public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
-                Intent target = item.getIntent();
-                if (target != null && Intent.ACTION_PROCESS_TEXT.equals(target.getAction())) {
-                    String selected = selectedText(tv);
-                    if (selected.isEmpty()) return false;
-                    try {
-                        startActivity(new Intent(target)
-                                .putExtra(Intent.EXTRA_PROCESS_TEXT, selected)
-                                .putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true));
-                    } catch (Throwable t) {
-                        Toast.makeText(ResultActivity.this,
-                                "无法打开文本处理应用", Toast.LENGTH_SHORT).show();
-                    }
-                    mode.finish();
-                    return true;
-                }
-                return false;
+                return true;
             }
 
             @Override public void onDestroyActionMode(ActionMode mode) {
@@ -620,28 +588,28 @@ public final class ResultActivity extends AppCompatActivity {
         return tv;
     }
 
+    /**
+     * Selection handles update the range continuously while dragged. Hide the FloatActionMenu on
+     * the first change and only restore it after the range has been stable for 220ms. The Android
+     * magnifier therefore remains unobstructed for the whole drag.
+     */
     private void onSelectionChanged(SelectionAwareEditText tv, int start, int end) {
-        ActionMode mode = activeSelectionActionMode;
-        if (mode == null || activeSelectionText != tv) return;
+        if (activeSelectionActionMode == null || activeSelectionText != tv) return;
         if (start < 0 || end < 0 || start == end) return;
         if (start == lastSelectionStart && end == lastSelectionEnd) return;
 
-        // The ActionMode callback is created after the initial long-press selection. Every later
-        // range change is therefore a real handle adjustment (or equivalent framework adjustment).
         lastSelectionStart = start;
         lastSelectionEnd = end;
         long generation = ++selectionGeneration;
+        FloatActionMenu.dismiss();
+        FloatMenuAnchor.clear();
 
         if (selectionReshow != null) tv.removeCallbacks(selectionReshow);
-        postHideSelectionToolbar(tv, mode, generation);
-        tv.postDelayed(() -> postHideSelectionToolbar(tv, mode, generation), 16L);
-        tv.postDelayed(() -> postHideSelectionToolbar(tv, mode, generation), 32L);
-
         selectionReshow = () -> {
-            if (activeSelectionActionMode != mode || activeSelectionText != tv
+            if (activeSelectionActionMode == null || activeSelectionText != tv
                     || generation != selectionGeneration) return;
-            try { mode.hide(0L); } catch (Throwable ignored) {}
             selectionReshow = null;
+            showSelectionMenu(tv);
             DiagnosticLog.i(ResultActivity.this, "RESULT_TEXT_MENU",
                     "HANDLE_ADJUST_END selected=" + selectedText(tv).length());
         };
@@ -649,28 +617,33 @@ public final class ResultActivity extends AppCompatActivity {
         DiagnosticLog.i(this, "RESULT_TEXT_MENU", "HANDLE_ADJUST_HIDE range=" + start + ":" + end);
     }
 
-    private void postHideSelectionToolbar(SelectionAwareEditText tv, ActionMode mode, long generation) {
-        tv.post(() -> {
-            if (activeSelectionActionMode != mode || activeSelectionText != tv
-                    || generation != selectionGeneration) return;
-            try { mode.hide(SELECTION_HIDE_HOLD_MS); } catch (Throwable ignored) {}
-        });
+    private void showSelectionMenu(SelectionAwareEditText tv) {
+        if (activeSelectionActionMode == null || activeSelectionText != tv) return;
+        String value = selectedText(tv).trim();
+        if (value.isEmpty()) return;
+        FloatActionMenu.showTextAt(this, value, () -> selectAll(tv),
+                FloatMenuAnchor.forTextSelection(tv));
+    }
+
+    private void selectAll(SelectionAwareEditText tv) {
+        try {
+            CharSequence raw = tv.getText();
+            if (raw instanceof Spannable span && span.length() > 0) {
+                Selection.setSelection(span, 0, span.length());
+                tv.post(() -> showSelectionMenu(tv));
+            }
+        } catch (Throwable ignored) {}
     }
 
     private void clearSelectionActionMode(SelectionAwareEditText tv) {
         if (selectionReshow != null && tv != null) tv.removeCallbacks(selectionReshow);
         selectionReshow = null;
+        FloatActionMenu.dismiss();
+        FloatMenuAnchor.clear();
         activeSelectionActionMode = null;
         activeSelectionText = null;
         lastSelectionStart = lastSelectionEnd = -1;
         selectionGeneration++;
-    }
-
-    private void refreshProcessItems(Menu menu, EditText tv) {
-        if (menu == null) return;
-        try { menu.removeGroup(MENU_GROUP_PROCESS); } catch (Throwable ignored) {}
-        String selected = selectedText(tv);
-        if (!selected.isEmpty()) addProcessTextItems(menu, selected);
     }
 
     private String selectedText(EditText tv) {
@@ -680,45 +653,6 @@ public final class ResultActivity extends AppCompatActivity {
         int lo = Math.max(0, Math.min(a, b));
         int hi = Math.min(tv.length(), Math.max(a, b));
         return lo < hi ? tv.getText().subSequence(lo, hi).toString() : "";
-    }
-
-    private void addProcessTextItems(Menu menu, String value) {
-        if (menu == null || value == null || value.isBlank()) return;
-        Intent base = new Intent(Intent.ACTION_PROCESS_TEXT)
-                .setType("text/plain")
-                .putExtra(Intent.EXTRA_PROCESS_TEXT, value)
-                .putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true);
-        PackageManager pm = getPackageManager();
-        List<ResolveInfo> handlers;
-        try { handlers = pm.queryIntentActivities(base, PackageManager.MATCH_ALL); }
-        catch (Throwable t) { handlers = new ArrayList<>(); }
-
-        Set<String> existing = new HashSet<>();
-        for (int i = 0; i < menu.size(); i++) {
-            MenuItem old = menu.getItem(i);
-            Intent oi = old == null ? null : old.getIntent();
-            if (oi != null && Intent.ACTION_PROCESS_TEXT.equals(oi.getAction())
-                    && oi.getComponent() != null) {
-                existing.add(oi.getComponent().flattenToString());
-            }
-        }
-
-        int order = 10;
-        int id = MENU_PROCESS_BASE;
-        if (handlers == null) return;
-        for (ResolveInfo ri : handlers) {
-            if (ri == null || ri.activityInfo == null) continue;
-            String key = ri.activityInfo.packageName + "/" + ri.activityInfo.name;
-            if (!existing.add(key)) continue;
-            CharSequence label;
-            try { label = ri.loadLabel(pm); }
-            catch (Throwable ignored) { label = ri.activityInfo.name; }
-            Intent target = new Intent(base).setClassName(ri.activityInfo.packageName, ri.activityInfo.name);
-            MenuItem item = menu.add(MENU_GROUP_PROCESS, id++, order++,
-                    label == null ? ri.activityInfo.name : label);
-            item.setIntent(target);
-            item.setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
-        }
     }
 
     private TextView blockView(String text) {
@@ -731,82 +665,16 @@ public final class ResultActivity extends AppCompatActivity {
         return tv;
     }
 
-    private void showBlockActionMode(TextView anchor, String block) {
-        final String value = block == null ? "" : block.trim();
+    private void showBlockMenu(TextView anchor, String block) {
+        String value = block == null ? "" : block.trim();
         if (value.isEmpty()) return;
-        if (activeBlockActionMode != null) {
-            try { activeBlockActionMode.finish(); } catch (Throwable ignored) {}
-            activeBlockActionMode = null;
-        }
-
-        ActionMode.Callback2 cb = new ActionMode.Callback2() {
-            @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) {
-                menu.add(Menu.NONE, MENU_COPY, 0, "复制").setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-                menu.add(Menu.NONE, MENU_SHARE, 1, "分享").setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-                addProcessTextItems(menu, value);
-                return true;
-            }
-            @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) { return false; }
-            @Override public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
-                if (item.getItemId() == MENU_COPY) {
-                    copyText(value, "FloatLens OCR");
-                    mode.finish();
-                    return true;
-                }
-                if (item.getItemId() == MENU_SHARE) {
-                    shareText(value);
-                    mode.finish();
-                    return true;
-                }
-                Intent target = item.getIntent();
-                if (target != null) {
-                    try { startActivity(target); }
-                    catch (Throwable t) {
-                        Toast.makeText(ResultActivity.this, "无法打开文本处理应用", Toast.LENGTH_SHORT).show();
-                    }
-                    mode.finish();
-                    return true;
-                }
-                return false;
-            }
-            @Override public void onDestroyActionMode(ActionMode mode) {
-                if (activeBlockActionMode == mode) activeBlockActionMode = null;
-            }
-            @Override public void onGetContentRect(ActionMode mode, View view, Rect outRect) {
-                outRect.set(0, 0, Math.max(1, anchor.getWidth()), Math.max(1, anchor.getHeight()));
-            }
-        };
-
-        try { activeBlockActionMode = anchor.startActionMode(cb, ActionMode.TYPE_FLOATING); }
-        catch (Throwable t) {
-            DiagnosticLog.i(this, "RESULT_TEXT_MENU", "BLOCK_ACTIONMODE_FAILED " + t);
-        }
-    }
-
-    private void shareText(String value) {
-        Intent share = new Intent(Intent.ACTION_SEND)
-                .setType("text/plain")
-                .putExtra(Intent.EXTRA_TEXT, value);
-        try { startActivity(Intent.createChooser(share, "分享文字")); }
-        catch (Throwable t) {
-            Toast.makeText(this, "无法打开分享菜单", Toast.LENGTH_SHORT).show();
-        }
+        FloatActionMenu.showTextAt(this, value, null, FloatMenuAnchor.forView(anchor));
     }
 
     private void copyText(String value, String label) {
         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        cm.setPrimaryClip(ClipData.newPlainText(label, value == null ? "" : value));
+        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText(label, value == null ? "" : value));
         Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show();
-    }
-
-    @Override public boolean dispatchTouchEvent(MotionEvent ev) {
-        if (ev != null && ev.getActionMasked() == MotionEvent.ACTION_DOWN
-                && activeBlockActionMode != null) {
-            ActionMode old = activeBlockActionMode;
-            activeBlockActionMode = null;
-            try { old.finish(); } catch (Throwable ignored) {}
-        }
-        return super.dispatchTouchEvent(ev);
     }
 
     private int addImage(LinearLayout body, Bitmap image, int innerW, int maxHeightPx) {
@@ -963,7 +831,7 @@ public final class ResultActivity extends AppCompatActivity {
     }
 
     private void finishWithCircle(String reason) {
-        finishActionModes();
+        finishSelection();
         if (!circleFinished) {
             circleFinished = true;
             FloatService f = FloatService.get();
@@ -972,11 +840,9 @@ public final class ResultActivity extends AppCompatActivity {
         finishNoAnim();
     }
 
-    private void finishActionModes() {
-        if (activeBlockActionMode != null) {
-            try { activeBlockActionMode.finish(); } catch (Throwable ignored) {}
-            activeBlockActionMode = null;
-        }
+    private void finishSelection() {
+        FloatActionMenu.dismiss();
+        FloatMenuAnchor.clear();
         if (activeSelectionActionMode != null) {
             SelectionAwareEditText tv = activeSelectionText;
             try { activeSelectionActionMode.finish(); } catch (Throwable ignored) {}
@@ -985,18 +851,12 @@ public final class ResultActivity extends AppCompatActivity {
     }
 
     private void finishNoAnim() {
-        finishActionModes();
+        finishSelection();
         finish();
         overridePendingTransition(0, 0);
     }
 
     @Override public void onBackPressed() {
-        if (activeBlockActionMode != null) {
-            ActionMode old = activeBlockActionMode;
-            activeBlockActionMode = null;
-            try { old.finish(); } catch (Throwable ignored) {}
-            return;
-        }
         if (activeSelectionActionMode != null) {
             ActionMode old = activeSelectionActionMode;
             SelectionAwareEditText tv = activeSelectionText;
@@ -1009,7 +869,7 @@ public final class ResultActivity extends AppCompatActivity {
     }
 
     @Override protected void onDestroy() {
-        finishActionModes();
+        finishSelection();
         if (payload != null && payload.mode == MODE_SCREENSHOT && payload.image != null) {
             clearInlineForImage(payload.image);
         }
