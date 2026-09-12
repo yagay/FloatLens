@@ -3,27 +3,25 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// http://www.apache.org/licenses/LICENSE-2.0
 
 package com.paddle.ocr.engine
 
 import android.content.Context
-import android.graphics.Bitmap
+import android.graphics.PointF
 import com.paddle.ocr.EngineConfig
 import com.paddle.ocr.PaddleOCRConfig
 import com.paddle.ocr.model.ModelConfig
+import com.paddle.ocr.model.OCRBox
+import com.paddle.ocr.model.OCRCharacter
 import com.paddle.ocr.model.OCRError
 import com.paddle.ocr.model.OCRResult
 import com.paddle.ocr.postprocess.BoxSorter
+import com.paddle.ocr.postprocess.CTCDecoder
 import com.paddle.ocr.postprocess.QuadTextCrop
 import com.paddle.ocr.util.BitmapUtils
+import kotlin.math.max
+import kotlin.math.min
 
 class OCREngine(
     context: Context,
@@ -41,8 +39,7 @@ class OCREngine(
     init {
         val configured = try {
             ortManager.loadModels(detModelAsset, recModelAsset)
-            val recModelConfig = ModelConfig.parse(context, recConfigAsset)
-            recModelConfig
+            ModelConfig.parse(context, recConfigAsset)
         } catch (t: Throwable) {
             ortManager.release()
             throw t
@@ -51,7 +48,7 @@ class OCREngine(
         recognitionEngine = RecognitionEngine(ortManager, configured.characterList)
     }
 
-    fun run(bitmap: Bitmap): OCREngineResult {
+    fun run(bitmap: android.graphics.Bitmap): OCREngineResult {
         val srcMat = BitmapUtils.bitmapToBGRMat(bitmap)
         return runWithOwnedMat(srcMat)
     }
@@ -66,11 +63,7 @@ class OCREngine(
     }
 
     private fun runWithOwnedMat(srcMat: org.opencv.core.Mat): OCREngineResult {
-        return try {
-            run(srcMat)
-        } finally {
-            srcMat.release()
-        }
+        return try { run(srcMat) } finally { srcMat.release() }
     }
 
     private fun run(srcMat: org.opencv.core.Mat): OCREngineResult {
@@ -81,23 +74,15 @@ class OCREngine(
         if (boxes.isEmpty()) {
             val elapsed = System.currentTimeMillis() - totalStart
             return OCREngineResult(
-                results = emptyList(),
-                detectionTimeMs = detResult.timeMs,
-                recognitionTimeMs = 0,
-                totalTimeMs = elapsed,
-                lineCount = 0,
-                detPreprocessMs = detResult.preprocessMs,
-                detInferenceMs = detResult.inferenceMs,
-                detPostprocessMs = detResult.postprocessMs,
-                detInputShape = detResult.inputShape,
+                results = emptyList(), detectionTimeMs = detResult.timeMs,
+                recognitionTimeMs = 0, totalTimeMs = elapsed, lineCount = 0,
+                detPreprocessMs = detResult.preprocessMs, detInferenceMs = detResult.inferenceMs,
+                detPostprocessMs = detResult.postprocessMs, detInputShape = detResult.inputShape,
                 coldLoadTimeMs = ortManager.coldLoadTimeMs,
             )
         }
 
-        // 2. Sort boxes
         val sortedBoxes = BoxSorter.sortInReadingOrder(boxes)
-
-        // 3. Crop and recognize text regions
         var totalRecPreMs = 0L
         var totalRecInfMs = 0L
         var totalRecPostMs = 0L
@@ -117,9 +102,7 @@ class OCREngine(
                 if (crop.rows() > 0 && crop.cols() > 0) {
                     batchCrops.add(crop)
                     batchBoxIndices.add(next)
-                } else {
-                    crop.release()
-                }
+                } else crop.release()
                 next++
             }
 
@@ -131,19 +114,20 @@ class OCREngine(
                     totalRecPostMs += batchResult.postprocessMs
                     totalRecMs += batchResult.timeMs
                     recInputShapes.add(batchResult.inputShape)
-                    if (batchSize == 1) {
-                        perLineRecMs.add(batchResult.timeMs)
-                    }
+                    if (batchSize == 1) perLineRecMs.add(batchResult.timeMs)
 
                     for (j in batchResult.texts.indices) {
                         val boxIdx = batchBoxIndices[j]
-                        val (text, confidence) = batchResult.texts[j]
-                        if (confidence >= config.recScoreThresh) {
+                        val decoded = batchResult.texts[j]
+                        if (decoded.confidence >= config.recScoreThresh) {
+                            val lineBox = sortedBoxes[boxIdx]
+                            val characters = buildCharacters(lineBox, decoded)
                             allResults.add(
                                 OCRResult(
-                                    box = sortedBoxes[boxIdx],
-                                    text = text,
-                                    confidence = confidence,
+                                    box = lineBox,
+                                    text = decoded.text,
+                                    confidence = decoded.confidence,
+                                    characters = characters,
                                 )
                             )
                         }
@@ -157,7 +141,6 @@ class OCREngine(
 
         val totalElapsed = System.currentTimeMillis() - totalStart
         val pipelineOverhead = totalElapsed - detResult.timeMs - totalRecMs
-
         return OCREngineResult(
             results = allResults,
             detectionTimeMs = detResult.timeMs,
@@ -178,7 +161,43 @@ class OCREngine(
         )
     }
 
-    fun release() {
-        ortManager.release()
+    /**
+     * Convert CTC time-axis fractions back to source-image geometry. Horizontal lines map along X;
+     * vertical crops are rotated by QuadTextCrop, so their recognition X axis maps top-to-bottom Y.
+     */
+    private fun buildCharacters(box: OCRBox, decoded: CTCDecoder.DecodedText): List<OCRCharacter> {
+        if (decoded.chars.isEmpty() || box.points.isEmpty()) return emptyList()
+        val minX = box.points.minOf { it.x }
+        val maxX = box.points.maxOf { it.x }
+        val minY = box.points.minOf { it.y }
+        val maxY = box.points.maxOf { it.y }
+        val width = max(1f, maxX - minX)
+        val height = max(1f, maxY - minY)
+        val vertical = height / width >= 1.5f
+
+        return decoded.chars.mapNotNull { c ->
+            if (c.text.isEmpty()) return@mapNotNull null
+            val start = min(c.startFraction, c.endFraction).coerceIn(0f, 1f)
+            val end = max(c.startFraction, c.endFraction).coerceIn(start, 1f)
+            val charBox = if (vertical) {
+                val top = minY + height * start
+                val bottom = minY + height * end
+                rectBox(minX, top, maxX, max(bottom, top + 1f))
+            } else {
+                val left = minX + width * start
+                val right = minX + width * end
+                rectBox(left, minY, max(right, left + 1f), maxY)
+            }
+            OCRCharacter(c.text, charBox, c.confidence)
+        }
     }
+
+    private fun rectBox(left: Float, top: Float, right: Float, bottom: Float): OCRBox = OCRBox(
+        listOf(
+            PointF(left, top), PointF(right, top),
+            PointF(right, bottom), PointF(left, bottom),
+        )
+    )
+
+    fun release() { ortManager.release() }
 }
