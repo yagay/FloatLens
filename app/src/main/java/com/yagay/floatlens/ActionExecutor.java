@@ -13,10 +13,20 @@ public final class ActionExecutor {
             case ActionId.HOME -> global(c,s,AccessibilityService.GLOBAL_ACTION_HOME);
             case ActionId.RECENTS -> global(c,s,AccessibilityService.GLOBAL_ACTION_RECENTS);
             case ActionId.NOTIFICATIONS -> global(c,s,AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS);
-            case ActionId.SCREENSHOT -> ScreenshotController.capture(c,false);
-            case ActionId.REGION_SCREENSHOT -> ScreenshotController.capture(c,true);
-            case ActionId.OCR -> ViewSelectionOverlay.show(c);
+            case ActionId.SCREENSHOT -> {
+                OcrEngine.invalidatePending(c, "action_screenshot");
+                ScreenshotController.capture(c,false);
+            }
+            case ActionId.REGION_SCREENSHOT -> {
+                OcrEngine.invalidatePending(c, "action_region_screenshot");
+                ScreenshotController.capture(c,true);
+            }
+            case ActionId.OCR -> {
+                OcrEngine.invalidatePending(c, "action_ocr_selection");
+                ViewSelectionOverlay.show(c);
+            }
             case ActionId.AI_SCREEN -> {
+                OcrEngine.invalidatePending(c, "action_circle_select");
                 DiagnosticLog.i(c,"AI_SCREEN","enter Circle Select workspace");
                 CircleSelectController.show(c);
             }
