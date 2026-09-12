@@ -83,6 +83,7 @@ public final class CircleSelectOverlay {
         private static final int MODE_CIRCLE = 4;
         private static final long RECT_SNAP_PREVIEW_MS = 170L;
         private static final float HANDLE_SNAP_DISTANCE_DP = 96f;
+        private static final float TEXT_TAP_SNAP_DISTANCE_DP = 18f;
         private static final long SYSTEM_NAV_FOCUS_LOSS_DELAY_MS = 80L;
 
         private final Context context;
@@ -103,7 +104,6 @@ public final class CircleSelectOverlay {
         private final RectF snappedCircleRect = new RectF();
         private final RectF closeRect = new RectF();
 
-        private OcrDocument document;
         private boolean ocrReady;
         private boolean closed;
         private boolean circleResolving;
@@ -163,7 +163,6 @@ public final class CircleSelectOverlay {
             OcrEngine.recognizeDocument(context, screenshot, new OcrEngine.DocumentCallback() {
                 @Override public void onSuccess(OcrDocument result) {
                     if (closed) return;
-                    document = result;
                     selection.setDocument(result);
                     ocrReady = true;
                     DiagnosticLog.i(context, "CIRCLE_SELECT", "document engine=" + result.engine()
@@ -174,7 +173,6 @@ public final class CircleSelectOverlay {
                 @Override public void onFailure(Throwable error) {
                     if (closed) return;
                     ocrReady = true;
-                    document = null;
                     selection.setChars(List.of());
                     DiagnosticLog.i(context, "CIRCLE_SELECT", "document OCR unavailable=" + safe(error));
                     invalidate();
@@ -219,10 +217,10 @@ public final class CircleSelectOverlay {
             }
 
             String status;
-            if (circleResolving) status = "正在检查圈选文字…";
-            else if (!ocrReady) status = "正在识别图片文字… · 空白处可直接圈选";
-            else if (selection.isEmpty()) status = "未检测到可选文字 · 圈画可局部增强识别";
-            else status = "点按文字选择 · 手柄可跨行调整 · 圈画直接选择区域文字";
+            if (circleResolving) status = "正在生成圈画截图…";
+            else if (!ocrReady) status = "正在识别图片文字… · 圈画仍可截图";
+            else if (selection.isEmpty()) status = "未检测到可选文字 · 圈画截图";
+            else status = "点按文字提取 · 手柄调整范围 · 圈画截图";
             canvas.drawText(status, dp(16), dp(34), textPaint);
             drawClose(canvas);
         }
@@ -277,7 +275,8 @@ public final class CircleSelectOverlay {
                         }
                     }
 
-                    int hit = selection.findWordAt(x, y, getWidth(), getHeight());
+                    int hit = selection.findSelectionWord(x, y, getWidth(), getHeight(),
+                            dp(TEXT_TAP_SNAP_DISTANCE_DP));
                     if (hit >= 0) {
                         selection.selectSingle(hit);
                         mode = MODE_TEXT;
@@ -382,32 +381,18 @@ public final class CircleSelectOverlay {
                     Math.round(union.right) + loc[0], Math.round(union.bottom) + loc[1]);
         }
 
-        private Rect imageRectFromView(RectF viewRect) {
-            float sx = screenshot.getWidth() / (float) Math.max(1, getWidth());
-            float sy = screenshot.getHeight() / (float) Math.max(1, getHeight());
-            int left = Math.max(0, Math.min(screenshot.getWidth() - 1, (int) Math.floor(viewRect.left * sx)));
-            int top = Math.max(0, Math.min(screenshot.getHeight() - 1, (int) Math.floor(viewRect.top * sy)));
-            int right = Math.max(left + 1, Math.min(screenshot.getWidth(), (int) Math.ceil(viewRect.right * sx)));
-            int bottom = Math.max(top + 1, Math.min(screenshot.getHeight(), (int) Math.ceil(viewRect.bottom * sy)));
-            return new Rect(left, top, right, bottom);
+        private Rect screenRectFromView(RectF viewRect) {
+            int[] loc = new int[2];
+            try { getLocationOnScreen(loc); } catch (Throwable ignored) { loc[0] = loc[1] = 0; }
+            return new Rect(
+                    Math.round(viewRect.left) + loc[0],
+                    Math.round(viewRect.top) + loc[1],
+                    Math.round(viewRect.right) + loc[0],
+                    Math.round(viewRect.bottom) + loc[1]);
         }
 
         private void finishSnappedCircle(RectF viewRect) {
             if (closed) return;
-            Rect imageRect = imageRectFromView(viewRect);
-
-            // Fast path: use the already-cached full-screen document. No second OCR is needed.
-            if (selection.selectIntersecting(imageRect)) {
-                circleResolving = false;
-                snappedCircleRect.setEmpty();
-                invalidate();
-                DiagnosticLog.i(context, "CIRCLE_SELECT", "circle matched cached chars="
-                        + selection.selectionIndices().size() + " rect=" + imageRect.toShortString());
-                post(this::showSelectionMenu);
-                return;
-            }
-
-            // Slow path: OCR only the missed region, merge it into the page document and stay here.
             Bitmap crop = CircleCropGeometry.crop(screenshot, viewRect, getWidth(), getHeight());
             if (crop == null) {
                 circleResolving = false;
@@ -415,39 +400,17 @@ public final class CircleSelectOverlay {
                 invalidate();
                 return;
             }
-            DiagnosticLog.i(context, "CIRCLE_SELECT", "local refinement "
-                    + crop.getWidth() + "x" + crop.getHeight() + " rect=" + imageRect.toShortString());
-            OcrEngine.recognizeDocument(context, crop, new OcrEngine.DocumentCallback() {
-                @Override public void onSuccess(OcrDocument patch) {
-                    try {
-                        if (closed) return;
-                        OcrDocument translated = patch.translated(imageRect.left, imageRect.top,
-                                screenshot.getWidth(), screenshot.getHeight());
-                        selection.mergeRefinement(translated, imageRect);
-                        selection.selectIntersecting(imageRect);
-                        document = translated;
-                        DiagnosticLog.i(context, "CIRCLE_SELECT", "local refinement engine="
-                                + patch.engine() + " chars=" + patch.chars().size());
-                    } finally {
-                        if (!crop.isRecycled()) crop.recycle();
-                        if (!closed) {
-                            circleResolving = false;
-                            snappedCircleRect.setEmpty();
-                            invalidate();
-                            if (selection.hasSelection()) post(WorkspaceView.this::showSelectionMenu);
-                        }
-                    }
-                }
 
-                @Override public void onFailure(Throwable error) {
-                    if (!crop.isRecycled()) crop.recycle();
-                    if (closed) return;
-                    circleResolving = false;
-                    snappedCircleRect.setEmpty();
-                    DiagnosticLog.i(context, "CIRCLE_SELECT", "local refinement failed=" + safe(error));
-                    invalidate();
-                }
-            });
+            Rect anchor = screenRectFromView(viewRect);
+            DiagnosticLog.i(context, "CIRCLE_SELECT", "circle screenshot="
+                    + crop.getWidth() + "x" + crop.getHeight()
+                    + " anchor=" + anchor.toShortString());
+            close("circle_screenshot");
+            boolean shown = ResultSurfaceRouter.showScreenshot(context, crop, anchor);
+            if (!shown) {
+                DiagnosticLog.i(context, "CIRCLE_SELECT", "screenshot result failed -> save fallback");
+                ScreenshotController.save(context, crop);
+            }
         }
 
         private void showSelectionMenu() {
