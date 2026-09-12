@@ -4,18 +4,21 @@ import android.content.Context;
 import android.view.View;
 import android.view.WindowManager;
 
+import java.util.IdentityHashMap;
+import java.util.Map;
+
 /**
- * Shared FV-style WindowManager host for selection/helper overlays.
+ * Shared FV-style WindowManager host.
  *
- * Use {@link #add(View, WindowManager.LayoutParams, String)} when the surface must sit above
- * SystemUI and should prefer TYPE_ACCESSIBILITY_OVERLAY. Use {@link #addApplication(View,
- * WindowManager.LayoutParams, String)} for native Android text editing/selection, whose framework
- * Editor, handles and magnifier require a normal focusable TYPE_APPLICATION_OVERLAY.
+ * A single instance can manage multiple Views. Host ownership is tracked per View rather than by a
+ * single global boolean, which lets FloatService, result windows and selection helpers all reuse the
+ * same add/update/remove/migrate implementation without guessing from LayoutParams.type.
  */
 final class FvOverlayWindowHost {
     private final Context context;
     private final WindowManager appWindowManager;
-    private boolean accessibilityHosted;
+    private final Map<View, Boolean> accessibilityHosted = new IdentityHashMap<>();
+    private View lastView;
 
     FvOverlayWindowHost(Context c) {
         context = c.getApplicationContext();
@@ -26,7 +29,7 @@ final class FvOverlayWindowHost {
         if (view == null || lp == null) return false;
         LensAccessibilityService a = LensAccessibilityService.get();
         if (a != null && a.addAccessibilityOverlay(view, lp)) {
-            accessibilityHosted = true;
+            remember(view, true);
             DiagnosticLog.i(context, "FV_WINDOW", tag + " host=accessibility type=" + lp.type);
             return true;
         }
@@ -38,11 +41,11 @@ final class FvOverlayWindowHost {
         try {
             lp.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
             appWindowManager.addView(view, lp);
-            accessibilityHosted = false;
+            remember(view, false);
             DiagnosticLog.i(context, "FV_WINDOW", tag + " host=application type=" + lp.type);
             return true;
         } catch (Throwable t) {
-            accessibilityHosted = false;
+            accessibilityHosted.remove(view);
             DiagnosticLog.i(context, "FV_WINDOW", tag + " application add failed=" + t);
             return false;
         }
@@ -51,7 +54,7 @@ final class FvOverlayWindowHost {
     boolean update(View view, WindowManager.LayoutParams lp, String tag) {
         if (view == null || lp == null) return false;
         try {
-            if (accessibilityHosted) {
+            if (isAccessibilityHosted(view)) {
                 LensAccessibilityService a = LensAccessibilityService.get();
                 if (a != null && a.updateAccessibilityOverlay(view, lp)) return true;
                 DiagnosticLog.i(context, "FV_WINDOW", tag + " accessibility host unavailable during update");
@@ -66,69 +69,95 @@ final class FvOverlayWindowHost {
         }
     }
 
-    /** Move the exact same View from AccessibilityService WindowManager to application overlay. */
     boolean migrateToApplication(View view, WindowManager.LayoutParams lp, String tag) {
+        return migrate(view, lp, false, tag);
+    }
+
+    boolean migrateToAccessibility(View view, WindowManager.LayoutParams lp, String tag) {
+        return migrate(view, lp, true, tag);
+    }
+
+    /** Rehost the exact same View while preserving its LayoutParams and visibility. */
+    boolean migrate(View view, WindowManager.LayoutParams lp, boolean useAccessibility, String tag) {
         if (view == null || lp == null) return false;
-        if (!accessibilityHosted) {
-            try {
-                lp.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
-                appWindowManager.updateViewLayout(view, lp);
-                DiagnosticLog.i(context, "FV_WINDOW", tag + " already application type=" + lp.type);
+        boolean currentAccessibility = isAccessibilityHosted(view);
+        if (accessibilityHosted.containsKey(view) && currentAccessibility == useAccessibility) {
+            return update(view, lp, tag + "_same_host");
+        }
+
+        int visibility = view.getVisibility();
+        if (!removeFromCurrentHost(view, lp, tag + "_migrate_remove")) return false;
+
+        boolean added;
+        if (useAccessibility) {
+            LensAccessibilityService a = LensAccessibilityService.get();
+            added = a != null && a.addAccessibilityOverlay(view, lp);
+            if (added) {
+                remember(view, true);
+                view.setVisibility(visibility);
+                DiagnosticLog.i(context, "FV_WINDOW", tag + " migrated host=accessibility type=" + lp.type);
                 return true;
-            } catch (Throwable t) {
-                DiagnosticLog.i(context, "FV_WINDOW", tag + " application update failed=" + t);
-                return false;
             }
-        }
-
-        LensAccessibilityService a = LensAccessibilityService.get();
-        if (a == null) {
-            DiagnosticLog.i(context, "FV_WINDOW", tag + " migrate failed accessibility service missing");
-            return false;
-        }
-        try {
-            a.removeAccessibilityOverlay(view);
-            accessibilityHosted = false;
-        } catch (Throwable t) {
-            DiagnosticLog.i(context, "FV_WINDOW", tag + " accessibility remove failed=" + t);
-            return false;
-        }
-
-        try {
-            lp.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
-            appWindowManager.addView(view, lp);
-            DiagnosticLog.i(context, "FV_WINDOW", tag + " migrated host=application type=" + lp.type);
-            return true;
-        } catch (Throwable t) {
-            DiagnosticLog.i(context, "FV_WINDOW", tag + " application add after migrate failed=" + t);
-            try {
-                if (a.addAccessibilityOverlay(view, lp)) {
-                    accessibilityHosted = true;
+            added = addApplication(view, lp, tag + "_fallback_application");
+        } else {
+            added = addApplication(view, lp, tag);
+            if (!added) {
+                LensAccessibilityService a = LensAccessibilityService.get();
+                if (a != null && a.addAccessibilityOverlay(view, lp)) {
+                    remember(view, true);
+                    added = true;
                     DiagnosticLog.i(context, "FV_WINDOW", tag + " migrate rollback host=accessibility type=" + lp.type);
                 }
-            } catch (Throwable rollback) {
-                DiagnosticLog.i(context, "FV_WINDOW", tag + " migrate rollback failed=" + rollback);
             }
-            return false;
         }
+
+        if (added) view.setVisibility(visibility);
+        return added;
     }
 
     void remove(View view, String tag) {
         if (view == null) return;
-        if (accessibilityHosted) {
-            LensAccessibilityService a = LensAccessibilityService.get();
-            if (a != null) {
-                try {
-                    a.removeAccessibilityOverlay(view);
-                    accessibilityHosted = false;
-                    return;
-                } catch (Throwable ignored) {}
-            }
-        }
-        try { appWindowManager.removeView(view); }
-        catch (Throwable ignored) {}
-        accessibilityHosted = false;
+        removeFromCurrentHost(view, null, tag);
+        accessibilityHosted.remove(view);
+        if (lastView == view) lastView = null;
     }
 
-    boolean isAccessibilityHosted() { return accessibilityHosted; }
+    private boolean removeFromCurrentHost(View view, WindowManager.LayoutParams lp, String tag) {
+        boolean known = accessibilityHosted.containsKey(view);
+        boolean onAccessibility = known
+                ? isAccessibilityHosted(view)
+                : lp != null && lp.type == WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
+        try {
+            if (onAccessibility) {
+                LensAccessibilityService a = LensAccessibilityService.get();
+                if (a != null) {
+                    a.removeAccessibilityOverlay(view);
+                } else {
+                    appWindowManager.removeView(view);
+                }
+            } else {
+                appWindowManager.removeView(view);
+            }
+            accessibilityHosted.remove(view);
+            return true;
+        } catch (Throwable t) {
+            DiagnosticLog.i(context, "FV_WINDOW", tag + " remove failed=" + t);
+            accessibilityHosted.remove(view);
+            return false;
+        }
+    }
+
+    boolean isAccessibilityHosted(View view) {
+        return Boolean.TRUE.equals(accessibilityHosted.get(view));
+    }
+
+    /** Convenience for single-view callers such as FloatingResultWindow. */
+    boolean isAccessibilityHosted() {
+        return lastView != null && isAccessibilityHosted(lastView);
+    }
+
+    private void remember(View view, boolean onAccessibility) {
+        accessibilityHosted.put(view, onAccessibility);
+        lastView = view;
+    }
 }
