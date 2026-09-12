@@ -1,14 +1,14 @@
 package com.yagay.floatlens;
 
+/** Stable persisted action IDs. Metadata and behavior live in ActionRegistry. */
 public final class ActionId {
-    public static final String NONE="none", BACK="back", HOME="home", RECENTS="recents", SCREENSHOT="screenshot", REGION_SCREENSHOT="region_screenshot", OCR="ocr", HIDE="hide", NOTIFICATIONS="notifications", CLICK_UNDER="click_under", AI_SCREEN="ai_screen", MOVE_ICON="move_icon";
-    public static String label(String id) {
-        return switch (id) {
-            case BACK -> "返回"; case HOME -> "主页"; case RECENTS -> "最近任务"; case SCREENSHOT -> "截图";
-            case REGION_SCREENSHOT -> "区域截图"; case OCR -> "OCR/提取文字"; case HIDE -> "隐藏悬浮图标";
-            case NOTIFICATIONS -> "通知栏"; case CLICK_UNDER -> "点击悬浮图标下方屏幕"; case AI_SCREEN -> "圈画识别";
-            case MOVE_ICON -> "移动图标位置"; default -> "无动作";
-        };
-    }
+    public static final String NONE="none", BACK="back", HOME="home", RECENTS="recents",
+            SCREENSHOT="screenshot", REGION_SCREENSHOT="region_screenshot", OCR="ocr",
+            HIDE="hide", NOTIFICATIONS="notifications", CLICK_UNDER="click_under",
+            AI_SCREEN="ai_screen", MOVE_ICON="move_icon";
+
+    public static String label(String id) { return ActionRegistry.label(id); }
+    public static String[] availableIds() { return ActionRegistry.availableIds(); }
+
     private ActionId() {}
 }
