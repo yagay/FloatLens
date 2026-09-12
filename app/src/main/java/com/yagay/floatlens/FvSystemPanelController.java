@@ -9,6 +9,8 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Clean-room equivalent of FV's notification/system-panel close path.
@@ -19,10 +21,20 @@ import java.util.List;
  *  - its callback then calls FooAccessibilityService.H();
  *  - H() is exactly performGlobalAction(15), i.e. GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE.
  *
- * Callers must snapshot the expanded state before capture and invoke dismiss only after the bitmap
- * or frozen result UI is ready. That preserves the notification shade in the captured image.
+ * Callers snapshot the expanded state before capture and invoke dismiss only after the bitmap or
+ * frozen result UI is ready. That preserves the notification shade in the captured image.
+ *
+ * Modern OxygenOS can reject both original FV routes: CLOSE_SYSTEM_DIALOGS requires a privileged
+ * permission and performGlobalAction(15) may return false. FloatLens therefore preserves FV's two
+ * routes first, then uses a root-only `cmd statusbar collapse` fallback when both fail.
  */
 public final class FvSystemPanelController {
+    private static final ExecutorService ROOT_IO = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "FloatLens-shade-collapse");
+        t.setDaemon(true);
+        return t;
+    });
+
     private FvSystemPanelController() {}
 
     /** FV B0()-style SystemUI window test, with the cached environment only as a fallback. */
@@ -87,8 +99,35 @@ public final class FvSystemPanelController {
                     DiagnosticLog.i(app, "FV_SHADE", "dismiss global action failed=" + t);
                 }
             }
+
             DiagnosticLog.i(app, "FV_SHADE", "dismiss after capture reason=" + reason
                     + " broadcast=" + broadcast + " global15=" + global);
+
+            // OxygenOS 16 on rooted devices can reject both original FV mechanisms. Do not replace
+            // FV's path: use root only as a fallback after both failed.
+            if (!broadcast && !global) {
+                collapseWithRoot(app, reason);
+            }
+        });
+    }
+
+    private static void collapseWithRoot(Context app, String reason) {
+        ROOT_IO.execute(() -> {
+            int code = -1;
+            String error = "";
+            try {
+                Process p = new ProcessBuilder("su", "-c", "cmd statusbar collapse")
+                        .redirectErrorStream(true)
+                        .start();
+                code = p.waitFor();
+            } catch (Throwable t) {
+                error = String.valueOf(t);
+            }
+            final int exitCode = code;
+            final String failure = error;
+            app.getMainExecutor().execute(() -> DiagnosticLog.i(app, "FV_SHADE",
+                    "root collapse reason=" + reason + " exit=" + exitCode
+                            + (failure.isEmpty() ? "" : " error=" + failure)));
         });
     }
 }
