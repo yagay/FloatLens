@@ -40,9 +40,12 @@ object PaddleOcrBridge {
                 if (!OcrModelManager.isReady(app, model)) throw IllegalStateException("model_not_downloaded")
                 val ocr = getOrCreate(app, model)
                 val result = runMutex.withLock { ocr.recognize(bitmap) }
-                val document = toDocument(result.results, bitmap.width, bitmap.height, model)
+                val baseDocument = toDocument(result.results, bitmap.width, bitmap.height, model)
+                val geometryStarted = System.currentTimeMillis()
+                val document = OcrGeometryRefiner.refinePpWithUpscaledMlKit(app, bitmap, baseDocument)
+                val geometryMs = System.currentTimeMillis() - geometryStarted
                 withContext(Dispatchers.Main) {
-                    callback.onSuccess(document, result.totalTimeMs, result.lineCount)
+                    callback.onSuccess(document, result.totalTimeMs + geometryMs, result.lineCount)
                 }
             } catch (t: Throwable) {
                 val msg = describeThrowable(t)
