@@ -32,6 +32,13 @@
                 android:resource="@xml/share_paths" />
         </provider>
         <activity android:name=".ResultActivity" android:theme="@style/Theme.FloatLens.ResultText" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" />
+        <activity
+            android:name=".ShadeDismissActivity"
+            android:theme="@style/Theme.FloatLens.ShadeDismiss"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity="" />
         <activity android:name=".MenuPickerActivity" android:exported="false" />
         <activity android:name=".SettingsActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
