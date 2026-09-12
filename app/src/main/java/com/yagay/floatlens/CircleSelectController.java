@@ -16,9 +16,9 @@ public final class CircleSelectController {
         long gen = ++generation;
         CircleSelectOverlay.dismissActive("restart");
 
-        // Match the region-screenshot path: capture the exact visible frame first, then hand the
-        // frozen bitmap to a real Activity. ResultReadyCoordinator closes the live notification shade
-        // only after that Activity has drawn its first frame. The interactive overlay attaches later.
+        // Capture the exact visible frame first. The frozen workspace is then attached immediately
+        // as TYPE_ACCESSIBILITY_OVERLAY so it can cover SystemUI while the real shade is cleaned up
+        // underneath. Circle interaction no longer depends on an Activity successfully closing shade.
         final FvSystemPanelController.CaptureState shadeState = FvSystemPanelController.beginCapture(
                 app, "circle_select");
 
@@ -42,14 +42,29 @@ public final class CircleSelectController {
                 return;
             }
 
-            boolean started = CircleSelectActivity.show(app, bitmap, shadeState);
-            DiagnosticLog.i(app, "CIRCLE_SELECT", "activity host started=" + started
+            boolean shown = CircleSelectOverlay.show(app, bitmap,
+                    () -> restore(service, "closed"));
+            DiagnosticLog.i(app, "CIRCLE_SELECT", "accessibility workspace shown=" + shown
                     + " bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight());
-            if (!started) {
+            if (!shown) {
                 if (!bitmap.isRecycled()) bitmap.recycle();
-                restore(service, "activity_start_failed");
+                restore(service, "overlay_failed");
                 Toast.makeText(app, "圈画识别启动失败", Toast.LENGTH_SHORT).show();
+                return;
             }
+
+            // The frozen 2032 workspace already hides the live shade. Clean SystemUI in the
+            // background; keep the workspace non-key-focusable until BACK retries are finished so
+            // the global BACK action cannot accidentally close the Circle workspace itself.
+            CircleShadeCoordinator.prepare(app, shadeState.expandedAtCapture(), collapsed -> {
+                synchronized (CircleSelectController.class) {
+                    if (gen != generation) return;
+                }
+                DiagnosticLog.i(app, "CIRCLE_SELECT", "background shade cleanup collapsed="
+                        + collapsed + " gen=" + gen);
+                CircleSelectOverlay.promoteActiveFocus(
+                        collapsed ? "shade_collapsed" : "shade_cleanup_exhausted");
+            });
         }, error -> {
             restore(service, "capture_failed");
             Toast.makeText(app, "圈画识别截图失败: " + safe(error), Toast.LENGTH_LONG).show();
