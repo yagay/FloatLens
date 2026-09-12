@@ -21,20 +21,39 @@ final class ScreenshotCaptureSession {
         Context app = c.getApplicationContext();
         FloatService service = FloatService.get();
         boolean hideIcon = !settings.keepInScreenshot() && service != null;
+        DiagnosticLog.i(app, "SCREENSHOT_SESSION", "begin hideIcon=" + hideIcon
+                + " accessibility=" + settings.accessibilityScreenshot()
+                + " root=" + settings.rootScreenshot());
         if (hideIcon) service.setScreenshotHidden(true);
 
-        MAIN.postDelayed(() -> ScreenCaptureBackend.capture(app, settings, raw -> {
-            restore(service, hideIcon);
-            ok.accept(raw);
-        }, error -> {
-            restore(service, hideIcon);
-            fail.accept(error);
-        }), hideIcon ? HIDE_SETTLE_MS : 0L);
+        MAIN.postDelayed(() -> {
+            DiagnosticLog.i(app, "SCREENSHOT_SESSION", "capture after settleMs="
+                    + (hideIcon ? HIDE_SETTLE_MS : 0L));
+            ScreenCaptureBackend.capture(app, settings, raw -> {
+                DiagnosticLog.i(app, "SCREENSHOT_SESSION", "backend success bitmap=" + size(raw));
+                restore(app, service, hideIcon);
+                ok.accept(raw);
+            }, error -> {
+                DiagnosticLog.i(app, "SCREENSHOT_SESSION", "backend failed error="
+                        + ScreenCaptureBackend.safeMessage(error));
+                restore(app, service, hideIcon);
+                fail.accept(error);
+            });
+        }, hideIcon ? HIDE_SETTLE_MS : 0L);
     }
 
-    private static void restore(FloatService service, boolean hidden) {
+    private static void restore(Context app, FloatService service, boolean hidden) {
         if (!hidden || service == null) return;
-        MAIN.postDelayed(() -> service.setScreenshotHidden(false), RESTORE_DELAY_MS);
+        MAIN.postDelayed(() -> {
+            service.setScreenshotHidden(false);
+            DiagnosticLog.i(app, "SCREENSHOT_SESSION", "icon restored delayMs=" + RESTORE_DELAY_MS);
+        }, RESTORE_DELAY_MS);
+    }
+
+    private static String size(Bitmap b) {
+        if (b == null) return "null";
+        if (b.isRecycled()) return "recycled";
+        return b.getWidth() + "x" + b.getHeight();
     }
 
     private ScreenshotCaptureSession() {}
