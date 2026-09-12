@@ -45,35 +45,65 @@ public final class ImageShareUtils {
         if (c == null || image == null || image.isRecycled()) return;
         Context app = c.getApplicationContext();
         try {
-            File dir = new File(app.getCacheDir(), DIR);
-            if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("Cannot create share cache");
-            cleanupOld(dir);
-
-            File outFile = new File(dir, "FloatLens_" + System.currentTimeMillis() + ".png");
-            try (FileOutputStream out = new FileOutputStream(outFile)) {
-                if (!image.compress(Bitmap.CompressFormat.PNG, 100, out)) {
-                    throw new IllegalStateException("Bitmap compress failed");
-                }
-                out.flush();
-            }
-
-            Uri uri = FileProvider.getUriForFile(app,
-                    app.getPackageName() + ".fileprovider", outFile);
+            SharedImage shared = prepareSharedImage(app, image);
             Intent send = new Intent(Intent.ACTION_SEND)
                     .setType("image/png")
-                    .putExtra(Intent.EXTRA_STREAM, uri);
-            send.setClipData(ClipData.newRawUri("FloatLens image", uri));
+                    .putExtra(Intent.EXTRA_STREAM, shared.uri);
+            send.setClipData(ClipData.newRawUri("FloatLens image", shared.uri));
             send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
             Intent chooser = Intent.createChooser(send, "分享图片")
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
             app.startActivity(chooser);
-            DiagnosticLog.i(app, "IMAGE_SHARE", "OPEN " + outFile.getName()
+            DiagnosticLog.i(app, "IMAGE_SHARE", "OPEN " + shared.file.getName()
                     + " " + image.getWidth() + "x" + image.getHeight());
         } catch (Throwable t) {
             DiagnosticLog.i(app, "IMAGE_SHARE", "FAILED " + t);
             Toast.makeText(app, "无法分享图片", Toast.LENGTH_SHORT).show();
         }
+    }
+
+    /** Open the current popup bitmap with any installed app that accepts image/png. */
+    public static void openWith(Context c, Bitmap image) {
+        if (c == null || image == null || image.isRecycled()) return;
+        Context app = c.getApplicationContext();
+        try {
+            SharedImage shared = prepareSharedImage(app, image);
+            Intent view = new Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(shared.uri, "image/png")
+                    .setClipData(ClipData.newRawUri("FloatLens image", shared.uri))
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            Intent chooser = Intent.createChooser(view, "打开方式")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            app.startActivity(chooser);
+            DiagnosticLog.i(app, "IMAGE_OPEN_WITH", "OPEN " + shared.file.getName()
+                    + " " + image.getWidth() + "x" + image.getHeight());
+        } catch (Throwable t) {
+            DiagnosticLog.i(app, "IMAGE_OPEN_WITH", "FAILED " + t);
+            Toast.makeText(app, "没有可用的图片应用", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /**
+     * Share and Open-With must expose the exact same temporary image/URI semantics. Keeping this in
+     * one helper also guarantees the FileProvider grant path stays consistent between both actions.
+     */
+    private static SharedImage prepareSharedImage(Context app, Bitmap image) throws Exception {
+        File dir = new File(app.getCacheDir(), DIR);
+        if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("Cannot create share cache");
+        cleanupOld(dir);
+
+        File outFile = new File(dir, "FloatLens_" + System.currentTimeMillis() + ".png");
+        try (FileOutputStream out = new FileOutputStream(outFile)) {
+            if (!image.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                throw new IllegalStateException("Bitmap compress failed");
+            }
+            out.flush();
+        }
+
+        Uri uri = FileProvider.getUriForFile(app,
+                app.getPackageName() + ".fileprovider", outFile);
+        return new SharedImage(outFile, uri);
     }
 
     private static void cleanupOld(File dir) {
@@ -84,6 +114,16 @@ public final class ImageShareUtils {
             if (f != null && f.isFile() && f.lastModified() < cutoff) {
                 try { f.delete(); } catch (Throwable ignored) {}
             }
+        }
+    }
+
+    private static final class SharedImage {
+        final File file;
+        final Uri uri;
+
+        SharedImage(File file, Uri uri) {
+            this.file = file;
+            this.uri = uri;
         }
     }
 
