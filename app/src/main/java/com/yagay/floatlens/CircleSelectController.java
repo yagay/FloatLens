@@ -16,10 +16,7 @@ public final class CircleSelectController {
         long gen = ++generation;
         CircleSelectOverlay.dismissActive("restart");
 
-        // Capture the exact visible frame first. The frozen workspace is then attached immediately
-        // as TYPE_ACCESSIBILITY_OVERLAY so it can cover SystemUI while the real shade is cleaned up
-        // underneath. Circle interaction no longer depends on an Activity successfully closing shade.
-        final FvSystemPanelController.CaptureState shadeState = FvSystemPanelController.beginCapture(
+        final FlSystemPanelController.CaptureState shadeState = FlSystemPanelController.beginCapture(
                 app, "circle_select");
 
         FloatService service = FloatService.get();
@@ -53,9 +50,6 @@ public final class CircleSelectController {
                 return;
             }
 
-            // The frozen 2032 workspace already hides the live shade. Clean SystemUI in the
-            // background; keep the workspace non-key-focusable until BACK retries are finished so
-            // the global BACK action cannot accidentally close the Circle workspace itself.
             OverlayShadeCoordinator.cleanup(app, shadeState.expandedAtCapture(), "circle_select",
                     collapsed -> {
                         synchronized (CircleSelectController.class) {
