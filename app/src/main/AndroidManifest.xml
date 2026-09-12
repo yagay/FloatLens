@@ -31,7 +31,13 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/share_paths" />
         </provider>
-        <activity android:name=".ResultActivity" android:theme="@style/Theme.FloatLens.ResultText" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" />
+        <activity
+            android:name=".ResultActivity"
+            android:theme="@style/Theme.FloatLens.ResultText"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:taskAffinity="" />
         <activity
             android:name=".ShadeDismissActivity"
             android:theme="@style/Theme.FloatLens.ShadeDismiss"
