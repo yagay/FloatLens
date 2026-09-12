@@ -4,10 +4,7 @@ import android.graphics.Rect;
 import android.graphics.RectF;
 
 import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /** Pure OcrDocument selection state used by CircleSelectOverlay. */
 final class CircleTextSelectionModel {
@@ -114,19 +111,35 @@ final class CircleTextSelectionModel {
         return best;
     }
 
+    /**
+     * Exact hit first; otherwise snap to the nearest character while strongly preferring the same
+     * visual row. The old score discounted vertical distance (0.72x), which made a large handle
+     * snap radius jump into adjacent lines. Vertical distance is now expensive and locally capped.
+     */
     int findSelectionWord(float viewX, float viewY, int viewWidth, int viewHeight,
                           float maxDistancePx) {
         int exact = findWordAt(viewX, viewY, viewWidth, viewHeight);
         if (exact >= 0) return exact;
         if (chars.isEmpty() || viewWidth <= 0 || viewHeight <= 0) return -1;
+
         float bestScore = Float.MAX_VALUE;
         int best = -1;
         for (int i = 0; i < chars.size(); i++) {
             RectF r = wordViewRect(i, viewWidth, viewHeight);
+            if (r.isEmpty()) continue;
             float dx = viewX < r.left ? r.left - viewX : viewX > r.right ? viewX - r.right : 0f;
             float dy = viewY < r.top ? r.top - viewY : viewY > r.bottom ? viewY - r.bottom : 0f;
-            float score = dx * dx + dy * dy * 0.72f;
-            if (score < bestScore) { bestScore = score; best = i; }
+
+            // Even when the caller supplies a large drag radius, never let it freely cross rows.
+            float rowGate = Math.max(r.height() * 1.35f,
+                    Math.min(maxDistancePx * 0.48f, r.height() * 2.15f));
+            if (dy > rowGate) continue;
+
+            float score = dx * dx + dy * dy * 3.25f;
+            if (score < bestScore) {
+                bestScore = score;
+                best = i;
+            }
         }
         if (best < 0 || bestScore > maxDistancePx * maxDistancePx) return -1;
         return best;
