@@ -13,15 +13,23 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-/** Dedicated screenshot fallback overlay. OCR is explicit via the result button only. */
+/** FV-style screenshot result surface hosted above SystemUI whenever accessibility is available. */
 public final class ScreenshotResultOverlay {
     private static final int MARGIN_DP = 12;
     private static final int GAP_DP = 10;
+    private static OverlaySession active;
 
-    public static void show(Context c, Bitmap image, Rect anchor) {
-        if (c == null || image == null || image.isRecycled()) return;
+    /**
+     * Shows the screenshot result immediately. Returns false only when neither accessibility nor
+     * application overlay hosting could attach the result surface; caller may then use Activity fallback.
+     */
+    public static synchronized boolean show(Context c, Bitmap image, Rect anchor) {
+        if (c == null || image == null || image.isRecycled()) return false;
+        dismissActive("replace");
+
         Context app = c.getApplicationContext();
         WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
+        FvOverlayWindowHost host = new FvOverlayWindowHost(app);
         Rect usable = usableBounds(app, wm);
         Rect selected = anchor == null ? null : new Rect(anchor);
 
@@ -78,25 +86,49 @@ public final class ScreenshotResultOverlay {
         lp.x = xy[0];
         lp.y = xy[1];
 
-        try {
-            wm.addView(box, lp);
-            DiagnosticLog.i(app, "SCREENSHOT_RESULT", "SHOW size=" + width + "x" + height
-                    + " pos=" + lp.x + "," + lp.y
-                    + " anchor=" + (selected == null ? "none" : selected.toShortString()));
-        } catch (Throwable t) {
-            DiagnosticLog.i(app, "SCREENSHOT_RESULT", "add failed=" + t);
-            return;
+        if (!host.add(box, lp, "screenshot_result")) {
+            DiagnosticLog.i(app, "SCREENSHOT_RESULT", "add failed all hosts");
+            return false;
         }
 
+        OverlaySession session = new OverlaySession(app, host, box, image, selected);
+        active = session;
+        DiagnosticLog.i(app, "SCREENSHOT_RESULT", "SHOW size=" + width + "x" + height
+                + " pos=" + lp.x + "," + lp.y
+                + " anchor=" + (selected == null ? "none" : selected.toShortString())
+                + " accessibilityHost=" + host.isAccessibilityHosted()
+                + " type=" + lp.type);
+
         ocr.setOnClickListener(v -> {
-            try { wm.removeView(box); } catch (Throwable ignored) {}
-            DiagnosticLog.i(app, "SCREENSHOT_RESULT", "OCR_BUTTON fallbackOverlay");
+            if (!detach(session, "ocr", false)) return;
+            DiagnosticLog.i(app, "SCREENSHOT_RESULT", "OCR_BUTTON accessibilityOverlay="
+                    + host.isAccessibilityHosted());
             OcrEngine.recognize(app, image, selected);
         });
         save.setOnClickListener(v -> ScreenshotController.save(app, image));
-        close.setOnClickListener(v -> {
-            try { wm.removeView(box); } catch (Throwable ignored) {}
-        });
+        close.setOnClickListener(v -> detach(session, "close", true));
+        return true;
+    }
+
+    public static synchronized void dismissActive(String reason) {
+        OverlaySession session = active;
+        if (session != null) detach(session, reason == null ? "dismiss" : reason, true);
+    }
+
+    /** Remove one result surface. recycle=false transfers Bitmap ownership to the next operation. */
+    private static synchronized boolean detach(OverlaySession session, String reason, boolean recycle) {
+        if (session == null || session.detached) return false;
+        session.detached = true;
+        if (active == session) active = null;
+        session.host.remove(session.box, "screenshot_result");
+        if (recycle) {
+            try {
+                if (!session.image.isRecycled()) session.image.recycle();
+            } catch (Throwable ignored) {}
+        }
+        DiagnosticLog.i(session.app, "SCREENSHOT_RESULT", "DETACH reason=" + reason
+                + " recycle=" + recycle);
+        return true;
     }
 
     private static Button button(Context c, String text) {
@@ -169,6 +201,24 @@ public final class ScreenshotResultOverlay {
     private static int clamp(int v, int min, int max) {
         if (max < min) return min;
         return Math.max(min, Math.min(v, max));
+    }
+
+    private static final class OverlaySession {
+        final Context app;
+        final FvOverlayWindowHost host;
+        final LinearLayout box;
+        final Bitmap image;
+        final Rect anchor;
+        boolean detached;
+
+        OverlaySession(Context app, FvOverlayWindowHost host, LinearLayout box,
+                       Bitmap image, Rect anchor) {
+            this.app = app;
+            this.host = host;
+            this.box = box;
+            this.image = image;
+            this.anchor = anchor == null ? null : new Rect(anchor);
+        }
     }
 
     private ScreenshotResultOverlay() {}
