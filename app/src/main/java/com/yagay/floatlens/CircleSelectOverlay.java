@@ -25,6 +25,11 @@ import java.util.List;
  *
  * OCR words stay directly selectable on the frozen screenshot. FloatLens owns the text action
  * menu, while a rough free-hand gesture snaps to a padded rectangle before OCR.
+ *
+ * The entire workspace is hosted through FvOverlayWindowHost. When accessibility is available this
+ * means TYPE_ACCESSIBILITY_OVERLAY (2032), matching the rest of the FV-style selection window family
+ * and allowing the frozen bitmap to sit above SystemUI while the real notification shade is cleaned
+ * up underneath it.
  */
 public final class CircleSelectOverlay {
     private static WorkspaceView active;
@@ -33,41 +38,50 @@ public final class CircleSelectOverlay {
         if (screenshot == null || screenshot.isRecycled()) return false;
         dismissActive("replace");
         Context app = c.getApplicationContext();
-        WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
+        FvOverlayWindowHost host = new FvOverlayWindowHost(app);
         Rect contentBounds = CircleSelectFrame.contentBounds(app);
         Rect displayBounds = CircleSelectFrame.displayBounds(app);
-        WorkspaceView view = new WorkspaceView(app, wm, screenshot, onClosed);
+        boolean shadeExpanded = FvSystemPanelController.notificationShadeExpanded();
+
+        int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+        // While the real notification shade is still open keep the frozen workspace touchable but
+        // not key-focusable. This prevents GLOBAL_ACTION_BACK cleanup from being delivered back to
+        // Circle Select itself. CircleSelectController promotes key focus when cleanup finishes.
+        if (shadeExpanded) flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 Math.max(1, contentBounds.width()),
                 Math.max(1, contentBounds.height()),
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                // Circle Select is a modal full-screen interaction surface. Keep it focusable while
-                // active so Back reaches WorkspaceView. Home/Recents are consumed by SystemUI, but
-                // they make this window lose focus; WorkspaceView treats that focus loss as cancel.
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                flags,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
         lp.x = contentBounds.left - displayBounds.left;
         lp.y = contentBounds.top - displayBounds.top;
-        try {
-            wm.addView(view, lp);
-            active = view;
-            view.post(() -> {
-                if (!view.isAttachedToWindow()) return;
-                boolean focused = view.requestFocus();
-                DiagnosticLog.i(app, "CIRCLE_SELECT", "key focus requested=" + focused);
-            });
-            view.startSpatialOcr();
-            DiagnosticLog.i(app, "CIRCLE_SELECT", "overlay shown "
-                    + screenshot.getWidth() + "x" + screenshot.getHeight()
-                    + " bounds=" + contentBounds.toShortString()
-                    + " offset=" + lp.x + "," + lp.y);
-            return true;
-        } catch (Throwable t) {
-            DiagnosticLog.i(app, "CIRCLE_SELECT", "overlay add failed=" + t);
+
+        WorkspaceView view = new WorkspaceView(
+                app, host, lp, screenshot, onClosed, !shadeExpanded);
+        if (!host.add(view, lp, "circle_select")) {
+            DiagnosticLog.i(app, "CIRCLE_SELECT", "overlay add failed");
             return false;
         }
+
+        active = view;
+        if (!shadeExpanded) view.promoteKeyFocus("initial_no_shade");
+        view.startSpatialOcr();
+        DiagnosticLog.i(app, "CIRCLE_SELECT", "overlay shown "
+                + screenshot.getWidth() + "x" + screenshot.getHeight()
+                + " bounds=" + contentBounds.toShortString()
+                + " offset=" + lp.x + "," + lp.y
+                + " accessibilityHost=" + host.isAccessibilityHosted()
+                + " initialFocusable=" + !shadeExpanded);
+        return true;
+    }
+
+    public static synchronized void promoteActiveFocus(String reason) {
+        WorkspaceView v = active;
+        if (v != null) v.promoteKeyFocus(reason == null ? "cleanup_complete" : reason);
     }
 
     public static synchronized void dismissActive(String reason) {
@@ -91,7 +105,8 @@ public final class CircleSelectOverlay {
         private static final long SYSTEM_NAV_FOCUS_LOSS_DELAY_MS = 80L;
 
         private final Context context;
-        private final WindowManager wm;
+        private final FvOverlayWindowHost host;
+        private final WindowManager.LayoutParams windowLayout;
         private final Bitmap screenshot;
         private final Runnable onClosed;
         private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
@@ -111,18 +126,22 @@ public final class CircleSelectOverlay {
         private boolean closed;
         private boolean circleResolving;
         private boolean hadWindowFocus;
+        private boolean keyFocusEnabled;
         private int mode = MODE_NONE;
         private int startIndex = -1;
         private int endIndex = -1;
         private boolean closePressed;
         private Magnifier magnifier;
 
-        WorkspaceView(Context c, WindowManager wm, Bitmap screenshot, Runnable onClosed) {
+        WorkspaceView(Context c, FvOverlayWindowHost host, WindowManager.LayoutParams windowLayout,
+                      Bitmap screenshot, Runnable onClosed, boolean keyFocusEnabled) {
             super(c);
             context = c;
-            this.wm = wm;
+            this.host = host;
+            this.windowLayout = windowLayout;
             this.screenshot = screenshot;
             this.onClosed = onClosed;
+            this.keyFocusEnabled = keyFocusEnabled;
             setClickable(true);
             setFocusable(true);
             setFocusableInTouchMode(true);
@@ -147,6 +166,26 @@ public final class CircleSelectOverlay {
             toolbarTextPaint.setTextAlign(Paint.Align.CENTER);
         }
 
+        void promoteKeyFocus(String reason) {
+            if (closed) return;
+            if (!keyFocusEnabled) {
+                windowLayout.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+                boolean updated = host.update(this, windowLayout, "circle_select_focus");
+                if (!updated) {
+                    DiagnosticLog.i(context, "CIRCLE_SELECT", "key focus promotion update failed reason=" + reason);
+                    return;
+                }
+                keyFocusEnabled = true;
+            }
+            post(() -> {
+                if (closed || !isAttachedToWindow()) return;
+                boolean focused = requestFocus();
+                DiagnosticLog.i(context, "CIRCLE_SELECT", "key focus requested=" + focused
+                        + " reason=" + reason
+                        + " accessibilityHost=" + host.isAccessibilityHosted());
+            });
+        }
+
         void startSpatialOcr() {
             SpatialOcrEngine.recognize(context, screenshot, new SpatialOcrEngine.Callback() {
                 @Override public void onSuccess(List<SpatialOcrEngine.Word> result) {
@@ -169,7 +208,7 @@ public final class CircleSelectOverlay {
 
         @Override public void onWindowFocusChanged(boolean hasWindowFocus) {
             super.onWindowFocusChanged(hasWindowFocus);
-            if (closed) return;
+            if (closed || !keyFocusEnabled) return;
             if (hasWindowFocus) {
                 hadWindowFocus = true;
                 return;
@@ -180,7 +219,7 @@ public final class CircleSelectOverlay {
             // windows. Both actions hand focus back to SystemUI/Launcher instead. FloatActionMenu is
             // FLAG_NOT_FOCUSABLE, so normal text-selection menus do not trigger this path.
             postDelayed(() -> {
-                if (closed || !hadWindowFocus || hasWindowFocus()) return;
+                if (closed || !keyFocusEnabled || !hadWindowFocus || hasWindowFocus()) return;
                 DiagnosticLog.i(context, "CIRCLE_SELECT", "system navigation focus loss -> close");
                 close("system_navigation");
             }, SYSTEM_NAV_FOCUS_LOSS_DELAY_MS);
@@ -244,8 +283,6 @@ public final class CircleSelectOverlay {
 
         @Override public boolean dispatchKeyEvent(KeyEvent event) {
             if (event != null && event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
-                // Back is the one three-button-navigation key Android delivers directly here.
-                // Consume DOWN/UP and close once on the uncancelled UP so it cannot reach the app below.
                 if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled() && !closed) {
                     DiagnosticLog.i(context, "CIRCLE_SELECT", "back pressed -> close");
                     close("back");
@@ -467,8 +504,6 @@ public final class CircleSelectOverlay {
                     if (w.line() != previousLine) {
                         out.append('\n');
                     } else if (w.group() != previousGroup && !noSpaceBetween(previous, value)) {
-                        // Symbol units from the same ML Kit Element form one word/phrase and must be
-                        // glued back together. Different Latin elements keep their natural word gap.
                         out.append(' ');
                     }
                 }
@@ -577,11 +612,6 @@ public final class CircleSelectOverlay {
             return Bitmap.createBitmap(screenshot, left, top, w, h);
         }
 
-        /**
-         * Match framework text-selection semantics: the finger controls the handle, but the
-         * magnifier samples the actual selection boundary inside the current OCR Symbol. This is
-         * the same separation Android's TextView.Editor uses for native selectable text.
-         */
         private void showSelectionMagnifier() {
             if (closed || getWidth() <= 0 || getHeight() <= 0 || !isAttachedToWindow()) return;
             int index;
@@ -593,9 +623,6 @@ public final class CircleSelectOverlay {
             RectF symbol = toViewRect(words.get(index).bounds());
             if (symbol.isEmpty()) return;
 
-            // A logical endpoint swaps visual sides when the selection crosses over the other end.
-            // start<=end: start is the left edge and end is the right edge.
-            // start>end : start is the right edge and end is the left edge.
             boolean rightEdge = mode == MODE_START_HANDLE
                     ? startIndex > endIndex
                     : startIndex <= endIndex;
@@ -626,7 +653,7 @@ public final class CircleSelectOverlay {
             FloatActionMenu.dismiss();
             FloatMenuAnchor.clear();
             removeCallbacks(null);
-            try { wm.removeView(this); } catch (Throwable ignored) {}
+            host.remove(this, "circle_select");
             try { if (!screenshot.isRecycled()) screenshot.recycle(); } catch (Throwable ignored) {}
             CircleSelectOverlay.onClosed(this);
             if (onClosed != null) {
