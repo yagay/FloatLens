@@ -7,10 +7,12 @@ import android.graphics.Rect;
 import java.util.List;
 
 /**
- * Single routing policy for screenshot, View and OCR result surfaces.
+ * Single routing policy for result surfaces.
  *
- * A result-surface failure must never be reported as a screenshot/crop failure. Floating windows are
- * best-effort; every entry point isolates their runtime exceptions and falls back to ResultActivity.
+ * Image-only screenshot results can safely live in an accessibility/application overlay. Results
+ * that require Android's native text Editor (selection handles, magnifier and ActionMode) are
+ * deliberately hosted by ResultActivity. Android/OxygenOS does not reliably provide the native
+ * Editor interaction stack inside TYPE_APPLICATION_OVERLAY, even when that window is focusable.
  */
 final class ResultSurfaceRouter {
     static boolean showScreenshot(Context c, Bitmap image, Rect anchor) {
@@ -23,26 +25,23 @@ final class ResultSurfaceRouter {
 
     static boolean showOcr(Context c, String text, List<String> blocks, Bitmap image, Rect anchor) {
         Context app = c.getApplicationContext();
-        if (tryFloating(app, "ocr", () -> FloatingResultWindow.showOcr(app, text, blocks, image, anchor))) {
-            return true;
-        }
-        return ResultActivity.showOcr(app, text, blocks, image, anchor);
+        boolean shown = ResultActivity.showOcr(app, text, blocks, image, anchor);
+        DiagnosticLog.i(app, "RESULT_ROUTER", "native_activity kind=ocr shown=" + shown);
+        return shown;
     }
 
     static boolean showViewText(Context c, String text, Bitmap image, Rect anchor) {
         Context app = c.getApplicationContext();
-        if (tryFloating(app, "view_text", () -> FloatingResultWindow.showViewText(app, text, image, anchor))) {
-            return true;
-        }
-        return ResultActivity.showViewText(app, text, image, anchor);
+        boolean shown = ResultActivity.showViewText(app, text, image, anchor);
+        DiagnosticLog.i(app, "RESULT_ROUTER", "native_activity kind=view_text shown=" + shown);
+        return shown;
     }
 
     static boolean showViewImage(Context c, Bitmap image, ViewNodeCandidate view, Rect anchor) {
         Context app = c.getApplicationContext();
-        if (tryFloating(app, "view_image", () -> FloatingResultWindow.showViewImage(app, image, view, anchor))) {
-            return true;
-        }
-        return ResultActivity.showViewImage(app, image, view, anchor);
+        boolean shown = ResultActivity.showViewImage(app, image, view, anchor);
+        DiagnosticLog.i(app, "RESULT_ROUTER", "native_activity kind=view_image shown=" + shown);
+        return shown;
     }
 
     /** Captured screenshot: show frozen overlay first, clean shade in background, Activity only as fallback. */
@@ -68,40 +67,29 @@ final class ResultSurfaceRouter {
     }
 
     /**
-     * View capture path: bootstrap the floating result above SystemUI and let it own shade cleanup.
-     * Only if no floating host can attach do we arm the legacy Activity-ready coordinator.
+     * View text always uses the Activity window because it requires the framework's real Editor
+     * selection stack. The result-ready coordinator preserves the existing SystemUI/shade behavior.
      */
     static boolean showCapturedViewText(Context c, String text, Bitmap image, Rect anchor,
                                         FvSystemPanelController.CaptureState shadeState) {
         Context app = c.getApplicationContext();
-        boolean captureExpanded = shadeState != null && shadeState.expandedAtCapture();
-        if (tryFloating(app, "captured_view_text",
-                () -> FloatingResultWindow.showViewText(app, text, image, anchor, captureExpanded))) {
-            return true;
-        }
-
         ResultReadyCoordinator.Ticket ticket = ResultReadyCoordinator.arm(
-                app, shadeState, "view_text_activity_fallback");
+                app, shadeState, "view_text_native_activity");
         boolean activity = ResultActivity.showViewText(app, text, image, anchor);
-        DiagnosticLog.i(app, "RESULT_ROUTER", "fallback kind=captured_view_text activity=" + activity);
+        DiagnosticLog.i(app, "RESULT_ROUTER", "native_activity kind=captured_view_text shown=" + activity);
         if (activity) return true;
         ResultReadyCoordinator.cancel(ticket, app, "view_text_activity_start_failed");
         return false;
     }
 
+    /** View image/meta also uses the Activity host so any displayed metadata remains selectable. */
     static boolean showCapturedViewImage(Context c, Bitmap image, ViewNodeCandidate view, Rect anchor,
                                          FvSystemPanelController.CaptureState shadeState) {
         Context app = c.getApplicationContext();
-        boolean captureExpanded = shadeState != null && shadeState.expandedAtCapture();
-        if (tryFloating(app, "captured_view_image",
-                () -> FloatingResultWindow.showViewImage(app, image, view, anchor, captureExpanded))) {
-            return true;
-        }
-
         ResultReadyCoordinator.Ticket ticket = ResultReadyCoordinator.arm(
-                app, shadeState, "view_image_activity_fallback");
+                app, shadeState, "view_image_native_activity");
         boolean activity = ResultActivity.showViewImage(app, image, view, anchor);
-        DiagnosticLog.i(app, "RESULT_ROUTER", "fallback kind=captured_view_image activity=" + activity);
+        DiagnosticLog.i(app, "RESULT_ROUTER", "native_activity kind=captured_view_image shown=" + activity);
         if (activity) return true;
         ResultReadyCoordinator.cancel(ticket, app, "view_image_activity_start_failed");
         return false;
@@ -115,7 +103,6 @@ final class ResultSurfaceRouter {
             DiagnosticLog.i(app, "RESULT_ROUTER", "floating kind=" + kind + " shown=" + shown);
             return shown;
         } catch (Throwable t) {
-            // A partially constructed/attached result must not survive a failed show attempt.
             try { FloatingResultWindow.dismissActive("show_failed_" + kind); } catch (Throwable ignored) {}
             DiagnosticLog.i(app, "RESULT_ROUTER", "floating exception kind=" + kind
                     + " error=" + ScreenCaptureBackend.safeMessage(t));
