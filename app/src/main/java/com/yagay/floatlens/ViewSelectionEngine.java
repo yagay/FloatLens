@@ -7,6 +7,7 @@ import android.graphics.RectF;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.MotionEvent;
+import android.view.WindowManager;
 
 /**
  * FV-style same-touch selection engine.
@@ -243,6 +244,24 @@ public final class ViewSelectionEngine {
         return FvOperationHintOverlay.Mode.SCREENSHOT;
     }
 
+    /**
+     * Exact FV FooViewService.D4() owner-coordinate source: read the active FloatIconView's current
+     * WindowManager.LayoutParams x/y/width directly. Do not reconstruct this from touch/probe data.
+     */
+    private RectF currentOwnerWindowBounds() {
+        if (ownerIcon == null) return null;
+        try {
+            android.view.ViewGroup.LayoutParams base = ownerIcon.getLayoutParams();
+            if (base instanceof WindowManager.LayoutParams wlp) {
+                int width = wlp.width > 0 ? wlp.width : Math.max(1, ownerIcon.getWidth());
+                int height = wlp.height > 0 ? wlp.height : Math.max(1, ownerIcon.getHeight());
+                return new RectF(wlp.x, wlp.y, wlp.x + width, wlp.y + height);
+            }
+        } catch (Throwable ignored) {
+        }
+        return ownerIcon.currentFvWindowBounds();
+    }
+
     private void updateOperationHint(float rawX, float rawY) {
         if (state != State.DIRECT || overlay == null) {
             hideOperationHint();
@@ -250,10 +269,7 @@ public final class ViewSelectionEngine {
         }
         if (operationOverlay == null) operationOverlay = new FvOperationHintOverlay(context);
 
-        // FV FooViewService.D4() reads the active FloatIconView's current WindowManager x/y.
-        // Use the owner icon's exact temporary-follow window bounds; keep the old transformer only
-        // as a compatibility fallback for callers that do not provide an owner icon.
-        RectF icon = ownerIcon == null ? null : ownerIcon.currentFvWindowBounds();
+        RectF icon = currentOwnerWindowBounds();
         if (icon == null || icon.isEmpty()) {
             icon = pointTransformer.iconBoundsForRaw(rawX, rawY);
         }
