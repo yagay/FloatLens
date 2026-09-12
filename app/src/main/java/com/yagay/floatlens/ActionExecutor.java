@@ -16,7 +16,10 @@ public final class ActionExecutor {
             case ActionId.SCREENSHOT -> ScreenshotController.capture(c,false);
             case ActionId.REGION_SCREENSHOT -> ScreenshotController.capture(c,true);
             case ActionId.OCR -> ViewSelectionOverlay.show(c);
-            case ActionId.AI_SCREEN -> AiScreenController.show(c);
+            case ActionId.AI_SCREEN -> {
+                DiagnosticLog.i(c,"AI_SCREEN","enter Circle Select workspace");
+                CircleSelectController.show(c);
+            }
             case ActionId.MOVE_ICON -> { FloatService f=FloatService.get(); if(f!=null) f.armPositionMove(); }
             case ActionId.CLICK_UNDER -> { FloatService f=FloatService.get(); if(f!=null) f.clickScreenUnderIcon(); }
             case ActionId.HIDE -> {
