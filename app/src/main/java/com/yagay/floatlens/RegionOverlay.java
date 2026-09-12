@@ -163,7 +163,17 @@ public final class RegionOverlay {
                     if (f != null) f.onCircleRecognizeStarted();
                     OcrEngine.recognize(getContext(), crop, anchor);
                 } else {
-                    ScreenshotController.save(getContext(), crop);
+                    // Region screenshots now use the same result surface as direct-selection
+                    // screenshots. This keeps one result flow and exposes OCR / Save in the same
+                    // place instead of silently saving the crop with no OCR entry point.
+                    boolean shown = ResultSurfaceRouter.showScreenshot(getContext(), crop, anchor);
+                    DiagnosticLog.i(getContext(), "REGION_SCREENSHOT",
+                            "result shown=" + shown + " bounds=" + anchor.toShortString());
+                    if (!shown) {
+                        DiagnosticLog.i(getContext(), "REGION_SCREENSHOT",
+                                "result surface failed; save crop as fallback");
+                        ScreenshotController.save(getContext(), crop);
+                    }
                 }
             } catch (Throwable t) {
                 if (ocr) {
