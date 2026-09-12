@@ -4,6 +4,7 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Rect;
+import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.WindowInsets;
 import android.view.WindowManager;
@@ -18,14 +19,26 @@ final class ResultUi {
     static final int TITLE_H_DP = 38;
     static final int ACTION_H_DP = 50;
     static final int ROOT_VPAD_DP = 16;
+    /** One radius for Screenshot / View / OCR result popups. */
+    static final int POPUP_RADIUS_DP = 18;
 
     static LinearLayout box(Context c) {
         LinearLayout box = new LinearLayout(c);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(c, BOX_HPAD_DP), dp(c, 8), dp(c, BOX_HPAD_DP), dp(c, 8));
-        box.setBackgroundColor(0xF0202124);
+        box.setBackground(popupBackground(c, 0xF0202124));
         box.setElevation(dp(c, 10));
+        // The Dialog window itself is transparent, so clipping the one shared result card gives
+        // Screenshot / View / OCR exactly the same visible rounded outline.
+        box.setClipToOutline(true);
         return box;
+    }
+
+    static android.graphics.drawable.Drawable popupBackground(Context c, int color) {
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(color);
+        background.setCornerRadius(dp(c, POPUP_RADIUS_DP));
+        return background;
     }
 
     static TextView heading(Context c, String text) {
