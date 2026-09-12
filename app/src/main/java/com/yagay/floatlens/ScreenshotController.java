@@ -6,8 +6,6 @@ import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.os.Environment;
 import android.provider.MediaStore;
-import android.view.WindowInsets;
-import android.view.WindowManager;
 import android.widget.Toast;
 
 import java.io.OutputStream;
@@ -78,7 +76,6 @@ public final class ScreenshotController {
                 }, "View OCR 失败，改用自由圈选", true);
     }
 
-    /** FV screenshot operation. This path never invokes OCR automatically. */
     public static void captureBoundsForRegion(Context c, Rect screenBounds) {
         if (screenBounds == null || screenBounds.isEmpty()) return;
         Context app = c.getApplicationContext();
@@ -162,7 +159,7 @@ public final class ScreenshotController {
         FloatSettings fs = new FloatSettings(app);
         ScreenshotCaptureSession.capture(app, fs, raw -> {
             try {
-                onCrop.accept(cropToScreenBounds(app, raw, screenBounds));
+                onCrop.accept(ScreenshotGeometry.cropScreenBounds(app, raw, screenBounds));
             } catch (Throwable t) {
                 Toast.makeText(app, failText, Toast.LENGTH_SHORT).show();
                 if (fallbackToFreeOcr) captureForOcr(app);
@@ -171,49 +168,14 @@ public final class ScreenshotController {
                 "截图失败: " + ScreenCaptureBackend.safeMessage(t), Toast.LENGTH_LONG).show());
     }
 
-    private static Bitmap cropToScreenBounds(Context app, Bitmap raw, Rect screenBounds) {
-        if (raw == null || screenBounds == null || screenBounds.isEmpty()) {
-            throw new IllegalArgumentException("invalid crop");
-        }
-        WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
-        Rect display = wm.getCurrentWindowMetrics().getBounds();
-        float sx = raw.getWidth() / (float) Math.max(1, display.width());
-        float sy = raw.getHeight() / (float) Math.max(1, display.height());
-        int left = Math.max(0, Math.min(raw.getWidth() - 1,
-                Math.round((screenBounds.left - display.left) * sx)));
-        int top = Math.max(0, Math.min(raw.getHeight() - 1,
-                Math.round((screenBounds.top - display.top) * sy)));
-        int right = Math.max(left + 1, Math.min(raw.getWidth(),
-                Math.round((screenBounds.right - display.left) * sx)));
-        int bottom = Math.max(top + 1, Math.min(raw.getHeight(),
-                Math.round((screenBounds.bottom - display.top) * sy)));
-        return Bitmap.createBitmap(raw, left, top, right - left, bottom - top);
-    }
-
     private static void getBitmap(Context c, Consumer<Bitmap> ok) {
         Context app = c.getApplicationContext();
         FloatSettings fs = new FloatSettings(app);
         ScreenshotCaptureSession.capture(app, fs,
-                raw -> ok.accept(maybeCropSystemBars(app, raw, fs)),
+                raw -> ok.accept(ScreenshotGeometry.maybeCropStatusBar(
+                        app, raw, fs.keepStatusBarInScreenshot())),
                 t -> Toast.makeText(app,
                         "截图失败: " + ScreenCaptureBackend.safeMessage(t), Toast.LENGTH_LONG).show());
-    }
-
-    private static Bitmap maybeCropSystemBars(Context c, Bitmap b, FloatSettings fs) {
-        if (b == null || fs.keepStatusBarInScreenshot()) return b;
-        try {
-            WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
-            var metrics = wm.getCurrentWindowMetrics();
-            var insets = metrics.getWindowInsets().getInsetsIgnoringVisibility(WindowInsets.Type.statusBars());
-            int screenH = metrics.getBounds().height();
-            int topPx = insets.top;
-            if (topPx <= 0 || screenH <= 0) return b;
-            float sy = b.getHeight() / (float) screenH;
-            int cropTop = Math.max(0, Math.min(b.getHeight() - 1, Math.round(topPx * sy)));
-            return Bitmap.createBitmap(b, 0, cropTop, b.getWidth(), b.getHeight() - cropTop);
-        } catch (Throwable ignored) {
-            return b;
-        }
     }
 
     static void save(Context c, Bitmap b) {
