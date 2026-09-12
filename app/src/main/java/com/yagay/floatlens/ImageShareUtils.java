@@ -69,12 +69,15 @@ public final class ImageShareUtils {
         Context app = c.getApplicationContext();
         try {
             SharedImage shared = prepareSharedImage(app, image);
-            Intent view = new Intent(Intent.ACTION_VIEW)
-                    .setDataAndType(shared.uri, "image/png")
-                    .setClipData(ClipData.newRawUri("FloatLens image", shared.uri))
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            Intent chooser = Intent.createChooser(view, "打开方式")
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            Intent view = new Intent(Intent.ACTION_VIEW);
+            view.setDataAndType(shared.uri, "image/png");
+            // Intent#setClipData returns void on Android, so keep the permission payload separate
+            // instead of chaining it after setDataAndType().
+            view.setClipData(ClipData.newRawUri("FloatLens image", shared.uri));
+            view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+            Intent chooser = Intent.createChooser(view, "打开方式");
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
             app.startActivity(chooser);
             DiagnosticLog.i(app, "IMAGE_OPEN_WITH", "OPEN " + shared.file.getName()
                     + " " + image.getWidth() + "x" + image.getHeight());
