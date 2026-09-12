@@ -30,7 +30,7 @@ public final class FloatLensApp extends Application implements Application.Activ
     @Override public void onActivityResumed(Activity activity) {
         install(activity);
         installResultCenterLock(activity);
-        if (activity instanceof ResultActivity) {
+        if (activity instanceof ResultActivity || activity instanceof CircleSelectActivity) {
             ResultReadyCoordinator.onResultActivityResumed(activity);
         }
         View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
@@ -43,8 +43,8 @@ public final class FloatLensApp extends Application implements Application.Activ
     private void install(Activity activity) {
         if (activity == null || activity.getWindow() == null) return;
         // ResultActivity owns its selectable text, native ActionMode and handle-drag lifecycle.
-        // Do not overwrite those callbacks with the app-wide FloatActionMenu installer.
-        if (activity instanceof ResultActivity) return;
+        // CircleSelectActivity delegates selection UI to CircleSelectOverlay.
+        if (activity instanceof ResultActivity || activity instanceof CircleSelectActivity) return;
         installRecursive(activity, activity.getWindow().getDecorView());
     }
 
@@ -178,20 +178,18 @@ public final class FloatLensApp extends Application implements Application.Activ
     @Override public void onActivityDestroyed(Activity activity) {
         FloatActionMenu.dismiss();
         FloatMenuAnchor.clear();
-        if (activity != null && activity.getWindow() != null) {
-            View decor = activity.getWindow().getDecorView();
-            View.OnLayoutChangeListener listener;
-            synchronized (resultCenterLocks) {
-                listener = resultCenterLocks.remove(activity);
-            }
-            if (decor != null && listener != null) {
-                try { decor.removeOnLayoutChangeListener(listener); } catch (Throwable ignored) {}
+        synchronized (resultCenterLocks) {
+            View.OnLayoutChangeListener listener = resultCenterLocks.remove(activity);
+            if (listener != null && activity.getWindow() != null) {
+                try { activity.getWindow().getDecorView().removeOnLayoutChangeListener(listener); }
+                catch (Throwable ignored) {}
             }
         }
     }
 
     @Override public void onActivityCreated(Activity activity, Bundle state) {}
     @Override public void onActivityStarted(Activity activity) {}
+    @Override public void onActivityPaused(Activity activity, android.os.PersistableBundle bundle) {}
     @Override public void onActivityStopped(Activity activity) {}
     @Override public void onActivitySaveInstanceState(Activity activity, Bundle outState) {}
 }
