@@ -24,6 +24,8 @@ import kotlin.math.ceil
 data class RecPreprocessResult(
     val tensorData: FloatArray,
     val shape: LongArray,
+    /** Width of each real resized crop before right-side batch padding. */
+    val contentWidths: IntArray,
 )
 
 object RecPreprocessor {
@@ -31,40 +33,34 @@ object RecPreprocessor {
     private const val MAX_IMG_W = 3200
 
     fun preprocessBatch(crops: List<Mat>): RecPreprocessResult {
-        // Convert BGR to RGB and resize to fixed height while preserving aspect ratio
         val resizedMats = mutableListOf<Mat>()
         for (crop in crops) {
-            // Convert BGR to RGB (model expects RGB input)
             val rgb = Mat()
             Imgproc.cvtColor(crop, rgb, Imgproc.COLOR_BGR2RGB)
             val h = rgb.rows()
             val w = rgb.cols()
             val aspectRatio = if (h > 0) w.toDouble() / h else 1.0
-            val newW = ceil(FIXED_HEIGHT * aspectRatio).toInt().coerceAtMost(MAX_IMG_W)
+            val newW = ceil(FIXED_HEIGHT * aspectRatio).toInt().coerceAtLeast(1).coerceAtMost(MAX_IMG_W)
             val dst = Mat()
             Imgproc.resize(rgb, dst, Size(newW.toDouble(), FIXED_HEIGHT.toDouble()), 0.0, 0.0, Imgproc.INTER_LINEAR)
             rgb.release()
             resizedMats.add(dst)
         }
 
-        // Convert to float and normalize: (x / 255 - 0.5) / 0.5 = x / 127.5 - 1
+        val contentWidths = IntArray(resizedMats.size) { index -> resizedMats[index].cols() }
         val floatMats = mutableListOf<Mat>()
         for (mat in resizedMats) {
             val floatMat = Mat(mat.rows(), mat.cols(), CvType.CV_32FC3)
             mat.convertTo(floatMat, CvType.CV_32F)
-            // Use Scalar with all 3 channels set — single-value Scalar only sets val[0]!
             Core.divide(floatMat, org.opencv.core.Scalar(127.5, 127.5, 127.5), floatMat)
             Core.subtract(floatMat, org.opencv.core.Scalar(1.0, 1.0, 1.0), floatMat)
-
             floatMats.add(floatMat)
-            mat.release()  // Release resized mat
+            mat.release()
         }
         resizedMats.clear()
 
         val maxW = floatMats.maxOf { it.cols() }
         val n = floatMats.size
-
-        // Pad to max width
         val paddedMats = mutableListOf<Mat>()
         for (mat in floatMats) {
             if (mat.cols() == maxW) {
@@ -80,7 +76,6 @@ object RecPreprocessor {
         }
         floatMats.clear()
 
-        // Build tensor data
         val channelSize = FIXED_HEIGHT * maxW
         val tensorData = FloatArray(n * 3 * channelSize)
         for (b in 0 until n) {
@@ -100,6 +95,7 @@ object RecPreprocessor {
         return RecPreprocessResult(
             tensorData = tensorData,
             shape = longArrayOf(n.toLong(), 3, FIXED_HEIGHT.toLong(), maxW.toLong()),
+            contentWidths = contentWidths,
         )
     }
 }
