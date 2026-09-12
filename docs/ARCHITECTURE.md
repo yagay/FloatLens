@@ -100,6 +100,11 @@ When SystemUI is expanded, a text-capable View result uses a two-stage host:
 Fallback only. It reuses shared UI/selection/OCR components and must not become a second independent
 result implementation.
 
+### `ResultOverlay`
+A package-private source-compatibility adapter used by `EditableRegionOverlay`. It contains no window,
+selection or result implementation and immediately forwards to `ResultSurfaceRouter`. New code must
+not depend on this adapter.
+
 ### `ResultUi`
 Shared sizing, title/button and result-layout primitives.
 
@@ -129,7 +134,7 @@ Do not add another static "next OCR result" mechanism to an Activity or View.
 ## 6. View selection
 
 ### `ViewSelectionEngine`
-Single owner of FV direct-selection state:
+Single owner of FV drag/direct-selection state:
 
 - probe position;
 - 400 ms transition into DIRECT;
@@ -139,7 +144,7 @@ Single owner of FV direct-selection state:
 - FV-compatible 5 ms release action delay.
 
 ### `ViewHoverOverlay`
-Candidate layer only:
+Candidate layer for the FV drag/direct-selection path only:
 
 - snapshot/cache Accessibility candidates;
 - cached hit-testing on MOVE;
@@ -147,6 +152,12 @@ Candidate layer only:
 - lightweight frame for large/full-screen candidate display.
 
 It must not own another direct-region gesture state machine.
+
+### `ViewSelectionOverlay`
+Explicit full-screen picker launched by `ActionId.OCR`. This is a separate user entry point from the
+FV drag/direct-selection state machine, not another implementation of its region state. It may scan
+the live Accessibility View under the finger, but it must reuse `FvOverlayWindowHost` for hosting and
+`ResultSurfaceRouter` / `ScreenshotController` for output.
 
 ## 7. Circle Select
 
