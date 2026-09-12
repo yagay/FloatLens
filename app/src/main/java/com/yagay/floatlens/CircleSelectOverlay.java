@@ -20,7 +20,7 @@ import android.widget.Magnifier;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Frozen-screen Circle Select workspace backed by one cached OcrDocument. */
+/** Frozen-screen Circle Select workspace with a fast per-session text index. */
 public final class CircleSelectOverlay {
     private static WorkspaceView active;
 
@@ -52,7 +52,7 @@ public final class CircleSelectOverlay {
 
         active = view;
         if (!shadeExpanded) view.promoteKeyFocus("initial_no_shade");
-        view.startDocumentOcr();
+        view.startRecognitionSession();
         DiagnosticLog.i(app, "CIRCLE_SELECT", "overlay shown "
                 + screenshot.getWidth() + "x" + screenshot.getHeight()
                 + " bounds=" + contentBounds.toShortString()
@@ -84,6 +84,8 @@ public final class CircleSelectOverlay {
         private static final long RECT_SNAP_PREVIEW_MS = 170L;
         private static final float HANDLE_SNAP_DISTANCE_DP = 96f;
         private static final float TEXT_TAP_SNAP_DISTANCE_DP = 18f;
+        private static final float ROI_RESULT_SNAP_DISTANCE_DP = 42f;
+        private static final float TAP_GESTURE_SLOP_DP = 18f;
         private static final long SYSTEM_NAV_FOCUS_LOSS_DELAY_MS = 80L;
 
         private final Context context;
@@ -104,7 +106,12 @@ public final class CircleSelectOverlay {
         private final RectF snappedCircleRect = new RectF();
         private final RectF closeRect = new RectF();
 
-        private boolean ocrReady;
+        private CircleRecognitionSession recognitionSession;
+        private OcrDocument pendingDocument;
+        private boolean fastIndexReady;
+        private boolean tapRefining;
+        private float refinementTapX;
+        private float refinementTapY;
         private boolean closed;
         private boolean circleResolving;
         private boolean hadWindowFocus;
@@ -159,25 +166,66 @@ public final class CircleSelectOverlay {
             });
         }
 
-        void startDocumentOcr() {
-            OcrEngine.recognizeDocument(context, screenshot, new OcrEngine.DocumentCallback() {
-                @Override public void onSuccess(OcrDocument result) {
-                    if (closed) return;
-                    selection.setDocument(result);
-                    ocrReady = true;
-                    DiagnosticLog.i(context, "CIRCLE_SELECT", "document engine=" + result.engine()
-                            + " chars=" + selection.size() + " lines=" + result.lines().size());
-                    invalidate();
-                }
+        void startRecognitionSession() {
+            recognitionSession = new CircleRecognitionSession(context, screenshot,
+                    new CircleRecognitionSession.Callback() {
+                        @Override public void onUpdate(OcrDocument document,
+                                                       CircleRecognitionSession.Stage stage,
+                                                       boolean ready) {
+                            if (closed) return;
+                            fastIndexReady = fastIndexReady || ready;
+                            if (stage == CircleRecognitionSession.Stage.ROI_PRECISE) {
+                                tapRefining = false;
+                                pendingDocument = null;
+                                selection.setDocument(document);
+                                int hit = selection.findSelectionWord(refinementTapX, refinementTapY,
+                                        getWidth(), getHeight(), dp(ROI_RESULT_SNAP_DISTANCE_DP));
+                                if (hit >= 0) {
+                                    selection.selectSingle(hit);
+                                    invalidate();
+                                    post(WorkspaceView.this::showSelectionMenu);
+                                } else {
+                                    invalidate();
+                                }
+                                DiagnosticLog.i(context, "CIRCLE_SELECT", "roi update chars="
+                                        + selection.size() + " hit=" + hit);
+                                return;
+                            }
 
-                @Override public void onFailure(Throwable error) {
-                    if (closed) return;
-                    ocrReady = true;
-                    selection.setChars(List.of());
-                    DiagnosticLog.i(context, "CIRCLE_SELECT", "document OCR unavailable=" + safe(error));
-                    invalidate();
-                }
+                            if (!selection.hasSelection() && mode == MODE_NONE) {
+                                selection.setDocument(document);
+                                pendingDocument = null;
+                            } else {
+                                pendingDocument = document;
+                            }
+                            DiagnosticLog.i(context, "CIRCLE_SELECT", "index stage=" + stage
+                                    + " chars=" + document.chars().size()
+                                    + " applied=" + (pendingDocument == null)
+                                    + " ready=" + fastIndexReady);
+                            invalidate();
+                        }
+
+                        @Override public void onFailure(CircleRecognitionSession.Stage stage,
+                                                        Throwable error, boolean ready) {
+                            if (closed) return;
+                            fastIndexReady = fastIndexReady || ready;
+                            if (stage == CircleRecognitionSession.Stage.ROI_PRECISE) tapRefining = false;
+                            DiagnosticLog.i(context, "CIRCLE_SELECT", "index failure stage=" + stage
+                                    + " error=" + safe(error) + " ready=" + fastIndexReady);
+                            invalidate();
+                        }
+                    });
+            // Let the overlay attach and draw before walking the accessibility tree.
+            post(() -> {
+                if (!closed && recognitionSession != null) recognitionSession.start();
             });
+        }
+
+        private void applyPendingIfIdle() {
+            if (pendingDocument == null || selection.hasSelection() || mode != MODE_NONE) return;
+            selection.setDocument(pendingDocument);
+            pendingDocument = null;
+            invalidate();
         }
 
         @Override public void onWindowFocusChanged(boolean hasWindowFocus) {
@@ -218,8 +266,10 @@ public final class CircleSelectOverlay {
 
             String status;
             if (circleResolving) status = "正在生成圈画截图…";
-            else if (!ocrReady) status = "正在识别图片文字… · 圈画仍可截图";
-            else if (selection.isEmpty()) status = "未检测到可选文字 · 圈画截图";
+            else if (tapRefining) status = "正在精识别点击位置… · 圈画仍是截图";
+            else if (!fastIndexReady && !selection.isEmpty()) status = "View 文字已可选 · 正在补充图片文字 · 圈画截图";
+            else if (!fastIndexReady) status = "正在建立快速文字索引… · 圈画截图";
+            else if (selection.isEmpty()) status = "未检测到可选文字 · 轻点可局部精识别 · 圈画截图";
             else status = "点按文字提取 · 手柄调整范围 · 圈画截图";
             canvas.drawText(status, dp(16), dp(34), textPaint);
             drawClose(canvas);
@@ -258,6 +308,7 @@ public final class CircleSelectOverlay {
             float x = e.getX(), y = e.getY();
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN -> {
+                    applyPendingIfIdle();
                     snappedCircleRect.setEmpty();
                     if (closeRect.contains(x, y)) {
                         dismissMagnifier(); closePressed = true; return true;
@@ -318,6 +369,7 @@ public final class CircleSelectOverlay {
                     }
                     if (mode == MODE_CIRCLE) {
                         circlePoints.add(new PointF(x, y));
+                        ArrayList<PointF> gesture = new ArrayList<>(circlePoints);
                         RectF snapped = CircleCropGeometry.snapToRectangle(
                                 circlePoints, getWidth(), getHeight(), getResources().getDisplayMetrics().density);
                         circlePoints.clear(); mode = MODE_NONE;
@@ -326,7 +378,11 @@ public final class CircleSelectOverlay {
                             circleResolving = true;
                             invalidate();
                             postDelayed(() -> finishSnappedCircle(new RectF(snapped)), RECT_SNAP_PREVIEW_MS);
-                        } else invalidate();
+                        } else if (isTapLike(gesture)) {
+                            startTapRefinement(x, y);
+                        } else {
+                            invalidate();
+                        }
                         return true;
                     }
                     if (mode == MODE_TEXT || mode == MODE_START_HANDLE || mode == MODE_END_HANDLE) {
@@ -346,6 +402,50 @@ public final class CircleSelectOverlay {
                 }
             }
             return true;
+        }
+
+        private boolean isTapLike(List<PointF> points) {
+            if (points == null || points.isEmpty()) return false;
+            float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
+            float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
+            for (PointF p : points) {
+                if (p == null) continue;
+                minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+                maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+            }
+            float slop = dp(TAP_GESTURE_SLOP_DP);
+            return minX != Float.MAX_VALUE && maxX - minX <= slop && maxY - minY <= slop;
+        }
+
+        private void startTapRefinement(float viewX, float viewY) {
+            if (recognitionSession == null || tapRefining || closed) {
+                invalidate();
+                return;
+            }
+            Rect region = imageRectAroundTap(viewX, viewY);
+            if (region == null || region.isEmpty()) {
+                invalidate();
+                return;
+            }
+            refinementTapX = viewX;
+            refinementTapY = viewY;
+            tapRefining = true;
+            DiagnosticLog.i(context, "CIRCLE_SELECT", "tap miss -> roi precise "
+                    + region.toShortString());
+            invalidate();
+            recognitionSession.refine(region);
+        }
+
+        private Rect imageRectAroundTap(float viewX, float viewY) {
+            if (getWidth() <= 0 || getHeight() <= 0) return null;
+            float halfW = Math.min(240f, getWidth() * 0.20f);
+            float halfH = Math.min(100f, getHeight() * 0.055f);
+            RectF viewRect = new RectF(
+                    Math.max(0f, viewX - halfW),
+                    Math.max(0f, viewY - halfH),
+                    Math.min(getWidth(), viewX + halfW),
+                    Math.min(getHeight(), viewY + halfH));
+            return imageRectFromView(viewRect);
         }
 
         private void updateSelectionEndpoint(int hit) {
@@ -379,6 +479,17 @@ public final class CircleSelectOverlay {
             try { getLocationOnScreen(loc); } catch (Throwable ignored) { return null; }
             return new Rect(Math.round(union.left) + loc[0], Math.round(union.top) + loc[1],
                     Math.round(union.right) + loc[0], Math.round(union.bottom) + loc[1]);
+        }
+
+        private Rect imageRectFromView(RectF viewRect) {
+            if (viewRect == null || viewRect.isEmpty() || getWidth() <= 0 || getHeight() <= 0) return null;
+            float sx = screenshot.getWidth() / (float) getWidth();
+            float sy = screenshot.getHeight() / (float) getHeight();
+            int left = Math.max(0, Math.min(screenshot.getWidth() - 1, (int) Math.floor(viewRect.left * sx)));
+            int top = Math.max(0, Math.min(screenshot.getHeight() - 1, (int) Math.floor(viewRect.top * sy)));
+            int right = Math.max(left + 1, Math.min(screenshot.getWidth(), (int) Math.ceil(viewRect.right * sx)));
+            int bottom = Math.max(top + 1, Math.min(screenshot.getHeight(), (int) Math.ceil(viewRect.bottom * sy)));
+            return new Rect(left, top, right, bottom);
         }
 
         private Rect screenRectFromView(RectF viewRect) {
@@ -452,6 +563,9 @@ public final class CircleSelectOverlay {
         void close(String reason) {
             if (closed) return;
             closed = true;
+            CircleRecognitionSession session = recognitionSession;
+            recognitionSession = null;
+            if (session != null) session.cancel();
             dismissMagnifier(); magnifier = null;
             FloatActionMenu.dismiss(); FloatMenuAnchor.clear();
             removeCallbacks(null);
