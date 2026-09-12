@@ -56,15 +56,16 @@ public final class CircleSelectController {
             // The frozen 2032 workspace already hides the live shade. Clean SystemUI in the
             // background; keep the workspace non-key-focusable until BACK retries are finished so
             // the global BACK action cannot accidentally close the Circle workspace itself.
-            CircleShadeCoordinator.prepare(app, shadeState.expandedAtCapture(), collapsed -> {
-                synchronized (CircleSelectController.class) {
-                    if (gen != generation) return;
-                }
-                DiagnosticLog.i(app, "CIRCLE_SELECT", "background shade cleanup collapsed="
-                        + collapsed + " gen=" + gen);
-                CircleSelectOverlay.promoteActiveFocus(
-                        collapsed ? "shade_collapsed" : "shade_cleanup_exhausted");
-            });
+            OverlayShadeCoordinator.cleanup(app, shadeState.expandedAtCapture(), "circle_select",
+                    collapsed -> {
+                        synchronized (CircleSelectController.class) {
+                            if (gen != generation) return;
+                        }
+                        DiagnosticLog.i(app, "CIRCLE_SELECT", "background shade cleanup collapsed="
+                                + collapsed + " gen=" + gen);
+                        CircleSelectOverlay.promoteActiveFocus(
+                                collapsed ? "shade_collapsed" : "shade_cleanup_exhausted");
+                    });
         }, error -> {
             restore(service, "capture_failed");
             Toast.makeText(app, "圈画识别截图失败: " + safe(error), Toast.LENGTH_LONG).show();
