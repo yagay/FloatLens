@@ -103,16 +103,29 @@ public final class ScreenshotController {
             DiagnosticLog.i(app, "FV_REGION_CAPTURE", "crop=" + crop.getWidth() + "x" + crop.getHeight()
                     + " bounds=" + bounds);
 
-            // startActivity() returning true is not the same as FV's candidate dialog being shown.
-            // Arm the lifecycle bridge before launching; it will deliver after ResultActivity's
-            // first real frame. Overlay fallback remains immediate because it is already attached.
+            // Primary path now matches Circle Select: the frozen result is attached immediately via
+            // FvOverlayWindowHost (TYPE_ACCESSIBILITY_OVERLAY when accessibility is available), then
+            // the real SystemUI shade is cleaned underneath without blocking the visible result.
+            boolean overlayShown = ScreenshotResultOverlay.show(app, crop, bounds);
+            DiagnosticLog.i(app, "FV_REGION_CAPTURE", "result overlay shown=" + overlayShown);
+            if (overlayShown) {
+                OverlayShadeCoordinator.cleanup(app, shadeState.expandedAtCapture(),
+                        "screenshot_result", collapsed ->
+                                DiagnosticLog.i(app, "SCREENSHOT_RESULT",
+                                        "background shade cleanup collapsed=" + collapsed));
+                return;
+            }
+
+            // Safe fallback: keep the previous Activity result path if both overlay hosts fail.
             ResultReadyCoordinator.Ticket ticket = ResultReadyCoordinator.arm(
-                    app, shadeState, "fv_region_result_shown");
+                    app, shadeState, "fv_region_result_fallback");
             if (!ScreenshotResultActivity.show(app, crop, bounds)) {
                 ResultReadyCoordinator.cancel(ticket, app, "result_activity_start_failed");
-                ScreenshotResultOverlay.show(app, crop, bounds);
+                DiagnosticLog.i(app, "FV_REGION_CAPTURE",
+                        "all result surfaces failed; save image as final fallback");
+                save(app, crop);
                 FvSystemPanelController.onResultReady(
-                        app, shadeState, "fv_region_overlay_shown");
+                        app, shadeState, "fv_region_saved_fallback");
             }
         }, "区域截图失败", false);
     }
