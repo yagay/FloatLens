@@ -11,6 +11,7 @@ import android.graphics.PointF;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
@@ -40,8 +41,10 @@ public final class CircleSelectOverlay {
                 Math.max(1, contentBounds.width()),
                 Math.max(1, contentBounds.height()),
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                // Circle Select is a modal, full-screen interaction surface. Keep it focusable while
+                // active so KEYCODE_BACK reaches WorkspaceView and behaves exactly like the × button.
+                // The window is removed on close, so ordinary app Back handling is immediately restored.
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
@@ -50,6 +53,11 @@ public final class CircleSelectOverlay {
         try {
             wm.addView(view, lp);
             active = view;
+            view.post(() -> {
+                if (!view.isAttachedToWindow()) return;
+                boolean focused = view.requestFocus();
+                DiagnosticLog.i(app, "CIRCLE_SELECT", "key focus requested=" + focused);
+            });
             view.startSpatialOcr();
             DiagnosticLog.i(app, "CIRCLE_SELECT", "overlay shown "
                     + screenshot.getWidth() + "x" + screenshot.getHeight()
@@ -114,7 +122,8 @@ public final class CircleSelectOverlay {
             this.screenshot = screenshot;
             this.onClosed = onClosed;
             setClickable(true);
-            setFocusable(false);
+            setFocusable(true);
+            setFocusableInTouchMode(true);
 
             shadePaint.setColor(0x33000000);
             selectedPaint.setColor(0x884285F4);
@@ -210,6 +219,20 @@ public final class CircleSelectOverlay {
             c.drawCircle(first.left, first.bottom + stem, radius, handlePaint);
             c.drawLine(last.right, last.bottom, last.right, last.bottom + stem, handlePaint);
             c.drawCircle(last.right, last.bottom + stem, radius, handlePaint);
+        }
+
+        @Override public boolean dispatchKeyEvent(KeyEvent event) {
+            if (event != null && event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+                // Consume both DOWN and UP so the Back event never falls through to the app under
+                // the frozen screenshot. Close only once on the uncancelled UP, matching a normal
+                // Activity Back press and the existing × close path.
+                if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled() && !closed) {
+                    DiagnosticLog.i(context, "CIRCLE_SELECT", "back pressed -> close");
+                    close("back");
+                }
+                return true;
+            }
+            return super.dispatchKeyEvent(event);
         }
 
         @Override public boolean onTouchEvent(MotionEvent e) {
