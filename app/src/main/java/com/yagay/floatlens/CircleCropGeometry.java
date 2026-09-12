@@ -6,7 +6,7 @@ import android.graphics.RectF;
 
 import java.util.List;
 
-/** Pure free-hand-to-rectangle and view-to-bitmap crop geometry for Circle Select. */
+/** Circle-specific freehand-to-rectangle policy; bitmap cropping is shared by SelectionCropper. */
 final class CircleCropGeometry {
     static RectF snapToRectangle(List<PointF> points, int viewWidth, int viewHeight, float density) {
         if (points == null || points.size() < 4 || viewWidth <= 0 || viewHeight <= 0) return null;
@@ -33,22 +33,7 @@ final class CircleCropGeometry {
     }
 
     static Bitmap crop(Bitmap source, RectF viewRect, int viewWidth, int viewHeight) {
-        if (source == null || source.isRecycled() || viewRect == null || viewRect.isEmpty()
-                || viewWidth <= 0 || viewHeight <= 0) return null;
-        float sx = source.getWidth() / (float) viewWidth;
-        float sy = source.getHeight() / (float) viewHeight;
-        int left = clamp((int) Math.floor(viewRect.left * sx), 0, source.getWidth() - 1);
-        int top = clamp((int) Math.floor(viewRect.top * sy), 0, source.getHeight() - 1);
-        int right = clamp((int) Math.ceil(viewRect.right * sx), left + 1, source.getWidth());
-        int bottom = clamp((int) Math.ceil(viewRect.bottom * sy), top + 1, source.getHeight());
-        int w = right - left;
-        int h = bottom - top;
-        if (w <= 1 || h <= 1) return null;
-        return Bitmap.createBitmap(source, left, top, w, h);
-    }
-
-    private static int clamp(int v, int min, int max) {
-        return Math.max(min, Math.min(max, v));
+        return SelectionCropper.cropRect(source, viewRect, viewWidth, viewHeight);
     }
 
     private CircleCropGeometry() {}
