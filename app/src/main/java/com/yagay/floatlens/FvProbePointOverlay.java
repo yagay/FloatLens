@@ -29,7 +29,7 @@ public final class FvProbePointOverlay {
     private static final int FV_READY_YELLOW = 0xFFFFFF00;
 
     private final Context context;
-    private final WindowManager wm;
+    private final FvOverlayWindowHost windowHost;
     private final int sizePx;
     private final ProbeView view;
     private final WindowManager.LayoutParams lp;
@@ -40,7 +40,7 @@ public final class FvProbePointOverlay {
 
     public FvProbePointOverlay(Context c) {
         context = c.getApplicationContext();
-        wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+        windowHost = new FvOverlayWindowHost(context);
         float density = Math.max(.1f, context.getResources().getDisplayMetrics().density);
         sizePx = Math.max(1, Math.round(FV_PROBE_SIZE_DP * density));
 
@@ -89,15 +89,13 @@ public final class FvProbePointOverlay {
         if (!attached) {
             lp.x = targetX;
             lp.y = targetY;
-            try {
-                wm.addView(view, lp);
-                attached = true;
+            attached = windowHost.add(view, lp, "probe");
+            if (attached) {
                 visible = true;
                 DiagnosticLog.i(context, "FV_PROBE_VIEW",
                         "ATTACH size=" + sizePx + " window=" + lp.x + "," + lp.y
-                                + " state=" + state);
-            } catch (Throwable t) {
-                DiagnosticLog.i(context, "FV_PROBE_VIEW", "attach failed=" + t);
+                                + " state=" + state
+                                + " accessibilityHost=" + windowHost.isAccessibilityHosted());
             }
         } else {
             if (!visible) {
@@ -107,11 +105,7 @@ public final class FvProbePointOverlay {
             if (lp.x != targetX || lp.y != targetY) {
                 lp.x = targetX;
                 lp.y = targetY;
-                try {
-                    wm.updateViewLayout(view, lp);
-                } catch (Throwable t) {
-                    DiagnosticLog.i(context, "FV_PROBE_VIEW", "move failed=" + t);
-                }
+                windowHost.update(view, lp, "probe");
             }
         }
 
@@ -140,9 +134,7 @@ public final class FvProbePointOverlay {
 
     public void close() {
         visible = false;
-        if (attached) {
-            try { wm.removeView(view); } catch (Throwable ignored) {}
-        }
+        if (attached) windowHost.remove(view, "probe");
         attached = false;
     }
 
