@@ -10,7 +10,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 
-/** FloatLens region frame; drawing geometry follows the behavior observed in FV m2/g. */
+/** Region-drag frame. FV View readiness colors do not apply to this frame. */
 final class FlRegionFrameOverlay {
     private final Context context;
     private final FlOverlayWindowHost windowHost;
@@ -43,9 +43,8 @@ final class FlRegionFrameOverlay {
         frame.setScreenRect(screenRect);
     }
 
-    void setVisualState(SelectionVisualState state) {
-        frame.setVisualState(state);
-    }
+    /** Compatibility only: region dragging does not participate in View TRACKING/READY colors. */
+    void setVisualState(SelectionVisualState ignored) { }
 
     void close() {
         if (!attached) {
@@ -63,8 +62,8 @@ final class FlRegionFrameOverlay {
         attached = windowHost.add(frame, lp, "region_frame");
         if (attached) {
             DiagnosticLog.i(context, "FL_REGION_FRAME",
-                    "ATTACH single-window 2dp state=" + frame.state()
-                            + " accessibilityHost=" + windowHost.isAccessibilityHosted());
+                    "ATTACH single-window fixed-yellow-2dp accessibilityHost="
+                            + windowHost.isAccessibilityHosted());
         }
     }
 
@@ -72,7 +71,6 @@ final class FlRegionFrameOverlay {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Rect screenRect = new Rect();
         private final int[] windowOrigin = new int[2];
-        private SelectionVisualState state = SelectionVisualState.TRACKING;
 
         FrameView(Context c) {
             super(c);
@@ -82,21 +80,7 @@ final class FlRegionFrameOverlay {
             paint.setStrokeJoin(Paint.Join.ROUND);
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setStrokeWidth(dp(c, 2f));
-            updateColor();
-        }
-
-        SelectionVisualState state() { return state; }
-
-        void setVisualState(SelectionVisualState next) {
-            if (next == null) next = SelectionVisualState.TRACKING;
-            if (state == next) return;
-            state = next;
-            updateColor();
-            invalidate();
-        }
-
-        private void updateColor() {
-            paint.setColor(SelectionVisuals.frameColor(state));
+            paint.setColor(SelectionVisuals.FL_CONFIRMED_COLOR);
         }
 
         void setScreenRect(Rect rect) {
