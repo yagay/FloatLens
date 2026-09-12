@@ -4,6 +4,7 @@ import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.view.HapticFeedbackConstants;
 import android.widget.ImageView;
@@ -14,18 +15,30 @@ import androidx.core.content.FileProvider;
 import java.io.File;
 import java.io.FileOutputStream;
 
-/** Shared long-press image sharing for every result popup. */
+/** Shared image actions for every result popup. */
 public final class ImageShareUtils {
     private static final String DIR = "shared_images";
 
-    public static void attachLongPressShare(Context c, ImageView view, Bitmap image) {
+    /**
+     * Long-press no longer launches sharing immediately. It opens the reusable FloatLens image
+     * action menu so Activity-backed result windows and TYPE_APPLICATION_OVERLAY fallbacks behave
+     * the same way.
+     */
+    public static void attachLongPressMenu(Context c, ImageView view, Bitmap image) {
         if (c == null || view == null || image == null || image.isRecycled()) return;
         view.setLongClickable(true);
         view.setOnLongClickListener(v -> {
-            try { v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); } catch (Throwable ignored) {}
-            share(c, image);
+            try { v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); }
+            catch (Throwable ignored) {}
+            Rect anchor = FloatMenuAnchor.forView(v);
+            ImageActionMenu.show(c, image, anchor);
             return true;
         });
+    }
+
+    /** Compatibility alias: all existing callers now get the long-press menu automatically. */
+    public static void attachLongPressShare(Context c, ImageView view, Bitmap image) {
+        attachLongPressMenu(c, view, image);
     }
 
     public static void share(Context c, Bitmap image) {
