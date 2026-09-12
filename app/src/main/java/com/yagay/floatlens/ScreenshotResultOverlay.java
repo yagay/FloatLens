@@ -16,7 +16,6 @@ import android.widget.TextView;
 /** FV-style screenshot result surface hosted above SystemUI whenever accessibility is available. */
 public final class ScreenshotResultOverlay {
     private static final int MARGIN_DP = 12;
-    private static final int GAP_DP = 10;
     private static OverlaySession active;
 
     /**
@@ -81,10 +80,11 @@ public final class ScreenshotResultOverlay {
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.TOP | Gravity.START;
-        int[] xy = choosePosition(app, usable, selected, width, height);
-        lp.x = xy[0];
-        lp.y = xy[1];
+        // Keep the result surface in one stable place. The anchor is still retained for OCR, but it
+        // no longer changes the popup location from one capture to the next.
+        lp.gravity = Gravity.CENTER;
+        lp.x = 0;
+        lp.y = 0;
 
         if (!host.add(box, lp, "screenshot_result")) {
             DiagnosticLog.i(app, "SCREENSHOT_RESULT", "add failed all hosts");
@@ -94,7 +94,7 @@ public final class ScreenshotResultOverlay {
         OverlaySession session = new OverlaySession(app, host, box, image, selected);
         active = session;
         DiagnosticLog.i(app, "SCREENSHOT_RESULT", "SHOW size=" + width + "x" + height
-                + " pos=" + lp.x + "," + lp.y
+                + " pos=center"
                 + " anchor=" + (selected == null ? "none" : selected.toShortString())
                 + " accessibilityHost=" + host.isAccessibilityHosted()
                 + " type=" + lp.type);
@@ -154,44 +154,6 @@ public final class ScreenshotResultOverlay {
         } catch (Throwable ignored) {}
         return new Rect(0, 0, c.getResources().getDisplayMetrics().widthPixels,
                 c.getResources().getDisplayMetrics().heightPixels);
-    }
-
-    private static int[] choosePosition(Context c, Rect usable, Rect anchor, int w, int h) {
-        int margin = dp(c, MARGIN_DP), gap = dp(c, GAP_DP);
-        int minX = usable.left + margin;
-        int maxX = Math.max(minX, usable.right - margin - w);
-        int minY = usable.top + margin;
-        int maxY = Math.max(minY, usable.bottom - margin - h);
-        if (anchor == null || anchor.isEmpty() || !Rect.intersects(usable, anchor)) {
-            return new int[]{clamp(usable.centerX() - w / 2, minX, maxX),
-                    clamp(usable.centerY() - h / 2, minY, maxY)};
-        }
-
-        int cx = anchor.centerX(), cy = anchor.centerY();
-        int[][] raw = {
-                {cx - w / 2, anchor.bottom + gap},
-                {cx - w / 2, anchor.top - gap - h},
-                {anchor.right + gap, cy - h / 2},
-                {anchor.left - gap - w, cy - h / 2}
-        };
-        long bestOverlap = Long.MAX_VALUE;
-        int bestShift = Integer.MAX_VALUE;
-        int bx = minX, by = minY;
-        for (int[] p : raw) {
-            int x = clamp(p[0], minX, maxX);
-            int y = clamp(p[1], minY, maxY);
-            Rect placed = new Rect(x, y, x + w, y + h);
-            Rect overlap = new Rect(placed);
-            long area = overlap.intersect(anchor) ? (long) overlap.width() * overlap.height() : 0L;
-            int shift = Math.abs(x - p[0]) + Math.abs(y - p[1]);
-            if (area < bestOverlap || (area == bestOverlap && shift < bestShift)) {
-                bestOverlap = area;
-                bestShift = shift;
-                bx = x;
-                by = y;
-            }
-        }
-        return new int[]{bx, by};
     }
 
     private static int dp(Context c, int v) {
