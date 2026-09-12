@@ -16,9 +16,10 @@ public final class CircleSelectController {
         long gen = ++generation;
         CircleSelectOverlay.dismissActive("restart");
 
-        // FV snapshots whether SystemUI's notification shade is expanded before capture. It closes
-        // the live shade only after the frozen Circle Select UI is ready, never before the bitmap.
-        final boolean shadeExpandedBeforeCapture = FvSystemPanelController.notificationShadeExpanded();
+        // Central FV-style state token: snapshot at capture start, but let Accessibility keep the
+        // shared notification state alive until the frozen candidate surface is actually shown.
+        final FvSystemPanelController.CaptureState shadeState = FvSystemPanelController.beginCapture(
+                app, "circle_select");
 
         FloatService service = FloatService.get();
         if (service != null) {
@@ -27,7 +28,7 @@ public final class CircleSelectController {
         }
 
         DiagnosticLog.i(app, "CIRCLE_SELECT", "capture begin gen=" + gen
-                + " shadeExpanded=" + shadeExpandedBeforeCapture);
+                + " shadeExpanded=" + shadeState.expandedAtCapture());
         MAIN.postDelayed(() -> CircleSelectFrame.capture(app, bitmap -> {
             synchronized (CircleSelectController.class) {
                 if (gen != generation) {
@@ -41,9 +42,9 @@ public final class CircleSelectController {
             }
             boolean shown = CircleSelectOverlay.show(app, bitmap, () -> restore(service, "closed"));
             if (shown) {
-                // Mirrors FV onCircelCandidateDialogShown -> w2.n() -> global action 15.
-                FvSystemPanelController.dismissAfterCapture(
-                        app, shadeExpandedBeforeCapture, "circle_candidate_shown");
+                // Re-verified FV order: candidate/frozen UI first, then the shared panel-close path.
+                FvSystemPanelController.onResultReady(
+                        app, shadeState, "circle_candidate_shown");
             } else {
                 if (!bitmap.isRecycled()) bitmap.recycle();
                 restore(service, "overlay_failed");
