@@ -37,7 +37,7 @@ public final class FvPointerOperationHintOverlay {
     private static final int FV_PICTURE = 0xFFC2185B; // window_picture_1
 
     private final Context context;
-    private final WindowManager wm;
+    private final FvOverlayWindowHost windowHost;
     private final int hintHeightPx;
     private final int probeXOffsetPx;
     private final int iconSizePx;
@@ -53,7 +53,7 @@ public final class FvPointerOperationHintOverlay {
 
     public FvPointerOperationHintOverlay(Context c) {
         context = c.getApplicationContext();
-        wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+        windowHost = new FvOverlayWindowHost(context);
 
         hintHeightPx = dp(HINT_HEIGHT_DP);
         probeXOffsetPx = dp(PROBE_X_OFFSET_DP);
@@ -110,25 +110,17 @@ public final class FvPointerOperationHintOverlay {
         lp.y = nextY;
 
         if (!attached) {
-            try {
-                wm.addView(root, lp);
-                attached = true;
+            attached = windowHost.add(root, lp, "pointer_hint");
+            if (attached) {
                 DiagnosticLog.i(context, "FV_POINTER_HINT",
                         "ATTACH pos=" + lp.x + "," + lp.y
-                                + " height=" + hintHeightPx + " xOffset=" + probeXOffsetPx);
-            } catch (Throwable t) {
-                DiagnosticLog.i(context, "FV_POINTER_HINT", "attach failed=" + t);
+                                + " height=" + hintHeightPx + " xOffset=" + probeXOffsetPx
+                                + " accessibilityHost=" + windowHost.isAccessibilityHosted());
             }
             return;
         }
 
-        if (changed) {
-            try {
-                wm.updateViewLayout(root, lp);
-            } catch (Throwable t) {
-                DiagnosticLog.i(context, "FV_POINTER_HINT", "move failed=" + t);
-            }
-        }
+        if (changed) windowHost.update(root, lp, "pointer_hint");
     }
 
     /**
@@ -183,7 +175,7 @@ public final class FvPointerOperationHintOverlay {
         }
         contentVisible = true;
         root.requestLayout();
-        try { wm.updateViewLayout(root, lp); } catch (Throwable ignored) {}
+        windowHost.update(root, lp, "pointer_hint");
 
         DiagnosticLog.i(context, "FV_POINTER_HINT",
                 "SHOW mode=" + mode + " pos=" + lp.x + "," + lp.y
@@ -201,16 +193,14 @@ public final class FvPointerOperationHintOverlay {
         icon.setVisibility(View.GONE);
         text.setVisibility(View.GONE);
         root.requestLayout();
-        try { wm.updateViewLayout(root, lp); } catch (Throwable ignored) {}
+        windowHost.update(root, lp, "pointer_hint");
         DiagnosticLog.i(context, "FV_POINTER_HINT", "CONTENT_HIDE pos=" + lp.x + "," + lp.y);
     }
 
     /** Mirrors m2/g.s(): remove pointer_op_hint together with float_pen_view. */
     public void close() {
         contentVisible = false;
-        if (attached) {
-            try { wm.removeView(root); } catch (Throwable ignored) {}
-        }
+        if (attached) windowHost.remove(root, "pointer_hint");
         attached = false;
         mode = null;
     }
