@@ -20,17 +20,7 @@ import android.widget.Magnifier;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Frozen-screen Circle Select workspace.
- *
- * OCR words stay directly selectable on the frozen screenshot. FloatLens owns the text action
- * menu, while a rough free-hand gesture snaps to a padded rectangle before OCR.
- *
- * The entire workspace is hosted through FvOverlayWindowHost. When accessibility is available this
- * means TYPE_ACCESSIBILITY_OVERLAY (2032), matching the rest of the FV-style selection window family
- * and allowing the frozen bitmap to sit above SystemUI while the real notification shade is cleaned
- * up underneath it.
- */
+/** Frozen-screen Circle Select workspace. */
 public final class CircleSelectOverlay {
     private static WorkspaceView active;
 
@@ -45,9 +35,6 @@ public final class CircleSelectOverlay {
 
         int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
-        // While the real notification shade is still open keep the frozen workspace touchable but
-        // not key-focusable. This prevents GLOBAL_ACTION_BACK cleanup from being delivered back to
-        // Circle Select itself. CircleSelectController promotes key focus when cleanup finishes.
         if (shadeExpanded) flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
@@ -60,8 +47,7 @@ public final class CircleSelectOverlay {
         lp.x = contentBounds.left - displayBounds.left;
         lp.y = contentBounds.top - displayBounds.top;
 
-        WorkspaceView view = new WorkspaceView(
-                app, host, lp, screenshot, onClosed, !shadeExpanded);
+        WorkspaceView view = new WorkspaceView(app, host, lp, screenshot, onClosed, !shadeExpanded);
         if (!host.add(view, lp, "circle_select")) {
             DiagnosticLog.i(app, "CIRCLE_SELECT", "overlay add failed");
             return false;
@@ -109,6 +95,7 @@ public final class CircleSelectOverlay {
         private final WindowManager.LayoutParams windowLayout;
         private final Bitmap screenshot;
         private final Runnable onClosed;
+        private final CircleTextSelectionModel selection;
         private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private final Paint shadePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint selectedPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -121,15 +108,12 @@ public final class CircleSelectOverlay {
         private final RectF snappedCircleRect = new RectF();
         private final RectF closeRect = new RectF();
 
-        private List<SpatialOcrEngine.Word> words = List.of();
         private boolean ocrReady;
         private boolean closed;
         private boolean circleResolving;
         private boolean hadWindowFocus;
         private boolean keyFocusEnabled;
         private int mode = MODE_NONE;
-        private int startIndex = -1;
-        private int endIndex = -1;
         private boolean closePressed;
         private Magnifier magnifier;
 
@@ -142,6 +126,7 @@ public final class CircleSelectOverlay {
             this.screenshot = screenshot;
             this.onClosed = onClosed;
             this.keyFocusEnabled = keyFocusEnabled;
+            selection = new CircleTextSelectionModel(screenshot.getWidth(), screenshot.getHeight());
             setClickable(true);
             setFocusable(true);
             setFocusableInTouchMode(true);
@@ -190,16 +175,16 @@ public final class CircleSelectOverlay {
             SpatialOcrEngine.recognize(context, screenshot, new SpatialOcrEngine.Callback() {
                 @Override public void onSuccess(List<SpatialOcrEngine.Word> result) {
                     if (closed) return;
-                    words = result == null ? List.of() : result;
+                    selection.setWords(result);
                     ocrReady = true;
-                    DiagnosticLog.i(context, "CIRCLE_SELECT", "spatial units=" + words.size());
+                    DiagnosticLog.i(context, "CIRCLE_SELECT", "spatial units=" + selection.size());
                     invalidate();
                 }
 
                 @Override public void onFailure(Throwable error) {
                     if (closed) return;
                     ocrReady = true;
-                    words = List.of();
+                    selection.setWords(List.of());
                     DiagnosticLog.i(context, "CIRCLE_SELECT", "spatial OCR unavailable=" + safe(error));
                     invalidate();
                 }
@@ -214,10 +199,6 @@ public final class CircleSelectOverlay {
                 return;
             }
             if (!hadWindowFocus) return;
-
-            // Android does not dispatch Home or Recents as normal KeyEvents to application/overlay
-            // windows. Both actions hand focus back to SystemUI/Launcher instead. FloatActionMenu is
-            // FLAG_NOT_FOCUSABLE, so normal text-selection menus do not trigger this path.
             postDelayed(() -> {
                 if (closed || !keyFocusEnabled || !hadWindowFocus || hasWindowFocus()) return;
                 DiagnosticLog.i(context, "CIRCLE_SELECT", "system navigation focus loss -> close");
@@ -230,11 +211,12 @@ public final class CircleSelectOverlay {
             canvas.drawBitmap(screenshot, null, new Rect(0, 0, getWidth(), getHeight()), bitmapPaint);
             canvas.drawRect(0, 0, getWidth(), getHeight(), shadePaint);
 
-            if (hasTextSelection()) {
-                int lo = Math.min(startIndex, endIndex);
-                int hi = Math.max(startIndex, endIndex);
-                for (int i = lo; i <= hi && i < words.size(); i++) {
-                    canvas.drawRoundRect(toViewRect(words.get(i).bounds()), dp(2), dp(2), selectedPaint);
+            if (selection.hasSelection()) {
+                int lo = selection.low();
+                int hi = selection.high();
+                for (int i = lo; i <= hi && i < selection.size(); i++) {
+                    canvas.drawRoundRect(selection.wordViewRect(i, getWidth(), getHeight()),
+                            dp(2), dp(2), selectedPaint);
                 }
                 drawHandles(canvas, lo, hi);
             }
@@ -254,7 +236,7 @@ public final class CircleSelectOverlay {
             String status;
             if (circleResolving) status = "已自动吸附为矩形…";
             else if (!ocrReady) status = "正在识别图片文字… · 空白处可直接圈选";
-            else if (words.isEmpty()) status = "未检测到可选文字 · 圈画松手自动变为矩形";
+            else if (selection.isEmpty()) status = "未检测到可选文字 · 圈画松手自动变为矩形";
             else status = "点按文字选择 · 手柄可按字符跨行调整 · 空白处圈画";
             canvas.drawText(status, dp(16), dp(34), textPaint);
             drawClose(canvas);
@@ -270,9 +252,9 @@ public final class CircleSelectOverlay {
         }
 
         private void drawHandles(Canvas c, int lo, int hi) {
-            if (lo < 0 || hi < 0 || lo >= words.size() || hi >= words.size()) return;
-            RectF first = toViewRect(words.get(lo).bounds());
-            RectF last = toViewRect(words.get(hi).bounds());
+            if (lo < 0 || hi < 0 || lo >= selection.size() || hi >= selection.size()) return;
+            RectF first = selection.wordViewRect(lo, getWidth(), getHeight());
+            RectF last = selection.wordViewRect(hi, getWidth(), getHeight());
             float stem = dp(7);
             float radius = dp(7);
             c.drawLine(first.left, first.bottom, first.left, first.bottom + stem, handlePaint);
@@ -293,8 +275,7 @@ public final class CircleSelectOverlay {
         }
 
         @Override public boolean onTouchEvent(MotionEvent e) {
-            if (closed) return true;
-            if (circleResolving) return true;
+            if (closed || circleResolving) return true;
             float x = e.getX(), y = e.getY();
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN -> {
@@ -308,7 +289,7 @@ public final class CircleSelectOverlay {
                     FloatActionMenu.dismiss();
                     FloatMenuAnchor.clear();
 
-                    if (hasTextSelection()) {
+                    if (selection.hasSelection()) {
                         int handle = hitSelectionHandle(x, y);
                         if (handle != MODE_NONE) {
                             mode = handle;
@@ -318,9 +299,9 @@ public final class CircleSelectOverlay {
                         }
                     }
 
-                    int hit = findWordAt(x, y);
+                    int hit = selection.findWordAt(x, y, getWidth(), getHeight());
                     if (hit >= 0) {
-                        startIndex = endIndex = hit;
+                        selection.selectSingle(hit);
                         mode = MODE_TEXT;
                         circlePoints.clear();
                         invalidate();
@@ -328,7 +309,7 @@ public final class CircleSelectOverlay {
                     }
 
                     dismissMagnifier();
-                    startIndex = endIndex = -1;
+                    selection.clear();
                     mode = MODE_CIRCLE;
                     circlePoints.clear();
                     circlePoints.add(new PointF(x, y));
@@ -353,7 +334,6 @@ public final class CircleSelectOverlay {
                             circlePoints.add(new PointF(x, y));
                             invalidate();
                         }
-                        return true;
                     }
                     return true;
                 }
@@ -368,7 +348,8 @@ public final class CircleSelectOverlay {
 
                     if (mode == MODE_CIRCLE) {
                         circlePoints.add(new PointF(x, y));
-                        RectF snapped = snapCircleToRectangle();
+                        RectF snapped = CircleCropGeometry.snapToRectangle(
+                                circlePoints, getWidth(), getHeight(), getResources().getDisplayMetrics().density);
                         circlePoints.clear();
                         mode = MODE_NONE;
                         if (snapped != null) {
@@ -386,20 +367,18 @@ public final class CircleSelectOverlay {
                     if (mode == MODE_TEXT || mode == MODE_START_HANDLE || mode == MODE_END_HANDLE) {
                         int finalHit = findSelectionWord(x, y);
                         if (finalHit >= 0) updateSelectionEndpoint(finalHit);
-
                         mode = MODE_NONE;
-                        String selected = selectedText();
+                        String selected = selection.selectedText();
                         DiagnosticLog.i(context, "CIRCLE_TEXT", "selected chars=" + selected.length()
-                                + " range=" + Math.min(startIndex, endIndex) + ".." + Math.max(startIndex, endIndex));
+                                + " range=" + selection.low() + ".." + selection.high());
                         invalidate();
                         if (!selected.isBlank()) {
                             FloatActionMenu.showTextAt(context, selected, () -> {
-                                if (words.isEmpty()) return;
-                                startIndex = 0;
-                                endIndex = words.size() - 1;
+                                if (selection.isEmpty()) return;
+                                selection.selectAll();
                                 invalidate();
                                 post(() -> FloatActionMenu.showTextAt(
-                                        context, selectedText(), null, selectionScreenRect()));
+                                        context, selection.selectedText(), null, selectionScreenRect()));
                             }, selectionScreenRect());
                         }
                         return true;
@@ -422,135 +401,33 @@ public final class CircleSelectOverlay {
         }
 
         private void updateSelectionEndpoint(int hit) {
-            if (hit < 0 || hit >= words.size()) return;
-            if (mode == MODE_START_HANDLE) startIndex = hit;
-            else endIndex = hit;
+            if (mode == MODE_START_HANDLE) selection.updateStart(hit);
+            else selection.updateEnd(hit);
         }
 
         private int hitSelectionHandle(float x, float y) {
-            int lo = Math.min(startIndex, endIndex);
-            int hi = Math.max(startIndex, endIndex);
-            if (lo < 0 || hi < 0 || lo >= words.size() || hi >= words.size()) return MODE_NONE;
-            RectF first = toViewRect(words.get(lo).bounds());
-            RectF last = toViewRect(words.get(hi).bounds());
+            int lo = selection.low();
+            int hi = selection.high();
+            if (lo < 0 || hi < 0) return MODE_NONE;
+            RectF first = selection.wordViewRect(lo, getWidth(), getHeight());
+            RectF last = selection.wordViewRect(hi, getWidth(), getHeight());
             float stem = dp(7);
             float r = dp(28);
             if (distance(x, y, first.left, first.bottom + stem) <= r) {
-                return startIndex <= endIndex ? MODE_START_HANDLE : MODE_END_HANDLE;
+                return selection.startIndex() <= selection.endIndex() ? MODE_START_HANDLE : MODE_END_HANDLE;
             }
             if (distance(x, y, last.right, last.bottom + stem) <= r) {
-                return startIndex <= endIndex ? MODE_END_HANDLE : MODE_START_HANDLE;
+                return selection.startIndex() <= selection.endIndex() ? MODE_END_HANDLE : MODE_START_HANDLE;
             }
             return MODE_NONE;
         }
 
-        private int findWordAt(float viewX, float viewY) {
-            if (words.isEmpty() || getWidth() <= 0 || getHeight() <= 0) return -1;
-            int bx = Math.round(viewX * screenshot.getWidth() / (float) getWidth());
-            int by = Math.round(viewY * screenshot.getHeight() / (float) getHeight());
-            int best = -1;
-            long bestArea = Long.MAX_VALUE;
-            for (int i = 0; i < words.size(); i++) {
-                Rect r = words.get(i).bounds();
-                if (!r.contains(bx, by)) continue;
-                long area = Math.max(1L, (long) r.width() * r.height());
-                if (area < bestArea) {
-                    bestArea = area;
-                    best = i;
-                }
-            }
-            return best;
-        }
-
-        private int findSelectionWord(float viewX, float viewY) {
-            int exact = findWordAt(viewX, viewY);
-            if (exact >= 0) return exact;
-            if (words.isEmpty() || getWidth() <= 0 || getHeight() <= 0) return -1;
-
-            float maxDistance = dp(HANDLE_SNAP_DISTANCE_DP);
-            float bestScore = Float.MAX_VALUE;
-            int best = -1;
-            for (int i = 0; i < words.size(); i++) {
-                RectF r = toViewRect(words.get(i).bounds());
-                float dx = 0f;
-                if (viewX < r.left) dx = r.left - viewX;
-                else if (viewX > r.right) dx = viewX - r.right;
-                float dy = 0f;
-                if (viewY < r.top) dy = r.top - viewY;
-                else if (viewY > r.bottom) dy = viewY - r.bottom;
-                float score = dx * dx + dy * dy * 0.72f;
-                if (score < bestScore) {
-                    bestScore = score;
-                    best = i;
-                }
-            }
-            if (best < 0 || bestScore > maxDistance * maxDistance) return -1;
-            return best;
-        }
-
-        private String selectedText() {
-            if (!hasTextSelection()) return "";
-            int lo = Math.min(startIndex, endIndex);
-            int hi = Math.max(startIndex, endIndex);
-            StringBuilder out = new StringBuilder();
-            int previousLine = -1;
-            int previousGroup = -1;
-            String previous = "";
-            for (int i = lo; i <= hi && i < words.size(); i++) {
-                SpatialOcrEngine.Word w = words.get(i);
-                String value = w.text();
-                if (value.isBlank()) continue;
-                if (out.length() > 0) {
-                    if (w.line() != previousLine) {
-                        out.append('\n');
-                    } else if (w.group() != previousGroup && !noSpaceBetween(previous, value)) {
-                        out.append(' ');
-                    }
-                }
-                out.append(value);
-                previousLine = w.line();
-                previousGroup = w.group();
-                previous = value;
-            }
-            return out.toString().trim();
-        }
-
-        private boolean noSpaceBetween(String a, String b) {
-            if (a == null || b == null || a.isEmpty() || b.isEmpty()) return false;
-            int ac = a.codePointBefore(a.length());
-            int bc = b.codePointAt(0);
-            return isCjk(ac) && isCjk(bc);
-        }
-
-        private boolean isCjk(int cp) {
-            return (cp >= 0x3400 && cp <= 0x4DBF)
-                    || (cp >= 0x4E00 && cp <= 0x9FFF)
-                    || (cp >= 0xF900 && cp <= 0xFAFF)
-                    || (cp >= 0x20000 && cp <= 0x2FA1F);
-        }
-
-        private boolean hasTextSelection() {
-            return startIndex >= 0 && endIndex >= 0 && !words.isEmpty()
-                    && startIndex < words.size() && endIndex < words.size();
-        }
-
-        private RectF toViewRect(Rect imageRect) {
-            float sx = getWidth() / (float) Math.max(1, screenshot.getWidth());
-            float sy = getHeight() / (float) Math.max(1, screenshot.getHeight());
-            return new RectF(imageRect.left * sx, imageRect.top * sy,
-                    imageRect.right * sx, imageRect.bottom * sy);
+        private int findSelectionWord(float x, float y) {
+            return selection.findSelectionWord(x, y, getWidth(), getHeight(), dp(HANDLE_SNAP_DISTANCE_DP));
         }
 
         private Rect selectionScreenRect() {
-            if (!hasTextSelection()) return null;
-            int lo = Math.min(startIndex, endIndex);
-            int hi = Math.max(startIndex, endIndex);
-            RectF union = null;
-            for (int i = lo; i <= hi && i < words.size(); i++) {
-                RectF r = toViewRect(words.get(i).bounds());
-                if (union == null) union = new RectF(r);
-                else union.union(r);
-            }
+            RectF union = selection.selectionViewBounds(getWidth(), getHeight());
             if (union == null || union.isEmpty()) return null;
             int[] loc = new int[2];
             try { getLocationOnScreen(loc); } catch (Throwable ignored) { return null; }
@@ -561,31 +438,9 @@ public final class CircleSelectOverlay {
                     Math.round(union.bottom) + loc[1]);
         }
 
-        private RectF snapCircleToRectangle() {
-            if (circlePoints.size() < 4 || getWidth() <= 0 || getHeight() <= 0) return null;
-            float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
-            float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
-            for (PointF p : circlePoints) {
-                minX = Math.min(minX, p.x);
-                minY = Math.min(minY, p.y);
-                maxX = Math.max(maxX, p.x);
-                maxY = Math.max(maxY, p.y);
-            }
-            float w = maxX - minX;
-            float h = maxY - minY;
-            if (w < dp(24) || h < dp(24)) return null;
-            float padding = Math.max(dp(6), Math.min(dp(18), Math.min(w, h) * 0.08f));
-            float left = Math.max(0f, minX - padding);
-            float top = Math.max(0f, minY - padding);
-            float right = Math.min(getWidth(), maxX + padding);
-            float bottom = Math.min(getHeight(), maxY + padding);
-            if (right - left < dp(24) || bottom - top < dp(24)) return null;
-            return new RectF(left, top, right, bottom);
-        }
-
         private void finishSnappedCircle(RectF viewRect) {
             if (closed) return;
-            Bitmap crop = createRectangularCrop(viewRect);
+            Bitmap crop = CircleCropGeometry.crop(screenshot, viewRect, getWidth(), getHeight());
             circleResolving = false;
             snappedCircleRect.setEmpty();
             if (crop == null) {
@@ -598,34 +453,20 @@ public final class CircleSelectOverlay {
             OcrEngine.recognize(context, crop);
         }
 
-        private Bitmap createRectangularCrop(RectF viewRect) {
-            if (viewRect == null || viewRect.isEmpty() || getWidth() <= 0 || getHeight() <= 0) return null;
-            float sx = screenshot.getWidth() / (float) getWidth();
-            float sy = screenshot.getHeight() / (float) getHeight();
-            int left = clamp((int) Math.floor(viewRect.left * sx), 0, screenshot.getWidth() - 1);
-            int top = clamp((int) Math.floor(viewRect.top * sy), 0, screenshot.getHeight() - 1);
-            int right = clamp((int) Math.ceil(viewRect.right * sx), left + 1, screenshot.getWidth());
-            int bottom = clamp((int) Math.ceil(viewRect.bottom * sy), top + 1, screenshot.getHeight());
-            int w = right - left;
-            int h = bottom - top;
-            if (w <= 1 || h <= 1) return null;
-            return Bitmap.createBitmap(screenshot, left, top, w, h);
-        }
-
         private void showSelectionMagnifier() {
             if (closed || getWidth() <= 0 || getHeight() <= 0 || !isAttachedToWindow()) return;
             int index;
-            if (mode == MODE_START_HANDLE) index = startIndex;
-            else if (mode == MODE_END_HANDLE) index = endIndex;
+            if (mode == MODE_START_HANDLE) index = selection.startIndex();
+            else if (mode == MODE_END_HANDLE) index = selection.endIndex();
             else return;
-            if (index < 0 || index >= words.size()) return;
+            if (index < 0 || index >= selection.size()) return;
 
-            RectF symbol = toViewRect(words.get(index).bounds());
+            RectF symbol = selection.wordViewRect(index, getWidth(), getHeight());
             if (symbol.isEmpty()) return;
 
             boolean rightEdge = mode == MODE_START_HANDLE
-                    ? startIndex > endIndex
-                    : startIndex <= endIndex;
+                    ? selection.startIndex() > selection.endIndex()
+                    : selection.startIndex() <= selection.endIndex();
             float maxX = Math.max(0f, getWidth() - 1f);
             float maxY = Math.max(0f, getHeight() - 1f);
             float sourceX = Math.max(0f, Math.min(maxX, rightEdge ? symbol.right : symbol.left));
@@ -666,7 +507,6 @@ public final class CircleSelectOverlay {
         private float distance(float x1, float y1, float x2, float y2) {
             return (float) Math.hypot(x1 - x2, y1 - y2);
         }
-        private int clamp(int v, int min, int max) { return Math.max(min, Math.min(max, v)); }
         private String safe(Throwable t) {
             if (t == null) return "unknown";
             String m = t.getMessage();
