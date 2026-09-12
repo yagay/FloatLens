@@ -3,25 +3,31 @@ package com.yagay.floatlens;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.graphics.Color;
 import android.graphics.Rect;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 
 /**
  * The one visual implementation for every FloatLens result.
  *
- * The hierarchy never changes by mode: title, image slot, selectable text slot and the fixed
- * OCR / Copy / Save / Close action row always exist. ResultSession only changes their content and
- * enabled state, so adding a result capability never requires another popup implementation.
+ * The Activity window is always a full-screen transparent native-selection host. This class owns
+ * one centered result card. The card hierarchy never changes by mode: title, content slots and the
+ * fixed OCR / Copy / Save / Close action row always exist. Only the middle content area changes
+ * size, so images or OEM window decor can never push the action row outside the visible result.
  */
 final class UnifiedResultPanel {
     private final Context context;
     private final FloatSettings settings;
-    private final LinearLayout root;
-    private final android.widget.TextView title;
+    private final FrameLayout root;
+    private final LinearLayout card;
+    private final TextView title;
     private final ImageView imageView;
     private final LinearLayout textPanel;
     private final TextSelectionSurface selection;
@@ -38,6 +44,7 @@ final class UnifiedResultPanel {
     private ResultSession session;
     private int height;
     private boolean ocrRunning;
+    private Runnable closeAction;
 
     UnifiedResultPanel(Context context, ResultSession initial) {
         this.context = context;
@@ -51,15 +58,25 @@ final class UnifiedResultPanel {
         contentBudget = Math.max(ResultUi.dp(context, 90),
                 maxHeight - titleHeight - actionsHeight - ResultUi.dp(context, ResultUi.ROOT_VPAD_DP));
 
-        root = ResultUi.box(context);
+        root = new FrameLayout(context);
+        root.setBackgroundColor(Color.TRANSPARENT);
+        root.setClickable(true);
+        root.setFocusable(true);
+
+        card = ResultUi.box(context);
+        card.setClickable(true); // consume taps inside the card so root only handles outside taps
+        card.setOnClickListener(v -> { });
+        root.addView(card, new FrameLayout.LayoutParams(width, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER));
+
         title = ResultUi.heading(context, "FloatLens");
-        root.addView(title, new LinearLayout.LayoutParams(-1, titleHeight));
+        card.addView(title, new LinearLayout.LayoutParams(-1, titleHeight));
 
         imageView = new ImageView(context);
         imageView.setAdjustViewBounds(false);
         imageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
         imageView.setVisibility(View.GONE);
-        root.addView(imageView, new LinearLayout.LayoutParams(-1, 0));
+        card.addView(imageView, new LinearLayout.LayoutParams(-1, 0));
 
         textPanel = new LinearLayout(context);
         textPanel.setOrientation(LinearLayout.VERTICAL);
@@ -67,7 +84,7 @@ final class UnifiedResultPanel {
         selection = new TextSelectionSurface(context);
         textPanel.addView(selection, new LinearLayout.LayoutParams(-1, 0, 1f));
         textPanel.setVisibility(View.GONE);
-        root.addView(textPanel, new LinearLayout.LayoutParams(-1, 0));
+        card.addView(textPanel, new LinearLayout.LayoutParams(-1, 0));
         bindSelectionMenu();
 
         LinearLayout actions = ResultUi.actionRow(context);
@@ -79,22 +96,24 @@ final class UnifiedResultPanel {
         actions.addView(copyButton, new LinearLayout.LayoutParams(0, -1, 1));
         actions.addView(saveButton, new LinearLayout.LayoutParams(0, -1, 1));
         actions.addView(closeButton, new LinearLayout.LayoutParams(0, -1, 1));
-        root.addView(actions, new LinearLayout.LayoutParams(-1, actionsHeight));
+        card.addView(actions, new LinearLayout.LayoutParams(-1, actionsHeight));
 
         copyButton.setOnClickListener(v -> copyAll());
         render(initial);
     }
 
-    LinearLayout root() { return root; }
+    FrameLayout root() { return root; }
     int width() { return width; }
     int height() { return height; }
     TextSelectionSurface selection() { return selection; }
     ResultSession session() { return session; }
 
     void bindActions(Runnable onOcr, Runnable onSave, Runnable onClose) {
+        closeAction = onClose;
         ocrButton.setOnClickListener(v -> { if (onOcr != null) onOcr.run(); });
         saveButton.setOnClickListener(v -> { if (onSave != null) onSave.run(); });
         closeButton.setOnClickListener(v -> { if (onClose != null) onClose.run(); });
+        root.setOnClickListener(v -> { if (closeAction != null) closeAction.run(); });
     }
 
     void render(ResultSession next) {
@@ -118,9 +137,9 @@ final class UnifiedResultPanel {
             } else if (next.mode() == ResultSession.Mode.SCREENSHOT) {
                 cap = contentBudget;
             } else if (next.mode() == ResultSession.Mode.VIEW_IMAGE) {
-                cap = ResultUi.dp(context, 190);
+                cap = Math.min(ResultUi.dp(context, 190), contentBudget);
             } else {
-                cap = ResultUi.dp(context, 135);
+                cap = Math.min(ResultUi.dp(context, 135), contentBudget);
             }
             imageHeight = ResultUi.imageHeight(context, next.image(), width, cap);
             imageView.setLayoutParams(new LinearLayout.LayoutParams(-1, imageHeight));
@@ -134,6 +153,9 @@ final class UnifiedResultPanel {
         int textHeight = 0;
         if (showText) {
             textHeight = Math.max(ResultUi.dp(context, 96), contentBudget - imageHeight);
+            // Never let a text minimum expand the card beyond its budget. If both image and text
+            // are present, shrink the text area first while keeping enough room for selection.
+            textHeight = Math.min(textHeight, Math.max(ResultUi.dp(context, 72), contentBudget - imageHeight));
             textPanel.setVisibility(View.VISIBLE);
             textPanel.setLayoutParams(new LinearLayout.LayoutParams(-1, textHeight));
             selection.setText(next.displayText());
@@ -146,14 +168,22 @@ final class UnifiedResultPanel {
         height = Math.max(ResultUi.dp(context, 158), Math.min(maxHeight,
                 titleHeight + actionsHeight + imageHeight + textHeight
                         + ResultUi.dp(context, ResultUi.ROOT_VPAD_DP)));
+
+        FrameLayout.LayoutParams cardLp = (FrameLayout.LayoutParams) card.getLayoutParams();
+        cardLp.width = width;
+        cardLp.height = height;
+        cardLp.gravity = Gravity.CENTER;
+        card.setLayoutParams(cardLp);
+
         updateActions();
+        card.requestLayout();
         root.requestLayout();
 
         DiagnosticLog.i(context, "RESULT_PANEL", "render mode=" + next.mode()
                 + " origin=" + next.originMode()
                 + " image=" + showImage + " text=" + showText
-                + " size=" + width + "x" + height
-                + " buttons=ocr/copy/save/close");
+                + " card=" + width + "x" + height
+                + " fixedActions=true buttons=ocr/copy/save/close");
     }
 
     void setOcrRunning(boolean running) {
@@ -183,10 +213,12 @@ final class UnifiedResultPanel {
         setEnabledVisual(saveButton, canSave);
 
         closeButton.setEnabled(true);
+        closeButton.setText("关闭");
         setEnabledVisual(closeButton, true);
     }
 
     private void setEnabledVisual(Button button, boolean enabled) {
+        button.setVisibility(View.VISIBLE);
         button.setAlpha(enabled ? 1f : 0.42f);
     }
 
