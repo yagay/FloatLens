@@ -78,6 +78,10 @@ public final class CircleSelectOverlay {
         private static final int MODE_END_HANDLE = 3;
         private static final int MODE_CIRCLE = 4;
         private static final long RECT_SNAP_PREVIEW_MS = 170L;
+        // While a text selection is already active, Android-style handles should keep following the
+        // nearest readable text through inter-word/inter-line whitespace instead of requiring the
+        // finger to remain exactly inside a tiny OCR bounding box.
+        private static final float HANDLE_SNAP_DISTANCE_DP = 96f;
 
         private final Context context;
         private final WindowManager wm;
@@ -183,7 +187,7 @@ public final class CircleSelectOverlay {
             if (circleResolving) status = "已自动吸附为矩形…";
             else if (!ocrReady) status = "正在识别图片文字… · 空白处可直接圈选";
             else if (words.isEmpty()) status = "未检测到可选文字 · 圈画松手自动变为矩形";
-            else status = "点按/拖动图片文字直接选择 · 圈画自动吸附矩形";
+            else status = "点按文字选择 · 拖动蓝色手柄可跨行调整 · 空白处圈画";
             canvas.drawText(status, dp(16), dp(34), textPaint);
             drawClose(canvas);
         }
@@ -201,8 +205,12 @@ public final class CircleSelectOverlay {
             if (lo < 0 || hi < 0 || lo >= words.size() || hi >= words.size()) return;
             RectF first = toViewRect(words.get(lo).bounds());
             RectF last = toViewRect(words.get(hi).bounds());
-            c.drawCircle(first.left, first.bottom + dp(7), dp(6), handlePaint);
-            c.drawCircle(last.right, last.bottom + dp(7), dp(6), handlePaint);
+            float stem = dp(7);
+            float radius = dp(7);
+            c.drawLine(first.left, first.bottom, first.left, first.bottom + stem, handlePaint);
+            c.drawCircle(first.left, first.bottom + stem, radius, handlePaint);
+            c.drawLine(last.right, last.bottom, last.right, last.bottom + stem, handlePaint);
+            c.drawCircle(last.right, last.bottom + stem, radius, handlePaint);
         }
 
         @Override public boolean onTouchEvent(MotionEvent e) {
@@ -224,10 +232,13 @@ public final class CircleSelectOverlay {
                         int handle = hitSelectionHandle(x, y);
                         if (handle != MODE_NONE) {
                             mode = handle;
+                            DiagnosticLog.i(context, "CIRCLE_TEXT", "handle_down mode=" + mode);
                             return true;
                         }
                     }
 
+                    // Starting a selection still requires a real OCR hit. This preserves the
+                    // distinction between selecting text and starting a free-hand circle in blank space.
                     int hit = findWordAt(x, y);
                     if (hit >= 0) {
                         startIndex = endIndex = hit;
@@ -248,10 +259,12 @@ public final class CircleSelectOverlay {
                 case MotionEvent.ACTION_MOVE -> {
                     if (closePressed) return true;
                     if (mode == MODE_TEXT || mode == MODE_START_HANDLE || mode == MODE_END_HANDLE) {
-                        int hit = findWordAt(x, y);
+                        // Once text selection is active, snap to the nearest word/line. Requiring an
+                        // exact OCR rectangle hit is what previously made handle dragging appear
+                        // limited to one row, especially across the blank gap between two lines.
+                        int hit = findSelectionWord(x, y);
                         if (hit >= 0) {
-                            if (mode == MODE_START_HANDLE) startIndex = hit;
-                            else endIndex = hit;
+                            updateSelectionEndpoint(hit);
                             invalidate();
                         }
                         return true;
@@ -292,6 +305,11 @@ public final class CircleSelectOverlay {
                     }
 
                     if (mode == MODE_TEXT || mode == MODE_START_HANDLE || mode == MODE_END_HANDLE) {
+                        // ACTION_MOVE can be coalesced during a fast drag. Snap once more at release
+                        // so the final line/word under the finger is never lost.
+                        int finalHit = findSelectionWord(x, y);
+                        if (finalHit >= 0) updateSelectionEndpoint(finalHit);
+
                         mode = MODE_NONE;
                         String selected = selectedText();
                         DiagnosticLog.i(context, "CIRCLE_TEXT", "selected chars=" + selected.length()
@@ -325,22 +343,32 @@ public final class CircleSelectOverlay {
             return true;
         }
 
+        private void updateSelectionEndpoint(int hit) {
+            if (hit < 0 || hit >= words.size()) return;
+            if (mode == MODE_START_HANDLE) startIndex = hit;
+            else endIndex = hit;
+        }
+
         private int hitSelectionHandle(float x, float y) {
             int lo = Math.min(startIndex, endIndex);
             int hi = Math.max(startIndex, endIndex);
             if (lo < 0 || hi < 0 || lo >= words.size() || hi >= words.size()) return MODE_NONE;
             RectF first = toViewRect(words.get(lo).bounds());
             RectF last = toViewRect(words.get(hi).bounds());
-            float r = dp(24);
-            if (distance(x, y, first.left, first.bottom + dp(7)) <= r) {
+            float stem = dp(7);
+            // A 28dp radius is intentionally larger than the drawn dot. It feels much closer to
+            // Android's native selection handle hit target and is easier to grab over a screenshot.
+            float r = dp(28);
+            if (distance(x, y, first.left, first.bottom + stem) <= r) {
                 return startIndex <= endIndex ? MODE_START_HANDLE : MODE_END_HANDLE;
             }
-            if (distance(x, y, last.right, last.bottom + dp(7)) <= r) {
+            if (distance(x, y, last.right, last.bottom + stem) <= r) {
                 return startIndex <= endIndex ? MODE_END_HANDLE : MODE_START_HANDLE;
             }
             return MODE_NONE;
         }
 
+        /** Exact hit used only when deciding whether a fresh gesture starts text selection or circle. */
         private int findWordAt(float viewX, float viewY) {
             if (words.isEmpty() || getWidth() <= 0 || getHeight() <= 0) return -1;
             int bx = Math.round(viewX * screenshot.getWidth() / (float) getWidth());
@@ -356,6 +384,40 @@ public final class CircleSelectOverlay {
                     best = i;
                 }
             }
+            return best;
+        }
+
+        /**
+         * Handle/drag hit test. Prefer an exact word, otherwise snap to the geometrically nearest OCR
+         * box. This is deliberately screen-space rather than image-space so the touch radius is
+         * consistent across display densities and screenshot scaling.
+         */
+        private int findSelectionWord(float viewX, float viewY) {
+            int exact = findWordAt(viewX, viewY);
+            if (exact >= 0) return exact;
+            if (words.isEmpty() || getWidth() <= 0 || getHeight() <= 0) return -1;
+
+            float maxDistance = dp(HANDLE_SNAP_DISTANCE_DP);
+            float bestScore = Float.MAX_VALUE;
+            int best = -1;
+            for (int i = 0; i < words.size(); i++) {
+                RectF r = toViewRect(words.get(i).bounds());
+                float dx = 0f;
+                if (viewX < r.left) dx = r.left - viewX;
+                else if (viewX > r.right) dx = viewX - r.right;
+                float dy = 0f;
+                if (viewY < r.top) dy = r.top - viewY;
+                else if (viewY > r.bottom) dy = viewY - r.bottom;
+
+                // Vertical movement is slightly favoured so crossing a normal line gap does not get
+                // stuck on the previous row merely because the next row starts at a different X.
+                float score = dx * dx + dy * dy * 0.72f;
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = i;
+                }
+            }
+            if (best < 0 || bestScore > maxDistance * maxDistance) return -1;
             return best;
         }
 
