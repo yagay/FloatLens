@@ -50,11 +50,7 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
             panel.render(session);
             panel.setOcrRunning(false);
             resizeDialog();
-            panel.root().post(() -> {
-                if (getActivity() instanceof ResultActivity host) {
-                    ResultReadyCoordinator.onResultActivityResumed(host);
-                }
-            });
+            notifyVisibleResultReady();
         }
         DiagnosticLog.i(requireContext(), "RESULT_DIALOG", "session mode=" + session.mode()
                 + " origin=" + session.originMode() + " sameDialog=true");
@@ -93,8 +89,18 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
         super.onStart();
         configureDialogWindow();
         resizeDialog();
+        notifyVisibleResultReady();
         DiagnosticLog.i(requireContext(), "RESULT_DIALOG", "started mode="
                 + (session == null ? "none" : session.mode()) + " wrapContent=true fixedActions=true");
+    }
+
+    private void notifyVisibleResultReady() {
+        if (panel == null) return;
+        panel.root().post(() -> {
+            if (getActivity() instanceof ResultActivity host && panel != null) {
+                ResultReadyCoordinator.onResultDialogReady(host, panel.root());
+            }
+        });
     }
 
     private void configureDialogWindow() {
