@@ -214,10 +214,18 @@ final class UnifiedResultPanel {
 
     private void copyAll() {
         if (session == null || !session.canCopy()) return;
-        String value = selection.editor().getText().toString();
-        if (value.isBlank()) value = session.displayText();
-        ClipboardManager cm = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
-        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("FloatLens", value));
-        Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show();
+
+        if (session.hasText()) {
+            String value = selection.editor().getText().toString();
+            if (value.isBlank()) value = session.displayText();
+            ClipboardManager cm = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("FloatLens", value));
+            Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (session.hasImage()) {
+            ImageShareUtils.copyToClipboard(context, session.image());
+        }
     }
 }
