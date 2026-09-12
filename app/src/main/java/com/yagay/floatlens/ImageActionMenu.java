@@ -40,9 +40,11 @@ public final class ImageActionMenu {
         root.setClipToOutline(true);
         root.setClickable(true);
 
+        TextView copy = row(app, "复制图片", palette);
         TextView share = row(app, "分享图片", palette);
         TextView openWith = row(app, "打开方式", palette);
         TextView save = row(app, "保存图片", palette);
+        root.addView(copy, new LinearLayout.LayoutParams(-1, dp(app, 48)));
         root.addView(share, new LinearLayout.LayoutParams(-1, dp(app, 48)));
         root.addView(openWith, new LinearLayout.LayoutParams(-1, dp(app, 48)));
         root.addView(save, new LinearLayout.LayoutParams(-1, dp(app, 48)));
@@ -57,7 +59,7 @@ public final class ImageActionMenu {
 
         Rect usable = usableBounds(app, wm);
         int width = Math.min(dp(app, 176), Math.max(dp(app, 132), usable.width() - dp(app, 16)));
-        int height = dp(app, 152);
+        int height = dp(app, 200);
         int[] pos = menuPosition(app, usable, anchor, width, height);
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
@@ -79,6 +81,7 @@ public final class ImageActionMenu {
             DiagnosticLog.i(app, "IMAGE_ACTION_MENU", "SHOW anchor="
                     + (anchor == null ? "none" : anchor.toShortString())
                     + " pos=" + lp.x + "," + lp.y
+                    + " actions=copy/share/open/save"
                     + " accessibilityHost=" + host.isAccessibilityHosted()
                     + " type=" + lp.type);
         } else {
@@ -86,6 +89,10 @@ public final class ImageActionMenu {
             return;
         }
 
+        copy.setOnClickListener(v -> {
+            dismiss();
+            ImageShareUtils.copyToClipboard(app, image);
+        });
         share.setOnClickListener(v -> {
             dismiss();
             ImageShareUtils.share(app, image);
