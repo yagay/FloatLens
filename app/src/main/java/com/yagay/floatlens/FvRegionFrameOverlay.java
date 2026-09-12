@@ -24,14 +24,14 @@ import android.view.WindowManager;
  */
 final class FvRegionFrameOverlay {
     private final Context context;
-    private final WindowManager wm;
+    private final FvOverlayWindowHost windowHost;
     private final FrameView frame;
     private final WindowManager.LayoutParams lp;
     private boolean attached;
 
     FvRegionFrameOverlay(Context c) {
         context = c.getApplicationContext();
-        wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+        windowHost = new FvOverlayWindowHost(context);
         frame = new FrameView(context);
         lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -68,25 +68,20 @@ final class FvRegionFrameOverlay {
             return;
         }
         frame.clear();
-        try {
-            // FV m2/g.s() removes the complete selection layer before the screenshot action is
-            // posted. One Window/Surface is removed atomically instead of four independent edges.
-            wm.removeView(frame);
-        } catch (Throwable ignored) {}
+        // FV m2/g.s() removes the complete selection layer before the screenshot action is posted.
+        // One Window/Surface is removed atomically instead of four independent edges.
+        windowHost.remove(frame, "region_frame");
         attached = false;
         DiagnosticLog.i(context, "FV_REGION_FRAME", "DETACH single-window-before-capture");
     }
 
     private void ensureAttached() {
         if (attached) return;
-        try {
-            wm.addView(frame, lp);
-            attached = true;
+        attached = windowHost.add(frame, lp, "region_frame");
+        if (attached) {
             DiagnosticLog.i(context, "FV_REGION_FRAME",
-                    "ATTACH fv-m2g-single-window yellow-2dp no-label");
-        } catch (Throwable t) {
-            attached = false;
-            DiagnosticLog.i(context, "FV_REGION_FRAME", "attach failed=" + t);
+                    "ATTACH fv-m2g-single-window yellow-2dp no-label accessibilityHost="
+                            + windowHost.isAccessibilityHosted());
         }
     }
 
