@@ -13,6 +13,8 @@ import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -37,6 +39,7 @@ public final class FloatActionMenu {
     private static final int MODE_PROCESS = 2;
     private static final int MODE_MORE = 3;
     private static final int NO_POSITION = Integer.MIN_VALUE;
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private static FvOverlayWindowHost activeHost;
     private static View activeView;
@@ -333,8 +336,7 @@ public final class FloatActionMenu {
     }
 
     private static void launchCustom(Context app, CustomMenuActionStore.Item item, String text) {
-        dismiss();
-        CustomMenuActionStore.launch(app, item, text);
+        launchExternal(app, "custom", () -> CustomMenuActionStore.launch(app, item, text));
     }
 
     private static void buildTargetMenu(Context app, LinearLayout root, String text,
@@ -401,7 +403,6 @@ public final class FloatActionMenu {
                 null, palette);
         root.addView(moreApps, new LinearLayout.LayoutParams(-1, dp(app, 46)));
         moreApps.setOnClickListener(v -> {
-            dismiss();
             if (mode == MODE_SHARE) launchSystemShare(app, text);
             else launchSystemProcess(app, text);
         });
@@ -487,41 +488,68 @@ public final class FloatActionMenu {
     }
 
     private static void launchExplicit(Context app, Intent base, ResolveInfo ri) {
-        try {
-            Intent target = new Intent(base)
-                    .setClassName(ri.activityInfo.packageName, ri.activityInfo.name)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            dismiss();
-            app.startActivity(target);
-        } catch (Throwable t) {
-            Toast.makeText(app, "无法打开该应用", Toast.LENGTH_SHORT).show();
-            DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "explicit launch failed=" + t);
-        }
+        launchExternal(app, "explicit", () -> {
+            try {
+                Intent target = new Intent(base)
+                        .setClassName(ri.activityInfo.packageName, ri.activityInfo.name)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                app.startActivity(target);
+            } catch (Throwable t) {
+                Toast.makeText(app, "无法打开该应用", Toast.LENGTH_SHORT).show();
+                DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "explicit launch failed=" + t);
+            }
+        });
     }
 
     static void launchSystemShare(Context app, String text) {
-        try {
-            Intent share = new Intent(Intent.ACTION_SEND)
-                    .setType("text/plain")
-                    .putExtra(Intent.EXTRA_TEXT, text);
-            app.startActivity(Intent.createChooser(share, "分享文字")
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-        } catch (Throwable t) {
-            Toast.makeText(app, "无法打开分享菜单", Toast.LENGTH_SHORT).show();
-        }
+        launchExternal(app, "system_share", () -> {
+            try {
+                Intent share = new Intent(Intent.ACTION_SEND)
+                        .setType("text/plain")
+                        .putExtra(Intent.EXTRA_TEXT, text);
+                app.startActivity(Intent.createChooser(share, "分享文字")
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            } catch (Throwable t) {
+                Toast.makeText(app, "无法打开分享菜单", Toast.LENGTH_SHORT).show();
+            }
+        });
     }
 
     private static void launchSystemProcess(Context app, String text) {
-        try {
-            Intent process = new Intent(Intent.ACTION_PROCESS_TEXT)
-                    .setType("text/plain")
-                    .putExtra(Intent.EXTRA_PROCESS_TEXT, text)
-                    .putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true);
-            app.startActivity(Intent.createChooser(process, "处理文字")
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-        } catch (Throwable t) {
-            Toast.makeText(app, "没有可用的文本处理应用", Toast.LENGTH_SHORT).show();
-        }
+        launchExternal(app, "system_process", () -> {
+            try {
+                Intent process = new Intent(Intent.ACTION_PROCESS_TEXT)
+                        .setType("text/plain")
+                        .putExtra(Intent.EXTRA_PROCESS_TEXT, text)
+                        .putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true);
+                app.startActivity(Intent.createChooser(process, "处理文字")
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            } catch (Throwable t) {
+                Toast.makeText(app, "没有可用的文本处理应用", Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    /**
+     * Accessibility overlays stay above normal activities. Remove the action menu and any active
+     * Circle Select workspace first, then launch the target on the next main-loop turn so the new
+     * activity can become visible immediately instead of being hidden under the frozen 2032 layer.
+     */
+    private static void launchExternal(Context app, String reason, Runnable launch) {
+        dismiss();
+        FloatMenuAnchor.clear();
+        resetLockedRow();
+        CircleSelectOverlay.dismissActive("external_text_action_" + reason);
+        DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "external prepare reason=" + reason);
+        MAIN.post(() -> {
+            try {
+                launch.run();
+                DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "external launched reason=" + reason);
+            } catch (Throwable t) {
+                DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "external launch crashed reason="
+                        + reason + " error=" + t);
+            }
+        });
     }
 
     public static synchronized void dismiss() {
