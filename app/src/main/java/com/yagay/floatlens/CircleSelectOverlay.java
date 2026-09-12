@@ -20,7 +20,7 @@ import android.widget.Magnifier;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Frozen-screen Circle Select workspace. */
+/** Frozen-screen Circle Select workspace backed by one cached OcrDocument. */
 public final class CircleSelectOverlay {
     private static WorkspaceView active;
 
@@ -38,11 +38,8 @@ public final class CircleSelectOverlay {
         if (shadeExpanded) flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                Math.max(1, contentBounds.width()),
-                Math.max(1, contentBounds.height()),
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                flags,
-                PixelFormat.TRANSLUCENT);
+                Math.max(1, contentBounds.width()), Math.max(1, contentBounds.height()),
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, flags, PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
         lp.x = contentBounds.left - displayBounds.left;
         lp.y = contentBounds.top - displayBounds.top;
@@ -55,13 +52,11 @@ public final class CircleSelectOverlay {
 
         active = view;
         if (!shadeExpanded) view.promoteKeyFocus("initial_no_shade");
-        view.startSpatialOcr();
+        view.startDocumentOcr();
         DiagnosticLog.i(app, "CIRCLE_SELECT", "overlay shown "
                 + screenshot.getWidth() + "x" + screenshot.getHeight()
                 + " bounds=" + contentBounds.toShortString()
-                + " offset=" + lp.x + "," + lp.y
-                + " accessibilityHost=" + host.isAccessibilityHosted()
-                + " initialFocusable=" + !shadeExpanded);
+                + " accessibilityHost=" + host.isAccessibilityHosted());
         return true;
     }
 
@@ -108,6 +103,7 @@ public final class CircleSelectOverlay {
         private final RectF snappedCircleRect = new RectF();
         private final RectF closeRect = new RectF();
 
+        private OcrDocument document;
         private boolean ocrReady;
         private boolean closed;
         private boolean circleResolving;
@@ -155,37 +151,32 @@ public final class CircleSelectOverlay {
             if (closed) return;
             if (!keyFocusEnabled) {
                 windowLayout.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
-                boolean updated = host.update(this, windowLayout, "circle_select_focus");
-                if (!updated) {
-                    DiagnosticLog.i(context, "CIRCLE_SELECT", "key focus promotion update failed reason=" + reason);
-                    return;
-                }
+                if (!host.update(this, windowLayout, "circle_select_focus")) return;
                 keyFocusEnabled = true;
             }
             post(() -> {
-                if (closed || !isAttachedToWindow()) return;
-                boolean focused = requestFocus();
-                DiagnosticLog.i(context, "CIRCLE_SELECT", "key focus requested=" + focused
-                        + " reason=" + reason
-                        + " accessibilityHost=" + host.isAccessibilityHosted());
+                if (!closed && isAttachedToWindow()) requestFocus();
             });
         }
 
-        void startSpatialOcr() {
-            SpatialOcrEngine.recognize(context, screenshot, new SpatialOcrEngine.Callback() {
-                @Override public void onSuccess(List<SpatialOcrEngine.Word> result) {
+        void startDocumentOcr() {
+            OcrEngine.recognizeDocument(context, screenshot, new OcrEngine.DocumentCallback() {
+                @Override public void onSuccess(OcrDocument result) {
                     if (closed) return;
-                    selection.setWords(result);
+                    document = result;
+                    selection.setDocument(result);
                     ocrReady = true;
-                    DiagnosticLog.i(context, "CIRCLE_SELECT", "spatial units=" + selection.size());
+                    DiagnosticLog.i(context, "CIRCLE_SELECT", "document engine=" + result.engine()
+                            + " chars=" + selection.size() + " lines=" + result.lines().size());
                     invalidate();
                 }
 
                 @Override public void onFailure(Throwable error) {
                     if (closed) return;
                     ocrReady = true;
-                    selection.setWords(List.of());
-                    DiagnosticLog.i(context, "CIRCLE_SELECT", "spatial OCR unavailable=" + safe(error));
+                    document = null;
+                    selection.setChars(List.of());
+                    DiagnosticLog.i(context, "CIRCLE_SELECT", "document OCR unavailable=" + safe(error));
                     invalidate();
                 }
             });
@@ -194,14 +185,10 @@ public final class CircleSelectOverlay {
         @Override public void onWindowFocusChanged(boolean hasWindowFocus) {
             super.onWindowFocusChanged(hasWindowFocus);
             if (closed || !keyFocusEnabled) return;
-            if (hasWindowFocus) {
-                hadWindowFocus = true;
-                return;
-            }
+            if (hasWindowFocus) { hadWindowFocus = true; return; }
             if (!hadWindowFocus) return;
             postDelayed(() -> {
                 if (closed || !keyFocusEnabled || !hadWindowFocus || hasWindowFocus()) return;
-                DiagnosticLog.i(context, "CIRCLE_SELECT", "system navigation focus loss -> close");
                 close("system_navigation");
             }, SYSTEM_NAV_FOCUS_LOSS_DELAY_MS);
         }
@@ -212,13 +199,11 @@ public final class CircleSelectOverlay {
             canvas.drawRect(0, 0, getWidth(), getHeight(), shadePaint);
 
             if (selection.hasSelection()) {
-                int lo = selection.low();
-                int hi = selection.high();
-                for (int i = lo; i <= hi && i < selection.size(); i++) {
-                    canvas.drawRoundRect(selection.wordViewRect(i, getWidth(), getHeight()),
+                for (int index : selection.selectionIndices()) {
+                    canvas.drawRoundRect(selection.wordViewRect(index, getWidth(), getHeight()),
                             dp(2), dp(2), selectedPaint);
                 }
-                drawHandles(canvas, lo, hi);
+                drawHandles(canvas, selection.low(), selection.high());
             }
 
             if (circlePoints.size() > 1) {
@@ -234,10 +219,10 @@ public final class CircleSelectOverlay {
             }
 
             String status;
-            if (circleResolving) status = "已自动吸附为矩形…";
+            if (circleResolving) status = "正在检查圈选文字…";
             else if (!ocrReady) status = "正在识别图片文字… · 空白处可直接圈选";
-            else if (selection.isEmpty()) status = "未检测到可选文字 · 圈画松手自动变为矩形";
-            else status = "点按文字选择 · 手柄可按字符跨行调整 · 空白处圈画";
+            else if (selection.isEmpty()) status = "未检测到可选文字 · 圈画可局部增强识别";
+            else status = "点按文字选择 · 手柄可跨行调整 · 圈画直接选择区域文字";
             canvas.drawText(status, dp(16), dp(34), textPaint);
             drawClose(canvas);
         }
@@ -255,8 +240,7 @@ public final class CircleSelectOverlay {
             if (lo < 0 || hi < 0 || lo >= selection.size() || hi >= selection.size()) return;
             RectF first = selection.wordViewRect(lo, getWidth(), getHeight());
             RectF last = selection.wordViewRect(hi, getWidth(), getHeight());
-            float stem = dp(7);
-            float radius = dp(7);
+            float stem = dp(7), radius = dp(7);
             c.drawLine(first.left, first.bottom, first.left, first.bottom + stem, handlePaint);
             c.drawCircle(first.left, first.bottom + stem, radius, handlePaint);
             c.drawLine(last.right, last.bottom, last.right, last.bottom + stem, handlePaint);
@@ -265,10 +249,7 @@ public final class CircleSelectOverlay {
 
         @Override public boolean dispatchKeyEvent(KeyEvent event) {
             if (event != null && event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
-                if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled() && !closed) {
-                    DiagnosticLog.i(context, "CIRCLE_SELECT", "back pressed -> close");
-                    close("back");
-                }
+                if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled() && !closed) close("back");
                 return true;
             }
             return super.dispatchKeyEvent(event);
@@ -281,9 +262,7 @@ public final class CircleSelectOverlay {
                 case MotionEvent.ACTION_DOWN -> {
                     snappedCircleRect.setEmpty();
                     if (closeRect.contains(x, y)) {
-                        dismissMagnifier();
-                        closePressed = true;
-                        return true;
+                        dismissMagnifier(); closePressed = true; return true;
                     }
                     closePressed = false;
                     FloatActionMenu.dismiss();
@@ -294,7 +273,6 @@ public final class CircleSelectOverlay {
                         if (handle != MODE_NONE) {
                             mode = handle;
                             showSelectionMagnifier();
-                            DiagnosticLog.i(context, "CIRCLE_TEXT", "handle_down mode=" + mode);
                             return true;
                         }
                     }
@@ -316,28 +294,22 @@ public final class CircleSelectOverlay {
                     invalidate();
                     return true;
                 }
-
                 case MotionEvent.ACTION_MOVE -> {
                     if (closePressed) return true;
                     if (mode == MODE_TEXT || mode == MODE_START_HANDLE || mode == MODE_END_HANDLE) {
                         int hit = findSelectionWord(x, y);
-                        if (hit >= 0) {
-                            updateSelectionEndpoint(hit);
-                            invalidate();
-                        }
+                        if (hit >= 0) { updateSelectionEndpoint(hit); invalidate(); }
                         if (mode == MODE_START_HANDLE || mode == MODE_END_HANDLE) showSelectionMagnifier();
                         return true;
                     }
                     if (mode == MODE_CIRCLE) {
                         PointF last = circlePoints.isEmpty() ? null : circlePoints.get(circlePoints.size() - 1);
                         if (last == null || Math.abs(last.x - x) >= 1f || Math.abs(last.y - y) >= 1f) {
-                            circlePoints.add(new PointF(x, y));
-                            invalidate();
+                            circlePoints.add(new PointF(x, y)); invalidate();
                         }
                     }
                     return true;
                 }
-
                 case MotionEvent.ACTION_UP -> {
                     dismissMagnifier();
                     if (closePressed) {
@@ -345,56 +317,33 @@ public final class CircleSelectOverlay {
                         if (closeRect.contains(x, y)) close("user_close");
                         return true;
                     }
-
                     if (mode == MODE_CIRCLE) {
                         circlePoints.add(new PointF(x, y));
                         RectF snapped = CircleCropGeometry.snapToRectangle(
                                 circlePoints, getWidth(), getHeight(), getResources().getDisplayMetrics().density);
-                        circlePoints.clear();
-                        mode = MODE_NONE;
+                        circlePoints.clear(); mode = MODE_NONE;
                         if (snapped != null) {
                             snappedCircleRect.set(snapped);
                             circleResolving = true;
                             invalidate();
-                            DiagnosticLog.i(context, "CIRCLE_SELECT", "circle snap rect="
-                                    + Math.round(snapped.left) + "," + Math.round(snapped.top) + "-"
-                                    + Math.round(snapped.right) + "," + Math.round(snapped.bottom));
                             postDelayed(() -> finishSnappedCircle(new RectF(snapped)), RECT_SNAP_PREVIEW_MS);
                         } else invalidate();
                         return true;
                     }
-
                     if (mode == MODE_TEXT || mode == MODE_START_HANDLE || mode == MODE_END_HANDLE) {
                         int finalHit = findSelectionWord(x, y);
                         if (finalHit >= 0) updateSelectionEndpoint(finalHit);
                         mode = MODE_NONE;
-                        String selected = selection.selectedText();
-                        DiagnosticLog.i(context, "CIRCLE_TEXT", "selected chars=" + selected.length()
-                                + " range=" + selection.low() + ".." + selection.high());
                         invalidate();
-                        if (!selected.isBlank()) {
-                            FloatActionMenu.showTextAt(context, selected, () -> {
-                                if (selection.isEmpty()) return;
-                                selection.selectAll();
-                                invalidate();
-                                post(() -> FloatActionMenu.showTextAt(
-                                        context, selection.selectedText(), null, selectionScreenRect()));
-                            }, selectionScreenRect());
-                        }
+                        showSelectionMenu();
                         return true;
                     }
                     mode = MODE_NONE;
                     return true;
                 }
-
                 case MotionEvent.ACTION_CANCEL -> {
-                    dismissMagnifier();
-                    closePressed = false;
-                    mode = MODE_NONE;
-                    circlePoints.clear();
-                    snappedCircleRect.setEmpty();
-                    invalidate();
-                    return true;
+                    dismissMagnifier(); closePressed = false; mode = MODE_NONE;
+                    circlePoints.clear(); snappedCircleRect.setEmpty(); invalidate(); return true;
                 }
             }
             return true;
@@ -406,13 +355,11 @@ public final class CircleSelectOverlay {
         }
 
         private int hitSelectionHandle(float x, float y) {
-            int lo = selection.low();
-            int hi = selection.high();
+            int lo = selection.low(), hi = selection.high();
             if (lo < 0 || hi < 0) return MODE_NONE;
             RectF first = selection.wordViewRect(lo, getWidth(), getHeight());
             RectF last = selection.wordViewRect(hi, getWidth(), getHeight());
-            float stem = dp(7);
-            float r = dp(28);
+            float stem = dp(7), r = dp(28);
             if (distance(x, y, first.left, first.bottom + stem) <= r) {
                 return selection.startIndex() <= selection.endIndex() ? MODE_START_HANDLE : MODE_END_HANDLE;
             }
@@ -431,75 +378,124 @@ public final class CircleSelectOverlay {
             if (union == null || union.isEmpty()) return null;
             int[] loc = new int[2];
             try { getLocationOnScreen(loc); } catch (Throwable ignored) { return null; }
-            return new Rect(
-                    Math.round(union.left) + loc[0],
-                    Math.round(union.top) + loc[1],
-                    Math.round(union.right) + loc[0],
-                    Math.round(union.bottom) + loc[1]);
+            return new Rect(Math.round(union.left) + loc[0], Math.round(union.top) + loc[1],
+                    Math.round(union.right) + loc[0], Math.round(union.bottom) + loc[1]);
+        }
+
+        private Rect imageRectFromView(RectF viewRect) {
+            float sx = screenshot.getWidth() / (float) Math.max(1, getWidth());
+            float sy = screenshot.getHeight() / (float) Math.max(1, getHeight());
+            int left = Math.max(0, Math.min(screenshot.getWidth() - 1, (int) Math.floor(viewRect.left * sx)));
+            int top = Math.max(0, Math.min(screenshot.getHeight() - 1, (int) Math.floor(viewRect.top * sy)));
+            int right = Math.max(left + 1, Math.min(screenshot.getWidth(), (int) Math.ceil(viewRect.right * sx)));
+            int bottom = Math.max(top + 1, Math.min(screenshot.getHeight(), (int) Math.ceil(viewRect.bottom * sy)));
+            return new Rect(left, top, right, bottom);
         }
 
         private void finishSnappedCircle(RectF viewRect) {
             if (closed) return;
+            Rect imageRect = imageRectFromView(viewRect);
+
+            // Fast path: use the already-cached full-screen document. No second OCR is needed.
+            if (selection.selectIntersecting(imageRect)) {
+                circleResolving = false;
+                snappedCircleRect.setEmpty();
+                invalidate();
+                DiagnosticLog.i(context, "CIRCLE_SELECT", "circle matched cached chars="
+                        + selection.selectionIndices().size() + " rect=" + imageRect.toShortString());
+                post(this::showSelectionMenu);
+                return;
+            }
+
+            // Slow path: OCR only the missed region, merge it into the page document and stay here.
             Bitmap crop = CircleCropGeometry.crop(screenshot, viewRect, getWidth(), getHeight());
-            circleResolving = false;
-            snappedCircleRect.setEmpty();
             if (crop == null) {
+                circleResolving = false;
+                snappedCircleRect.setEmpty();
                 invalidate();
                 return;
             }
-            DiagnosticLog.i(context, "CIRCLE_SELECT", "snapped rectangle -> OCR "
-                    + crop.getWidth() + "x" + crop.getHeight());
-            close("circle_rect_ocr");
-            OcrEngine.recognize(context, crop);
+            DiagnosticLog.i(context, "CIRCLE_SELECT", "local refinement "
+                    + crop.getWidth() + "x" + crop.getHeight() + " rect=" + imageRect.toShortString());
+            OcrEngine.recognizeDocument(context, crop, new OcrEngine.DocumentCallback() {
+                @Override public void onSuccess(OcrDocument patch) {
+                    try {
+                        if (closed) return;
+                        OcrDocument translated = patch.translated(imageRect.left, imageRect.top,
+                                screenshot.getWidth(), screenshot.getHeight());
+                        selection.mergeRefinement(translated, imageRect);
+                        selection.selectIntersecting(imageRect);
+                        document = translated;
+                        DiagnosticLog.i(context, "CIRCLE_SELECT", "local refinement engine="
+                                + patch.engine() + " chars=" + patch.chars().size());
+                    } finally {
+                        if (!crop.isRecycled()) crop.recycle();
+                        if (!closed) {
+                            circleResolving = false;
+                            snappedCircleRect.setEmpty();
+                            invalidate();
+                            if (selection.hasSelection()) post(WorkspaceView.this::showSelectionMenu);
+                        }
+                    }
+                }
+
+                @Override public void onFailure(Throwable error) {
+                    if (!crop.isRecycled()) crop.recycle();
+                    if (closed) return;
+                    circleResolving = false;
+                    snappedCircleRect.setEmpty();
+                    DiagnosticLog.i(context, "CIRCLE_SELECT", "local refinement failed=" + safe(error));
+                    invalidate();
+                }
+            });
+        }
+
+        private void showSelectionMenu() {
+            if (closed || !selection.hasSelection()) return;
+            String selected = selection.selectedText();
+            if (selected.isBlank()) return;
+            FloatActionMenu.showTextAt(context, selected, () -> {
+                if (selection.isEmpty()) return;
+                selection.selectAll();
+                invalidate();
+                post(() -> FloatActionMenu.showTextAt(
+                        context, selection.selectedText(), null, selectionScreenRect()));
+            }, selectionScreenRect());
         }
 
         private void showSelectionMagnifier() {
             if (closed || getWidth() <= 0 || getHeight() <= 0 || !isAttachedToWindow()) return;
-            int index;
-            if (mode == MODE_START_HANDLE) index = selection.startIndex();
-            else if (mode == MODE_END_HANDLE) index = selection.endIndex();
-            else return;
+            int index = mode == MODE_START_HANDLE ? selection.startIndex()
+                    : mode == MODE_END_HANDLE ? selection.endIndex() : -1;
             if (index < 0 || index >= selection.size()) return;
-
             RectF symbol = selection.wordViewRect(index, getWidth(), getHeight());
             if (symbol.isEmpty()) return;
-
             boolean rightEdge = mode == MODE_START_HANDLE
                     ? selection.startIndex() > selection.endIndex()
                     : selection.startIndex() <= selection.endIndex();
-            float maxX = Math.max(0f, getWidth() - 1f);
-            float maxY = Math.max(0f, getHeight() - 1f);
-            float sourceX = Math.max(0f, Math.min(maxX, rightEdge ? symbol.right : symbol.left));
-            float sourceY = Math.max(0f, Math.min(maxY, symbol.centerY()));
-
+            float sourceX = Math.max(0f, Math.min(getWidth() - 1f, rightEdge ? symbol.right : symbol.left));
+            float sourceY = Math.max(0f, Math.min(getHeight() - 1f, symbol.centerY()));
             try {
                 if (magnifier == null) magnifier = new Magnifier(this);
                 magnifier.show(sourceX, sourceY);
-            } catch (Throwable t) {
-                DiagnosticLog.i(context, "CIRCLE_MAGNIFIER", "show failed=" + safe(t));
-            }
+            } catch (Throwable t) { DiagnosticLog.i(context, "CIRCLE_MAGNIFIER", "show failed=" + safe(t)); }
         }
 
         private void dismissMagnifier() {
             Magnifier m = magnifier;
-            if (m == null) return;
-            try { m.dismiss(); } catch (Throwable ignored) {}
+            if (m != null) try { m.dismiss(); } catch (Throwable ignored) {}
         }
 
         void close(String reason) {
             if (closed) return;
             closed = true;
-            dismissMagnifier();
-            magnifier = null;
-            FloatActionMenu.dismiss();
-            FloatMenuAnchor.clear();
+            dismissMagnifier(); magnifier = null;
+            FloatActionMenu.dismiss(); FloatMenuAnchor.clear();
             removeCallbacks(null);
             host.remove(this, "circle_select");
             try { if (!screenshot.isRecycled()) screenshot.recycle(); } catch (Throwable ignored) {}
             CircleSelectOverlay.onClosed(this);
-            if (onClosed != null) {
-                try { onClosed.run(); } catch (Throwable ignored) {}
-            }
+            if (onClosed != null) try { onClosed.run(); } catch (Throwable ignored) {}
             DiagnosticLog.i(context, "CIRCLE_SELECT", "closed reason=" + reason);
         }
 
