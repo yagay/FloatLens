@@ -185,12 +185,12 @@ public final class ViewSelectionEngine {
 
         final boolean region = overlay != null && overlay.isRegionMode();
         final ScreenCandidate candidate = overlay == null ? null : overlay.currentCandidate();
-        final FvOperationHintOverlay.Mode op = currentOperationMode();
+        final FvPointerOperationHintOverlay.Mode op = currentOperationMode();
         final Rect bounds;
         final ViewNodeCandidate view;
         final String text;
 
-        if (op == FvOperationHintOverlay.Mode.SCREENSHOT) {
+        if (op == FvPointerOperationHintOverlay.Mode.SCREENSHOT) {
             bounds = region && overlay != null ? overlay.currentRegion()
                     : candidate == null ? new Rect() : candidate.bounds();
             view = null;
@@ -214,9 +214,9 @@ public final class ViewSelectionEngine {
         final boolean result = !bounds.isEmpty();
         if (result) {
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                if (op == FvOperationHintOverlay.Mode.SCREENSHOT) {
+                if (op == FvPointerOperationHintOverlay.Mode.SCREENSHOT) {
                     ScreenshotController.captureBoundsForRegion(context, bounds);
-                } else if (op == FvOperationHintOverlay.Mode.TEXT) {
+                } else if (op == FvPointerOperationHintOverlay.Mode.TEXT) {
                     ScreenshotController.captureBoundsForViewCandidate(context, bounds, view, text);
                 } else {
                     ScreenshotController.captureBoundsForVisualCandidate(context, bounds, view);
@@ -249,19 +249,19 @@ public final class ViewSelectionEngine {
         if (active) DiagnosticLog.i(context, "FV_SELECT", "DIRECT_CANCEL");
     }
 
-    private FvOperationHintOverlay.Mode currentOperationMode() {
-        if (overlay == null) return FvOperationHintOverlay.Mode.SCREENSHOT;
-        if (overlay.isRegionMode()) return FvOperationHintOverlay.Mode.SCREENSHOT;
+    private FvPointerOperationHintOverlay.Mode currentOperationMode() {
+        if (overlay == null) return FvPointerOperationHintOverlay.Mode.SCREENSHOT;
+        if (overlay.isRegionMode()) return FvPointerOperationHintOverlay.Mode.SCREENSHOT;
 
         ScreenCandidate candidate = overlay.currentCandidate();
-        if (candidate == null) return FvOperationHintOverlay.Mode.SCREENSHOT;
+        if (candidate == null) return FvPointerOperationHintOverlay.Mode.SCREENSHOT;
         if (candidate.type() == ScreenCandidate.Type.TEXT && candidate.hasText()) {
-            return FvOperationHintOverlay.Mode.TEXT;
+            return FvPointerOperationHintOverlay.Mode.TEXT;
         }
         if (candidate.type() == ScreenCandidate.Type.NON_TEXT) {
-            return FvOperationHintOverlay.Mode.IMAGE;
+            return FvPointerOperationHintOverlay.Mode.IMAGE;
         }
-        return FvOperationHintOverlay.Mode.SCREENSHOT;
+        return FvPointerOperationHintOverlay.Mode.SCREENSHOT;
     }
 
     /**
