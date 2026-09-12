@@ -4,29 +4,34 @@ import android.accessibilityservice.AccessibilityService;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Rect;
+import android.os.Build;
+import android.os.SystemClock;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Clean-room equivalent of FV's notification/system-panel close path.
+ * Clean-room equivalent of FV's notification/system-panel state and close path.
  *
- * Reverse-engineered FV behaviour:
- *  - FooAccessibilityService.B0() identifies an expanded SystemUI TYPE_SYSTEM window;
- *  - m5/w2.n() first broadcasts ACTION_CLOSE_SYSTEM_DIALOGS;
- *  - its callback then calls FooAccessibilityService.H();
- *  - H() is exactly performGlobalAction(15), i.e. GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE.
+ * Re-verified FV behaviour:
+ *  - FooAccessibilityService.B0() detects an expanded SystemUI TYPE_SYSTEM window;
+ *  - FooViewService keeps that state continuously ("notification is expand/collapse");
+ *  - capture/circle code waits until the frozen/candidate result UI is ready;
+ *  - m5/w2.n() broadcasts ACTION_CLOSE_SYSTEM_DIALOGS and then still invokes its callback;
+ *  - on Android 12+ the callback reaches performGlobalAction(15), i.e.
+ *    GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE;
+ *  - MIUI has an extra close attempt even when the cached expanded flag is false.
  *
- * Callers snapshot the expanded state before capture and invoke dismiss only after the bitmap or
- * frozen result UI is ready. That preserves the notification shade in the captured image.
- *
- * Modern OxygenOS can reject both original FV routes: CLOSE_SYSTEM_DIALOGS requires a privileged
- * permission and performGlobalAction(15) may return false. FloatLens therefore preserves FV's two
- * routes first, then uses a root-only `cmd statusbar collapse` fallback when both fail.
+ * FloatLens mirrors that shape with a central CaptureState token. Capture code snapshots once, while
+ * LensAccessibilityService keeps the shared shade state updated. Result surfaces call onResultReady()
+ * only after their frozen/result UI has been created. Root is never required for the normal path and
+ * remains a last-resort compatibility fallback only when both FV routes fail synchronously.
  */
 public final class FvSystemPanelController {
     private static final ExecutorService ROOT_IO = Executors.newSingleThreadExecutor(r -> {
@@ -35,18 +40,110 @@ public final class FvSystemPanelController {
         return t;
     });
 
+    private static volatile boolean cachedShadeExpanded;
+    private static volatile boolean cachedShadeKnown;
+    private static volatile long cachedShadeUpdatedAt;
+    private static volatile Boolean cachedMiui;
+
     private FvSystemPanelController() {}
 
-    /** FV B0()-style SystemUI window test, with the cached environment only as a fallback. */
+    /** Immutable-per-capture token with one-shot result delivery, matching FV's capture -> candidate flow. */
+    public static final class CaptureState {
+        private final boolean expandedAtCapture;
+        private final long startedAt;
+        private final String startReason;
+        private final AtomicBoolean consumed = new AtomicBoolean(false);
+
+        private CaptureState(boolean expandedAtCapture, long startedAt, String startReason) {
+            this.expandedAtCapture = expandedAtCapture;
+            this.startedAt = startedAt;
+            this.startReason = startReason == null ? "capture" : startReason;
+        }
+
+        public boolean expandedAtCapture() { return expandedAtCapture; }
+        public long startedAt() { return startedAt; }
+        public String startReason() { return startReason; }
+        private boolean consume() { return consumed.compareAndSet(false, true); }
+    }
+
+    /**
+     * Called by LensAccessibilityService whenever its environment snapshot changes. This is the
+     * FloatLens equivalent of FV's service-level j0 notification-expanded state.
+     */
+    public static void onAccessibilityEnvironment(Context context, EnvironmentState state) {
+        if (context == null || state == null) return;
+        updateCachedShade(context.getApplicationContext(), state.notificationExpanded(), "accessibility_env");
+    }
+
+    /** Accessibility service disappeared; keep the last value only as history, not as authoritative state. */
+    public static void onAccessibilityDisconnected(Context context) {
+        boolean wasKnown = cachedShadeKnown;
+        boolean wasExpanded = cachedShadeExpanded;
+        cachedShadeKnown = false;
+        cachedShadeUpdatedAt = SystemClock.uptimeMillis();
+        if (context != null && wasKnown) {
+            DiagnosticLog.i(context.getApplicationContext(), "FV_SHADE",
+                    "accessibility disconnected lastExpanded=" + wasExpanded);
+        }
+    }
+
+    /** Start one screenshot/circle/View operation and remember the notification state at its boundary. */
+    public static CaptureState beginCapture(Context context, String reason) {
+        Context app = context.getApplicationContext();
+        boolean expanded = notificationShadeExpanded();
+        CaptureState state = new CaptureState(expanded, SystemClock.uptimeMillis(), reason);
+        DiagnosticLog.i(app, "FV_SHADE", "capture begin reason=" + state.startReason()
+                + " expanded=" + expanded + " cachedKnown=" + cachedShadeKnown);
+        return state;
+    }
+
+    /**
+     * Candidate/frozen/result UI callback. This is the central equivalent of FV's shared e0()/
+     * onCircelCandidateDialogShown path. It is intentionally one-shot per CaptureState.
+     */
+    public static void onResultReady(Context context, CaptureState state, String reason) {
+        if (context == null || state == null || !state.consume()) return;
+        Context app = context.getApplicationContext();
+
+        // FV keeps a live service-level flag. Preserve the capture snapshot, but also honor a newer
+        // live expanded state that appeared while capture/result UI was being prepared.
+        boolean liveExpanded = cachedShadeKnown && cachedShadeExpanded;
+        boolean miuiCompat = isMiuiDevice();
+        boolean shouldDismiss = state.expandedAtCapture() || liveExpanded || miuiCompat;
+        long elapsed = Math.max(0L, SystemClock.uptimeMillis() - state.startedAt());
+
+        DiagnosticLog.i(app, "FV_SHADE", "result ready reason=" + reason
+                + " start=" + state.startReason()
+                + " captureExpanded=" + state.expandedAtCapture()
+                + " liveExpanded=" + liveExpanded
+                + " miuiCompat=" + miuiCompat
+                + " elapsedMs=" + elapsed);
+
+        if (!shouldDismiss) return;
+        dismissSystemPanel(app, reason == null ? state.startReason() : reason);
+    }
+
+    /** FV B0()-style SystemUI window test, with the service environment and cached state as fallbacks. */
     public static boolean notificationShadeExpanded() {
         LensAccessibilityService service = LensAccessibilityService.get();
-        if (service == null) return false;
+        Boolean live = probeNotificationShadeExpanded(service);
+        if (live != null) {
+            Context app = service == null ? null : service.getApplicationContext();
+            if (app != null) updateCachedShade(app, live, "live_probe");
+            return live;
+        }
+        return cachedShadeKnown && cachedShadeExpanded;
+    }
 
+    private static Boolean probeNotificationShadeExpanded(LensAccessibilityService service) {
+        if (service == null) return null;
+        boolean windowListRead = false;
         try {
             WindowManager wm = (WindowManager) service.getSystemService(Context.WINDOW_SERVICE);
             int screenHeight = Math.max(1, wm.getCurrentWindowMetrics().getBounds().height());
             List<AccessibilityWindowInfo> windows = service.getWindows();
             if (windows != null) {
+                windowListRead = true;
                 for (AccessibilityWindowInfo window : windows) {
                     if (window == null || window.getType() != AccessibilityWindowInfo.TYPE_SYSTEM) continue;
                     AccessibilityNodeInfo root = null;
@@ -58,7 +155,7 @@ public final class FvSystemPanelController {
                     if (!bounds.isEmpty() && bounds.height() >= screenHeight / 2) {
                         DiagnosticLog.i(service, "FV_SHADE", "expanded via TYPE_SYSTEM bounds="
                                 + bounds.toShortString());
-                        return true;
+                        return Boolean.TRUE;
                     }
                 }
             }
@@ -68,20 +165,27 @@ public final class FvSystemPanelController {
 
         try {
             EnvironmentState env = service.environment();
-            return env != null && env.notificationExpanded();
-        } catch (Throwable ignored) {
-            return false;
+            if (env != null) return env.notificationExpanded();
+        } catch (Throwable ignored) {}
+        return windowListRead ? Boolean.FALSE : null;
+    }
+
+    private static void updateCachedShade(Context app, boolean expanded, String source) {
+        boolean changed = !cachedShadeKnown || cachedShadeExpanded != expanded;
+        cachedShadeExpanded = expanded;
+        cachedShadeKnown = true;
+        cachedShadeUpdatedAt = SystemClock.uptimeMillis();
+        if (changed && app != null) {
+            DiagnosticLog.i(app, "FV_SHADE", expanded
+                    ? "notification is expand source=" + source
+                    : "notification is collapse source=" + source);
         }
     }
 
-    /**
-     * Mirrors m5/w2.n() + FooAccessibilityService.H(). Only executes when the shade was known to be
-     * expanded before capture; this must be called after the captured/frozen result is ready.
-     */
-    public static void dismissAfterCapture(Context context, boolean wasExpanded, String reason) {
-        if (!wasExpanded) return;
-        Context app = context.getApplicationContext();
+    private static void dismissSystemPanel(Context app, String reason) {
         app.getMainExecutor().execute(() -> {
+            // Re-verified FV order: broadcast first, then callback/global action regardless of
+            // whether sendBroadcast() itself threw. Do not turn these into mutually exclusive paths.
             boolean broadcast = false;
             try {
                 app.sendBroadcast(new Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS));
@@ -100,15 +204,51 @@ public final class FvSystemPanelController {
                 }
             }
 
-            DiagnosticLog.i(app, "FV_SHADE", "dismiss after capture reason=" + reason
-                    + " broadcast=" + broadcast + " global15=" + global);
+            DiagnosticLog.i(app, "FV_SHADE", "dismiss result-ready reason=" + reason
+                    + " broadcast=" + broadcast + " global15=" + global
+                    + " cachedAgeMs=" + Math.max(0L, SystemClock.uptimeMillis() - cachedShadeUpdatedAt));
 
-            // OxygenOS 16 on rooted devices can reject both original FV mechanisms. Do not replace
-            // FV's path: use root only as a fallback after both failed.
-            if (!broadcast && !global) {
-                collapseWithRoot(app, reason);
-            }
+            // The ordinary FV-compatible implementation above is non-root. Preserve the existing
+            // root command only as a final fallback when neither route could even be issued.
+            if (!broadcast && !global) collapseWithRoot(app, reason);
         });
+    }
+
+    /**
+     * Compatibility wrappers for older call sites. New capture code should use beginCapture() and
+     * onResultReady() so all operations share the same one-shot state machine.
+     */
+    @Deprecated
+    public static void dismissAfterCapture(Context context, boolean wasExpanded, String reason) {
+        CaptureState state = new CaptureState(wasExpanded, SystemClock.uptimeMillis(), "legacy");
+        onResultReady(context, state, reason);
+    }
+
+    private static boolean isMiuiDevice() {
+        Boolean cached = cachedMiui;
+        if (cached != null) return cached;
+
+        boolean miui = !systemProperty("ro.miui.ui.version.code").isEmpty()
+                || !systemProperty("ro.miui.ui.version.name").isEmpty()
+                || !systemProperty("ro.miui.internal.storage").isEmpty();
+        if (!miui) {
+            String maker = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER.toLowerCase(Locale.ROOT);
+            String brand = Build.BRAND == null ? "" : Build.BRAND.toLowerCase(Locale.ROOT);
+            miui = maker.contains("xiaomi") || brand.contains("xiaomi")
+                    || brand.contains("redmi") || brand.contains("poco");
+        }
+        cachedMiui = miui;
+        return miui;
+    }
+
+    private static String systemProperty(String key) {
+        try {
+            Class<?> cls = Class.forName("android.os.SystemProperties");
+            Object value = cls.getMethod("get", String.class).invoke(null, key);
+            return value == null ? "" : String.valueOf(value).trim();
+        } catch (Throwable ignored) {
+            return "";
+        }
     }
 
     private static void collapseWithRoot(Context app, String reason) {
