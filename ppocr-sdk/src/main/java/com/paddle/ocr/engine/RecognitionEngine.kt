@@ -17,13 +17,14 @@ package com.paddle.ocr.engine
 import com.paddle.ocr.postprocess.CTCDecoder
 import com.paddle.ocr.preprocess.RecPreprocessor
 import org.opencv.core.Mat
+import kotlin.math.ceil
 
 class RecognitionEngine(
     private val ortManager: ORTSessionManager,
     private val characterList: List<String>,
 ) {
     data class RecognitionResult(
-        val texts: List<Pair<String, Float>>,
+        val texts: List<CTCDecoder.DecodedText>,
         val preprocessMs: Long,
         val inferenceMs: Long,
         val postprocessMs: Long,
@@ -32,19 +33,23 @@ class RecognitionEngine(
     )
 
     fun recognize(crops: List<Mat>): RecognitionResult {
-        // Preprocess
         val preStart = System.currentTimeMillis()
         val preResult = RecPreprocessor.preprocessBatch(crops)
         val preprocessMs = System.currentTimeMillis() - preStart
 
-        // Inference
         val infStart = System.currentTimeMillis()
         val (outputData, outputShape) = ortManager.runRecognition(preResult.tensorData, preResult.shape)
         val inferenceMs = System.currentTimeMillis() - infStart
 
-        // Postprocess (CTC decode)
+        val timeSteps = outputShape[1].toInt().coerceAtLeast(1)
+        val paddedWidth = preResult.shape[3].toInt().coerceAtLeast(1)
+        val validSteps = IntArray(preResult.contentWidths.size) { index ->
+            ceil(timeSteps * (preResult.contentWidths[index] / paddedWidth.toDouble()))
+                .toInt().coerceIn(1, timeSteps)
+        }
+
         val postStart = System.currentTimeMillis()
-        val decoded = CTCDecoder.decode(outputData, outputShape, characterList)
+        val decoded = CTCDecoder.decode(outputData, outputShape, characterList, validSteps)
         val postprocessMs = System.currentTimeMillis() - postStart
 
         val inputShape = preResult.shape.map { it.toInt() }
