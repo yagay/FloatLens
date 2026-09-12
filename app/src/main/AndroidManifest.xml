@@ -33,6 +33,12 @@
         </provider>
         <activity android:name=".ResultActivity" android:theme="@style/Theme.FloatLens.ResultText" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" />
         <activity
+            android:name=".CircleSelectActivity"
+            android:theme="@style/Theme.FloatLens"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity="" />
+        <activity
             android:name=".ShadeDismissActivity"
             android:theme="@style/Theme.FloatLens.ShadeDismiss"
             android:exported="false"
