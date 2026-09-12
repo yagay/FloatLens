@@ -20,9 +20,10 @@ import java.util.List;
 /**
  * Single primary result surface for screenshot, View and OCR output.
  *
- * Screenshot starts as a 2032 accessibility overlay so it can appear above SystemUI. As soon as
- * native text selection is needed, the exact same View migrates to a focusable application overlay.
- * All result modes share the same window lifecycle, OCR session and TextSelectionSurface.
+ * Surfaces that must appear while SystemUI is still expanded are first attached through the
+ * AccessibilityService WindowManager (TYPE_ACCESSIBILITY_OVERLAY). Text-capable surfaces migrate
+ * the exact same View to a focusable TYPE_APPLICATION_OVERLAY only after shade cleanup, so native
+ * Android selection handles/magnifier continue to work without duplicating a second result UI.
  */
 final class FloatingResultWindow {
     private static final long OCR_TIMEOUT_MS = 12_000L;
@@ -30,28 +31,44 @@ final class FloatingResultWindow {
 
     static boolean showScreenshot(Context c, Bitmap image, Rect anchor) {
         if (c == null || image == null || image.isRecycled()) return false;
-        return show(c, new Spec(Mode.SCREENSHOT, "区域截图", "", List.of(), image, anchor, null));
+        return show(c, new Spec(Mode.SCREENSHOT, "区域截图", "", List.of(),
+                image, anchor, null, false));
     }
 
     static boolean showOcr(Context c, String text, List<String> blocks, Bitmap image, Rect anchor) {
         if (c == null) return false;
-        return show(c, new Spec(Mode.OCR, "OCR 结果", safe(text), safeBlocks(blocks), image, anchor, null));
+        return show(c, new Spec(Mode.OCR, "OCR 结果", safe(text), safeBlocks(blocks),
+                image, anchor, null, false));
     }
 
     static boolean showViewText(Context c, String text, Bitmap image, Rect anchor) {
+        return showViewText(c, text, image, anchor, false);
+    }
+
+    static boolean showViewText(Context c, String text, Bitmap image, Rect anchor,
+                                boolean shadeExpandedAtCapture) {
         if (c == null || text == null || text.isBlank()) return false;
-        return show(c, new Spec(Mode.VIEW_TEXT, "View 内容", text, List.of(), image, anchor, null));
+        return show(c, new Spec(Mode.VIEW_TEXT, "View 内容", text, List.of(),
+                image, anchor, null, shadeExpandedAtCapture));
     }
 
     static boolean showViewImage(Context c, Bitmap image, ViewNodeCandidate view, Rect anchor) {
+        return showViewImage(c, image, view, anchor, false);
+    }
+
+    static boolean showViewImage(Context c, Bitmap image, ViewNodeCandidate view, Rect anchor,
+                                 boolean shadeExpandedAtCapture) {
         if (c == null || image == null || image.isRecycled()) return false;
-        return show(c, new Spec(Mode.VIEW_IMAGE, "View / 图标", buildViewMeta(view), List.of(), image, anchor, view));
+        return show(c, new Spec(Mode.VIEW_IMAGE, "View / 图标", buildViewMeta(view), List.of(),
+                image, anchor, view, shadeExpandedAtCapture));
     }
 
     private static synchronized boolean show(Context c, Spec spec) {
         dismissActive("replace");
         Context app = c.getApplicationContext();
         boolean showText = needsText(app, spec);
+        boolean shadeBootstrap = showText && spec.mode != Mode.OCR
+                && (spec.shadeExpandedAtCapture || FvSystemPanelController.notificationShadeExpanded());
         Rect usable = ResultUi.usableBounds(app);
         int width = ResultUi.standardWidth(app, usable);
         int maxH = ResultUi.standardMaxHeight(app, usable);
@@ -113,18 +130,22 @@ final class FloatingResultWindow {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
-        if (spec.mode == Mode.SCREENSHOT) lp.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
-        else lp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
+        if (spec.mode == Mode.SCREENSHOT || shadeBootstrap) {
+            lp.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+        } else {
+            lp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
+        }
         position(app, usable, lp, spec.anchor, spec.mode == Mode.SCREENSHOT);
 
         FvOverlayWindowHost host = new FvOverlayWindowHost(app);
-        boolean attached = spec.mode == Mode.SCREENSHOT
+        boolean accessibilityBootstrap = spec.mode == Mode.SCREENSHOT || shadeBootstrap;
+        boolean attached = accessibilityBootstrap
                 ? host.add(box, lp, "result_window")
                 : host.addApplication(box, lp, "result_window");
         if (!attached) return false;
 
         Session session = new Session(app, spec, host, box, lp, title, imageView,
-                textPanel, selection, ocr, copy, save, close, imageH, height);
+                textPanel, selection, ocr, copy, save, close, imageH, height, shadeBootstrap);
         active = session;
         bindSelection(session);
         if (showText) setTextMode(session, spec.text, spec.blocks, false);
@@ -137,7 +158,15 @@ final class FloatingResultWindow {
         DiagnosticLog.i(app, "RESULT_WINDOW", "show mode=" + spec.mode
                 + " size=" + lp.width + "x" + lp.height
                 + " host=" + (host.isAccessibilityHosted() ? "accessibility" : "application")
-                + " type=" + lp.type + " actions=" + count);
+                + " type=" + lp.type + " shadeBootstrap=" + shadeBootstrap
+                + " actions=" + count);
+
+        if (shadeBootstrap) {
+            OverlayShadeCoordinator.cleanup(app, spec.shadeExpandedAtCapture,
+                    "view_result", collapsed -> box.post(() ->
+                            promoteNativeTextHost(session,
+                                    collapsed ? "shade_collapsed" : "shade_cleanup_exhausted")));
+        }
         return true;
     }
 
@@ -161,6 +190,14 @@ final class FloatingResultWindow {
                         session.selection::selectAllText, anchorOnScreen);
             }
         });
+    }
+
+    private static synchronized void promoteNativeTextHost(Session session, String reason) {
+        if (session == null || session.detached || active != session || !session.nativeHostDeferred) return;
+        session.nativeHostDeferred = false;
+        boolean ok = ensureNativeTextHost(session);
+        DiagnosticLog.i(session.app, "RESULT_WINDOW", "promote native host reason=" + reason
+                + " success=" + ok + " type=" + session.windowLayout.type);
     }
 
     private static synchronized void beginOcr(Session session) {
@@ -212,7 +249,7 @@ final class FloatingResultWindow {
 
     private static void setTextMode(Session session, String text, List<String> blocks, boolean fromOcr) {
         if (session.detached) return;
-        ensureNativeTextHost(session);
+        if (!session.nativeHostDeferred) ensureNativeTextHost(session);
         String shown = text == null || text.trim().isEmpty() ? "未识别到文字" : text.trim();
         session.selection.setText(shown);
         session.textPanel.setVisibility(View.VISIBLE);
@@ -234,10 +271,10 @@ final class FloatingResultWindow {
 
         DiagnosticLog.i(session.app, "RESULT_WINDOW", "text mode fromOcr=" + fromOcr
                 + " chars=" + shown.length() + " blocks=" + (blocks == null ? 0 : blocks.size())
-                + " nativeSelection=true magnifier=true");
+                + " nativeSelection=true magnifier=true deferred=" + session.nativeHostDeferred);
     }
 
-    private static void ensureNativeTextHost(Session session) {
+    private static boolean ensureNativeTextHost(Session session) {
         session.windowLayout.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
         session.windowLayout.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
@@ -246,9 +283,9 @@ final class FloatingResultWindow {
                     session.box, session.windowLayout, "result_window_text");
             DiagnosticLog.i(session.app, "RESULT_WINDOW", "native host migrated=" + migrated
                     + " type=" + session.windowLayout.type);
-        } else {
-            session.host.update(session.box, session.windowLayout, "result_window_text");
+            return migrated;
         }
+        return session.host.update(session.box, session.windowLayout, "result_window_text");
     }
 
     private static void copyAll(Session session) {
@@ -336,7 +373,8 @@ final class FloatingResultWindow {
     private enum Mode { SCREENSHOT, VIEW_TEXT, VIEW_IMAGE, OCR }
 
     private record Spec(Mode mode, String title, String text, List<String> blocks,
-                        Bitmap image, Rect anchor, ViewNodeCandidate view) {
+                        Bitmap image, Rect anchor, ViewNodeCandidate view,
+                        boolean shadeExpandedAtCapture) {
         Spec {
             anchor = anchor == null ? null : new Rect(anchor);
         }
@@ -358,6 +396,7 @@ final class FloatingResultWindow {
         final Button closeButton;
         final int initialImageHeight;
         final int windowHeight;
+        boolean nativeHostDeferred;
         boolean detached;
         boolean ocrRunning;
         long ocrGeneration;
@@ -366,7 +405,7 @@ final class FloatingResultWindow {
                 WindowManager.LayoutParams windowLayout, TextView title, ImageView imageView,
                 LinearLayout textPanel, TextSelectionSurface selection, Button ocrButton,
                 Button copyButton, Button saveButton, Button closeButton,
-                int initialImageHeight, int windowHeight) {
+                int initialImageHeight, int windowHeight, boolean nativeHostDeferred) {
             this.app = app;
             this.spec = spec;
             this.host = host;
@@ -382,6 +421,7 @@ final class FloatingResultWindow {
             this.closeButton = closeButton;
             this.initialImageHeight = initialImageHeight;
             this.windowHeight = windowHeight;
+            this.nativeHostDeferred = nativeHostDeferred;
         }
     }
 
