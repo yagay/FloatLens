@@ -16,6 +16,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.math.max
+import kotlin.math.min
 
 /** PP-OCR adapter. Engine-specific output is normalized to OcrDocument here. */
 object PaddleOcrBridge {
@@ -40,12 +42,12 @@ object PaddleOcrBridge {
                 if (!OcrModelManager.isReady(app, model)) throw IllegalStateException("model_not_downloaded")
                 val ocr = getOrCreate(app, model)
                 val result = runMutex.withLock { ocr.recognize(bitmap) }
-                val baseDocument = toDocument(result.results, bitmap.width, bitmap.height, model)
+                val baseDocument = toDocument(app, result.results, bitmap.width, bitmap.height, model)
                 val geometryStarted = System.currentTimeMillis()
                 val document = OcrGeometryRefiner.refinePpWithUpscaledMlKit(app, bitmap, baseDocument)
                 val geometryMs = System.currentTimeMillis() - geometryStarted
                 withContext(Dispatchers.Main) {
-                    callback.onSuccess(document, result.totalTimeMs + geometryMs, result.lineCount)
+                    callback.onSuccess(document, result.totalTimeMs + geometryMs, document.lines().size)
                 }
             } catch (t: Throwable) {
                 val msg = describeThrowable(t)
@@ -56,17 +58,15 @@ object PaddleOcrBridge {
     }
 
     private fun toDocument(
+        context: Context,
         results: List<OCRResult>,
         imageWidth: Int,
         imageHeight: Int,
         model: Int,
     ): OcrDocument {
-        val lines = mutableListOf<OcrDocument.Line>()
-        val blocks = mutableListOf<String>()
+        val rawLines = mutableListOf<OcrDocument.Line>()
         var order = 0
         var nextGroup = 0
-        var confSum = 0f
-        var confCount = 0
 
         results.forEachIndexed { lineIndex, item ->
             val lineText = item.text.trim()
@@ -110,18 +110,139 @@ object PaddleOcrBridge {
                 }
             }
 
-            lines += OcrDocument.Line(lineText, lineRect, item.confidence, chars)
-            blocks += lineText
-            confSum += item.confidence
-            confCount++
+            rawLines += OcrDocument.Line(lineText, lineRect, item.confidence, chars)
         }
 
+        val deduped = dedupeOverlappingLines(rawLines)
+        if (deduped.size != rawLines.size) {
+            DiagnosticLog.i(
+                context,
+                "PPOCR_DEDUP",
+                "model=$model rawLines=${rawLines.size} keptLines=${deduped.size} removed=${rawLines.size - deduped.size}",
+            )
+        }
+
+        val lines = reindexLines(deduped)
+        val blocks = lines.map { it.text().trim() }
         val text = blocks.joinToString("\n").trim()
-        val avg = if (confCount == 0) 0f else confSum / confCount
+        val avg = if (lines.isEmpty()) 0f else lines.map { it.confidence() }.average().toFloat()
         return OcrDocument(
             text, blocks, lines, "ppocr-$model", avg, 0.0, imageWidth, imageHeight,
         )
     }
+
+    /**
+     * Paddle DB post-processing can return nested/near-identical contours for the same visual text.
+     * Keep exactly one logical OCR line before any ML Kit geometry rescue so selection never sees
+     * two overlapping copies of the same text.
+     */
+    private fun dedupeOverlappingLines(source: List<OcrDocument.Line>): List<OcrDocument.Line> {
+        if (source.size < 2) return source
+
+        // Higher-confidence results win. For effectively equal confidence, the tighter box wins.
+        val ranked = source.sortedWith(
+            compareByDescending<OcrDocument.Line> { it.confidence() }
+                .thenBy { area(it.bounds()) }
+        )
+        val kept = mutableListOf<OcrDocument.Line>()
+        for (candidate in ranked) {
+            val duplicate = kept.any { existing -> duplicateVisualLine(existing, candidate) }
+            if (!duplicate) kept += candidate
+        }
+
+        return kept.sortedWith(
+            compareBy<OcrDocument.Line> { it.bounds().centerY() }
+                .thenBy { it.bounds().left }
+        )
+    }
+
+    private fun duplicateVisualLine(a: OcrDocument.Line, b: OcrDocument.Line): Boolean {
+        val ar = a.bounds()
+        val br = b.bounds()
+        if (ar.isEmpty || br.isEmpty || !Rect.intersects(ar, br)) return false
+
+        val intersection = Rect()
+        if (!intersection.setIntersect(ar, br)) return false
+        val overlap = area(intersection).toFloat()
+        val aArea = max(1L, area(ar))
+        val bArea = max(1L, area(br))
+        val minCoverage = overlap / min(aArea, bArea).toFloat()
+        val union = max(1f, (aArea + bArea).toFloat() - overlap)
+        val iou = overlap / union
+
+        val at = compactText(a.text())
+        val bt = compactText(b.text())
+        if (at.isEmpty() || bt.isEmpty()) return false
+        val exact = at == bt
+        val related = at.contains(bt) || bt.contains(at)
+        val lengthRatio = min(at.codePointCount(0, at.length), bt.codePointCount(0, bt.length)).toFloat() /
+            max(1, max(at.codePointCount(0, at.length), bt.codePointCount(0, bt.length))).toFloat()
+
+        // Exact duplicates can differ slightly because DB's unclip creates nested rectangles.
+        if (exact && (minCoverage >= 0.52f || iou >= 0.38f)) return true
+
+        // A duplicate recognizer pass can lose or add one punctuation/character. Require much
+        // stronger spatial containment before treating those lines as the same visual line.
+        if (related && lengthRatio >= 0.78f && minCoverage >= 0.72f) return true
+
+        // Final guard for two almost-identical boxes with a one-character OCR disagreement.
+        if (lengthRatio >= 0.88f && minCoverage >= 0.90f && normalizedEditSimilarity(at, bt) >= 0.82f) return true
+        return false
+    }
+
+    private fun normalizedEditSimilarity(a: String, b: String): Float {
+        if (a == b) return 1f
+        if (a.isEmpty() || b.isEmpty()) return 0f
+        val aa = a.codePoints().toArray()
+        val bb = b.codePoints().toArray()
+        var prev = IntArray(bb.size + 1) { it }
+        for (i in aa.indices) {
+            val cur = IntArray(bb.size + 1)
+            cur[0] = i + 1
+            for (j in bb.indices) {
+                val cost = if (aa[i] == bb[j]) 0 else 1
+                cur[j + 1] = minOf(cur[j] + 1, prev[j + 1] + 1, prev[j] + cost)
+            }
+            prev = cur
+        }
+        val distance = prev[bb.size]
+        return 1f - distance / max(aa.size, bb.size).toFloat()
+    }
+
+    private fun compactText(value: String?): String {
+        if (value.isNullOrEmpty()) return ""
+        return buildString(value.length) {
+            value.codePoints().forEach { cp ->
+                if (!Character.isWhitespace(cp)) appendCodePoint(Character.toLowerCase(cp))
+            }
+        }.lowercase()
+    }
+
+    private fun reindexLines(source: List<OcrDocument.Line>): List<OcrDocument.Line> {
+        val out = mutableListOf<OcrDocument.Line>()
+        var order = 0
+        var group = 0
+        source.forEachIndexed { lineIndex, line ->
+            val chars = mutableListOf<OcrDocument.CharUnit>()
+            var currentOldGroup: Int? = null
+            var currentNewGroup = group++
+            line.chars().forEach { c ->
+                if (currentOldGroup == null) {
+                    currentOldGroup = c.group()
+                } else if (c.group() != currentOldGroup) {
+                    currentOldGroup = c.group()
+                    currentNewGroup = group++
+                }
+                chars += OcrDocument.CharUnit(
+                    c.text(), c.bounds(), c.confidence(), lineIndex, currentNewGroup, order++,
+                )
+            }
+            out += OcrDocument.Line(line.text(), line.bounds(), line.confidence(), chars)
+        }
+        return out
+    }
+
+    private fun area(rect: Rect): Long = max(0, rect.width()).toLong() * max(0, rect.height()).toLong()
 
     private fun boxRect(box: OCRBox, imageWidth: Int, imageHeight: Int): Rect? {
         val points = box.points
