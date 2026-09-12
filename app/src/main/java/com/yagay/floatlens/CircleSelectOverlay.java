@@ -41,9 +41,9 @@ public final class CircleSelectOverlay {
                 Math.max(1, contentBounds.width()),
                 Math.max(1, contentBounds.height()),
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                // Circle Select is a modal, full-screen interaction surface. Keep it focusable while
-                // active so KEYCODE_BACK reaches WorkspaceView and behaves exactly like the × button.
-                // The window is removed on close, so ordinary app Back handling is immediately restored.
+                // Circle Select is a modal full-screen interaction surface. Keep it focusable while
+                // active so Back reaches WorkspaceView. Home/Recents are consumed by SystemUI, but
+                // they make this window lose focus; WorkspaceView treats that focus loss as cancel.
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
@@ -88,6 +88,7 @@ public final class CircleSelectOverlay {
         private static final int MODE_CIRCLE = 4;
         private static final long RECT_SNAP_PREVIEW_MS = 170L;
         private static final float HANDLE_SNAP_DISTANCE_DP = 96f;
+        private static final long SYSTEM_NAV_FOCUS_LOSS_DELAY_MS = 80L;
 
         private final Context context;
         private final WindowManager wm;
@@ -109,6 +110,7 @@ public final class CircleSelectOverlay {
         private boolean ocrReady;
         private boolean closed;
         private boolean circleResolving;
+        private boolean hadWindowFocus;
         private int mode = MODE_NONE;
         private int startIndex = -1;
         private int endIndex = -1;
@@ -163,6 +165,25 @@ public final class CircleSelectOverlay {
                     invalidate();
                 }
             });
+        }
+
+        @Override public void onWindowFocusChanged(boolean hasWindowFocus) {
+            super.onWindowFocusChanged(hasWindowFocus);
+            if (closed) return;
+            if (hasWindowFocus) {
+                hadWindowFocus = true;
+                return;
+            }
+            if (!hadWindowFocus) return;
+
+            // Android does not dispatch Home or Recents as normal KeyEvents to application/overlay
+            // windows. Both actions hand focus back to SystemUI/Launcher instead. FloatActionMenu is
+            // FLAG_NOT_FOCUSABLE, so normal text-selection menus do not trigger this path.
+            postDelayed(() -> {
+                if (closed || !hadWindowFocus || hasWindowFocus()) return;
+                DiagnosticLog.i(context, "CIRCLE_SELECT", "system navigation focus loss -> close");
+                close("system_navigation");
+            }, SYSTEM_NAV_FOCUS_LOSS_DELAY_MS);
         }
 
         @Override protected void onDraw(Canvas canvas) {
@@ -223,9 +244,8 @@ public final class CircleSelectOverlay {
 
         @Override public boolean dispatchKeyEvent(KeyEvent event) {
             if (event != null && event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
-                // Consume both DOWN and UP so the Back event never falls through to the app under
-                // the frozen screenshot. Close only once on the uncancelled UP, matching a normal
-                // Activity Back press and the existing × close path.
+                // Back is the one three-button-navigation key Android delivers directly here.
+                // Consume DOWN/UP and close once on the uncancelled UP so it cannot reach the app below.
                 if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled() && !closed) {
                     DiagnosticLog.i(context, "CIRCLE_SELECT", "back pressed -> close");
                     close("back");
