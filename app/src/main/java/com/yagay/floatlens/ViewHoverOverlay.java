@@ -6,8 +6,6 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
-import android.os.Handler;
-import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
@@ -18,28 +16,26 @@ import java.util.List;
 /**
  * Cached Accessibility candidate + highlight layer used by ViewSelectionEngine.
  *
- * FV's red/yellow readiness belongs to the selected View candidate itself. A new candidate always
- * starts red, then becomes yellow only after it remains selected for 400ms. Region dragging is a
- * separate visual and never participates in this state.
+ * Mirrors FV o1/n1: this class is only the selected-View visual. The gesture/service state machine
+ * decides when d(false)/d(true) happens; this layer merely renders TRACKING red or READY yellow.
+ * Region dragging is a separate visual and never participates in this state.
  */
 public final class ViewHoverOverlay {
+    public interface CandidateListener {
+        void onCandidateChanged(ScreenCandidate candidate);
+    }
+
     private static final int LARGE_TARGET_PERCENT = 72;
-    private static final long FV_CANDIDATE_READY_DELAY_MS = 400L;
 
     private final Context context;
     private final FlOverlayWindowHost windowHost;
     private final LensAccessibilityService accessibility;
     private final ScreenSelectionModel model = new ScreenSelectionModel();
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private HoverView view;
     private ViewCandidateFrameOverlay largeCandidateFrame;
     private ScreenCandidate current;
     private SelectionVisualState visualState = SelectionVisualState.TRACKING;
-
-    private final Runnable candidateReadyRunnable = () -> {
-        if (current == null) return;
-        setCandidateVisualState(SelectionVisualState.READY, "candidate_stable_400ms");
-    };
+    private CandidateListener candidateListener;
 
     public ViewHoverOverlay(Context c) {
         context = c.getApplicationContext();
@@ -49,22 +45,19 @@ public final class ViewHoverOverlay {
 
     public boolean available() { return accessibility != null; }
 
-    /**
-     * Engine movement can revoke READY, but READY is never cached before a View candidate exists.
-     * This is important because Accessibility candidates may arrive asynchronously after DIRECT has
-     * already entered its ready state.
-     */
+    public void setCandidateListener(CandidateListener listener) {
+        candidateListener = listener;
+    }
+
+    /** FV o1/n1.d(false/true) equivalent. */
     public void setVisualState(SelectionVisualState next) {
         if (next == null) next = SelectionVisualState.TRACKING;
-        if (current == null) {
-            if (next == SelectionVisualState.TRACKING) {
-                mainHandler.removeCallbacks(candidateReadyRunnable);
-                visualState = SelectionVisualState.TRACKING;
-            }
-            return;
-        }
-        setCandidateVisualState(next, "engine_" + next.name().toLowerCase());
-        if (next == SelectionVisualState.TRACKING) armCandidateReady();
+        if (visualState == next) return;
+        visualState = next;
+        if (view != null) view.setVisualState(next);
+        if (largeCandidateFrame != null) largeCandidateFrame.setVisualState(next);
+        DiagnosticLog.i(context, "VIEW_HOVER", "visualState=" + next
+                + " candidate=" + (current == null ? "none" : current.type()));
     }
 
     /** Snapshot the Accessibility target tree once; MOVE later uses only cached geometry. */
@@ -106,7 +99,6 @@ public final class ViewHoverOverlay {
         ScreenCandidate next = model.selectAt(selectionX, selectionY);
         if (sameCandidate(current, next)) return;
 
-        mainHandler.removeCallbacks(candidateReadyRunnable);
         current = next;
         visualState = SelectionVisualState.TRACKING;
 
@@ -136,43 +128,26 @@ public final class ViewHoverOverlay {
                     + " pkg=" + next.packageName()
                     + " fullscreenLike=" + next.fullscreenLike()
                     + " visual=" + shouldRenderCandidate(next));
-            armCandidateReady();
         } else {
-            DiagnosticLog.i(context, "VIEW_HOVER", "cacheHit=false selection="
+            DiagnosticLog.i(context, "VIEW_HOVER", "candidate_changed none selection="
                     + Math.round(selectionX) + "," + Math.round(selectionY)
                     + " cached=" + model.size());
         }
+
+        CandidateListener listener = candidateListener;
+        if (listener != null) listener.onCandidateChanged(next);
     }
 
     public ScreenCandidate currentCandidate() { return current; }
 
     public void cancel() {
-        mainHandler.removeCallbacks(candidateReadyRunnable);
         detachView();
         closeLargeCandidateFrame();
         current = null;
         visualState = SelectionVisualState.TRACKING;
+        candidateListener = null;
         model.setAccessibility(Collections.emptyList());
         model.setVisual(Collections.emptyList());
-    }
-
-    private void armCandidateReady() {
-        mainHandler.removeCallbacks(candidateReadyRunnable);
-        if (current == null) return;
-        mainHandler.postDelayed(candidateReadyRunnable, FV_CANDIDATE_READY_DELAY_MS);
-        DiagnosticLog.i(context, "VIEW_HOVER", "ready_timer delayMs="
-                + FV_CANDIDATE_READY_DELAY_MS + " candidate=" + current.type());
-    }
-
-    private void setCandidateVisualState(SelectionVisualState next, String reason) {
-        if (next == null) next = SelectionVisualState.TRACKING;
-        if (visualState == next) return;
-        visualState = next;
-        if (view != null) view.setVisualState(next);
-        if (largeCandidateFrame != null) largeCandidateFrame.setVisualState(next);
-        DiagnosticLog.i(context, "VIEW_HOVER", "visualState=" + next
-                + " reason=" + reason
-                + " candidate=" + (current == null ? "none" : current.type()));
     }
 
     private void ensureView() {
