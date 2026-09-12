@@ -18,7 +18,8 @@ import java.util.List;
  *
  * This class deliberately owns no gesture/direct-region state. Region selection belongs exclusively
  * to ViewSelectionEngine; this layer snapshots candidates once, performs cheap cached hit-testing,
- * and renders only the currently selected View/text candidate.
+ * and renders only the currently selected View/text candidate. Visual readiness is supplied by the
+ * engine so the candidate frame follows FV's red TRACKING -> yellow READY state.
  */
 public final class ViewHoverOverlay {
     private static final int LARGE_TARGET_PERCENT = 72;
@@ -30,6 +31,7 @@ public final class ViewHoverOverlay {
     private HoverView view;
     private FlRegionFrameOverlay largeCandidateFrame;
     private ScreenCandidate current;
+    private SelectionVisualState visualState = SelectionVisualState.TRACKING;
 
     public ViewHoverOverlay(Context c) {
         context = c.getApplicationContext();
@@ -38,6 +40,16 @@ public final class ViewHoverOverlay {
     }
 
     public boolean available() { return accessibility != null; }
+
+    public void setVisualState(SelectionVisualState next) {
+        if (next == null) next = SelectionVisualState.TRACKING;
+        if (visualState == next) return;
+        visualState = next;
+        if (view != null) view.setVisualState(next);
+        if (largeCandidateFrame != null) largeCandidateFrame.setVisualState(next);
+        DiagnosticLog.i(context, "VIEW_HOVER", "visualState=" + next
+                + " candidate=" + (current == null ? "none" : current.type()));
+    }
 
     /** Snapshot the Accessibility target tree once; MOVE later uses only cached geometry. */
     public void begin() {
@@ -82,12 +94,15 @@ public final class ViewHoverOverlay {
         if (shouldRenderCandidate(next)) {
             closeLargeCandidateFrame();
             ensureView();
-            if (view != null) view.setCandidate(next);
+            if (view != null) {
+                view.setVisualState(visualState);
+                view.setCandidate(next);
+            }
         } else {
             detachView();
             if (next != null) {
                 if (largeCandidateFrame == null) largeCandidateFrame = new FlRegionFrameOverlay(context);
-                largeCandidateFrame.setConfirmed(false);
+                largeCandidateFrame.setVisualState(visualState);
                 largeCandidateFrame.show(next.bounds());
             } else {
                 closeLargeCandidateFrame();
@@ -101,11 +116,12 @@ public final class ViewHoverOverlay {
                     + " class=" + next.className() + " id=" + next.viewId()
                     + " pkg=" + next.packageName()
                     + " fullscreenLike=" + next.fullscreenLike()
-                    + " visual=" + shouldRenderCandidate(next));
+                    + " visual=" + shouldRenderCandidate(next)
+                    + " state=" + visualState);
         } else {
             DiagnosticLog.i(context, "VIEW_HOVER", "cacheHit=false selection="
                     + Math.round(selectionX) + "," + Math.round(selectionY)
-                    + " cached=" + model.size());
+                    + " cached=" + model.size() + " state=" + visualState);
         }
     }
 
@@ -115,6 +131,7 @@ public final class ViewHoverOverlay {
         detachView();
         closeLargeCandidateFrame();
         current = null;
+        visualState = SelectionVisualState.TRACKING;
         model.setAccessibility(Collections.emptyList());
         model.setVisual(Collections.emptyList());
     }
@@ -122,6 +139,7 @@ public final class ViewHoverOverlay {
     private void ensureView() {
         if (accessibility == null || view != null) return;
         HoverView next = new HoverView(context);
+        next.setVisualState(visualState);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -135,7 +153,7 @@ public final class ViewHoverOverlay {
         if (windowHost.add(next, lp, "view_hover")) {
             view = next;
             DiagnosticLog.i(context, "VIEW_HOVER", "visual_attach accessibilityHost="
-                    + windowHost.isAccessibilityHosted());
+                    + windowHost.isAccessibilityHosted() + " state=" + visualState);
         }
     }
 
@@ -177,14 +195,23 @@ public final class ViewHoverOverlay {
         private final Paint label = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final int[] overlayLocation = new int[2];
         private ScreenCandidate candidate;
+        private SelectionVisualState visualState = SelectionVisualState.TRACKING;
         private int lastLoggedOriginX = Integer.MIN_VALUE;
         private int lastLoggedOriginY = Integer.MIN_VALUE;
 
         HoverView(Context c) {
             super(c);
             setBackgroundColor(Color.TRANSPARENT);
-            SelectionVisuals.configureFramePaints(c, border, unusedBorder, false);
+            SelectionVisuals.configureFramePaints(c, border, unusedBorder, visualState);
             SelectionVisuals.configureTextPaints(c, labelUnused, label, 14f);
+        }
+
+        void setVisualState(SelectionVisualState next) {
+            if (next == null) next = SelectionVisualState.TRACKING;
+            if (visualState == next) return;
+            visualState = next;
+            border.setColor(SelectionVisuals.frameColor(next));
+            invalidate();
         }
 
         void setCandidate(ScreenCandidate candidate) {
