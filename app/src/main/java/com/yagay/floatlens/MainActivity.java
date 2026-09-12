@@ -9,12 +9,13 @@ import android.os.Bundle;
 import android.provider.Settings;
 import android.widget.*;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.content.ContextCompat;
 
 public class MainActivity extends AppCompatActivity {
     private static final int REQ_EXPORT_LOG = 701;
     private static final int REQ_EXPORT_INSPECTOR = 702;
     private TextView inspectorStatus;
+    private Switch overlaySwitch;
+    private boolean syncingOverlaySwitch;
     private boolean statusLoadedOnce;
 
     @Override protected void onCreate(Bundle b) {
@@ -51,16 +52,38 @@ public class MainActivity extends AppCompatActivity {
             root.addView(notify);
         }
 
-        Button start = button("启动悬浮图标");
-        start.setOnClickListener(v -> {
-            if (!Settings.canDrawOverlays(this)) { Toast.makeText(this, "请先授予悬浮窗权限", Toast.LENGTH_SHORT).show(); return; }
-            ContextCompat.startForegroundService(this, new Intent(this, FloatService.class).setAction(FloatService.ACT_START));
+        overlaySwitch = new Switch(this);
+        overlaySwitch.setText("悬浮图标（保持开启状态）");
+        overlaySwitch.setTextSize(17);
+        overlaySwitch.setPadding(dp(10), dp(16), dp(10), dp(16));
+        syncingOverlaySwitch = true;
+        overlaySwitch.setChecked(FloatServiceState.isEnabled(this));
+        syncingOverlaySwitch = false;
+        overlaySwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (syncingOverlaySwitch) return;
+            if (isChecked) {
+                if (!Settings.canDrawOverlays(this) && !LensAccessibilityService.ready()) {
+                    Toast.makeText(this, "请先授予悬浮窗权限或开启 FloatLens 无障碍服务", Toast.LENGTH_LONG).show();
+                    FloatServiceState.setEnabled(this, false);
+                    syncOverlaySwitch(false);
+                    return;
+                }
+                if (FloatServiceState.start(this)) {
+                    Toast.makeText(this, "悬浮图标已开启，并会保持当前状态", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(this, "启动悬浮服务失败，已保留开启状态供稍后自动重试", Toast.LENGTH_LONG).show();
+                }
+            } else {
+                FloatServiceState.stop(this);
+                Toast.makeText(this, "悬浮图标已关闭", Toast.LENGTH_SHORT).show();
+            }
         });
-        root.addView(start);
+        root.addView(overlaySwitch);
 
-        Button stop = button("停止悬浮图标");
-        stop.setOnClickListener(v -> stopService(new Intent(this, FloatService.class)));
-        root.addView(stop);
+        TextView overlayHint = new TextView(this);
+        overlayHint.setText("开启后退出 FloatLens 仍保持运行；重启设备或更新应用后会按保存状态自动恢复。");
+        overlayHint.setPadding(dp(10), 0, dp(10), dp(10));
+        root.addView(overlayHint);
 
         Button settings = button("悬浮图标与手势参数");
         settings.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
@@ -135,7 +158,20 @@ public class MainActivity extends AppCompatActivity {
 
     @Override protected void onResume(){
         super.onResume();
+        boolean enabled = FloatServiceState.isEnabled(this);
+        syncOverlaySwitch(enabled);
+        if (enabled && FloatService.get() == null
+                && (Settings.canDrawOverlays(this) || LensAccessibilityService.ready())) {
+            FloatServiceState.start(this);
+        }
         if(!statusLoadedOnce){statusLoadedOnce=true;inspectorStatus.post(this::refreshInspectorStatus);}
+    }
+
+    private void syncOverlaySwitch(boolean checked) {
+        if (overlaySwitch == null || overlaySwitch.isChecked() == checked) return;
+        syncingOverlaySwitch = true;
+        overlaySwitch.setChecked(checked);
+        syncingOverlaySwitch = false;
     }
 
     private void refreshInspectorStatus(){if(inspectorStatus!=null)inspectorStatus.setText(InspectorLog.selfTestStatus(this));}
