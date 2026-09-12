@@ -31,10 +31,10 @@ public class FloatService extends Service implements android.content.SharedPrefe
         DiagnosticLog.init(this);
         DiagnosticLog.sessionHeader(this);instance=this;fs=new FloatSettings(this);circleState=new CircleStateMachine(this);fs.prefs().registerOnSharedPreferenceChangeListener(this);wm=(WindowManager)getSystemService(WINDOW_SERVICE);trail=new GestureTrailOverlay(this);createChannel();Notification n=buildNotification();if(Build.VERSION.SDK_INT>=34)startForeground(27,n,ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);else startForeground(27,n);registerScreenReceiver();}
     @Override public int onStartCommand(Intent i,int flags,int id){if(i!=null&&ACT_STOP.equals(i.getAction())){stopSelf();return START_NOT_STICKY;}if(i!=null&&ACT_SHOW.equals(i.getAction()))manualHidden=false;show();return START_STICKY;}
-    private void show(){if(!Settings.canDrawOverlays(this))return;if(primary==null)addPrimary();syncSecondary();recomputeVisibility();}
+    private void show(){if(!Settings.canDrawOverlays(this)&&!LensAccessibilityService.ready())return;if(primary==null)addPrimary();syncSecondary();recomputeVisibility();}
 
-    private void addPrimary(){int px=iconPx();primaryLp=makeLp(px);int[] wh=displaySize();int defaultX=wh[0]-px,defaultY=wh[1]/3;primaryLp.x=fs.prefs().getInt(fs.posXKey(),fs.prefs().getInt(FloatSettings.K_POS_X,defaultX));primaryLp.y=fs.prefs().getInt(fs.posYKey(),fs.prefs().getInt(FloatSettings.K_POS_Y,defaultY));int side=fs.savedSide(primaryLp.x+px/2<wh[0]/2?0:1);primaryLp.x=side==0?0:wh[0]-px;clamp(primaryLp,false);primary=newIcon(primaryLp,false);primary.setAlpha(fs.alpha());wm.addView(primary,primaryLp);edgeHide(primaryLp);safeUpdate(primary,primaryLp);}
-    private void syncSecondary(){if(fs.bothSide()){if(secondary==null&&primaryLp!=null){secondaryLp=makeLp(iconPx());int[] wh=displaySize();secondaryLp.x=isLeft(primaryLp,wh[0])?wh[0]-secondaryLp.width:0;secondaryLp.y=primaryLp.y;secondary=newIcon(secondaryLp,true);secondary.setAlpha(fs.alpha());wm.addView(secondary,secondaryLp);edgeHide(secondaryLp);safeUpdate(secondary,secondaryLp);}}else if(secondary!=null){try{wm.removeView(secondary);}catch(Throwable ignored){}secondary=null;secondaryLp=null;}}
+    private void addPrimary(){int px=iconPx();primaryLp=makeLp(px);int[] wh=displaySize();int defaultX=wh[0]-px,defaultY=wh[1]/3;primaryLp.x=fs.prefs().getInt(fs.posXKey(),fs.prefs().getInt(FloatSettings.K_POS_X,defaultX));primaryLp.y=fs.prefs().getInt(fs.posYKey(),fs.prefs().getInt(FloatSettings.K_POS_Y,defaultY));int side=fs.savedSide(primaryLp.x+px/2<wh[0]/2?0:1);primaryLp.x=side==0?0:wh[0]-px;clamp(primaryLp,false);primary=newIcon(primaryLp,false);primary.setAlpha(fs.alpha());addIconWindow(primary,primaryLp);edgeHide(primaryLp);safeUpdate(primary,primaryLp);}
+    private void syncSecondary(){if(fs.bothSide()){if(secondary==null&&primaryLp!=null){secondaryLp=makeLp(iconPx());int[] wh=displaySize();secondaryLp.x=isLeft(primaryLp,wh[0])?wh[0]-secondaryLp.width:0;secondaryLp.y=primaryLp.y;secondary=newIcon(secondaryLp,true);secondary.setAlpha(fs.alpha());addIconWindow(secondary,secondaryLp);edgeHide(secondaryLp);safeUpdate(secondary,secondaryLp);}}else if(secondary!=null){removeIconWindow(secondary,secondaryLp);secondary=null;secondaryLp=null;}}
 
     private FloatIconView newIcon(WindowManager.LayoutParams lp,boolean mirrored){
         final int[] origin=new int[2];
@@ -45,16 +45,11 @@ public class FloatService extends Service implements android.content.SharedPrefe
         final int[] otherVisibility={View.VISIBLE};
         return new FloatIconView(this,new FloatIconView.Callback(){
             @Override public void onDragStart(){
-                // FV starts from the real current overlay x/y, even if the resting icon is partly
-                // hidden beyond an edge. It does NOT restore the icon fully before temporary follow.
                 origin[0]=lp.x; origin[1]=lp.y; originReady[0]=true;
                 if(!mirrored&&secondaryLp!=null){mirrorOrigin[0]=secondaryLp.x;mirrorOrigin[1]=secondaryLp.y;mirrorOriginReady[0]=true;}
                 DiagnosticLog.i(FloatService.this,"POSITION","fv follow origin="+origin[0]+","+origin[1]+" moveMode="+positionMoveArmed);
             }
             @Override public void onMove(int dxFromDown,int dyFromDown){
-                // FV FloatIconView.c0() applies every MOVE to WindowManager immediately. D4(),
-                // which positions the screenshot/View/text operation hint, runs only after this
-                // owner-window update. Do not defer/coalesce this update to the next animation frame.
                 if(!originReady[0]){origin[0]=lp.x;origin[1]=lp.y;originReady[0]=true;}
                 lp.x=origin[0]+dxFromDown;
                 lp.y=origin[1]+dyFromDown;
@@ -74,7 +69,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
                     positionMoveArmed=false;
                     originReady[0]=false;mirrorOriginReady[0]=false;
                     DiagnosticLog.i(FloatService.this,"POSITION","committed explicit move x="+lp.x+" y="+lp.y);
-                    android.widget.Toast.makeText(FloatService.this,"图标位置已保存",android.widget.Toast.LENGTH_SHORT).show();
+                    android.widget.Toast.makeText(FloatService.this,"移动图标位置已保存",android.widget.Toast.LENGTH_SHORT).show();
                     updateNotification();
                     return;
                 }
@@ -125,7 +120,6 @@ public class FloatService extends Service implements android.content.SharedPrefe
         if(!ActionId.NONE.equals(action))ActionExecutor.execute(this,action);
     }
 
-    /** Arms the one-shot FV-style position edit. Normal icon gestures never change the rest position. */
     public void armPositionMove(){
         positionMoveArmed=true;
         DiagnosticLog.i(this,"POSITION","explicit move mode armed");
@@ -142,13 +136,54 @@ public class FloatService extends Service implements android.content.SharedPrefe
     public CircleStateMachine.State circleState(){return circleState==null?CircleStateMachine.State.IDLE:circleState.state();}
 
     private void syncMirrorPosition(){if(primaryLp==null||secondaryLp==null||secondary==null)return;int[] wh=displaySize();secondaryLp.x=isLeft(primaryLp,wh[0])?wh[0]-secondaryLp.width:0;secondaryLp.y=primaryLp.y;edgeHide(secondaryLp);safeUpdate(secondary,secondaryLp);}
-    private WindowManager.LayoutParams makeLp(int px){WindowManager.LayoutParams lp=new WindowManager.LayoutParams(px,px,WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE|WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS|WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,PixelFormat.TRANSLUCENT);lp.gravity=Gravity.TOP|Gravity.START;return lp;}
+    private WindowManager.LayoutParams makeLp(int px){int type=LensAccessibilityService.ready()?WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY:WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;WindowManager.LayoutParams lp=new WindowManager.LayoutParams(px,px,type,WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE|WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS|WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,PixelFormat.TRANSLUCENT);lp.gravity=Gravity.TOP|Gravity.START;return lp;}
     private int iconPx(){return Math.round(fs.sizeDp()*getResources().getDisplayMetrics().density);} private int[] displaySize(){android.graphics.Rect b=wm.getCurrentWindowMetrics().getBounds();return new int[]{b.width(),b.height()};}
     private boolean isLeft(WindowManager.LayoutParams lp,int sw){return lp.x+lp.width/2<sw/2;}
     private void clamp(WindowManager.LayoutParams lp,boolean allowHidden){int[] wh=displaySize();int hidden=allowHidden?Math.round(lp.width*fs.hiddenPercent()/100f):0;lp.x=Math.max(-hidden,Math.min(lp.x,wh[0]-lp.width+hidden));lp.y=Math.max(0,Math.min(lp.y,wh[1]-lp.height));}
     private void snap(WindowManager.LayoutParams lp,View v){int[] wh=displaySize();lp.x=isLeft(lp,wh[0])?0:wh[0]-lp.width;clamp(lp,false);safeUpdate(v,lp);edgeHide(lp);safeUpdate(v,lp);}
     private void edgeHide(WindowManager.LayoutParams lp){int hp=fs.hiddenPercent();if(hp<=0)return;int[] wh=displaySize();boolean left=isLeft(lp,wh[0]);int hidden=Math.round(lp.width*hp/100f);lp.x=left?-hidden:wh[0]-lp.width+hidden;clamp(lp,true);DiagnosticLog.i(this,"EDGE","side="+(left?"L":"R")+" visiblePct="+fs.showPercentage()+" hiddenPx="+hidden+" x="+lp.x);}
     private void persistPosition(){if(primaryLp==null)return;DiagnosticLog.i(this,"POSITION","persist x="+primaryLp.x+" y="+primaryLp.y+" side="+(isLeft(primaryLp,displaySize()[0])?"L":"R")+" landscape="+fs.isLandscape());int[] wh=displaySize();fs.saveSide(isLeft(primaryLp,wh[0]));fs.prefs().edit().putInt(fs.posXKey(),primaryLp.x).putInt(fs.posYKey(),primaryLp.y).apply();}
+
+    private boolean addIconWindow(View v,WindowManager.LayoutParams lp){
+        LensAccessibilityService a=LensAccessibilityService.get();
+        if(a!=null){
+            lp.type=WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
+            if(a.addAccessibilityOverlay(v,lp))return true;
+        }
+        if(!Settings.canDrawOverlays(this))return false;
+        try{lp.type=WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;wm.addView(v,lp);DiagnosticLog.i(this,"FV_WINDOW","fallback application overlay type="+lp.type);return true;}catch(Throwable t){DiagnosticLog.i(this,"FV_WINDOW","add application overlay failed="+t);return false;}
+    }
+
+    private void removeIconWindow(View v,WindowManager.LayoutParams lp){
+        if(v==null)return;
+        if(lp!=null&&lp.type==WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY){LensAccessibilityService a=LensAccessibilityService.get();if(a!=null){a.removeAccessibilityOverlay(v);return;}}
+        try{wm.removeView(v);}catch(Throwable ignored){}
+    }
+
+    public void onAccessibilityOverlayHostChanged(boolean available){
+        getMainExecutor().execute(()->rehostIconWindows(available));
+    }
+
+    private void rehostIconWindows(boolean useAccessibility){
+        if(primary==null||primaryLp==null)return;
+        int target=useAccessibility?WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY:WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
+        if(primaryLp.type==target&&(secondaryLp==null||secondaryLp.type==target))return;
+        DiagnosticLog.i(this,"FV_WINDOW","rehost icons target="+target+" notif="+notificationExpanded);
+        rehostOne(primary,primaryLp,useAccessibility);
+        if(secondary!=null&&secondaryLp!=null)rehostOne(secondary,secondaryLp,useAccessibility);
+    }
+
+    private void rehostOne(View v,WindowManager.LayoutParams lp,boolean useAccessibility){
+        if(v==null||lp==null)return;
+        int visibility=v.getVisibility();
+        int oldType=lp.type;
+        if(oldType==WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY){LensAccessibilityService a=LensAccessibilityService.get();if(a!=null)a.removeAccessibilityOverlay(v);else try{wm.removeView(v);}catch(Throwable ignored){}}
+        else try{wm.removeView(v);}catch(Throwable ignored){}
+        boolean added=false;
+        if(useAccessibility){LensAccessibilityService a=LensAccessibilityService.get();if(a!=null){lp.type=WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;added=a.addAccessibilityOverlay(v,lp);}}
+        if(!added&&Settings.canDrawOverlays(this)){try{lp.type=WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;wm.addView(v,lp);added=true;}catch(Throwable t){DiagnosticLog.i(this,"FV_WINDOW","rehost fallback failed="+t);}}
+        if(added)v.setVisibility(visibility);
+    }
 
     public void setManualHidden(boolean h){manualHidden=h;DiagnosticLog.i(this,"VISIBILITY","manualHidden="+h);recomputeVisibility();} public boolean isManualHidden(){return manualHidden;}
     public void setScreenshotHidden(boolean h){screenshotHidden=h;DiagnosticLog.i(this,"VISIBILITY","screenshotHidden="+h);recomputeVisibility();} public void setIconVisible(boolean v){setScreenshotHidden(!v);} public void restoreConfiguredVisibility(){screenshotHidden=false;recomputeVisibility();}
@@ -171,8 +206,8 @@ public class FloatService extends Service implements android.content.SharedPrefe
     @Override public void onSharedPreferenceChanged(android.content.SharedPreferences p,String key){refreshAppearance();}
     @Override public void onConfigurationChanged(Configuration c){persistPosition();super.onConfigurationChanged(c);imeRestoreY=null;removeIcons();fs=new FloatSettings(this);show();}
     private void registerScreenReceiver(){screenReceiver=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){updateLockVisibility();}};IntentFilter f=new IntentFilter();f.addAction(Intent.ACTION_SCREEN_OFF);f.addAction(Intent.ACTION_SCREEN_ON);f.addAction(Intent.ACTION_USER_PRESENT);if(Build.VERSION.SDK_INT>=33)registerReceiver(screenReceiver,f,Context.RECEIVER_NOT_EXPORTED);else registerReceiver(screenReceiver,f);}
-    private void removeIcons(){trail.end();removeWakeViews();if(primary!=null)try{wm.removeView(primary);}catch(Throwable ignored){}if(secondary!=null)try{wm.removeView(secondary);}catch(Throwable ignored){}primary=secondary=null;primaryLp=secondaryLp=null;}
-    private void safeUpdate(View v,WindowManager.LayoutParams lp){if(v==null)return;try{wm.updateViewLayout(v,lp);}catch(Throwable ignored){}}
+    private void removeIcons(){trail.end();removeWakeViews();if(primary!=null)removeIconWindow(primary,primaryLp);if(secondary!=null)removeIconWindow(secondary,secondaryLp);primary=secondary=null;primaryLp=secondaryLp=null;}
+    private void safeUpdate(View v,WindowManager.LayoutParams lp){if(v==null)return;if(lp!=null&&lp.type==WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY){LensAccessibilityService a=LensAccessibilityService.get();if(a!=null&&a.updateAccessibilityOverlay(v,lp))return;}try{wm.updateViewLayout(v,lp);}catch(Throwable ignored){}}
     @Override public void onDestroy(){persistPosition();if(circleState!=null)circleState.finish("service_destroy");removeIcons();try{fs.prefs().unregisterOnSharedPreferenceChangeListener(this);}catch(Throwable ignored){}if(screenReceiver!=null)try{unregisterReceiver(screenReceiver);}catch(Throwable ignored){}if(instance==this)instance=null;super.onDestroy();}
     @Override public IBinder onBind(Intent i){return null;}
     private Notification buildNotification(){Intent stop=new Intent(this,FloatService.class).setAction(ACT_STOP),show=new Intent(this,FloatService.class).setAction(ACT_SHOW);PendingIntent stopPi=PendingIntent.getService(this,1,stop,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE),showPi=PendingIntent.getService(this,3,show,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE),openPi=PendingIntent.getActivity(this,2,new Intent(this,MainActivity.class),PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);String state=positionMoveArmed?"移动图标位置：拖动后松手保存":manualHidden?"图标已手动隐藏":lockHidden?"锁屏隐藏":fullscreenHidden?"全屏应用隐藏":appHidden?"当前应用按规则隐藏":circleState!=null&&circleState.active()?"Circle: "+circleState.state():notificationExpanded?"通知栏已展开":"点击进入设置";NotificationCompat.Builder b=new NotificationCompat.Builder(this,"floatlens").setSmallIcon(android.R.drawable.ic_menu_search).setContentTitle("FloatLens 悬浮图标已运行").setContentText(state).setContentIntent(openPi).setOngoing(true);if(manualHidden)b.addAction(0,"显示图标",showPi);b.addAction(0,"停止",stopPi);return b.build();}
