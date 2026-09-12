@@ -67,17 +67,17 @@ public class MainActivity extends AppCompatActivity {
         root.addView(settings);
 
         Button customMenu = button("自定义文字操作菜单");
-        customMenu.setOnClickListener(v -> startActivity(new Intent(this, CustomActionPickerActivity.class)));
+        customMenu.setOnClickListener(v -> startActivity(MenuPickerActivity.customIntent(this)));
         root.addView(customMenu);
 
         Button shareMenu = button("自定义分享菜单");
-        shareMenu.setOnClickListener(v -> startActivity(new Intent(this, TargetMenuPickerActivity.class)
-                .putExtra(TargetMenuPickerActivity.EXTRA_MODE, TargetMenuStore.MODE_SHARE)));
+        shareMenu.setOnClickListener(v -> startActivity(
+                MenuPickerActivity.targetIntent(this, TargetMenuStore.MODE_SHARE)));
         root.addView(shareMenu);
 
         Button processMenu = button("自定义打开 / 处理菜单");
-        processMenu.setOnClickListener(v -> startActivity(new Intent(this, TargetMenuPickerActivity.class)
-                .putExtra(TargetMenuPickerActivity.EXTRA_MODE, TargetMenuStore.MODE_PROCESS)));
+        processMenu.setOnClickListener(v -> startActivity(
+                MenuPickerActivity.targetIntent(this, TargetMenuStore.MODE_PROCESS)));
         root.addView(processMenu);
 
         Button exportLog = button("导出 FV 诊断日志");
