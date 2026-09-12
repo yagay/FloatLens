@@ -28,5 +28,35 @@ final class ResultSurfaceRouter {
         return ResultActivity.showViewImage(c, image, view, anchor);
     }
 
+    /**
+     * View capture path: bootstrap the floating result above SystemUI and let it own shade cleanup.
+     * Only if no floating host can attach do we arm the legacy Activity-ready coordinator.
+     */
+    static boolean showCapturedViewText(Context c, String text, Bitmap image, Rect anchor,
+                                        FvSystemPanelController.CaptureState shadeState) {
+        Context app = c.getApplicationContext();
+        boolean captureExpanded = shadeState != null && shadeState.expandedAtCapture();
+        if (FloatingResultWindow.showViewText(app, text, image, anchor, captureExpanded)) return true;
+
+        ResultReadyCoordinator.Ticket ticket = ResultReadyCoordinator.arm(
+                app, shadeState, "view_text_activity_fallback");
+        if (ResultActivity.showViewText(app, text, image, anchor)) return true;
+        ResultReadyCoordinator.cancel(ticket, app, "view_text_activity_start_failed");
+        return false;
+    }
+
+    static boolean showCapturedViewImage(Context c, Bitmap image, ViewNodeCandidate view, Rect anchor,
+                                         FvSystemPanelController.CaptureState shadeState) {
+        Context app = c.getApplicationContext();
+        boolean captureExpanded = shadeState != null && shadeState.expandedAtCapture();
+        if (FloatingResultWindow.showViewImage(app, image, view, anchor, captureExpanded)) return true;
+
+        ResultReadyCoordinator.Ticket ticket = ResultReadyCoordinator.arm(
+                app, shadeState, "view_image_activity_fallback");
+        if (ResultActivity.showViewImage(app, image, view, anchor)) return true;
+        ResultReadyCoordinator.cancel(ticket, app, "view_image_activity_start_failed");
+        return false;
+    }
+
     private ResultSurfaceRouter() {}
 }
