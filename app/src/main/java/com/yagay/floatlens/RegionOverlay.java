@@ -19,7 +19,7 @@ import android.widget.Toast;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Region screenshot selector; OCR mode uses a free-form lasso/circle path. */
+/** Region screenshot selector; OCR mode uses a free-form lasso path. */
 public final class RegionOverlay {
     public static void show(Context c, Bitmap screen, boolean ocr) {
         if (ocr) {
@@ -39,41 +39,41 @@ public final class RegionOverlay {
     }
 
     static class SelectView extends View {
-        final Bitmap b;
+        final Bitmap source;
         final boolean ocr;
         final WindowManager wm;
         float sx, sy, ex, ey;
-        final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         boolean selecting;
         final Path lasso = new Path();
-        final List<PointF> pts = new ArrayList<>();
+        final List<PointF> points = new ArrayList<>();
 
-        SelectView(Context c, Bitmap b, boolean ocr, WindowManager wm) {
+        SelectView(Context c, Bitmap source, boolean ocr, WindowManager wm) {
             super(c);
-            this.b = b;
+            this.source = source;
             this.ocr = ocr;
             this.wm = wm;
-            p.setStrokeWidth(dp(2));
+            paint.setStrokeWidth(dp(2));
             textPaint.setColor(Color.WHITE);
             textPaint.setTextSize(dp(16));
             textPaint.setShadowLayer(dp(3), 0, dp(1), Color.BLACK);
         }
 
-        @Override protected void onDraw(Canvas c) {
-            c.drawBitmap(b, null, new Rect(0, 0, getWidth(), getHeight()), p);
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(0x77000000);
-            c.drawRect(0, 0, getWidth(), getHeight(), p);
+        @Override protected void onDraw(Canvas canvas) {
+            canvas.drawBitmap(source, null, new Rect(0, 0, getWidth(), getHeight()), paint);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(0x77000000);
+            canvas.drawRect(0, 0, getWidth(), getHeight(), paint);
             if (selecting) {
-                p.setStyle(Paint.Style.STROKE);
-                p.setStrokeWidth(dp(3));
-                p.setColor(Color.WHITE);
-                if (ocr) c.drawPath(lasso, p);
-                else c.drawRect(rect(), p);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(dp(3));
+                paint.setColor(Color.WHITE);
+                if (ocr) canvas.drawPath(lasso, paint);
+                else canvas.drawRect(rect(), paint);
             }
-            String tip = ocr ? "圈选要识别的内容 · 松手开始 OCR" : "拖动选择截图区域";
-            c.drawText(tip, dp(18), dp(38), textPaint);
+            canvas.drawText(ocr ? "圈选要识别的内容 · 松手开始 OCR" : "拖动选择截图区域",
+                    dp(18), dp(38), textPaint);
         }
 
         @Override public boolean onTouchEvent(MotionEvent e) {
@@ -82,10 +82,10 @@ public final class RegionOverlay {
                     sx = ex = e.getX();
                     sy = ey = e.getY();
                     selecting = true;
-                    pts.clear();
+                    points.clear();
                     lasso.reset();
                     lasso.moveTo(sx, sy);
-                    pts.add(new PointF(sx, sy));
+                    points.add(new PointF(sx, sy));
                     invalidate();
                     return true;
                 }
@@ -94,7 +94,7 @@ public final class RegionOverlay {
                     ey = e.getY();
                     if (ocr) {
                         lasso.lineTo(ex, ey);
-                        pts.add(new PointF(ex, ey));
+                        points.add(new PointF(ex, ey));
                     }
                     invalidate();
                     return true;
@@ -105,7 +105,7 @@ public final class RegionOverlay {
                     if (ocr) {
                         lasso.lineTo(ex, ey);
                         lasso.close();
-                        pts.add(new PointF(ex, ey));
+                        points.add(new PointF(ex, ey));
                     }
                     finishSelection();
                     return true;
@@ -133,17 +133,19 @@ public final class RegionOverlay {
         }
 
         private void finishSelection() {
-            RectF r = ocr ? lassoBounds() : rect();
+            RectF selected = ocr ? lassoBounds() : rect();
+            int viewWidth = getWidth();
+            int viewHeight = getHeight();
             int[] origin = new int[2];
             getLocationOnScreen(origin);
             Rect anchor = new Rect(
-                    Math.round(r.left) + origin[0],
-                    Math.round(r.top) + origin[1],
-                    Math.round(r.right) + origin[0],
-                    Math.round(r.bottom) + origin[1]);
+                    Math.round(selected.left) + origin[0],
+                    Math.round(selected.top) + origin[1],
+                    Math.round(selected.right) + origin[0],
+                    Math.round(selected.bottom) + origin[1]);
             close();
 
-            if (r.width() < dp(8) || r.height() < dp(8)) {
+            if (selected.width() < dp(8) || selected.height() < dp(8)) {
                 if (ocr) {
                     FloatService f = FloatService.get();
                     if (f != null) f.onCircleFinished("selection_too_small");
@@ -151,38 +153,15 @@ public final class RegionOverlay {
                 return;
             }
 
-            float xs = b.getWidth() / (float) getWidth();
-            float ys = b.getHeight() / (float) getHeight();
-            int x = Math.max(0, Math.round(r.left * xs));
-            int y = Math.max(0, Math.round(r.top * ys));
-            int w = Math.min(b.getWidth() - x, Math.max(1, Math.round(r.width() * xs)));
-            int h = Math.min(b.getHeight() - y, Math.max(1, Math.round(r.height() * ys)));
             try {
-                Bitmap crop = Bitmap.createBitmap(b, x, y, w, h);
+                Bitmap crop = ocr
+                        ? SelectionCropper.maskedCrop(source, points, viewWidth, viewHeight, dp(8))
+                        : SelectionCropper.cropRect(source, selected, viewWidth, viewHeight);
+                if (crop == null) throw new IllegalStateException("empty selection crop");
                 if (ocr) {
-                    Bitmap masked = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-                    Canvas mc = new Canvas(masked);
-                    mc.drawColor(Color.WHITE);
-                    Path path = new Path();
-                    boolean first = true;
-                    for (PointF q : pts) {
-                        float px = q.x * xs - x;
-                        float py = q.y * ys - y;
-                        if (first) {
-                            path.moveTo(px, py);
-                            first = false;
-                        } else {
-                            path.lineTo(px, py);
-                        }
-                    }
-                    path.close();
-                    mc.save();
-                    mc.clipPath(path);
-                    mc.drawBitmap(crop, 0, 0, null);
-                    mc.restore();
                     FloatService f = FloatService.get();
                     if (f != null) f.onCircleRecognizeStarted();
-                    OcrEngine.recognize(getContext(), masked, anchor);
+                    OcrEngine.recognize(getContext(), crop, anchor);
                 } else {
                     ScreenshotController.save(getContext(), crop);
                 }
@@ -196,7 +175,7 @@ public final class RegionOverlay {
         }
 
         private void close() {
-            try { wm.removeView(this); } catch (Throwable ignored) {}
+            try { wm.removeView(this); } catch (Throwable ignored) { }
         }
 
         private float dp(float v) {
