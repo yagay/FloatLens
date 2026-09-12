@@ -10,9 +10,7 @@ import java.util.Map;
 public class SettingsActivity extends AppCompatActivity {
     private FloatSettings fs;
     private EditText hidePackagesEdit;
-    private final String[] ids = {ActionId.NONE, ActionId.BACK, ActionId.HOME, ActionId.RECENTS,
-            ActionId.SCREENSHOT, ActionId.REGION_SCREENSHOT, ActionId.OCR, ActionId.AI_SCREEN,
-            ActionId.NOTIFICATIONS, ActionId.CLICK_UNDER, ActionId.MOVE_ICON, ActionId.HIDE};
+    private final String[] ids = ActionId.availableIds();
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -93,7 +91,7 @@ public class SettingsActivity extends AppCompatActivity {
         map.put("下滑-长 / gesture_down_long", FloatSettings.K_ACTION_DOWN_LONG);
         map.put("侧滑-短 / gesture_side_short", FloatSettings.K_ACTION_SIDE_SHORT);
         map.put("侧滑-长 / gesture_side_long", FloatSettings.K_ACTION_SIDE_LONG);
-        for (var e : map.entrySet()) spinner(root, e.getKey(), e.getValue(), defaultFor(e.getValue()));
+        for (var e : map.entrySet()) spinner(root, e.getKey(), e.getValue(), ActionRegistry.defaultForPreference(e.getValue()));
 
         TextView note = new TextView(this);
         note.setText("FV式位置逻辑：普通手势时图标只临时跟手，松手恢复原来的贴边位置；只有先触发“移动图标位置”动作，下一次拖动才保存新位置。高亮 View 连续停留达到设定时间后锁定，松手截取整个高亮 View。");
@@ -106,16 +104,6 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void saveHidePackages() {
         if (hidePackagesEdit != null && fs != null) fs.prefs().edit().putString(FloatSettings.K_HIDE_PACKAGES, hidePackagesEdit.getText().toString()).apply();
-    }
-
-    private String defaultFor(String k) {
-        if (k.equals(FloatSettings.K_ACTION_DOUBLE)) return ActionId.SCREENSHOT;
-        if (k.equals(FloatSettings.K_ACTION_LONG)) return ActionId.NONE;
-        if (k.equals(FloatSettings.K_ACTION_RECOGNIZE)) return ActionId.OCR;
-        if (k.equals(FloatSettings.K_ACTION_UP)) return ActionId.RECENTS;
-        if (k.equals(FloatSettings.K_ACTION_DOWN_SHORT)) return ActionId.NOTIFICATIONS;
-        if (k.equals(FloatSettings.K_ACTION_SIDE_SHORT)) return ActionId.BACK;
-        return ActionId.NONE;
     }
 
     private void title(LinearLayout r, String s) { TextView t = new TextView(this); t.setText(s); t.setTextSize(20); t.setPadding(0, dp(24), 0, dp(10)); r.addView(t); }
