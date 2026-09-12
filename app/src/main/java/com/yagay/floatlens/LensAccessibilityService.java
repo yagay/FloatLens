@@ -3,6 +3,9 @@ package com.yagay.floatlens;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.accessibilityservice.GestureDescription;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.Path;
 import android.graphics.Rect;
@@ -15,8 +18,10 @@ import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 
@@ -24,6 +29,7 @@ public class LensAccessibilityService extends AccessibilityService {
     private static volatile LensAccessibilityService s;
     private static final long ENV_INSPECT_MIN_MS = 180L;
     private volatile EnvironmentState env = new EnvironmentState("", false, 0, true, false, false);
+    private final Set<String> homePackages = new HashSet<>();
     private long lastEnvironmentInspectAt;
 
     @Override protected void onServiceConnected(){
@@ -40,6 +46,8 @@ public class LensAccessibilityService extends AccessibilityService {
         } catch(Throwable t){
             DiagnosticLog.i(this,"ACCESSIBILITY","setServiceInfo flags failed="+t);
         }
+        try { refreshHomePackages(); }
+        catch (Throwable t) { DiagnosticLog.i(this,"ACCESSIBILITY","home package query failed="+t); }
         try { publishEnvironment(); }
         catch (Throwable t) { DiagnosticLog.i(this,"ACCESSIBILITY","publish on connect failed="+t); }
     }
@@ -48,6 +56,16 @@ public class LensAccessibilityService extends AccessibilityService {
 
     @Override public void onAccessibilityEvent(AccessibilityEvent e) {
         try {
+            // A focusable TYPE_APPLICATION_OVERLAY is not guaranteed to lose focus when the user
+            // presses Home or Recents. Detect the actual launcher/overview window transition instead.
+            // Do this before environment throttling so a fast navigation press can never be skipped.
+            if (isSystemNavigationEvent(e)) {
+                String pkg = eventPackage(e);
+                String cls = eventClass(e);
+                DiagnosticLog.i(this,"CIRCLE_SELECT","system navigation event pkg="+pkg+" cls="+cls);
+                CircleSelectOverlay.dismissActive("system_navigation");
+            }
+
             String oldTop = env.topPackage();
             String top = oldTop;
             if (e != null && e.getPackageName() != null) {
@@ -65,6 +83,89 @@ public class LensAccessibilityService extends AccessibilityService {
         } catch (Throwable t) {
             DiagnosticLog.i(this,"ACCESSIBILITY","event failed="+t);
         }
+    }
+
+    private void refreshHomePackages() {
+        homePackages.clear();
+        Intent home = new Intent(Intent.ACTION_MAIN);
+        home.addCategory(Intent.CATEGORY_HOME);
+        PackageManager pm = getPackageManager();
+        try {
+            ResolveInfo resolved = pm.resolveActivity(home, PackageManager.MATCH_DEFAULT_ONLY);
+            if (resolved != null && resolved.activityInfo != null && resolved.activityInfo.packageName != null) {
+                String pkg = resolved.activityInfo.packageName;
+                if (!pkg.equals("android")) homePackages.add(pkg);
+            }
+        } catch (Throwable ignored) {}
+        try {
+            List<ResolveInfo> homes = pm.queryIntentActivities(home, PackageManager.MATCH_DEFAULT_ONLY);
+            if (homes != null) for (ResolveInfo info : homes) {
+                if (info == null || info.activityInfo == null || info.activityInfo.packageName == null) continue;
+                String pkg = info.activityInfo.packageName;
+                if (!pkg.equals("android")) homePackages.add(pkg);
+            }
+        } catch (Throwable ignored) {}
+        DiagnosticLog.i(this,"ACCESSIBILITY","home packages="+homePackages);
+    }
+
+    private boolean isSystemNavigationEvent(AccessibilityEvent e) {
+        if (e == null) return false;
+        int type = e.getEventType();
+        if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                && type != AccessibilityEvent.TYPE_WINDOWS_CHANGED) return false;
+
+        String pkg = eventPackage(e);
+        String cls = eventClass(e);
+        if (isHomePackage(pkg)) return true;
+        if (isRecentsWindow(pkg, cls)) return true;
+
+        // TYPE_WINDOWS_CHANGED is sometimes emitted by SystemUI while the event package itself does
+        // not identify Quickstep. Inspect the active/focused accessibility window as a second source.
+        try {
+            List<AccessibilityWindowInfo> windows = getWindows();
+            if (windows != null) for (AccessibilityWindowInfo w : windows) {
+                if (w == null || (!w.isActive() && !w.isFocused())) continue;
+                AccessibilityNodeInfo root = null;
+                try { root = w.getRoot(); } catch (Throwable ignored) {}
+                String activePkg = nodePackage(root);
+                if (isHomePackage(activePkg)) return true;
+                String activeCls = "";
+                try {
+                    if (root != null && root.getClassName() != null) activeCls = root.getClassName().toString();
+                } catch (Throwable ignored) {}
+                if (isRecentsWindow(activePkg, activeCls)) return true;
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    private boolean isHomePackage(String pkg) {
+        if (pkg == null || pkg.isBlank()) return false;
+        if (homePackages.isEmpty()) {
+            try { refreshHomePackages(); } catch (Throwable ignored) {}
+        }
+        return homePackages.contains(pkg);
+    }
+
+    private boolean isRecentsWindow(String pkg, String cls) {
+        String p = pkg == null ? "" : pkg.toLowerCase(Locale.ROOT);
+        String c = cls == null ? "" : cls.toLowerCase(Locale.ROOT);
+        boolean recentsName = c.contains("recents") || c.contains("overview")
+                || c.contains("recenttask") || c.contains("taskoverview")
+                || c.contains("task_switch") || c.contains("taskswitch");
+        if (!recentsName) return false;
+        return "com.android.systemui".equals(p) || isHomePackage(pkg)
+                || p.contains("launcher") || p.contains("quickstep") || p.contains("systemui");
+    }
+
+    private String eventPackage(AccessibilityEvent e) {
+        try { return e != null && e.getPackageName() != null ? e.getPackageName().toString() : ""; }
+        catch (Throwable t) { return ""; }
+    }
+
+    private String eventClass(AccessibilityEvent e) {
+        try { return e != null && e.getClassName() != null ? e.getClassName().toString() : ""; }
+        catch (Throwable t) { return ""; }
     }
 
     private boolean sameEnvironment(EnvironmentState a, EnvironmentState b) {
