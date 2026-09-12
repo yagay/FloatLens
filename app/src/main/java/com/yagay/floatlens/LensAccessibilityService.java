@@ -13,6 +13,7 @@ import android.graphics.Region;
 import android.hardware.HardwareBuffer;
 import android.os.SystemClock;
 import android.view.Display;
+import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -50,9 +51,53 @@ public class LensAccessibilityService extends AccessibilityService {
         catch (Throwable t) { DiagnosticLog.i(this,"ACCESSIBILITY","home package query failed="+t); }
         try { publishEnvironment(); }
         catch (Throwable t) { DiagnosticLog.i(this,"ACCESSIBILITY","publish on connect failed="+t); }
+        FloatService f=FloatService.get();
+        if(f!=null) f.onAccessibilityOverlayHostChanged(true);
     }
 
-    @Override public void onDestroy(){ if(s==this)s=null; super.onDestroy(); }
+    @Override public void onDestroy(){
+        FloatService f=FloatService.get();
+        if(f!=null) f.onAccessibilityOverlayHostChanged(false);
+        if(s==this)s=null;
+        super.onDestroy();
+    }
+
+    /**
+     * FV's window helper switches floating windows to type 2032 when accessibility is available.
+     * 2032 is TYPE_ACCESSIBILITY_OVERLAY. Hosting the icon from the AccessibilityService's own
+     * WindowManager gives it the accessibility overlay token/layer so it remains above SystemUI's
+     * notification shade and quick settings, just like FV.
+     */
+    public boolean addAccessibilityOverlay(View view, WindowManager.LayoutParams lp) {
+        if(view==null||lp==null)return false;
+        try {
+            lp.type=WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
+            ((WindowManager)getSystemService(WINDOW_SERVICE)).addView(view,lp);
+            DiagnosticLog.i(this,"FV_WINDOW","add accessibility overlay type="+lp.type);
+            return true;
+        } catch(Throwable t) {
+            DiagnosticLog.i(this,"FV_WINDOW","add accessibility overlay failed="+t);
+            return false;
+        }
+    }
+
+    public boolean updateAccessibilityOverlay(View view, WindowManager.LayoutParams lp) {
+        if(view==null||lp==null)return false;
+        try {
+            lp.type=WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
+            ((WindowManager)getSystemService(WINDOW_SERVICE)).updateViewLayout(view,lp);
+            return true;
+        } catch(Throwable t) {
+            DiagnosticLog.i(this,"FV_WINDOW","update accessibility overlay failed="+t);
+            return false;
+        }
+    }
+
+    public void removeAccessibilityOverlay(View view) {
+        if(view==null)return;
+        try { ((WindowManager)getSystemService(WINDOW_SERVICE)).removeView(view); }
+        catch(Throwable ignored) {}
+    }
 
     @Override public void onAccessibilityEvent(AccessibilityEvent e) {
         try {
@@ -119,8 +164,6 @@ public class LensAccessibilityService extends AccessibilityService {
         if (isHomePackage(pkg)) return true;
         if (isRecentsWindow(pkg, cls)) return true;
 
-        // TYPE_WINDOWS_CHANGED is sometimes emitted by SystemUI while the event package itself does
-        // not identify Quickstep. Inspect the active/focused accessibility window as a second source.
         try {
             List<AccessibilityWindowInfo> windows = getWindows();
             if (windows != null) for (AccessibilityWindowInfo w : windows) {
@@ -230,9 +273,6 @@ public class LensAccessibilityService extends AccessibilityService {
                 }
             }
 
-            // Some launchers expose their workspace more completely through the active root while
-            // application overlays are present. Add this chain as another source; dedupe happens in
-            // ScreenSelectionModel and no semantic priority is introduced.
             try{
                 AccessibilityNodeInfo active=getRootInActiveWindow();
                 if(active!=null&&!getPackageName().equals(nodePackage(active))){
@@ -249,7 +289,6 @@ public class LensAccessibilityService extends AccessibilityService {
         return out;
     }
 
-    /** Compatibility entry point; core selection now uses collectCandidatesAt + ScreenSelectionModel. */
     public ViewNodeCandidate findViewAt(float x, float y) {
         ScreenSelectionModel model=new ScreenSelectionModel();
         model.setAccessibility(collectCandidatesAt(x,y));
@@ -257,10 +296,6 @@ public class LensAccessibilityService extends AccessibilityService {
         return selected==null?null:selected.toViewNodeCandidate();
     }
 
-    /**
-     * Collect every visible node whose bounds contain the point. Children are traversed first so
-     * logs naturally expose the deep chain, but ScreenSelectionModel does not rely on this order.
-     */
     private void collectByPosition(AccessibilityNodeInfo n,int x,int y,Rect screen,int depth,int[] count,List<ScreenCandidate> out){
         if(n==null||count[0]++>2200||depth>80)return;
         try{if(!n.isVisibleToUser())return;}catch(Throwable ignored){}
@@ -346,7 +381,6 @@ public class LensAccessibilityService extends AccessibilityService {
                 ||id.contains("/image")||id.contains("_image")||id.contains("avatar")||id.contains("thumbnail");
     }
 
-    /** Classification only; never used to rank selection. */
     private boolean isCompactIconLikeNode(AccessibilityNodeInfo n,Rect r,boolean actionable,boolean text){
         if(text||r==null||r.isEmpty())return false;
         boolean focusable=false;
