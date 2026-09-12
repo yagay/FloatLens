@@ -204,16 +204,21 @@ final class FvRegionFrameOverlay {
     private static final class EdgeView extends View {
         private final Paint paint = new Paint();
         private boolean confirmed;
+        private boolean paintInitialized;
 
         EdgeView(Context c, boolean ignored) {
             super(c);
+            // android.graphics.Paint defaults to opaque BLACK. Always configure the first frame;
+            // otherwise confirmed=false would incorrectly look "already initialized" and the
+            // region frame would stay black until a later state transition.
             setConfirmed(false);
         }
 
         void setConfirmed(boolean value) {
-            if (confirmed == value && paint.getColor() != 0) return;
+            if (paintInitialized && confirmed == value) return;
             confirmed = value;
             SelectionVisuals.configureEdgePaints(paint, null, confirmed);
+            paintInitialized = true;
             invalidate();
         }
 
