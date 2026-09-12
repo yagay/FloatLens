@@ -13,8 +13,8 @@ final class SelectionVisuals {
     /** FV o1/n1.onDraw(): confirmed/extractable selection is yellow. */
     static final int FL_CONFIRMED_COLOR = 0xFFFFFF00;
 
-    static int frameColor(boolean confirmed) {
-        return confirmed ? FL_CONFIRMED_COLOR : FL_ACTIVE_COLOR;
+    static int frameColor(SelectionVisualState state) {
+        return state == SelectionVisualState.READY ? FL_CONFIRMED_COLOR : FL_ACTIVE_COLOR;
     }
 
     static int edgeThicknessPx(Context c) {
@@ -26,10 +26,10 @@ final class SelectionVisuals {
      * Kept with the old two-Paint signature so callers stay simple, but only one Paint is drawn.
      * This intentionally matches FV's single STROKE Paint rather than the previous double outline.
      */
-    static void configureFramePaints(Context c, Paint frame, Paint unused, boolean confirmed) {
+    static void configureFramePaints(Context c, Paint frame, Paint unused, SelectionVisualState state) {
         frame.setAntiAlias(true);
         frame.setStyle(Paint.Style.STROKE);
-        frame.setColor(frameColor(confirmed));
+        frame.setColor(frameColor(state));
         frame.setStrokeWidth(dp(c, 2f));
         frame.setStrokeJoin(Paint.Join.MITER);
 
@@ -59,11 +59,11 @@ final class SelectionVisuals {
         c.drawText(text, x, y, fill);
     }
 
-    static void configureEdgePaints(Paint frame, Paint unused, boolean confirmed) {
+    static void configureEdgePaints(Paint frame, Paint unused, SelectionVisualState state) {
         frame.reset();
         frame.setAntiAlias(false);
         frame.setStyle(Paint.Style.FILL);
-        frame.setColor(frameColor(confirmed));
+        frame.setColor(frameColor(state));
         if (unused != null) {
             unused.reset();
             unused.setColor(Color.TRANSPARENT);
