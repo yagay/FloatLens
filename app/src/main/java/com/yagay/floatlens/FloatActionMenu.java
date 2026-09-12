@@ -38,7 +38,7 @@ public final class FloatActionMenu {
     private static final int MODE_MORE = 3;
     private static final int NO_POSITION = Integer.MIN_VALUE;
 
-    private static WindowManager activeWm;
+    private static FvOverlayWindowHost activeHost;
     private static View activeView;
     private static int activeCenterX = NO_POSITION;
     private static int activeTopY = NO_POSITION;
@@ -87,6 +87,7 @@ public final class FloatActionMenu {
         Context app = c.getApplicationContext();
         WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
         if (wm == null) return;
+        FvOverlayWindowHost host = new FvOverlayWindowHost(app);
         Palette palette = Palette.from(app);
 
         LinearLayout root = new LinearLayout(app);
@@ -145,9 +146,8 @@ public final class FloatActionMenu {
         lp.gravity = Gravity.TOP | Gravity.START;
         lp.x = pos[0];
         lp.y = pos[1];
-        try {
-            wm.addView(root, lp);
-            activeWm = wm;
+        if (host.add(root, lp, "float_action_menu")) {
+            activeHost = host;
             activeView = root;
             activeCenterX = lp.x + menuWidth / 2;
             activeTopY = lp.y;
@@ -157,9 +157,11 @@ public final class FloatActionMenu {
                     + " anchor=" + (anchor == null ? "none" : anchor.toShortString())
                     + " lockedRow=" + (hasLockedRow() ? lockedTopY : -1)
                     + " width=" + menuWidth
-                    + " pos=" + lp.x + "," + lp.y);
-        } catch (Throwable t) {
-            DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "show failed=" + t);
+                    + " pos=" + lp.x + "," + lp.y
+                    + " accessibilityHost=" + host.isAccessibilityHosted()
+                    + " type=" + lp.type);
+        } else {
+            DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "show failed all hosts mode=" + mode);
             if (mode == MODE_SHARE) launchSystemShare(app, text);
             else if (mode == MODE_PROCESS) launchSystemProcess(app, text);
         }
@@ -524,13 +526,13 @@ public final class FloatActionMenu {
 
     public static synchronized void dismiss() {
         View v = activeView;
-        WindowManager wm = activeWm;
+        FvOverlayWindowHost host = activeHost;
         activeView = null;
-        activeWm = null;
+        activeHost = null;
         activeCenterX = NO_POSITION;
         activeTopY = NO_POSITION;
-        if (v != null && wm != null) {
-            try { wm.removeView(v); } catch (Throwable ignored) {}
+        if (v != null && host != null) {
+            host.remove(v, "float_action_menu");
         }
     }
 
