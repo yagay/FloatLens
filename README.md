@@ -1,4 +1,3 @@
 # FloatLens
 
-Initial repository bootstrap. Source import follows in the next commit.
-
+FV-style floating selection, OCR and screenshot utility for Android.
