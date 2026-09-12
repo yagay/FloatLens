@@ -208,10 +208,7 @@ public final class OcrEngine {
         MAIN.post(() -> {
             if (stale(app, requestId, "paddle_show_main")) return;
             if (service != null) service.onOcrResults(Math.max(1, r.blocks.size()));
-            if (!ResultTextActivity.show(app, r.text, r.blocks, source, anchor)) {
-                if (stale(app, requestId, "paddle_overlay_fallback")) return;
-                ResultOverlay.show(app, r.text, r.blocks, source, anchor);
-            }
+            OcrResultDispatcher.deliver(app, r.text, r.blocks, source, anchor);
         });
     }
 
@@ -407,11 +404,7 @@ public final class OcrEngine {
             if (service != null) service.onOcrResults(best.blocks.size());
 
             if (stale(app, requestId, "mlkit_before_show")) return;
-            if (!ResultTextActivity.show(app, best.full, best.blocks, source, anchor)) {
-                if (stale(app, requestId, "mlkit_overlay_fallback")) return;
-                DiagnosticLog.i(app, "RESULT_TEXT_ACTIVITY", "fallback to overlay request=" + requestId);
-                ResultOverlay.show(app, best.full, best.blocks, source, anchor);
-            }
+            OcrResultDispatcher.deliver(app, best.full, best.blocks, source, anchor);
         }
     }
 
@@ -451,10 +444,7 @@ public final class OcrEngine {
                                 }
                                 if (stale(app, requestId, "fallback_before_show")) return;
                                 if (service != null) service.onOcrResults(result.blocks.size());
-                                if (!ResultTextActivity.show(app, result.full, result.blocks, source, anchor)) {
-                                    if (stale(app, requestId, "fallback_overlay_fallback")) return;
-                                    ResultOverlay.show(app, result.full, result.blocks, source, anchor);
-                                }
+                                OcrResultDispatcher.deliver(app, result.full, result.blocks, source, anchor);
                             } finally {
                                 try { finalClient.close(); } catch (Throwable ignored) {}
                             }
