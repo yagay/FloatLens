@@ -20,8 +20,9 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
-/** High-accuracy OCR with sequential low-memory preprocessing and a safe legacy fallback. */
+/** High-accuracy OCR with sequential low-memory preprocessing and stale-result suppression. */
 public final class OcrEngine {
     private static final ExecutorService PREP_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "FloatLens-OCR-Prep");
@@ -29,6 +30,28 @@ public final class OcrEngine {
         return t;
     });
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    private static final AtomicLong REQUEST_GENERATION = new AtomicLong(0L);
+
+    /**
+     * Make every OCR request that started before this point stale. Native/MLKit work may finish in
+     * the background, but its callbacks are not allowed to change UI, show toasts, or open a result
+     * window after the user has started another interaction.
+     */
+    public static void invalidatePending(Context c, String reason) {
+        long generation = REQUEST_GENERATION.incrementAndGet();
+        if (c != null) {
+            DiagnosticLog.i(c.getApplicationContext(), "OCR_SESSION", "invalidate generation="
+                    + generation + " reason=" + (reason == null ? "unknown" : reason));
+        }
+    }
+
+    private static boolean stale(Context app, long requestId, String stage) {
+        long current = REQUEST_GENERATION.get();
+        if (requestId == current) return false;
+        DiagnosticLog.i(app, "OCR_SESSION", "drop stale request=" + requestId
+                + " current=" + current + " stage=" + stage);
+        return true;
+    }
 
     public static void recognize(Context c, Bitmap b) {
         recognize(c, b, null);
@@ -38,8 +61,9 @@ public final class OcrEngine {
         Context app = c.getApplicationContext();
         Rect resultAnchor = anchor == null ? null : new Rect(anchor);
         FloatService service = FloatService.get();
+        long requestId = REQUEST_GENERATION.incrementAndGet();
 
-        DiagnosticLog.i(app, "OCR_REQUEST", "bitmap="
+        DiagnosticLog.i(app, "OCR_REQUEST", "request=" + requestId + " bitmap="
                 + (b == null ? "null" : b.getWidth() + "x" + b.getHeight())
                 + " recycled=" + (b != null && b.isRecycled())
                 + " anchor=" + (resultAnchor == null ? "none" : resultAnchor.toShortString()));
@@ -51,73 +75,104 @@ public final class OcrEngine {
             return;
         }
 
-        startSelectedEngine(app, service, b, resultAnchor);
+        startSelectedEngine(app, service, b, resultAnchor, requestId);
     }
 
     private static void startSelectedEngine(Context app, FloatService service,
-                                            Bitmap source, Rect anchor) {
+                                            Bitmap source, Rect anchor, long requestId) {
+        if (stale(app, requestId, "engine_start")) return;
         int mode = readOcrEngineModeSafely(app);
         boolean smallReady = OcrModelManager.isReady(app, OcrModelManager.SMALL);
         boolean mediumReady = OcrModelManager.isReady(app, OcrModelManager.MEDIUM);
-        DiagnosticLog.i(app, "OCR_ENGINE", "mode=" + mode + " small=" + smallReady + " medium=" + mediumReady);
-        if (mode == 3) { startMlKitPipeline(app, service, source, anchor, "manual_mlkit"); return; }
-        if (mode == 1) { runPaddle(app, service, source, anchor, OcrModelManager.MEDIUM, false, null); return; }
-        if (mode == 2) { runPaddle(app, service, source, anchor, OcrModelManager.SMALL, false, null); return; }
+        DiagnosticLog.i(app, "OCR_ENGINE", "request=" + requestId + " mode=" + mode
+                + " small=" + smallReady + " medium=" + mediumReady);
+        if (mode == 3) { startMlKitPipeline(app, service, source, anchor, "manual_mlkit", requestId); return; }
+        if (mode == 1) { runPaddle(app, service, source, anchor, OcrModelManager.MEDIUM, false, null, requestId); return; }
+        if (mode == 2) { runPaddle(app, service, source, anchor, OcrModelManager.SMALL, false, null, requestId); return; }
 
         if (smallReady) {
-            runPaddle(app, service, source, anchor, OcrModelManager.SMALL, true, null);
+            runPaddle(app, service, source, anchor, OcrModelManager.SMALL, true, null, requestId);
         } else if (mediumReady) {
-            runPaddle(app, service, source, anchor, OcrModelManager.MEDIUM, true, null);
+            runPaddle(app, service, source, anchor, OcrModelManager.MEDIUM, true, null, requestId);
         } else {
-            DiagnosticLog.i(app, "OCR_ENGINE", "auto no local model -> ML Kit");
+            DiagnosticLog.i(app, "OCR_ENGINE", "auto no local model -> ML Kit request=" + requestId);
             Toast.makeText(app, "未下载 PP-OCRv6 模型，暂用 ML Kit；可在设置中下载", Toast.LENGTH_SHORT).show();
-            startMlKitPipeline(app, service, source, anchor, "no_local_model");
+            startMlKitPipeline(app, service, source, anchor, "no_local_model", requestId);
         }
     }
 
     private static final class PaddleResult {
         final String text; final List<String> blocks; final float confidence;
         PaddleResult(String text, List<String> blocks, float confidence) {
-            this.text = text == null ? "" : text.trim(); this.blocks = blocks == null ? List.of() : blocks; this.confidence = confidence;
+            this.text = text == null ? "" : text.trim();
+            this.blocks = blocks == null ? List.of() : blocks;
+            this.confidence = confidence;
         }
     }
 
     private static void runPaddle(Context app, FloatService service, Bitmap source, Rect anchor,
-                                  int model, boolean auto, PaddleResult previous) {
+                                  int model, boolean auto, PaddleResult previous, long requestId) {
+        if (stale(app, requestId, "paddle_start")) return;
         if (!OcrModelManager.isReady(app, model)) {
-            if (auto) { startMlKitPipeline(app, service, source, anchor, "local_model_missing"); return; }
-            if (service != null) service.onCircleFinished("ppocr_model_missing");
-            Toast.makeText(app, "请先在设置中下载 " + OcrModelManager.displayName(model), Toast.LENGTH_LONG).show();
+            if (auto) {
+                startMlKitPipeline(app, service, source, anchor, "local_model_missing", requestId);
+                return;
+            }
+            if (!stale(app, requestId, "paddle_model_missing")) {
+                if (service != null) service.onCircleFinished("ppocr_model_missing");
+                Toast.makeText(app, "请先在设置中下载 " + OcrModelManager.displayName(model), Toast.LENGTH_LONG).show();
+            }
             return;
         }
-        DiagnosticLog.i(app, "PPOCRV6", "launch model=" + model + " languages=" + OcrLanguages.get(app)
+        DiagnosticLog.i(app, "PPOCRV6", "launch request=" + requestId + " model=" + model
+                + " languages=" + OcrLanguages.get(app)
                 + " image=" + source.getWidth() + "x" + source.getHeight());
         PaddleOcrBridge.recognize(app, source, model, new PaddleOcrBridge.Callback() {
-            @Override public void onSuccess(String text, List<String> blocks, long totalMs, int lineCount, float averageConfidence) {
+            @Override public void onSuccess(String text, List<String> blocks, long totalMs,
+                                            int lineCount, float averageConfidence) {
+                if (stale(app, requestId, "paddle_success")) return;
                 PaddleResult now = new PaddleResult(text, blocks, averageConfidence);
-                DiagnosticLog.i(app, "PPOCRV6", "success model=" + model + " chars=" + now.text.length()
-                        + " lines=" + lineCount + " avgConf=" + String.format(java.util.Locale.US, "%.3f", averageConfidence)
+                DiagnosticLog.i(app, "PPOCRV6", "success request=" + requestId + " model=" + model
+                        + " chars=" + now.text.length() + " lines=" + lineCount
+                        + " avgConf=" + String.format(java.util.Locale.US, "%.3f", averageConfidence)
                         + " totalMs=" + totalMs);
                 if (now.text.isBlank()) {
-                    if (previous != null && !previous.text.isBlank()) { showPaddleResult(app, service, source, anchor, previous); return; }
-                    if (auto) { startMlKitPipeline(app, service, source, anchor, "ppocr_empty"); return; }
-                    if (service != null) service.onCircleFinished("ppocr_empty");
-                    Toast.makeText(app, "未识别到文字", Toast.LENGTH_SHORT).show(); return;
+                    if (previous != null && !previous.text.isBlank()) {
+                        showPaddleResult(app, service, source, anchor, previous, requestId);
+                        return;
+                    }
+                    if (auto) {
+                        startMlKitPipeline(app, service, source, anchor, "ppocr_empty", requestId);
+                        return;
+                    }
+                    if (!stale(app, requestId, "paddle_empty")) {
+                        if (service != null) service.onCircleFinished("ppocr_empty");
+                        Toast.makeText(app, "未识别到文字", Toast.LENGTH_SHORT).show();
+                    }
+                    return;
                 }
                 if (auto && model == OcrModelManager.SMALL
                         && OcrModelManager.isReady(app, OcrModelManager.MEDIUM)
                         && shouldEscalate(now)) {
-                    DiagnosticLog.i(app, "OCR_ENGINE", "Small low confidence -> Medium");
-                    runPaddle(app, service, source, anchor, OcrModelManager.MEDIUM, true, now);
+                    DiagnosticLog.i(app, "OCR_ENGINE", "Small low confidence -> Medium request=" + requestId);
+                    runPaddle(app, service, source, anchor, OcrModelManager.MEDIUM, true, now, requestId);
                     return;
                 }
-                showPaddleResult(app, service, source, anchor, chooseBetter(previous, now));
+                showPaddleResult(app, service, source, anchor, chooseBetter(previous, now), requestId);
             }
+
             @Override public void onFailure(String message) {
-                DiagnosticLog.i(app, "PPOCRV6", "failure model=" + model + " " + message);
-                if (previous != null && !previous.text.isBlank()) { showPaddleResult(app, service, source, anchor, previous); return; }
-                if (auto) startMlKitPipeline(app, service, source, anchor, "ppocr_failure:" + message);
-                else {
+                if (stale(app, requestId, "paddle_failure")) return;
+                DiagnosticLog.i(app, "PPOCRV6", "failure request=" + requestId
+                        + " model=" + model + " " + message);
+                if (previous != null && !previous.text.isBlank()) {
+                    showPaddleResult(app, service, source, anchor, previous, requestId);
+                    return;
+                }
+                if (auto) {
+                    startMlKitPipeline(app, service, source, anchor,
+                            "ppocr_failure:" + message, requestId);
+                } else if (!stale(app, requestId, "paddle_failure_ui")) {
                     if (service != null) service.onCircleFinished("ppocr_failure");
                     Toast.makeText(app, "PP-OCRv6 失败: " + message, Toast.LENGTH_LONG).show();
                 }
@@ -129,7 +184,9 @@ public final class OcrEngine {
         if (r == null || r.text.isBlank()) return true;
         if (r.confidence < 0.82f) return true;
         int meaningful = 0;
-        for (int i=0;i<r.text.length();i++) if (Character.isLetterOrDigit(r.text.charAt(i)) || isCjk(r.text.charAt(i))) meaningful++;
+        for (int i = 0; i < r.text.length(); i++) {
+            if (Character.isLetterOrDigit(r.text.charAt(i)) || isCjk(r.text.charAt(i))) meaningful++;
+        }
         return meaningful < 6 || meaningful * 2 < r.text.length();
     }
 
@@ -141,16 +198,28 @@ public final class OcrEngine {
         return sb >= sa ? b : a;
     }
 
-    private static void showPaddleResult(Context app, FloatService service, Bitmap source, Rect anchor, PaddleResult r) {
-        if (r == null || r.text.isBlank()) { if (service != null) service.onCircleFinished("ppocr_empty"); return; }
-        if (service != null) service.onOcrResults(Math.max(1, r.blocks.size()));
-        if (!ResultTextActivity.show(app, r.text, r.blocks, source, anchor)) ResultOverlay.show(app, r.text, r.blocks, source, anchor);
+    private static void showPaddleResult(Context app, FloatService service, Bitmap source, Rect anchor,
+                                         PaddleResult r, long requestId) {
+        if (stale(app, requestId, "paddle_show_schedule")) return;
+        if (r == null || r.text.isBlank()) {
+            if (service != null) service.onCircleFinished("ppocr_empty");
+            return;
+        }
+        MAIN.post(() -> {
+            if (stale(app, requestId, "paddle_show_main")) return;
+            if (service != null) service.onOcrResults(Math.max(1, r.blocks.size()));
+            if (!ResultTextActivity.show(app, r.text, r.blocks, source, anchor)) {
+                if (stale(app, requestId, "paddle_overlay_fallback")) return;
+                ResultOverlay.show(app, r.text, r.blocks, source, anchor);
+            }
+        });
     }
 
     private static void startMlKitPipeline(Context app, FloatService service,
-                                           Bitmap source, Rect anchor, String reason) {
+                                           Bitmap source, Rect anchor, String reason, long requestId) {
+        if (stale(app, requestId, "mlkit_start")) return;
         try {
-            DiagnosticLog.i(app, "OCR_INIT", "MLKit begin reason=" + reason);
+            DiagnosticLog.i(app, "OCR_INIT", "MLKit begin request=" + requestId + " reason=" + reason);
             Set<String> languages = OcrLanguages.get(app);
             boolean chinese = OcrLanguages.chineseEnabled(languages);
             boolean english = OcrLanguages.englishEnabled(languages);
@@ -159,7 +228,7 @@ public final class OcrEngine {
                 chinese = true;
                 english = true;
             }
-            DiagnosticLog.i(app, "OCR_INIT", "languages=" + languages
+            DiagnosticLog.i(app, "OCR_INIT", "request=" + requestId + " languages=" + languages
                     + " chinese=" + chinese + " english=" + english);
 
             ArrayList<PassSpec> plan = new ArrayList<>();
@@ -170,13 +239,16 @@ public final class OcrEngine {
             if (chinese) plan.add(new PassSpec("zh-mono", OcrImagePreprocessor.MODE_MONO, true));
             if (english) plan.add(new PassSpec("latin-mono", OcrImagePreprocessor.MODE_MONO, false));
 
-            DiagnosticLog.i(app, "OCR_PIPELINE", "start MLKit serial-safe languages=" + languages
+            DiagnosticLog.i(app, "OCR_PIPELINE", "start request=" + requestId
+                    + " MLKit serial-safe languages=" + languages
                     + " source=" + source.getWidth() + "x" + source.getHeight()
                     + " passes=" + plan.size() + " reason=" + reason);
-            new RunState(app, service, source, anchor, plan).next();
+            new RunState(app, service, source, anchor, plan, requestId).next();
         } catch (Throwable t) {
-            DiagnosticLog.i(app, "OCR_INIT_FAIL", t.getClass().getName() + ":" + safe(t));
-            runFallback(app, service, source, anchor, "mlkit_init_failure");
+            if (stale(app, requestId, "mlkit_init_failure")) return;
+            DiagnosticLog.i(app, "OCR_INIT_FAIL", "request=" + requestId + " "
+                    + t.getClass().getName() + ":" + safe(t));
+            runFallback(app, service, source, anchor, "mlkit_init_failure", requestId);
         }
     }
 
@@ -201,18 +273,22 @@ public final class OcrEngine {
         final Bitmap source;
         final Rect anchor;
         final List<PassSpec> plan;
+        final long requestId;
         final List<Candidate> results = new ArrayList<>();
         int index;
 
-        RunState(Context app, FloatService service, Bitmap source, Rect anchor, List<PassSpec> plan) {
+        RunState(Context app, FloatService service, Bitmap source, Rect anchor,
+                 List<PassSpec> plan, long requestId) {
             this.app = app;
             this.service = service;
             this.source = source;
             this.anchor = anchor;
             this.plan = plan;
+            this.requestId = requestId;
         }
 
         void next() {
+            if (stale(app, requestId, "mlkit_next")) return;
             if (index >= plan.size()) {
                 MAIN.post(this::finishOnMain);
                 return;
@@ -221,38 +297,46 @@ public final class OcrEngine {
             try {
                 PREP_EXECUTOR.execute(() -> prepareAndRun(spec));
             } catch (Throwable t) {
-                DiagnosticLog.i(app, "OCR_EXECUTOR_FAIL", spec.name + " "
-                        + t.getClass().getSimpleName() + ":" + safe(t));
-                runFallback(app, service, source, anchor, "executor_failure");
+                if (stale(app, requestId, "mlkit_executor_failure")) return;
+                DiagnosticLog.i(app, "OCR_EXECUTOR_FAIL", "request=" + requestId + " "
+                        + spec.name + " " + t.getClass().getSimpleName() + ":" + safe(t));
+                runFallback(app, service, source, anchor, "executor_failure", requestId);
             }
         }
 
         private void prepareAndRun(PassSpec spec) {
+            if (stale(app, requestId, "mlkit_prepare_" + spec.name)) return;
             if (source.isRecycled()) {
-                DiagnosticLog.i(app, "OCR_PASS", spec.name + " skipped=source_recycled");
+                DiagnosticLog.i(app, "OCR_PASS", "request=" + requestId + " "
+                        + spec.name + " skipped=source_recycled");
                 next();
                 return;
             }
 
             OcrImagePreprocessor.Prepared prepared;
             try {
-                DiagnosticLog.i(app, "OCR_PREP", spec.name + " begin mode="
-                        + OcrImagePreprocessor.modeName(spec.mode));
+                DiagnosticLog.i(app, "OCR_PREP", "request=" + requestId + " " + spec.name
+                        + " begin mode=" + OcrImagePreprocessor.modeName(spec.mode));
                 prepared = OcrImagePreprocessor.prepare(source, spec.mode);
             } catch (Throwable t) {
-                DiagnosticLog.i(app, "OCR_PREP", spec.name + " exception="
-                        + t.getClass().getSimpleName() + ":" + safe(t));
+                DiagnosticLog.i(app, "OCR_PREP", "request=" + requestId + " " + spec.name
+                        + " exception=" + t.getClass().getSimpleName() + ":" + safe(t));
                 next();
                 return;
             }
 
             if (prepared == null || prepared.bitmap == null || prepared.bitmap.isRecycled()) {
-                DiagnosticLog.i(app, "OCR_PREP", spec.name + " failed; skip");
+                DiagnosticLog.i(app, "OCR_PREP", "request=" + requestId + " "
+                        + spec.name + " failed; skip");
                 next();
                 return;
             }
-            DiagnosticLog.i(app, "OCR_PREP", spec.name + " ready="
-                    + prepared.bitmap.getWidth() + "x" + prepared.bitmap.getHeight()
+            if (stale(app, requestId, "mlkit_prepared_" + spec.name)) {
+                OcrImagePreprocessor.recycle(prepared);
+                return;
+            }
+            DiagnosticLog.i(app, "OCR_PREP", "request=" + requestId + " " + spec.name
+                    + " ready=" + prepared.bitmap.getWidth() + "x" + prepared.bitmap.getHeight()
                     + " owned=" + prepared.owned);
 
             TextRecognizer client = null;
@@ -261,78 +345,91 @@ public final class OcrEngine {
                         ? TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build())
                         : TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
                 TextRecognizer finalClient = client;
-                DiagnosticLog.i(app, "OCR_PASS", spec.name + " launch");
+                DiagnosticLog.i(app, "OCR_PASS", "request=" + requestId + " " + spec.name + " launch");
                 client.process(InputImage.fromBitmap(prepared.bitmap, 0))
                         .addOnSuccessListener(t -> {
                             try {
+                                if (stale(app, requestId, "mlkit_success_" + spec.name)) return;
                                 Candidate candidate = candidate(spec.name, t);
                                 if (!candidate.full.isBlank()) results.add(candidate);
-                                DiagnosticLog.i(app, "OCR_PASS", spec.name
-                                        + " chars=" + candidate.full.length()
+                                DiagnosticLog.i(app, "OCR_PASS", "request=" + requestId + " "
+                                        + spec.name + " chars=" + candidate.full.length()
                                         + " blocks=" + candidate.blocks.size()
                                         + " score=" + Math.round(candidate.score));
                             } catch (Throwable error) {
-                                DiagnosticLog.i(app, "OCR_PASS", spec.name + " parseFailure=" + safe(error));
+                                DiagnosticLog.i(app, "OCR_PASS", "request=" + requestId + " "
+                                        + spec.name + " parseFailure=" + safe(error));
                             } finally {
                                 try { finalClient.close(); } catch (Throwable ignored) {}
                                 OcrImagePreprocessor.recycle(prepared);
-                                next();
                             }
+                            next();
                         })
                         .addOnFailureListener(e -> {
-                            DiagnosticLog.i(app, "OCR_PASS", spec.name + " failure=" + safe(e));
-                            try { finalClient.close(); } catch (Throwable ignored) {}
-                            OcrImagePreprocessor.recycle(prepared);
+                            try {
+                                if (stale(app, requestId, "mlkit_failure_" + spec.name)) return;
+                                DiagnosticLog.i(app, "OCR_PASS", "request=" + requestId + " "
+                                        + spec.name + " failure=" + safe(e));
+                            } finally {
+                                try { finalClient.close(); } catch (Throwable ignored) {}
+                                OcrImagePreprocessor.recycle(prepared);
+                            }
                             next();
                         });
             } catch (Throwable t) {
                 if (client != null) try { client.close(); } catch (Throwable ignored) {}
                 OcrImagePreprocessor.recycle(prepared);
-                DiagnosticLog.i(app, "OCR_PASS", spec.name + " launchFailure="
-                        + t.getClass().getSimpleName() + ":" + safe(t));
+                if (stale(app, requestId, "mlkit_launch_failure_" + spec.name)) return;
+                DiagnosticLog.i(app, "OCR_PASS", "request=" + requestId + " " + spec.name
+                        + " launchFailure=" + t.getClass().getSimpleName() + ":" + safe(t));
                 next();
             }
         }
 
         private void finishOnMain() {
+            if (stale(app, requestId, "mlkit_finish")) return;
             Candidate best = null;
             for (Candidate c : results) {
                 if (best == null || c.score > best.score) best = c;
             }
             if (best == null || best.full.isBlank()) {
-                DiagnosticLog.i(app, "OCR_PIPELINE", "finish empty successfulPasses=" + results.size());
+                DiagnosticLog.i(app, "OCR_PIPELINE", "finish request=" + requestId
+                        + " empty successfulPasses=" + results.size());
                 if (service != null) service.onCircleFinished("ocr_empty");
                 Toast.makeText(app, "未识别到文字", Toast.LENGTH_SHORT).show();
                 return;
             }
 
-            DiagnosticLog.i(app, "OCR_PIPELINE", "selected pass=" + best.passName
-                    + " score=" + Math.round(best.score)
-                    + " chars=" + best.full.length()
-                    + " candidates=" + best.blocks.size()
+            DiagnosticLog.i(app, "OCR_PIPELINE", "selected request=" + requestId
+                    + " pass=" + best.passName + " score=" + Math.round(best.score)
+                    + " chars=" + best.full.length() + " candidates=" + best.blocks.size()
                     + " successfulPasses=" + results.size());
             if (service != null) service.onOcrResults(best.blocks.size());
 
+            if (stale(app, requestId, "mlkit_before_show")) return;
             if (!ResultTextActivity.show(app, best.full, best.blocks, source, anchor)) {
-                DiagnosticLog.i(app, "RESULT_TEXT_ACTIVITY", "fallback to overlay");
+                if (stale(app, requestId, "mlkit_overlay_fallback")) return;
+                DiagnosticLog.i(app, "RESULT_TEXT_ACTIVITY", "fallback to overlay request=" + requestId);
                 ResultOverlay.show(app, best.full, best.blocks, source, anchor);
             }
         }
     }
 
     private static void runFallback(Context app, FloatService service, Bitmap source, Rect anchor,
-                                    String reason) {
+                                    String reason, long requestId) {
+        if (stale(app, requestId, "fallback_schedule")) return;
         if (source == null || source.isRecycled()) {
             if (service != null) service.onCircleFinished("ocr_fallback_invalid");
             return;
         }
         MAIN.post(() -> {
+            if (stale(app, requestId, "fallback_start")) return;
             TextRecognizer client = null;
             try {
                 Set<String> languages = OcrLanguages.get(app);
                 boolean useChinese = OcrLanguages.chineseEnabled(languages);
-                DiagnosticLog.i(app, "OCR_FALLBACK", "start reason=" + reason
-                        + " languages=" + languages
+                DiagnosticLog.i(app, "OCR_FALLBACK", "start request=" + requestId
+                        + " reason=" + reason + " languages=" + languages
                         + " image=" + source.getWidth() + "x" + source.getHeight());
                 client = useChinese
                         ? TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build())
@@ -342,16 +439,20 @@ public final class OcrEngine {
                 client.process(InputImage.fromBitmap(source, 0))
                         .addOnSuccessListener(text -> {
                             try {
+                                if (stale(app, requestId, "fallback_success")) return;
                                 Candidate result = candidate(passName, text);
-                                DiagnosticLog.i(app, "OCR_FALLBACK", "success chars="
-                                        + result.full.length() + " blocks=" + result.blocks.size());
+                                DiagnosticLog.i(app, "OCR_FALLBACK", "success request=" + requestId
+                                        + " chars=" + result.full.length()
+                                        + " blocks=" + result.blocks.size());
                                 if (result.full.isBlank()) {
                                     if (service != null) service.onCircleFinished("ocr_fallback_empty");
                                     Toast.makeText(app, "未识别到文字", Toast.LENGTH_SHORT).show();
                                     return;
                                 }
+                                if (stale(app, requestId, "fallback_before_show")) return;
                                 if (service != null) service.onOcrResults(result.blocks.size());
                                 if (!ResultTextActivity.show(app, result.full, result.blocks, source, anchor)) {
+                                    if (stale(app, requestId, "fallback_overlay_fallback")) return;
                                     ResultOverlay.show(app, result.full, result.blocks, source, anchor);
                                 }
                             } finally {
@@ -359,14 +460,20 @@ public final class OcrEngine {
                             }
                         })
                         .addOnFailureListener(e -> {
-                            DiagnosticLog.i(app, "OCR_FALLBACK", "failure=" + safe(e));
-                            try { finalClient.close(); } catch (Throwable ignored) {}
-                            if (service != null) service.onCircleFinished("ocr_fallback_failure");
-                            Toast.makeText(app, "OCR失败", Toast.LENGTH_SHORT).show();
+                            try {
+                                if (stale(app, requestId, "fallback_failure")) return;
+                                DiagnosticLog.i(app, "OCR_FALLBACK", "failure request=" + requestId
+                                        + " " + safe(e));
+                                if (service != null) service.onCircleFinished("ocr_fallback_failure");
+                                Toast.makeText(app, "OCR失败", Toast.LENGTH_SHORT).show();
+                            } finally {
+                                try { finalClient.close(); } catch (Throwable ignored) {}
+                            }
                         });
             } catch (Throwable t) {
                 if (client != null) try { client.close(); } catch (Throwable ignored) {}
-                DiagnosticLog.i(app, "OCR_FALLBACK", "launchFailure="
+                if (stale(app, requestId, "fallback_launch_failure")) return;
+                DiagnosticLog.i(app, "OCR_FALLBACK", "launchFailure request=" + requestId + " "
                         + t.getClass().getSimpleName() + ":" + safe(t));
                 if (service != null) service.onCircleFinished("ocr_fallback_launch_failure");
                 Toast.makeText(app, "OCR失败", Toast.LENGTH_SHORT).show();
