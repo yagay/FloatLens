@@ -3,7 +3,14 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// http://www.apache.org/licenses/LICENSE-2.0
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package com.paddle.ocr.engine
 
@@ -20,6 +27,7 @@ import com.paddle.ocr.postprocess.BoxSorter
 import com.paddle.ocr.postprocess.CTCDecoder
 import com.paddle.ocr.postprocess.QuadTextCrop
 import com.paddle.ocr.util.BitmapUtils
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
@@ -162,42 +170,144 @@ class OCREngine(
     }
 
     /**
-     * Convert CTC time-axis fractions back to source-image geometry. Horizontal lines map along X;
-     * vertical crops are rotated by QuadTextCrop, so their recognition X axis maps top-to-bottom Y.
+     * Convert CTC time-axis alignment back to source-image character geometry.
+     *
+     * Detection boxes are deliberately expanded for OCR recognition, so using the whole detected
+     * line height/width for every character makes selection rectangles much larger than the glyph.
+     * It is especially bad for a one-character CJK line: an expanded narrow box can be rotated as a
+     * vertical crop and the old mapping then produced a very thin character occupying the full line.
+     *
+     * The mapping below keeps the detector's real quadrilateral orientation, expands the raw CTC run
+     * only toward neighbouring character centres, and tightens both axes. CJK/full-width characters
+     * are additionally constrained to a near-square cell, matching their visual glyph geometry.
      */
     private fun buildCharacters(box: OCRBox, decoded: CTCDecoder.DecodedText): List<OCRCharacter> {
-        if (decoded.chars.isEmpty() || box.points.isEmpty()) return emptyList()
-        val minX = box.points.minOf { it.x }
-        val maxX = box.points.maxOf { it.x }
-        val minY = box.points.minOf { it.y }
-        val maxY = box.points.maxOf { it.y }
-        val width = max(1f, maxX - minX)
-        val height = max(1f, maxY - minY)
-        val vertical = height / width >= 1.5f
+        val decodedChars = decoded.chars.filter { it.text.isNotEmpty() }
+        if (decodedChars.isEmpty() || box.points.size != 4) return emptyList()
 
-        return decoded.chars.mapNotNull { c ->
-            if (c.text.isEmpty()) return@mapNotNull null
+        // DBPostProcessor guarantees TL, TR, BR, BL order.
+        val tl = box.points[0]
+        val tr = box.points[1]
+        val br = box.points[2]
+        val bl = box.points[3]
+        val horizontalLength = max(1f, (distance(tl, tr) + distance(bl, br)) * 0.5f)
+        val verticalLength = max(1f, (distance(tl, bl) + distance(tr, br)) * 0.5f)
+        // Must match QuadTextCrop's rotation rule so recognition X maps to the correct source axis.
+        val verticalCrop = verticalLength / horizontalLength >= 1.5f
+        val majorLength = if (verticalCrop) verticalLength else horizontalLength
+        val crossLength = if (verticalCrop) horizontalLength else verticalLength
+
+        val rawStarts = FloatArray(decodedChars.size)
+        val rawEnds = FloatArray(decodedChars.size)
+        val centers = FloatArray(decodedChars.size)
+        decodedChars.forEachIndexed { index, c ->
             val start = min(c.startFraction, c.endFraction).coerceIn(0f, 1f)
             val end = max(c.startFraction, c.endFraction).coerceIn(start, 1f)
-            val charBox = if (vertical) {
-                val top = minY + height * start
-                val bottom = minY + height * end
-                rectBox(minX, top, maxX, max(bottom, top + 1f))
-            } else {
-                val left = minX + width * start
-                val right = minX + width * end
-                rectBox(left, minY, max(right, left + 1f), maxY)
+            rawStarts[index] = start
+            rawEnds[index] = end
+            centers[index] = (start + end) * 0.5f
+        }
+
+        return decodedChars.mapIndexedNotNull { index, c ->
+            val rawStart = rawStarts[index]
+            val rawEnd = rawEnds[index]
+            val center = centers[index]
+            val rawSpan = max(1f / max(1f, majorLength), rawEnd - rawStart)
+
+            val leftCell = when {
+                index > 0 -> (centers[index - 1] + center) * 0.5f
+                decodedChars.size > 1 -> center - (centers[1] - center) * 0.5f
+                else -> center - rawSpan * 0.5f
+            }.coerceIn(0f, center)
+            val rightCell = when {
+                index + 1 < decodedChars.size -> (center + centers[index + 1]) * 0.5f
+                decodedChars.size > 1 -> center + (center - centers[index - 1]) * 0.5f
+                else -> center + rawSpan * 0.5f
+            }.coerceIn(center, 1f)
+
+            val wideGlyph = isWideGlyph(c.text)
+            // CTC activation is narrower than the visible glyph. Blend toward neighbour midpoints,
+            // more strongly for CJK/full-width characters and conservatively for Latin text.
+            val cellBlend = if (wideGlyph) 0.72f else 0.38f
+            var start = mix(rawStart, leftCell, cellBlend).coerceIn(0f, center)
+            var end = mix(rawEnd, rightCell, cellBlend).coerceIn(center, 1f)
+
+            // A single CJK character must not occupy an entire tall/narrow expanded detection box.
+            // Clamp its primary-axis size to roughly one glyph relative to the cross axis.
+            if (wideGlyph) {
+                val currentSpanPx = max(1f, majorLength * (end - start))
+                val maxGlyphMajorPx = max(2f, crossLength * 1.12f)
+                if (currentSpanPx > maxGlyphMajorPx) {
+                    val half = (maxGlyphMajorPx / majorLength) * 0.5f
+                    start = (center - half).coerceAtLeast(0f)
+                    end = (center + half).coerceAtMost(1f)
+                }
             }
-            OCRCharacter(c.text, charBox, c.confidence)
+
+            val majorSpanPx = max(1f, majorLength * (end - start))
+            val targetCrossPx = if (wideGlyph) {
+                min(crossLength * 0.86f, max(crossLength * 0.42f, majorSpanPx * 0.96f))
+            } else {
+                min(crossLength * 0.76f, max(crossLength * 0.50f, majorSpanPx * 1.55f))
+            }
+            val crossFill = (targetCrossPx / crossLength).coerceIn(0.30f, 0.90f)
+            val crossInset = (1f - crossFill) * 0.5f
+
+            val charPoints = if (verticalCrop) {
+                val leftStart = lerp(tl, bl, start)
+                val rightStart = lerp(tr, br, start)
+                val leftEnd = lerp(tl, bl, end)
+                val rightEnd = lerp(tr, br, end)
+                listOf(
+                    lerp(leftStart, rightStart, crossInset),
+                    lerp(leftStart, rightStart, 1f - crossInset),
+                    lerp(leftEnd, rightEnd, 1f - crossInset),
+                    lerp(leftEnd, rightEnd, crossInset),
+                )
+            } else {
+                val topStart = lerp(tl, tr, start)
+                val bottomStart = lerp(bl, br, start)
+                val topEnd = lerp(tl, tr, end)
+                val bottomEnd = lerp(bl, br, end)
+                listOf(
+                    lerp(topStart, bottomStart, crossInset),
+                    lerp(topEnd, bottomEnd, crossInset),
+                    lerp(topEnd, bottomEnd, 1f - crossInset),
+                    lerp(topStart, bottomStart, 1f - crossInset),
+                )
+            }
+            OCRCharacter(c.text, OCRBox(charPoints), c.confidence)
         }
     }
 
-    private fun rectBox(left: Float, top: Float, right: Float, bottom: Float): OCRBox = OCRBox(
-        listOf(
-            PointF(left, top), PointF(right, top),
-            PointF(right, bottom), PointF(left, bottom),
-        )
-    )
+    private fun lerp(a: PointF, b: PointF, t: Float): PointF {
+        val v = t.coerceIn(0f, 1f)
+        return PointF(a.x + (b.x - a.x) * v, a.y + (b.y - a.y) * v)
+    }
+
+    private fun mix(a: Float, b: Float, t: Float): Float {
+        val v = t.coerceIn(0f, 1f)
+        return a + (b - a) * v
+    }
+
+    private fun distance(a: PointF, b: PointF): Float =
+        hypot((a.x - b.x).toDouble(), (a.y - b.y).toDouble()).toFloat()
+
+    private fun isWideGlyph(value: String): Boolean {
+        var offset = 0
+        while (offset < value.length) {
+            val cp = value.codePointAt(offset)
+            offset += Character.charCount(cp)
+            if ((cp in 0x3400..0x4DBF)
+                || (cp in 0x4E00..0x9FFF)
+                || (cp in 0xF900..0xFAFF)
+                || (cp in 0x20000..0x2FA1F)
+                || (cp in 0x3000..0x303F)
+                || (cp in 0xFF01..0xFF60)
+                || (cp in 0xFFE0..0xFFE6)) return true
+        }
+        return false
+    }
 
     fun release() { ortManager.release() }
 }
