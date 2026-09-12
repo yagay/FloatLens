@@ -2,10 +2,14 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.PixelFormat;
+import android.graphics.PointF;
 import android.graphics.Rect;
 import android.text.InputType;
+import android.text.Layout;
 import android.text.Selection;
 import android.text.Spannable;
 import android.view.Gravity;
@@ -29,12 +33,11 @@ public final class ScreenshotResultOverlay {
     private static final int TITLE_H_DP = 38;
     private static final int ACTION_H_DP = 50;
     private static final long OCR_INLINE_TIMEOUT_MS = 12_000L;
+    private static final int HANDLE_NONE = 0;
+    private static final int HANDLE_START = 1;
+    private static final int HANDLE_END = 2;
     private static OverlaySession active;
 
-    /**
-     * Shows the screenshot result immediately. Returns false only when neither accessibility nor
-     * application overlay hosting could attach the result surface; caller may then use Activity fallback.
-     */
     public static synchronized boolean show(Context c, Bitmap image, Rect anchor) {
         if (c == null || image == null || image.isRecycled()) return false;
         dismissActive("replace");
@@ -155,15 +158,14 @@ public final class ScreenshotResultOverlay {
         tv.setKeyListener(null);
         tv.setCursorVisible(false);
         tv.setShowSoftInputOnFocus(false);
-        // Do not rely on Android's contextual ActionMode inside TYPE_ACCESSIBILITY_OVERLAY.
-        // Selection is driven explicitly by touch below, which also keeps ScrollView behaviour intact.
         tv.setTextIsSelectable(false);
         tv.setLongClickable(false);
         tv.setClickable(true);
         tv.setFocusable(true);
         tv.setFocusableInTouchMode(true);
         tv.setSelectAllOnFocus(false);
-        tv.setPadding(dp(app, 8), dp(app, 5), dp(app, 8), dp(app, 5));
+        // Leave enough bottom room for the custom circular handles on the last line.
+        tv.setPadding(dp(app, 8), dp(app, 5), dp(app, 8), dp(app, 22));
         return tv;
     }
 
@@ -181,11 +183,26 @@ public final class ScreenshotResultOverlay {
                 case MotionEvent.ACTION_DOWN -> {
                     session.touchDown = true;
                     session.manualSelecting = false;
+                    session.handleMode = HANDLE_NONE;
                     session.downX = x;
                     session.downY = y;
                     FloatActionMenu.dismiss();
                     FloatMenuAnchor.clear();
                     cancelLongPress(session);
+
+                    if (session.selectionActive) {
+                        int handle = tv.hitSelectionHandle(x, y);
+                        if (handle != HANDLE_NONE) {
+                            session.handleMode = handle;
+                            session.manualSelecting = true;
+                            requestNoParentIntercept(tv, true);
+                            DiagnosticLog.i(session.app, "SCREENSHOT_RESULT",
+                                    "OCR_SELECTION_HANDLE_DOWN mode="
+                                            + (handle == HANDLE_START ? "start" : "end"));
+                            return true;
+                        }
+                    }
+
                     session.longPressRunnable = () -> {
                         if (session.detached || !session.touchDown || tv.length() == 0) return;
                         int offset = offsetForTouch(tv, session.downX, session.downY);
@@ -206,6 +223,13 @@ public final class ScreenshotResultOverlay {
                 }
 
                 case MotionEvent.ACTION_MOVE -> {
+                    if (session.handleMode != HANDLE_NONE) {
+                        requestNoParentIntercept(tv, true);
+                        FloatActionMenu.dismiss();
+                        FloatMenuAnchor.clear();
+                        updateSelectionHandle(session, offsetForTouch(tv, x, y));
+                        return true;
+                    }
                     if (!session.manualSelecting) {
                         float dx = x - session.downX;
                         float dy = y - session.downY;
@@ -222,6 +246,22 @@ public final class ScreenshotResultOverlay {
                 case MotionEvent.ACTION_UP -> {
                     session.touchDown = false;
                     cancelLongPress(session);
+
+                    if (session.handleMode != HANDLE_NONE) {
+                        updateSelectionHandle(session, offsetForTouch(tv, x, y));
+                        int released = session.handleMode;
+                        session.handleMode = HANDLE_NONE;
+                        session.manualSelecting = false;
+                        requestNoParentIntercept(tv, false);
+                        DiagnosticLog.i(session.app, "SCREENSHOT_RESULT",
+                                "OCR_SELECTION_HANDLE_UP mode="
+                                        + (released == HANDLE_START ? "start" : "end")
+                                        + " start=" + tv.getSelectionStart()
+                                        + " end=" + tv.getSelectionEnd());
+                        tv.post(() -> showSelectionMenu(session));
+                        return true;
+                    }
+
                     if (!session.manualSelecting) return false;
                     extendSelectionTo(session, offsetForTouch(tv, x, y));
                     session.manualSelecting = false;
@@ -236,7 +276,8 @@ public final class ScreenshotResultOverlay {
                 case MotionEvent.ACTION_CANCEL -> {
                     session.touchDown = false;
                     cancelLongPress(session);
-                    if (session.manualSelecting) {
+                    if (session.manualSelecting || session.handleMode != HANDLE_NONE) {
+                        session.handleMode = HANDLE_NONE;
                         session.manualSelecting = false;
                         requestNoParentIntercept(tv, false);
                         tv.post(() -> showSelectionMenu(session));
@@ -247,6 +288,27 @@ public final class ScreenshotResultOverlay {
             }
             return false;
         });
+    }
+
+    private static void updateSelectionHandle(OverlaySession session, int offset) {
+        if (session == null || !session.selectionActive || session.handleMode == HANDLE_NONE) return;
+        SelectionAwareEditText tv = session.ocrText;
+        CharSequence text = tv.getText();
+        if (text == null || text.length() == 0) return;
+        int a = Math.min(tv.getSelectionStart(), tv.getSelectionEnd());
+        int b = Math.max(tv.getSelectionStart(), tv.getSelectionEnd());
+        if (a < 0 || b <= a) return;
+        int safe = clamp(offset, 0, text.length());
+        int probe = safe >= text.length() ? text.length() - 1 : safe;
+        int[] word = wordBounds(text, probe);
+
+        if (session.handleMode == HANDLE_START) {
+            int nextStart = clamp(word[0], 0, Math.max(0, b - 1));
+            applySelection(session, nextStart, b);
+        } else {
+            int nextEnd = clamp(word[1], Math.min(text.length(), a + 1), text.length());
+            applySelection(session, a, nextEnd);
+        }
     }
 
     private static void extendSelectionTo(OverlaySession session, int offset) {
@@ -278,6 +340,8 @@ public final class ScreenshotResultOverlay {
         tv.requestFocus();
         Selection.setSelection(span, a, b);
         session.selectionActive = true;
+        tv.setHandlesVisible(true);
+        tv.invalidate();
     }
 
     private static int offsetForTouch(EditText tv, float x, float y) {
@@ -354,6 +418,8 @@ public final class ScreenshotResultOverlay {
                 session.selectionAnchorStart = 0;
                 session.selectionAnchorEnd = span.length();
                 Selection.setSelection(span, 0, span.length());
+                session.ocrText.setHandlesVisible(true);
+                session.ocrText.invalidate();
                 session.ocrText.post(() -> showSelectionMenu(session));
             }
         } catch (Throwable ignored) {}
@@ -375,9 +441,12 @@ public final class ScreenshotResultOverlay {
         session.touchDown = false;
         session.manualSelecting = false;
         session.selectionActive = false;
+        session.handleMode = HANDLE_NONE;
         requestNoParentIntercept(session.ocrText, false);
         FloatActionMenu.dismiss();
         FloatMenuAnchor.clear();
+        session.ocrText.setHandlesVisible(false);
+        session.ocrText.invalidate();
         try {
             CharSequence raw = session.ocrText.getText();
             if (raw instanceof Spannable span) {
@@ -459,7 +528,7 @@ public final class ScreenshotResultOverlay {
         DiagnosticLog.i(session.app, "SCREENSHOT_RESULT", "OCR_INLINE_SHOW chars="
                 + value.length() + " blocks=" + (blocks == null ? 0 : blocks.size())
                 + " imageH=" + newImageH + " panelH=" + panelH
-                + " manualSelection=true sameWindow=true pos=center");
+                + " manualSelection=true handles=true sameWindow=true pos=center");
     }
 
     public static synchronized void dismissActive(String reason) {
@@ -526,7 +595,78 @@ public final class ScreenshotResultOverlay {
     }
 
     private static final class SelectionAwareEditText extends EditText {
-        SelectionAwareEditText(Context context) { super(context); }
+        private final Paint handlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final PointF startHandle = new PointF(Float.NaN, Float.NaN);
+        private final PointF endHandle = new PointF(Float.NaN, Float.NaN);
+        private boolean handlesVisible;
+
+        SelectionAwareEditText(Context context) {
+            super(context);
+            handlePaint.setColor(0xFF4285F4);
+            handlePaint.setStyle(Paint.Style.FILL);
+        }
+
+        void setHandlesVisible(boolean visible) {
+            if (handlesVisible == visible) return;
+            handlesVisible = visible;
+            invalidate();
+        }
+
+        int hitSelectionHandle(float x, float y) {
+            updateHandlePoints();
+            if (!handlesVisible) return HANDLE_NONE;
+            float hit = dp(getContext(), 28);
+            float hit2 = hit * hit;
+            if (!Float.isNaN(startHandle.x)) {
+                float dx = x - startHandle.x;
+                float dy = y - startHandle.y;
+                if (dx * dx + dy * dy <= hit2) return HANDLE_START;
+            }
+            if (!Float.isNaN(endHandle.x)) {
+                float dx = x - endHandle.x;
+                float dy = y - endHandle.y;
+                if (dx * dx + dy * dy <= hit2) return HANDLE_END;
+            }
+            return HANDLE_NONE;
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            if (!handlesVisible) return;
+            updateHandlePoints();
+            float stem = dp(getContext(), 7);
+            float radius = dp(getContext(), 7);
+            if (!Float.isNaN(startHandle.x)) {
+                canvas.drawLine(startHandle.x, startHandle.y - stem, startHandle.x, startHandle.y, handlePaint);
+                canvas.drawCircle(startHandle.x, startHandle.y, radius, handlePaint);
+            }
+            if (!Float.isNaN(endHandle.x)) {
+                canvas.drawLine(endHandle.x, endHandle.y - stem, endHandle.x, endHandle.y, handlePaint);
+                canvas.drawCircle(endHandle.x, endHandle.y, radius, handlePaint);
+            }
+        }
+
+        private void updateHandlePoints() {
+            startHandle.set(Float.NaN, Float.NaN);
+            endHandle.set(Float.NaN, Float.NaN);
+            if (!handlesVisible || getText() == null || length() == 0) return;
+            int a = Math.min(getSelectionStart(), getSelectionEnd());
+            int b = Math.max(getSelectionStart(), getSelectionEnd());
+            if (a < 0 || b <= a) return;
+            Layout layout = getLayout();
+            if (layout == null) return;
+
+            int startOffset = clamp(a, 0, Math.max(0, length() - 1));
+            int endProbe = clamp(Math.max(a, b - 1), 0, Math.max(0, length() - 1));
+            int startLine = layout.getLineForOffset(startOffset);
+            int endLine = layout.getLineForOffset(endProbe);
+            float startX = getTotalPaddingLeft() + layout.getPrimaryHorizontal(a) - getScrollX();
+            float endX = getTotalPaddingLeft() + layout.getPrimaryHorizontal(b) - getScrollX();
+            float startY = getTotalPaddingTop() + layout.getLineBottom(startLine) - getScrollY() + dp(getContext(), 7);
+            float endY = getTotalPaddingTop() + layout.getLineBottom(endLine) - getScrollY() + dp(getContext(), 7);
+            startHandle.set(startX, startY);
+            endHandle.set(endX, endY);
+        }
     }
 
     private static final class OverlaySession {
@@ -551,6 +691,7 @@ public final class ScreenshotResultOverlay {
         boolean selectionActive;
         int selectionAnchorStart;
         int selectionAnchorEnd;
+        int handleMode = HANDLE_NONE;
         float downX;
         float downY;
         Runnable longPressRunnable;
