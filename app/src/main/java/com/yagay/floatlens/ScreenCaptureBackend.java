@@ -11,10 +11,21 @@ final class ScreenCaptureBackend {
                         Consumer<Bitmap> ok, Consumer<Throwable> fail) {
         Context app = c.getApplicationContext();
         if (settings.accessibilityScreenshot()) {
-            captureAccessibility(app, ok, accessError -> {
+            DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "try accessibility primary");
+            captureAccessibility(app, b -> {
+                DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "accessibility success bitmap=" + size(b));
+                ok.accept(b);
+            }, accessError -> {
+                DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "accessibility failed=" + safeMessage(accessError));
                 if (settings.rootScreenshot()) {
-                    RootCapture.captureAsync(app, ok,
-                            rootError -> fail.accept(combined(accessError, rootError)));
+                    DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "fallback root");
+                    RootCapture.captureAsync(app, b -> {
+                        DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "root fallback success bitmap=" + size(b));
+                        ok.accept(b);
+                    }, rootError -> {
+                        DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "root fallback failed=" + safeMessage(rootError));
+                        fail.accept(combined(accessError, rootError));
+                    });
                 } else {
                     fail.accept(accessError);
                 }
@@ -22,10 +33,24 @@ final class ScreenCaptureBackend {
             return;
         }
         if (settings.rootScreenshot()) {
-            RootCapture.captureAsync(app, ok, fail);
+            DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "try root primary");
+            RootCapture.captureAsync(app, b -> {
+                DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "root success bitmap=" + size(b));
+                ok.accept(b);
+            }, error -> {
+                DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "root failed=" + safeMessage(error));
+                fail.accept(error);
+            });
             return;
         }
-        captureAccessibility(app, ok, fail);
+        DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "try accessibility implicit");
+        captureAccessibility(app, b -> {
+            DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "accessibility implicit success bitmap=" + size(b));
+            ok.accept(b);
+        }, error -> {
+            DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "accessibility implicit failed=" + safeMessage(error));
+            fail.accept(error);
+        });
     }
 
     private static void captureAccessibility(Context app, Consumer<Bitmap> ok,
@@ -47,6 +72,12 @@ final class ScreenCaptureBackend {
         if (t == null) return "unknown";
         String m = t.getMessage();
         return (m == null || m.isBlank()) ? t.getClass().getSimpleName() : m;
+    }
+
+    private static String size(Bitmap b) {
+        if (b == null) return "null";
+        if (b.isRecycled()) return "recycled";
+        return b.getWidth() + "x" + b.getHeight();
     }
 
     private ScreenCaptureBackend() {}
