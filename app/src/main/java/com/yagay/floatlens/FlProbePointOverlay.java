@@ -10,26 +10,16 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 
-/**
- * FV m2/g float_pen_view equivalent.
- *
- * The original APK creates a 15dp x 15dp WindowManager window (m2/g.x) and moves it immediately.
- * pointer_op_hint is a second sibling window positioned from this exact window:
- *   hint.x = pen.x + 15dp
- *   hint.y = pen.y - 20dp
- *
- * Keep these coordinates available to FvPointerOperationHintOverlay; do not derive the hint from
- * the floating owner icon or from raw touch coordinates.
- */
-public final class FvProbePointOverlay {
+/** FloatLens probe point; geometry follows the behavior observed in FV m2/g. */
+public final class FlProbePointOverlay {
     public enum State { TRACKING_RED, READY_YELLOW }
 
-    private static final float FV_PROBE_SIZE_DP = 15f;
-    private static final int FV_TRACKING_RED = 0xFFFF0000;
-    private static final int FV_READY_YELLOW = 0xFFFFFF00;
+    private static final float FL_PROBE_SIZE_DP = 15f;
+    private static final int FL_TRACKING_RED = 0xFFFF0000;
+    private static final int FL_READY_YELLOW = 0xFFFFFF00;
 
     private final Context context;
-    private final FvOverlayWindowHost windowHost;
+    private final FlOverlayWindowHost windowHost;
     private final int sizePx;
     private final ProbeView view;
     private final WindowManager.LayoutParams lp;
@@ -38,15 +28,13 @@ public final class FvProbePointOverlay {
     private int targetX, targetY;
     private State state = State.TRACKING_RED;
 
-    public FvProbePointOverlay(Context c) {
+    public FlProbePointOverlay(Context c) {
         context = c.getApplicationContext();
-        windowHost = new FvOverlayWindowHost(context);
+        windowHost = new FlOverlayWindowHost(context);
         float density = Math.max(.1f, context.getResources().getDisplayMetrics().density);
-        sizePx = Math.max(1, Math.round(FV_PROBE_SIZE_DP * density));
-
+        sizePx = Math.max(1, Math.round(FL_PROBE_SIZE_DP * density));
         view = new ProbeView(context);
         view.setState(state);
-
         lp = new WindowManager.LayoutParams(
                 sizePx,
                 sizePx,
@@ -62,12 +50,8 @@ public final class FvProbePointOverlay {
         lp.y = 0;
     }
 
-    /** Red while following/moving before FV's delayed selection state has fired. */
     public void setTracking() { setState(State.TRACKING_RED); }
-
-    /** Yellow once the move-idle/direct-selection state has fired. */
     public void setReady() { setState(State.READY_YELLOW); }
-
     public State state() { return state; }
 
     private void setState(State next) {
@@ -75,24 +59,19 @@ public final class FvProbePointOverlay {
         if (state == next) return;
         state = next;
         view.setState(next);
-        DiagnosticLog.i(context, "FV_PROBE_VIEW", "STATE " + next);
+        DiagnosticLog.i(context, "FL_PROBE_VIEW", "STATE " + next);
     }
 
-    /**
-     * Mirrors FV m2/g: x = point.x - c0/2, y = point.y - c0/2, then WindowManager is updated
-     * immediately. FV does not defer this move to the next animation frame.
-     */
     public PointF showAt(float screenX, float screenY) {
         targetX = Math.round(screenX - sizePx / 2f);
         targetY = Math.round(screenY - sizePx / 2f);
-
         if (!attached) {
             lp.x = targetX;
             lp.y = targetY;
             attached = windowHost.add(view, lp, "probe");
             if (attached) {
                 visible = true;
-                DiagnosticLog.i(context, "FV_PROBE_VIEW",
+                DiagnosticLog.i(context, "FL_PROBE_VIEW",
                         "ATTACH size=" + sizePx + " window=" + lp.x + "," + lp.y
                                 + " state=" + state
                                 + " accessibilityHost=" + windowHost.isAccessibilityHosted());
@@ -108,28 +87,22 @@ public final class FvProbePointOverlay {
                 windowHost.update(view, lp, "probe");
             }
         }
-
         float cx = targetX + sizePx / 2f;
         float cy = targetY + sizePx / 2f;
-        DiagnosticLog.i(context, "FV_PROBE_VIEW",
+        DiagnosticLog.i(context, "FL_PROBE_VIEW",
                 "MOVE centre=" + Math.round(cx) + "," + Math.round(cy)
                         + " window=" + targetX + "," + targetY + " state=" + state);
         return new PointF(cx, cy);
     }
 
-    /** Exact current m2/g.x WindowManager coordinates used by pointer_op_hint. */
     public int windowX() { return targetX; }
     public int windowY() { return targetY; }
     public int windowSizePx() { return sizePx; }
     public boolean isAttached() { return attached; }
 
-    /**
-     * m2/g.s() removes the pen window rather than parking it off-screen. Keeping the same lifecycle
-     * also preserves sibling Z-order with pointer_op_hint when selection starts again.
-     */
     public void hide() {
         close();
-        DiagnosticLog.i(context, "FV_PROBE_VIEW", "HIDE state=" + state);
+        DiagnosticLog.i(context, "FL_PROBE_VIEW", "HIDE state=" + state);
     }
 
     public void close() {
@@ -166,7 +139,7 @@ public final class FvProbePointOverlay {
         }
 
         private void updateColor() {
-            plus.setColor(state == State.READY_YELLOW ? FV_READY_YELLOW : FV_TRACKING_RED);
+            plus.setColor(state == State.READY_YELLOW ? FL_READY_YELLOW : FL_TRACKING_RED);
         }
 
         @Override protected void onDraw(Canvas canvas) {

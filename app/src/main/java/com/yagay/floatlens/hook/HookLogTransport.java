@@ -8,8 +8,8 @@ import android.os.SystemClock;
 import java.util.ArrayDeque;
 
 final class HookLogTransport {
-    static final String ACTION_LOG="com.yagay.floatlens.FV_HOOK_LOG";
-    static final String ACTION_CMD="com.yagay.floatlens.FV_HOOK_COMMAND";
+    static final String ACTION_LOG="com.yagay.floatlens.FL_HOOK_LOG";
+    static final String ACTION_CMD="com.yagay.floatlens.FL_HOOK_COMMAND";
     static final String TARGET="com.yagay.floatlens";
     private static final Object LOCK=new Object();
     private static final ArrayDeque<String> Q=new ArrayDeque<>();

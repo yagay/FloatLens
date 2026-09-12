@@ -19,23 +19,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Clean-room equivalent of FV's notification/system-panel state and close path.
- *
- * Re-verified FV behaviour:
- *  - FooAccessibilityService.B0() detects an expanded SystemUI TYPE_SYSTEM window;
- *  - FooViewService keeps that state continuously ("notification is expand/collapse");
- *  - capture/circle code waits until the frozen/candidate result UI is ready;
- *  - m5/w2.n() broadcasts ACTION_CLOSE_SYSTEM_DIALOGS and then still invokes its callback;
- *  - on Android 12+ the callback reaches performGlobalAction(15), i.e.
- *    GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE;
- *  - FV's ShadowActivity request=21 starts a transient Activity and finishes it 300 ms later.
- *
- * FV itself targets SDK 29, while FloatLens intentionally stays on a modern target SDK. Android 12+
- * rejects ACTION_CLOSE_SYSTEM_DIALOGS for modern targets, so FloatLens keeps the same high-level FV
- * sequence but uses the supported accessibility action first, verifies the live shade state, then
- * falls back to an FV-style transient Activity. Root remains the final optional fallback only.
+ * FloatLens system-panel state and close path. The sequence is based on the behavior verified in FV,
+ * while modern-target adaptations remain explicit.
  */
-public final class FvSystemPanelController {
+public final class FlSystemPanelController {
     private static final ExecutorService ROOT_IO = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "FloatLens-shade-collapse");
         t.setDaemon(true);
@@ -50,9 +37,8 @@ public final class FvSystemPanelController {
     private static volatile long cachedShadeUpdatedAt;
     private static volatile Boolean cachedMiui;
 
-    private FvSystemPanelController() {}
+    private FlSystemPanelController() {}
 
-    /** Immutable-per-capture token with one-shot result delivery, matching FV's capture -> candidate flow. */
     public static final class CaptureState {
         private final boolean expandedAtCapture;
         private final long startedAt;
@@ -71,64 +57,49 @@ public final class FvSystemPanelController {
         private boolean consume() { return consumed.compareAndSet(false, true); }
     }
 
-    /**
-     * Called by LensAccessibilityService whenever its environment snapshot changes. This is the
-     * FloatLens equivalent of FV's service-level j0 notification-expanded state.
-     */
     public static void onAccessibilityEnvironment(Context context, EnvironmentState state) {
         if (context == null || state == null) return;
         updateCachedShade(context.getApplicationContext(), state.notificationExpanded(), "accessibility_env");
     }
 
-    /** Accessibility service disappeared; keep the last value only as history, not as authoritative state. */
     public static void onAccessibilityDisconnected(Context context) {
         boolean wasKnown = cachedShadeKnown;
         boolean wasExpanded = cachedShadeExpanded;
         cachedShadeKnown = false;
         cachedShadeUpdatedAt = SystemClock.uptimeMillis();
         if (context != null && wasKnown) {
-            DiagnosticLog.i(context.getApplicationContext(), "FV_SHADE",
+            DiagnosticLog.i(context.getApplicationContext(), "FL_SHADE",
                     "accessibility disconnected lastExpanded=" + wasExpanded);
         }
     }
 
-    /** Start one screenshot/circle/View operation and remember the notification state at its boundary. */
     public static CaptureState beginCapture(Context context, String reason) {
         Context app = context.getApplicationContext();
         boolean expanded = notificationShadeExpanded();
         CaptureState state = new CaptureState(expanded, SystemClock.uptimeMillis(), reason);
-        DiagnosticLog.i(app, "FV_SHADE", "capture begin reason=" + state.startReason()
+        DiagnosticLog.i(app, "FL_SHADE", "capture begin reason=" + state.startReason()
                 + " expanded=" + expanded + " cachedKnown=" + cachedShadeKnown);
         return state;
     }
 
-    /**
-     * Candidate/frozen/result UI callback. This is the central equivalent of FV's shared e0()/
-     * onCircelCandidateDialogShown path. It is intentionally one-shot per CaptureState.
-     */
     public static void onResultReady(Context context, CaptureState state, String reason) {
         if (context == null || state == null || !state.consume()) return;
         Context app = context.getApplicationContext();
-
-        // FV keeps a live service-level flag. Preserve the capture snapshot, but also honor a newer
-        // live expanded state that appeared while capture/result UI was being prepared.
         boolean liveExpanded = cachedShadeKnown && cachedShadeExpanded;
         boolean miuiCompat = isMiuiDevice();
         boolean shouldDismiss = state.expandedAtCapture() || liveExpanded || miuiCompat;
         long elapsed = Math.max(0L, SystemClock.uptimeMillis() - state.startedAt());
 
-        DiagnosticLog.i(app, "FV_SHADE", "result ready reason=" + reason
+        DiagnosticLog.i(app, "FL_SHADE", "result ready reason=" + reason
                 + " start=" + state.startReason()
                 + " captureExpanded=" + state.expandedAtCapture()
                 + " liveExpanded=" + liveExpanded
                 + " miuiCompat=" + miuiCompat
                 + " elapsedMs=" + elapsed);
-
         if (!shouldDismiss) return;
         dismissSystemPanel(context, reason == null ? state.startReason() : reason);
     }
 
-    /** FV B0()-style SystemUI window test, with the service environment and cached state as fallbacks. */
     public static boolean notificationShadeExpanded() {
         LensAccessibilityService service = LensAccessibilityService.get();
         Boolean live = probeNotificationShadeExpanded(service);
@@ -158,14 +129,14 @@ public final class FvSystemPanelController {
                     Rect bounds = new Rect();
                     try { window.getBoundsInScreen(bounds); } catch (Throwable ignored) {}
                     if (!bounds.isEmpty() && bounds.height() >= screenHeight / 2) {
-                        DiagnosticLog.i(service, "FV_SHADE", "expanded via TYPE_SYSTEM bounds="
+                        DiagnosticLog.i(service, "FL_SHADE", "expanded via TYPE_SYSTEM bounds="
                                 + bounds.toShortString());
                         return Boolean.TRUE;
                     }
                 }
             }
         } catch (Throwable t) {
-            DiagnosticLog.i(service, "FV_SHADE", "window check failed=" + t);
+            DiagnosticLog.i(service, "FL_SHADE", "window check failed=" + t);
         }
 
         try {
@@ -181,7 +152,7 @@ public final class FvSystemPanelController {
         cachedShadeKnown = true;
         cachedShadeUpdatedAt = SystemClock.uptimeMillis();
         if (changed && app != null) {
-            DiagnosticLog.i(app, "FV_SHADE", expanded
+            DiagnosticLog.i(app, "FL_SHADE", expanded
                     ? "notification is expand source=" + source
                     : "notification is collapse source=" + source);
         }
@@ -192,19 +163,15 @@ public final class FvSystemPanelController {
         MAIN.post(() -> {
             int targetSdk = app.getApplicationInfo().targetSdkVersion;
             boolean broadcast = false;
-
-            // FV targets SDK 29 and can still benefit from the compatibility exception. FloatLens
-            // targets modern Android, where this broadcast is guaranteed to be rejected, so avoid
-            // intentionally throwing SecurityException while retaining the FV order for old targets.
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || targetSdk < Build.VERSION_CODES.S) {
                 try {
                     app.sendBroadcast(new Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS));
                     broadcast = true;
                 } catch (Throwable t) {
-                    DiagnosticLog.i(app, "FV_SHADE", "CLOSE_SYSTEM_DIALOGS failed=" + t);
+                    DiagnosticLog.i(app, "FL_SHADE", "CLOSE_SYSTEM_DIALOGS failed=" + t);
                 }
             } else {
-                DiagnosticLog.i(app, "FV_SHADE", "skip CLOSE_SYSTEM_DIALOGS targetSdk=" + targetSdk);
+                DiagnosticLog.i(app, "FL_SHADE", "skip CLOSE_SYSTEM_DIALOGS targetSdk=" + targetSdk);
             }
 
             LensAccessibilityService service = LensAccessibilityService.get();
@@ -214,30 +181,26 @@ public final class FvSystemPanelController {
                 try {
                     global = service.global(AccessibilityService.GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE);
                 } catch (Throwable t) {
-                    DiagnosticLog.i(app, "FV_SHADE", "dismiss global action failed=" + t);
+                    DiagnosticLog.i(app, "FL_SHADE", "dismiss global action failed=" + t);
                 }
             }
 
-            DiagnosticLog.i(app, "FV_SHADE", "dismiss result-ready reason=" + reason
+            DiagnosticLog.i(app, "FL_SHADE", "dismiss result-ready reason=" + reason
                     + " broadcast=" + broadcast
                     + " action15Available=" + actions.hasDismissShade
                     + " global15=" + global
                     + " systemActions=" + actions.ids
                     + " cachedAgeMs=" + Math.max(0L, SystemClock.uptimeMillis() - cachedShadeUpdatedAt));
-
             MAIN.postDelayed(() -> verifyAfterPrimary(caller, app, reason), PRIMARY_RECHECK_MS);
         });
     }
 
     private static void verifyAfterPrimary(Context caller, Context app, String reason) {
         boolean expanded = notificationShadeExpanded();
-        DiagnosticLog.i(app, "FV_SHADE", "primary recheck reason=" + reason
+        DiagnosticLog.i(app, "FL_SHADE", "primary recheck reason=" + reason
                 + " expanded=" + expanded + " delayMs=" + PRIMARY_RECHECK_MS);
         if (!expanded) return;
 
-        // FV ShadowActivity request=21 is a transient Activity that closes itself after 300 ms.
-        // Use the same shape only after the supported accessibility action failed to collapse the
-        // live shade on this ROM.
         boolean launched = ShadeDismissActivity.launch(caller, reason);
         if (!launched) {
             collapseWithRoot(app, reason + ":shadow_launch_failed");
@@ -246,7 +209,7 @@ public final class FvSystemPanelController {
 
         MAIN.postDelayed(() -> {
             boolean stillExpanded = notificationShadeExpanded();
-            DiagnosticLog.i(app, "FV_SHADE", "shadow recheck reason=" + reason
+            DiagnosticLog.i(app, "FL_SHADE", "shadow recheck reason=" + reason
                     + " expanded=" + stillExpanded + " delayMs=" + SHADOW_RECHECK_MS);
             if (stillExpanded) collapseWithRoot(app, reason + ":shadow_still_expanded");
         }, SHADOW_RECHECK_MS);
@@ -270,7 +233,7 @@ public final class FvSystemPanelController {
             ids.append(']');
             return new SystemActions(has15, ids.toString());
         } catch (Throwable t) {
-            DiagnosticLog.i(service, "FV_SHADE", "getSystemActions failed=" + t);
+            DiagnosticLog.i(service, "FL_SHADE", "getSystemActions failed=" + t);
             return new SystemActions(false, "[error]");
         }
     }
@@ -284,10 +247,6 @@ public final class FvSystemPanelController {
         }
     }
 
-    /**
-     * Compatibility wrappers for older call sites. New capture code should use beginCapture() and
-     * onResultReady() so all operations share the same one-shot state machine.
-     */
     @Deprecated
     public static void dismissAfterCapture(Context context, boolean wasExpanded, String reason) {
         CaptureState state = new CaptureState(wasExpanded, SystemClock.uptimeMillis(), "legacy");
@@ -297,7 +256,6 @@ public final class FvSystemPanelController {
     private static boolean isMiuiDevice() {
         Boolean cached = cachedMiui;
         if (cached != null) return cached;
-
         boolean miui = !systemProperty("ro.miui.ui.version.code").isEmpty()
                 || !systemProperty("ro.miui.ui.version.name").isEmpty()
                 || !systemProperty("ro.miui.internal.storage").isEmpty();
@@ -335,7 +293,7 @@ public final class FvSystemPanelController {
             }
             final int exitCode = code;
             final String failure = error;
-            MAIN.post(() -> DiagnosticLog.i(app, "FV_SHADE",
+            MAIN.post(() -> DiagnosticLog.i(app, "FL_SHADE",
                     "root collapse reason=" + reason + " exit=" + exitCode
                             + (failure.isEmpty() ? "" : " error=" + failure)));
         });

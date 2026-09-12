@@ -56,8 +56,8 @@
         <service android:name=".FloatService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Persistent user-controlled floating gesture button" />
         </service>
-        <receiver android:name=".FvInspectorReceiver" android:exported="true">
-            <intent-filter><action android:name="com.yagay.floatlens.FV_HOOK_LOG" /></intent-filter>
+        <receiver android:name=".FlInspectorReceiver" android:exported="true">
+            <intent-filter><action android:name="com.yagay.floatlens.FL_HOOK_LOG" /></intent-filter>
         </receiver>
         <service android:name=".LensAccessibilityService" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="false">
             <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>

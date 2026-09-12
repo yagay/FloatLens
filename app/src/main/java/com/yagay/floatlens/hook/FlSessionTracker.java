@@ -6,8 +6,8 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 
-/** Runtime-only summarizer for fooView FV touch sessions with nested Circle support. */
-final class FvSessionTracker {
+/** Runtime-only summarizer for fooView touch sessions with nested Circle support. */
+final class FlSessionTracker {
     private static final Object LOCK = new Object();
     private static final String BUILD = "2.2.6-tracker-1";
     private static final Deque<Session> sessions = new ArrayDeque<>();
@@ -48,7 +48,7 @@ final class FvSessionTracker {
 
     static void onCode(int code, String source) {
         synchronized (LOCK) {
-            HookLogTransport.log("FV_CODE", "source=" + source + " code=" + code + " label=" + label(code));
+            HookLogTransport.log("FL_CODE", "source=" + source + " code=" + code + " label=" + label(code));
             Session s = sessions.peekLast();
             if (s == null) return;
             if ("b".equals(source)) s.bCode = code;
@@ -143,5 +143,5 @@ final class FvSessionTracker {
         }
     }
 
-    private FvSessionTracker() {}
+    private FlSessionTracker() {}
 }
