@@ -10,8 +10,10 @@ import android.view.MotionEvent;
 /**
  * FV-style same-touch selection engine.
  *
- * The Accessibility tree is cached before FloatLens adds its own probe/highlight windows. MOVE then
- * updates the red/yellow probe and performs only cached rectangle hit testing.
+ * FV keeps the active FloatIconView movement path lightweight: MOVE updates the owner window and
+ * probe immediately, while expensive target/View preparation is entered only after the pointer has
+ * dwelled long enough to trigger DIRECT selection. FloatLens follows that ordering here so video
+ * SurfaceView/TextureView accessibility trees can never stall ordinary icon dragging.
  *
  * Important: FV has two different operation-hint systems. The direct-selection hint that sits next
  * to the + probe belongs to m2/g.pointer_op_hint. It is NOT FooViewService.D4()'s 24dp owner-icon
@@ -77,15 +79,17 @@ public final class ViewSelectionEngine {
     }
 
     /**
-     * Moving state: cache the target App's full Accessibility tree BEFORE attaching our own probe,
-     * then show the RED exact-point probe and update the cached View highlight.
+     * Free-moving state. Match FV FooViewService$c3: MOVE must stay cheap and never synchronously
+     * traverse the target app's Accessibility tree. The icon owner window is already updated by
+     * FloatIconView/FloatService before this method runs; here we only move the small probe.
+     *
+     * The View tree is prepared later by activateDirect(), which is reached only after FV's ~400ms
+     * move-idle dwell timer fires. This is especially important over video players, where querying a
+     * SurfaceView/TextureView hierarchy can block Accessibility binder calls long enough to make the
+     * floating icon appear frozen.
      */
     public PointF showProbe(float rawX, float rawY) {
         PointF transformed = pointTransformer.transformRaw(rawX, rawY);
-
-        // Important for fullscreen/root Views: do not let FloatLens' own probe/highlight overlay
-        // become the active accessibility window before the initial complete-tree snapshot.
-        if (accessibility != null) ensureHoverOverlay();
 
         ensureProbe();
         if (probeOverlay != null) probeOverlay.setTracking();
@@ -96,6 +100,8 @@ public final class ViewSelectionEngine {
         selectionX = shown.x;
         selectionY = shown.y;
 
+        // Deliberately no ensureHoverOverlay()/AccessibilityCandidateCollector.collect() here.
+        // FV's MOVE path updates position/probe only; target preparation belongs to DIRECT dwell.
         if (overlay != null) overlay.update(selectionX, selectionY);
         return shown;
     }
@@ -107,7 +113,7 @@ public final class ViewSelectionEngine {
         pointerHintOverlay = null;
     }
 
-    /** Delayed move-idle state: keep the cached/highlighted target and enter DIRECT. */
+    /** Delayed move-idle state: prepare target Views, keep the current point and enter DIRECT. */
     public boolean activateDirect(float rawX, float rawY) {
         if (accessibility == null) return false;
         if (state == State.DIRECT) {
@@ -115,6 +121,8 @@ public final class ViewSelectionEngine {
             return true;
         }
 
+        // This is intentionally the first place that may traverse the Accessibility hierarchy.
+        // FloatIconView only reaches it after its ~400ms dwell timer, never during free icon motion.
         ensureHoverOverlay();
         if (overlay == null || !overlay.available()) {
             if (overlay != null) overlay.cancel();
@@ -306,8 +314,8 @@ public final class ViewSelectionEngine {
         if (!next.available()) return;
         next.begin();
         overlay = next;
-        DiagnosticLog.i(context, "FV_SELECT", "HOVER_ARM cache=true beforeProbe="
-                + (probeOverlay == null));
+        DiagnosticLog.i(context, "FV_SELECT", "HOVER_ARM cache=true afterDwell=true probeAttached="
+                + (probeOverlay != null));
     }
 
     private void closeVisuals() {
