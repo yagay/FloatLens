@@ -16,9 +16,9 @@ public final class CircleSelectController {
         long gen = ++generation;
         CircleSelectOverlay.dismissActive("restart");
 
-        // Snapshot the live notification shade before capture. The bitmap keeps that exact frame,
-        // but on modern OxygenOS we must collapse the live shade before attaching the focusable
-        // Circle Select TYPE_APPLICATION_OVERLAY or the transient Activity fallback is blocked.
+        // Match the region-screenshot path: capture the exact visible frame first, then hand the
+        // frozen bitmap to a real Activity. ResultReadyCoordinator closes the live notification shade
+        // only after that Activity has drawn its first frame. The interactive overlay attaches later.
         final FvSystemPanelController.CaptureState shadeState = FvSystemPanelController.beginCapture(
                 app, "circle_select");
 
@@ -42,51 +42,19 @@ public final class CircleSelectController {
                 return;
             }
 
-            CircleShadeCoordinator.prepare(app, shadeState.expandedAtCapture(), collapsed -> {
-                synchronized (CircleSelectController.class) {
-                    if (gen != generation) {
-                        if (!bitmap.isRecycled()) bitmap.recycle();
-                        return;
-                    }
-                }
-                DiagnosticLog.i(app, "CIRCLE_SELECT", "pre-candidate shade collapsed=" + collapsed);
-                showCandidate(app, bitmap, service, shadeState, collapsed);
-            });
+            boolean started = CircleSelectActivity.show(app, bitmap, shadeState);
+            DiagnosticLog.i(app, "CIRCLE_SELECT", "activity host started=" + started
+                    + " bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight());
+            if (!started) {
+                if (!bitmap.isRecycled()) bitmap.recycle();
+                restore(service, "activity_start_failed");
+                Toast.makeText(app, "圈画识别启动失败", Toast.LENGTH_SHORT).show();
+            }
         }, error -> {
             restore(service, "capture_failed");
             Toast.makeText(app, "圈画识别截图失败: " + safe(error), Toast.LENGTH_LONG).show();
             DiagnosticLog.i(app, "CIRCLE_SELECT", "capture failed=" + safe(error));
         }), 90L);
-    }
-
-    private static void showCandidate(Context app, Bitmap bitmap, FloatService service,
-                                      FvSystemPanelController.CaptureState shadeState,
-                                      boolean shadeAlreadyCollapsed) {
-        if (bitmap == null || bitmap.isRecycled()) {
-            restore(service, "invalid_candidate_bitmap");
-            return;
-        }
-
-        boolean shown = CircleSelectOverlay.show(app, bitmap, () -> restore(service, "closed"));
-        if (shown) {
-            // Normal modern-OxygenOS path: the live shade was collapsed before the focusable overlay
-            // attached, while the frozen screenshot still contains the original notification shade.
-            // If the pre-candidate compatibility step failed, retain the shared FV fallback path so
-            // Root-capable devices still get one final chance rather than silently regressing.
-            if (!shadeAlreadyCollapsed && FvSystemPanelController.notificationShadeExpanded()) {
-                DiagnosticLog.i(app, "CIRCLE_SELECT",
-                        "pre-candidate collapse failed; retry shared result-ready path");
-                FvSystemPanelController.onResultReady(
-                        app, shadeState, "circle_candidate_shown_after_preclose_failed");
-            } else {
-                DiagnosticLog.i(app, "CIRCLE_SELECT",
-                        "candidate shown after live shade collapse; no second dismiss needed");
-            }
-        } else {
-            if (!bitmap.isRecycled()) bitmap.recycle();
-            restore(service, "overlay_failed");
-            Toast.makeText(app, "圈画识别启动失败", Toast.LENGTH_SHORT).show();
-        }
     }
 
     private static void restore(FloatService service, String reason) {
