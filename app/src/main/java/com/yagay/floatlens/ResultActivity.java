@@ -14,8 +14,8 @@ import java.util.List;
 /**
  * Transparent native-selection host for the one UnifiedResultDialogFragment.
  *
- * This Activity no longer owns result UI, OCR state or popup geometry. Every screenshot / View /
- * OCR result is rendered by one DialogFragment + one UnifiedResultPanel implementation.
+ * This Activity no longer owns result UI, OCR state, popup geometry or result-ready timing. Every
+ * screenshot / View / OCR result is rendered by one DialogFragment + one UnifiedResultPanel.
  */
 public final class ResultActivity extends AppCompatActivity {
     private static final String DIALOG_TAG = "floatlens_result_dialog";
@@ -67,11 +67,6 @@ public final class ResultActivity extends AppCompatActivity {
         super.onNewIntent(intent);
         setIntent(intent);
         if (!acceptIntent(intent, true)) finishNoAnim();
-    }
-
-    @Override protected void onResume() {
-        super.onResume();
-        ResultReadyCoordinator.onResultActivityResumed(this);
     }
 
     private boolean acceptIntent(Intent intent, boolean reuse) {
