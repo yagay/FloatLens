@@ -275,7 +275,7 @@ public final class CircleSelectOverlay {
                         int handle = hitSelectionHandle(x, y);
                         if (handle != MODE_NONE) {
                             mode = handle;
-                            showMagnifier(x, y);
+                            showSelectionMagnifier();
                             DiagnosticLog.i(context, "CIRCLE_TEXT", "handle_down mode=" + mode);
                             return true;
                         }
@@ -307,7 +307,7 @@ public final class CircleSelectOverlay {
                             updateSelectionEndpoint(hit);
                             invalidate();
                         }
-                        if (mode == MODE_START_HANDLE || mode == MODE_END_HANDLE) showMagnifier(x, y);
+                        if (mode == MODE_START_HANDLE || mode == MODE_END_HANDLE) showSelectionMagnifier();
                         return true;
                     }
                     if (mode == MODE_CIRCLE) {
@@ -577,14 +577,35 @@ public final class CircleSelectOverlay {
             return Bitmap.createBitmap(screenshot, left, top, w, h);
         }
 
-        /** Use Android's default Magnifier configuration, matching ResultActivity's native
-         * selectable EditText instead of imposing a separate FloatLens lens size/zoom/style. */
-        private void showMagnifier(float x, float y) {
+        /**
+         * Match framework text-selection semantics: the finger controls the handle, but the
+         * magnifier samples the actual selection boundary inside the current OCR Symbol. This is
+         * the same separation Android's TextView.Editor uses for native selectable text.
+         */
+        private void showSelectionMagnifier() {
             if (closed || getWidth() <= 0 || getHeight() <= 0 || !isAttachedToWindow()) return;
+            int index;
+            if (mode == MODE_START_HANDLE) index = startIndex;
+            else if (mode == MODE_END_HANDLE) index = endIndex;
+            else return;
+            if (index < 0 || index >= words.size()) return;
+
+            RectF symbol = toViewRect(words.get(index).bounds());
+            if (symbol.isEmpty()) return;
+
+            // A logical endpoint swaps visual sides when the selection crosses over the other end.
+            // start<=end: start is the left edge and end is the right edge.
+            // start>end : start is the right edge and end is the left edge.
+            boolean rightEdge = mode == MODE_START_HANDLE
+                    ? startIndex > endIndex
+                    : startIndex <= endIndex;
+            float maxX = Math.max(0f, getWidth() - 1f);
+            float maxY = Math.max(0f, getHeight() - 1f);
+            float sourceX = Math.max(0f, Math.min(maxX, rightEdge ? symbol.right : symbol.left));
+            float sourceY = Math.max(0f, Math.min(maxY, symbol.centerY()));
+
             try {
                 if (magnifier == null) magnifier = new Magnifier(this);
-                float sourceX = Math.max(0f, Math.min(getWidth(), x));
-                float sourceY = Math.max(0f, Math.min(getHeight(), y));
                 magnifier.show(sourceX, sourceY);
             } catch (Throwable t) {
                 DiagnosticLog.i(context, "CIRCLE_MAGNIFIER", "show failed=" + safe(t));
