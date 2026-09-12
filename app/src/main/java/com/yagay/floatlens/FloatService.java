@@ -23,7 +23,6 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private boolean manualHidden,screenshotHidden,appHidden,lockHidden,fullscreenHidden;
     private boolean imeVisible,notificationExpanded,statusBarVisible=true;
     private boolean positionMoveArmed;
-    private boolean primaryMoveUpdatePosted,secondaryMoveUpdatePosted;
     private String topPackage=""; private int imeTopPx; private Integer imeRestoreY;
     private float lastActionX,lastActionY;
     public static FloatService get(){return instance;}
@@ -42,7 +41,6 @@ public class FloatService extends Service implements android.content.SharedPrefe
         final int[] mirrorOrigin=new int[2];
         final boolean[] originReady={false};
         final boolean[] mirrorOriginReady={false};
-        final int[] directWindow={0,0,0,0};
         final boolean[] directExpanded={false};
         final int[] otherVisibility={View.VISIBLE};
         return new FloatIconView(this,new FloatIconView.Callback(){
@@ -54,15 +52,16 @@ public class FloatService extends Service implements android.content.SharedPrefe
                 DiagnosticLog.i(FloatService.this,"POSITION","fv follow origin="+origin[0]+","+origin[1]+" moveMode="+positionMoveArmed);
             }
             @Override public void onMove(int dxFromDown,int dyFromDown){
-                // FloatIconView supplies absolute displacement from ACTION_DOWN. Match FV c0():
-                // target = start Window position + currentRaw - downRaw. Never integrate frame deltas.
+                // FV FloatIconView.c0() applies every MOVE to WindowManager immediately. D4(),
+                // which positions the screenshot/View/text operation hint, runs only after this
+                // owner-window update. Do not defer/coalesce this update to the next animation frame.
                 if(!originReady[0]){origin[0]=lp.x;origin[1]=lp.y;originReady[0]=true;}
                 lp.x=origin[0]+dxFromDown;
                 lp.y=origin[1]+dyFromDown;
-                scheduleMoveUpdate(mirrored?secondary:primary,lp);
+                safeUpdate(mirrored?secondary:primary,lp);
                 if(!mirrored&&secondary!=null&&secondaryLp!=null){
                     secondaryLp.y=(mirrorOriginReady[0]?mirrorOrigin[1]:origin[1])+dyFromDown;
-                    scheduleMoveUpdate(secondary,secondaryLp);
+                    safeUpdate(secondary,secondaryLp);
                 }
             }
             @Override public void onRelease(boolean moved){
@@ -172,23 +171,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
     @Override public void onSharedPreferenceChanged(android.content.SharedPreferences p,String key){refreshAppearance();}
     @Override public void onConfigurationChanged(Configuration c){persistPosition();super.onConfigurationChanged(c);imeRestoreY=null;removeIcons();fs=new FloatSettings(this);show();}
     private void registerScreenReceiver(){screenReceiver=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){updateLockVisibility();}};IntentFilter f=new IntentFilter();f.addAction(Intent.ACTION_SCREEN_OFF);f.addAction(Intent.ACTION_SCREEN_ON);f.addAction(Intent.ACTION_USER_PRESENT);if(Build.VERSION.SDK_INT>=33)registerReceiver(screenReceiver,f,Context.RECEIVER_NOT_EXPORTED);else registerReceiver(screenReceiver,f);}
-    private void removeIcons(){primaryMoveUpdatePosted=secondaryMoveUpdatePosted=false;trail.end();removeWakeViews();if(primary!=null)try{wm.removeView(primary);}catch(Throwable ignored){}if(secondary!=null)try{wm.removeView(secondary);}catch(Throwable ignored){}primary=secondary=null;primaryLp=secondaryLp=null;}
-    private void scheduleMoveUpdate(View v,WindowManager.LayoutParams lp){
-        if(v==null)return;
-        if(v==primary){
-            if(primaryMoveUpdatePosted)return;
-            primaryMoveUpdatePosted=true;
-            v.postOnAnimation(()->{primaryMoveUpdatePosted=false;if(v==primary)safeUpdate(v,lp);});
-            return;
-        }
-        if(v==secondary){
-            if(secondaryMoveUpdatePosted)return;
-            secondaryMoveUpdatePosted=true;
-            v.postOnAnimation(()->{secondaryMoveUpdatePosted=false;if(v==secondary)safeUpdate(v,lp);});
-            return;
-        }
-        safeUpdate(v,lp);
-    }
+    private void removeIcons(){trail.end();removeWakeViews();if(primary!=null)try{wm.removeView(primary);}catch(Throwable ignored){}if(secondary!=null)try{wm.removeView(secondary);}catch(Throwable ignored){}primary=secondary=null;primaryLp=secondaryLp=null;}
     private void safeUpdate(View v,WindowManager.LayoutParams lp){if(v==null)return;try{wm.updateViewLayout(v,lp);}catch(Throwable ignored){}}
     @Override public void onDestroy(){persistPosition();if(circleState!=null)circleState.finish("service_destroy");removeIcons();try{fs.prefs().unregisterOnSharedPreferenceChangeListener(this);}catch(Throwable ignored){}if(screenReceiver!=null)try{unregisterReceiver(screenReceiver);}catch(Throwable ignored){}if(instance==this)instance=null;super.onDestroy();}
     @Override public IBinder onBind(Intent i){return null;}
