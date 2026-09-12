@@ -73,7 +73,8 @@ final class ResultSession {
     boolean hasText() { return !displayText().isBlank(); }
     boolean canOcr() { return hasImage(); }
     boolean canSave() { return hasImage(); }
-    boolean canCopy() { return hasText(); }
+    /** Copy means text when text exists, otherwise the current bitmap. */
+    boolean canCopy() { return hasText() || hasImage(); }
 
     boolean showImage(FloatSettings settings) {
         if (!hasImage()) return false;
