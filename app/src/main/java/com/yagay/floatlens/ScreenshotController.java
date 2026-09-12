@@ -21,10 +21,19 @@ public final class ScreenshotController {
         final FvSystemPanelController.CaptureState shadeState = FvSystemPanelController.beginCapture(
                 app, region ? "screenshot_region" : "screenshot_full");
         getBitmap(app, b -> {
-            if (region) RegionOverlay.show(app, b, false);
-            else save(app, b);
-            FvSystemPanelController.onResultReady(
-                    app, shadeState, region ? "region_overlay_shown" : "screenshot_saved");
+            try {
+                if (region) RegionOverlay.show(app, b, false);
+                else save(app, b);
+                FvSystemPanelController.onResultReady(
+                        app, shadeState, region ? "region_overlay_shown" : "screenshot_saved");
+                DiagnosticLog.i(app, "SCREENSHOT_FLOW", "full result region=" + region
+                        + " bitmap=" + bitmapSize(b));
+            } catch (Throwable t) {
+                DiagnosticLog.i(app, "SCREENSHOT_FLOW", "full result failed region=" + region
+                        + " error=" + ScreenCaptureBackend.safeMessage(t));
+                Toast.makeText(app, region ? "区域选择器启动失败" : "截图结果处理失败",
+                        Toast.LENGTH_LONG).show();
+            }
         });
     }
 
@@ -33,8 +42,14 @@ public final class ScreenshotController {
         final FvSystemPanelController.CaptureState shadeState = FvSystemPanelController.beginCapture(
                 app, "ocr_region_capture");
         getBitmap(app, b -> {
-            RegionOverlay.show(app, b, true);
-            FvSystemPanelController.onResultReady(app, shadeState, "ocr_region_overlay_shown");
+            try {
+                RegionOverlay.show(app, b, true);
+                FvSystemPanelController.onResultReady(app, shadeState, "ocr_region_overlay_shown");
+            } catch (Throwable t) {
+                DiagnosticLog.i(app, "SCREENSHOT_FLOW", "ocr region result failed error="
+                        + ScreenCaptureBackend.safeMessage(t));
+                Toast.makeText(app, "OCR 区域选择器启动失败", Toast.LENGTH_LONG).show();
+            }
         });
     }
 
@@ -51,14 +66,24 @@ public final class ScreenshotController {
         FloatSettings fs = new FloatSettings(app);
         ScreenshotCaptureSession.capture(app, fs, raw -> {
             if (raw == null || raw.isRecycled()) {
+                DiagnosticLog.i(app, "SCREENSHOT_CAPTURE", "region editor invalid bitmap");
                 Toast.makeText(app, "区域截图失败: 截图无效", Toast.LENGTH_LONG).show();
                 return;
             }
-            DiagnosticLog.i(app, "REGION_EDIT", "open screenshot=" + raw.getWidth() + "x" + raw.getHeight());
-            EditableRegionOverlay.show(app, raw);
-            FvSystemPanelController.onResultReady(app, shadeState, "editable_region_overlay_shown");
-        }, t -> Toast.makeText(app,
-                "区域截图失败: " + ScreenCaptureBackend.safeMessage(t), Toast.LENGTH_LONG).show());
+            try {
+                DiagnosticLog.i(app, "REGION_EDIT", "open screenshot=" + bitmapSize(raw));
+                EditableRegionOverlay.show(app, raw);
+                FvSystemPanelController.onResultReady(app, shadeState, "editable_region_overlay_shown");
+            } catch (Throwable t) {
+                DiagnosticLog.i(app, "REGION_EDIT", "open failed=" + ScreenCaptureBackend.safeMessage(t));
+                Toast.makeText(app, "区域编辑器启动失败", Toast.LENGTH_LONG).show();
+            }
+        }, t -> {
+            DiagnosticLog.i(app, "SCREENSHOT_CAPTURE", "region editor backend failed="
+                    + ScreenCaptureBackend.safeMessage(t));
+            Toast.makeText(app,
+                    "区域截图失败: " + ScreenCaptureBackend.safeMessage(t), Toast.LENGTH_LONG).show();
+        });
     }
 
     public static void captureBoundsForOcr(Context c, Rect screenBounds) {
@@ -71,9 +96,9 @@ public final class ScreenshotController {
                 app, "view_ocr_capture");
         Rect anchor = new Rect(screenBounds);
         captureBounds(app, anchor, crop -> {
-                    OcrEngine.recognize(app, crop, anchor);
-                    FvSystemPanelController.onResultReady(app, shadeState, "view_ocr_capture_ready");
-                }, "View OCR 失败，改用自由圈选", true);
+            OcrEngine.recognize(app, crop, anchor);
+            FvSystemPanelController.onResultReady(app, shadeState, "view_ocr_capture_ready");
+        }, "View OCR", true);
     }
 
     public static void captureBoundsForRegion(Context c, Rect screenBounds) {
@@ -83,7 +108,7 @@ public final class ScreenshotController {
                 app, "fv_region_capture");
         Rect bounds = new Rect(screenBounds);
         captureBounds(app, bounds, crop -> {
-            DiagnosticLog.i(app, "FV_REGION_CAPTURE", "crop=" + crop.getWidth() + "x" + crop.getHeight()
+            DiagnosticLog.i(app, "FV_REGION_CAPTURE", "crop=" + bitmapSize(crop)
                     + " bounds=" + bounds);
             boolean shown = ResultSurfaceRouter.showCapturedScreenshot(app, crop, bounds, shadeState);
             DiagnosticLog.i(app, "FV_REGION_CAPTURE", "result shown=" + shown);
@@ -93,7 +118,7 @@ public final class ScreenshotController {
                 save(app, crop);
                 FvSystemPanelController.onResultReady(app, shadeState, "fv_region_saved_fallback");
             }
-        }, "区域截图失败", false);
+        }, "区域截图", false);
     }
 
     public static void captureBoundsForViewCandidate(Context c, Rect screenBounds,
@@ -105,7 +130,7 @@ public final class ScreenshotController {
         Rect bounds = new Rect(screenBounds);
         captureBounds(app, bounds, crop -> {
             String text = directText == null ? "" : directText.trim();
-            DiagnosticLog.i(app, "VIEW_CAPTURE", "crop=" + crop.getWidth() + "x" + crop.getHeight()
+            DiagnosticLog.i(app, "VIEW_CAPTURE", "crop=" + bitmapSize(crop)
                     + " bounds=" + bounds + " textLen=" + text.length()
                     + " kind=" + (candidate == null ? "view" : candidate.kind()));
 
@@ -119,11 +144,12 @@ public final class ScreenshotController {
                         "no Accessibility text; show cropped View bounds=" + bounds);
                 shown = ResultSurfaceRouter.showCapturedViewImage(app, crop, candidate, bounds, shadeState);
             }
+            DiagnosticLog.i(app, "VIEW_CAPTURE", "result shown=" + shown);
             if (!shown) {
                 DiagnosticLog.i(app, "VIEW_CAPTURE", "all result surfaces failed");
                 FvSystemPanelController.onResultReady(app, shadeState, "view_result_failed");
             }
-        }, "View 截图失败", false);
+        }, "View 截图", false);
     }
 
     public static void captureBoundsForVisualCandidate(Context c, Rect screenBounds,
@@ -135,37 +161,87 @@ public final class ScreenshotController {
         Rect bounds = new Rect(screenBounds);
         captureBounds(app, bounds, crop -> {
             DiagnosticLog.i(app, "VIEW_SCREENSHOT", "visual candidate crop="
-                    + crop.getWidth() + "x" + crop.getHeight() + " bounds=" + bounds);
-            if (!ResultSurfaceRouter.showCapturedViewImage(app, crop, candidate, bounds, shadeState)) {
+                    + bitmapSize(crop) + " bounds=" + bounds);
+            boolean shown = ResultSurfaceRouter.showCapturedViewImage(app, crop, candidate, bounds, shadeState);
+            DiagnosticLog.i(app, "VIEW_CAPTURE", "visual result shown=" + shown);
+            if (!shown) {
                 DiagnosticLog.i(app, "VIEW_CAPTURE", "visual result surfaces failed");
                 FvSystemPanelController.onResultReady(app, shadeState, "visual_result_failed");
             }
-        }, "View 截图失败", false);
+        }, "View 截图", false);
     }
 
+    /**
+     * Capture, crop and deliver are three separate failure domains. Never report a result-window
+     * exception as "screenshot failed" again: the log must say exactly which stage failed.
+     */
     private static void captureBounds(Context c, Rect screenBounds, Consumer<Bitmap> onCrop,
-                                      String failText, boolean fallbackToFreeOcr) {
+                                      String label, boolean fallbackToFreeOcr) {
         Context app = c.getApplicationContext();
         FloatSettings fs = new FloatSettings(app);
         ScreenshotCaptureSession.capture(app, fs, raw -> {
+            DiagnosticLog.i(app, "SCREENSHOT_CAPTURE", "backend success label=" + label
+                    + " raw=" + bitmapSize(raw) + " requested=" + screenBounds);
+
+            final Bitmap crop;
             try {
-                onCrop.accept(ScreenshotGeometry.cropScreenBounds(app, raw, screenBounds));
+                crop = ScreenshotGeometry.cropScreenBounds(app, raw, screenBounds);
+                DiagnosticLog.i(app, "SCREENSHOT_CROP", "success label=" + label
+                        + " raw=" + bitmapSize(raw) + " requested=" + screenBounds
+                        + " crop=" + bitmapSize(crop));
             } catch (Throwable t) {
-                Toast.makeText(app, failText, Toast.LENGTH_SHORT).show();
+                DiagnosticLog.i(app, "SCREENSHOT_CROP", "failed label=" + label
+                        + " raw=" + bitmapSize(raw) + " requested=" + screenBounds
+                        + " error=" + ScreenCaptureBackend.safeMessage(t));
+                Toast.makeText(app, label + "失败: 裁剪失败", Toast.LENGTH_SHORT).show();
                 if (fallbackToFreeOcr) captureForOcr(app);
+                return;
             }
-        }, t -> Toast.makeText(app,
-                "截图失败: " + ScreenCaptureBackend.safeMessage(t), Toast.LENGTH_LONG).show());
+
+            try {
+                onCrop.accept(crop);
+            } catch (Throwable t) {
+                DiagnosticLog.i(app, "SCREENSHOT_RESULT", "failed label=" + label
+                        + " crop=" + bitmapSize(crop)
+                        + " error=" + ScreenCaptureBackend.safeMessage(t));
+                Toast.makeText(app, label + "结果处理失败", Toast.LENGTH_LONG).show();
+            }
+        }, t -> {
+            DiagnosticLog.i(app, "SCREENSHOT_CAPTURE", "backend failed label=" + label
+                    + " error=" + ScreenCaptureBackend.safeMessage(t));
+            Toast.makeText(app,
+                    "截图失败: " + ScreenCaptureBackend.safeMessage(t), Toast.LENGTH_LONG).show();
+        });
     }
 
     private static void getBitmap(Context c, Consumer<Bitmap> ok) {
         Context app = c.getApplicationContext();
         FloatSettings fs = new FloatSettings(app);
-        ScreenshotCaptureSession.capture(app, fs,
-                raw -> ok.accept(ScreenshotGeometry.maybeCropStatusBar(
-                        app, raw, fs.keepStatusBarInScreenshot())),
-                t -> Toast.makeText(app,
-                        "截图失败: " + ScreenCaptureBackend.safeMessage(t), Toast.LENGTH_LONG).show());
+        ScreenshotCaptureSession.capture(app, fs, raw -> {
+            DiagnosticLog.i(app, "SCREENSHOT_CAPTURE", "full backend success raw=" + bitmapSize(raw));
+            try {
+                Bitmap out = ScreenshotGeometry.maybeCropStatusBar(
+                        app, raw, fs.keepStatusBarInScreenshot());
+                DiagnosticLog.i(app, "SCREENSHOT_CROP", "full statusBar keep="
+                        + fs.keepStatusBarInScreenshot() + " output=" + bitmapSize(out));
+                ok.accept(out);
+            } catch (Throwable t) {
+                DiagnosticLog.i(app, "SCREENSHOT_CROP", "full failed error="
+                        + ScreenCaptureBackend.safeMessage(t));
+                Toast.makeText(app, "截图处理失败", Toast.LENGTH_LONG).show();
+            }
+        }, t -> {
+            DiagnosticLog.i(app, "SCREENSHOT_CAPTURE", "full backend failed error="
+                    + ScreenCaptureBackend.safeMessage(t));
+            Toast.makeText(app,
+                    "截图失败: " + ScreenCaptureBackend.safeMessage(t), Toast.LENGTH_LONG).show();
+        });
+    }
+
+    private static String bitmapSize(Bitmap b) {
+        if (b == null) return "null";
+        if (b.isRecycled()) return "recycled";
+        return b.getWidth() + "x" + b.getHeight();
     }
 
     static void save(Context c, Bitmap b) {
