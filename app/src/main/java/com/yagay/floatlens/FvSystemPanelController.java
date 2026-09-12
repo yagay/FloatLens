@@ -5,6 +5,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Rect;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -26,12 +28,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *  - m5/w2.n() broadcasts ACTION_CLOSE_SYSTEM_DIALOGS and then still invokes its callback;
  *  - on Android 12+ the callback reaches performGlobalAction(15), i.e.
  *    GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE;
- *  - MIUI has an extra close attempt even when the cached expanded flag is false.
+ *  - FV's ShadowActivity request=21 starts a transient Activity and finishes it 300 ms later.
  *
- * FloatLens mirrors that shape with a central CaptureState token. Capture code snapshots once, while
- * LensAccessibilityService keeps the shared shade state updated. Result surfaces call onResultReady()
- * only after their frozen/result UI has been created. Root is never required for the normal path and
- * remains a last-resort compatibility fallback only when both FV routes fail synchronously.
+ * FV itself targets SDK 29, while FloatLens intentionally stays on a modern target SDK. Android 12+
+ * rejects ACTION_CLOSE_SYSTEM_DIALOGS for modern targets, so FloatLens keeps the same high-level FV
+ * sequence but uses the supported accessibility action first, verifies the live shade state, then
+ * falls back to an FV-style transient Activity. Root remains the final optional fallback only.
  */
 public final class FvSystemPanelController {
     private static final ExecutorService ROOT_IO = Executors.newSingleThreadExecutor(r -> {
@@ -39,6 +41,9 @@ public final class FvSystemPanelController {
         t.setDaemon(true);
         return t;
     });
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    private static final long PRIMARY_RECHECK_MS = 140L;
+    private static final long SHADOW_RECHECK_MS = 380L;
 
     private static volatile boolean cachedShadeExpanded;
     private static volatile boolean cachedShadeKnown;
@@ -120,7 +125,7 @@ public final class FvSystemPanelController {
                 + " elapsedMs=" + elapsed);
 
         if (!shouldDismiss) return;
-        dismissSystemPanel(app, reason == null ? state.startReason() : reason);
+        dismissSystemPanel(context, reason == null ? state.startReason() : reason);
     }
 
     /** FV B0()-style SystemUI window test, with the service environment and cached state as fallbacks. */
@@ -182,20 +187,29 @@ public final class FvSystemPanelController {
         }
     }
 
-    private static void dismissSystemPanel(Context app, String reason) {
-        app.getMainExecutor().execute(() -> {
-            // Re-verified FV order: broadcast first, then callback/global action regardless of
-            // whether sendBroadcast() itself threw. Do not turn these into mutually exclusive paths.
+    private static void dismissSystemPanel(Context caller, String reason) {
+        Context app = caller.getApplicationContext();
+        MAIN.post(() -> {
+            int targetSdk = app.getApplicationInfo().targetSdkVersion;
             boolean broadcast = false;
-            try {
-                app.sendBroadcast(new Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS));
-                broadcast = true;
-            } catch (Throwable t) {
-                DiagnosticLog.i(app, "FV_SHADE", "CLOSE_SYSTEM_DIALOGS failed=" + t);
+
+            // FV targets SDK 29 and can still benefit from the compatibility exception. FloatLens
+            // targets modern Android, where this broadcast is guaranteed to be rejected, so avoid
+            // intentionally throwing SecurityException while retaining the FV order for old targets.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || targetSdk < Build.VERSION_CODES.S) {
+                try {
+                    app.sendBroadcast(new Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS));
+                    broadcast = true;
+                } catch (Throwable t) {
+                    DiagnosticLog.i(app, "FV_SHADE", "CLOSE_SYSTEM_DIALOGS failed=" + t);
+                }
+            } else {
+                DiagnosticLog.i(app, "FV_SHADE", "skip CLOSE_SYSTEM_DIALOGS targetSdk=" + targetSdk);
             }
 
-            boolean global = false;
             LensAccessibilityService service = LensAccessibilityService.get();
+            SystemActions actions = inspectSystemActions(service);
+            boolean global = false;
             if (service != null) {
                 try {
                     global = service.global(AccessibilityService.GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE);
@@ -205,13 +219,69 @@ public final class FvSystemPanelController {
             }
 
             DiagnosticLog.i(app, "FV_SHADE", "dismiss result-ready reason=" + reason
-                    + " broadcast=" + broadcast + " global15=" + global
+                    + " broadcast=" + broadcast
+                    + " action15Available=" + actions.hasDismissShade
+                    + " global15=" + global
+                    + " systemActions=" + actions.ids
                     + " cachedAgeMs=" + Math.max(0L, SystemClock.uptimeMillis() - cachedShadeUpdatedAt));
 
-            // The ordinary FV-compatible implementation above is non-root. Preserve the existing
-            // root command only as a final fallback when neither route could even be issued.
-            if (!broadcast && !global) collapseWithRoot(app, reason);
+            MAIN.postDelayed(() -> verifyAfterPrimary(caller, app, reason), PRIMARY_RECHECK_MS);
         });
+    }
+
+    private static void verifyAfterPrimary(Context caller, Context app, String reason) {
+        boolean expanded = notificationShadeExpanded();
+        DiagnosticLog.i(app, "FV_SHADE", "primary recheck reason=" + reason
+                + " expanded=" + expanded + " delayMs=" + PRIMARY_RECHECK_MS);
+        if (!expanded) return;
+
+        // FV ShadowActivity request=21 is a transient Activity that closes itself after 300 ms.
+        // Use the same shape only after the supported accessibility action failed to collapse the
+        // live shade on this ROM.
+        boolean launched = ShadeDismissActivity.launch(caller, reason);
+        if (!launched) {
+            collapseWithRoot(app, reason + ":shadow_launch_failed");
+            return;
+        }
+
+        MAIN.postDelayed(() -> {
+            boolean stillExpanded = notificationShadeExpanded();
+            DiagnosticLog.i(app, "FV_SHADE", "shadow recheck reason=" + reason
+                    + " expanded=" + stillExpanded + " delayMs=" + SHADOW_RECHECK_MS);
+            if (stillExpanded) collapseWithRoot(app, reason + ":shadow_still_expanded");
+        }, SHADOW_RECHECK_MS);
+    }
+
+    private static SystemActions inspectSystemActions(LensAccessibilityService service) {
+        if (service == null) return new SystemActions(false, "[]");
+        try {
+            List<AccessibilityNodeInfo.AccessibilityAction> actions = service.getSystemActions();
+            if (actions == null || actions.isEmpty()) return new SystemActions(false, "[]");
+            boolean has15 = false;
+            StringBuilder ids = new StringBuilder("[");
+            for (int i = 0; i < actions.size(); i++) {
+                AccessibilityNodeInfo.AccessibilityAction action = actions.get(i);
+                if (action == null) continue;
+                int id = action.getId();
+                if (id == AccessibilityService.GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE) has15 = true;
+                if (ids.length() > 1) ids.append(',');
+                ids.append(id);
+            }
+            ids.append(']');
+            return new SystemActions(has15, ids.toString());
+        } catch (Throwable t) {
+            DiagnosticLog.i(service, "FV_SHADE", "getSystemActions failed=" + t);
+            return new SystemActions(false, "[error]");
+        }
+    }
+
+    private static final class SystemActions {
+        final boolean hasDismissShade;
+        final String ids;
+        SystemActions(boolean hasDismissShade, String ids) {
+            this.hasDismissShade = hasDismissShade;
+            this.ids = ids;
+        }
     }
 
     /**
@@ -265,7 +335,7 @@ public final class FvSystemPanelController {
             }
             final int exitCode = code;
             final String failure = error;
-            app.getMainExecutor().execute(() -> DiagnosticLog.i(app, "FV_SHADE",
+            MAIN.post(() -> DiagnosticLog.i(app, "FV_SHADE",
                     "root collapse reason=" + reason + " exit=" + exitCode
                             + (failure.isEmpty() ? "" : " error=" + failure)));
         });
