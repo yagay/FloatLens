@@ -40,8 +40,10 @@ public final class ImageActionMenu {
         root.setClickable(true);
 
         TextView share = row(app, "分享图片", palette);
+        TextView openWith = row(app, "打开方式", palette);
         TextView save = row(app, "保存图片", palette);
         root.addView(share, new LinearLayout.LayoutParams(-1, dp(app, 48)));
+        root.addView(openWith, new LinearLayout.LayoutParams(-1, dp(app, 48)));
         root.addView(save, new LinearLayout.LayoutParams(-1, dp(app, 48)));
 
         root.setOnTouchListener((v, e) -> {
@@ -54,7 +56,7 @@ public final class ImageActionMenu {
 
         Rect usable = usableBounds(app, wm);
         int width = Math.min(dp(app, 176), Math.max(dp(app, 132), usable.width() - dp(app, 16)));
-        int height = dp(app, 104);
+        int height = dp(app, 152);
         int[] pos = menuPosition(app, usable, anchor, width, height);
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
@@ -85,6 +87,10 @@ public final class ImageActionMenu {
         share.setOnClickListener(v -> {
             dismiss();
             ImageShareUtils.share(app, image);
+        });
+        openWith.setOnClickListener(v -> {
+            dismiss();
+            ImageShareUtils.openWith(app, image);
         });
         save.setOnClickListener(v -> {
             dismiss();
