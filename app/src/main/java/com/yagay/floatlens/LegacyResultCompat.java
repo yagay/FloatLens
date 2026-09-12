@@ -4,26 +4,7 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
 
-import java.util.List;
-
-/** Temporary source-compatibility names while old callers are migrated to shared result components. */
-final class ResultTextActivity {
-    interface InlineResultSink {
-        void onResult(String text, List<String> blocks);
-    }
-
-    static boolean show(Context c, String text, List<String> blocks, Bitmap image, Rect anchor) {
-        return OcrResultDispatcher.deliver(c, text, blocks, image, anchor);
-    }
-
-    static void captureNextForImage(Bitmap image, InlineResultSink sink) {
-        OcrResultDispatcher.register(image, sink == null ? null : sink::onResult);
-    }
-
-    static void clearInlineForImage(Bitmap image) {
-        OcrResultDispatcher.cancel(image);
-    }
-}
+/** Temporary source-compatibility names while old View callers are migrated. */
 
 /** Final Activity fallback when the floating screenshot host cannot attach. */
 final class ScreenshotResultActivity {
