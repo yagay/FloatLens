@@ -4,7 +4,6 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.view.Gravity;
@@ -13,7 +12,6 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -53,6 +51,7 @@ final class FloatingResultWindow {
     private static synchronized boolean show(Context c, Spec spec) {
         dismissActive("replace");
         Context app = c.getApplicationContext();
+        boolean showText = needsText(app, spec);
         Rect usable = ResultUi.usableBounds(app);
         int width = ResultUi.standardWidth(app, usable);
         int maxH = ResultUi.standardMaxHeight(app, usable);
@@ -84,12 +83,12 @@ final class FloatingResultWindow {
         textPanel.setPadding(0, ResultUi.dp(app, 4), 0, ResultUi.dp(app, 4));
         TextSelectionSurface selection = new TextSelectionSurface(app);
         textPanel.addView(selection, new LinearLayout.LayoutParams(-1, 0, 1f));
-        textPanel.setVisibility(needsText(spec) ? View.VISIBLE : View.GONE);
+        textPanel.setVisibility(showText ? View.VISIBLE : View.GONE);
         box.addView(textPanel, new LinearLayout.LayoutParams(-1, 0));
 
         LinearLayout actions = ResultUi.actionRow(app);
         Button ocr = canOcr(spec) ? ResultUi.button(app, "OCR") : null;
-        Button copy = needsText(spec) ? ResultUi.button(app, "复制全部") : null;
+        Button copy = showText ? ResultUi.button(app, "复制全部") : null;
         Button save = canSave(spec) ? ResultUi.button(app, "保存图片") : null;
         Button close = ResultUi.button(app, "关闭");
         int count = 1 + (ocr == null ? 0 : 1) + (copy == null ? 0 : 1) + (save == null ? 0 : 1);
@@ -99,9 +98,8 @@ final class FloatingResultWindow {
         actions.addView(close, new LinearLayout.LayoutParams(0, -1, 1));
         box.addView(actions, new LinearLayout.LayoutParams(-1, actionsH));
 
-        int textH = needsText(spec) ? Math.max(ResultUi.dp(app, 96), contentBudget - imageH) : 0;
-        if (needsText(spec) && imageH > 0) textH = Math.max(ResultUi.dp(app, 96), contentBudget - imageH);
-        if (needsText(spec)) textPanel.setLayoutParams(new LinearLayout.LayoutParams(-1, textH));
+        int textH = showText ? Math.max(ResultUi.dp(app, 96), contentBudget - imageH) : 0;
+        if (showText) textPanel.setLayoutParams(new LinearLayout.LayoutParams(-1, textH));
 
         int height;
         if (spec.mode == Mode.SCREENSHOT) {
@@ -129,7 +127,7 @@ final class FloatingResultWindow {
                 textPanel, selection, ocr, copy, save, close, imageH, height);
         active = session;
         bindSelection(session);
-        if (needsText(spec)) setTextMode(session, spec.text, spec.blocks, false);
+        if (showText) setTextMode(session, spec.text, spec.blocks, false);
 
         if (ocr != null) ocr.setOnClickListener(v -> beginOcr(session));
         if (copy != null) copy.setOnClickListener(v -> copyAll(session));
@@ -254,7 +252,7 @@ final class FloatingResultWindow {
     }
 
     private static void copyAll(Session session) {
-        String value = session.selection == null ? "" : session.selection.editor().getText().toString();
+        String value = session.selection.editor().getText().toString();
         if (value.isEmpty()) value = session.spec.text;
         ClipboardManager cm = (ClipboardManager) session.app.getSystemService(Context.CLIPBOARD_SERVICE);
         if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("FloatLens", safe(value)));
@@ -308,9 +306,9 @@ final class FloatingResultWindow {
         return mode != Mode.OCR || new FloatSettings(c).ocrShowImage();
     }
 
-    private static boolean needsText(Spec spec) {
+    private static boolean needsText(Context c, Spec spec) {
         if (spec.mode == Mode.SCREENSHOT) return false;
-        if (spec.mode == Mode.OCR) return new FloatSettings(FloatLensApp.get()).ocrShowText();
+        if (spec.mode == Mode.OCR) return new FloatSettings(c).ocrShowText();
         return true;
     }
 
