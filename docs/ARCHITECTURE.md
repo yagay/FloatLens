@@ -42,7 +42,7 @@ belong in this controller instead of adding another boolean to the service.
 
 ## 2. Window hosting
 
-### `FvOverlayWindowHost`
+### `FlOverlayWindowHost`
 Shared owner of ordinary overlay add/update/remove/migration logic. It supports Accessibility overlay
 (2032) and application overlay windows.
 
@@ -261,7 +261,7 @@ These stores are intentionally separate because their persisted data semantics d
 
 ## 11. Notification shade
 
-### `FvSystemPanelController`
+### `FlSystemPanelController`
 Live SystemUI shade detection and Activity-result FV compatibility sequence.
 
 ### `OverlayShadeCoordinator`

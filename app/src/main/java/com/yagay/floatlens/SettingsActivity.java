@@ -75,7 +75,7 @@ public class SettingsActivity extends AppCompatActivity {
         title(root, "环境与显示");
         check(root, "键盘出现时避让悬浮图标", FloatSettings.K_IME_AVOID, fs.imeAvoid());
         check(root, "Quick Move / 智能屏幕入口启用", FloatSettings.K_QUICK_MOVE, fs.quickMoveEnabled());
-        check(root, "FV 诊断日志（用于和 fooView 真机行为校准）", FloatSettings.K_DIAGNOSTIC, fs.diagnosticLogging());
+        check(root, "FL 诊断日志（用于和 fooView 真机行为校准）", FloatSettings.K_DIAGNOSTIC, fs.diagnosticLogging());
         TextView pkgLabel = new TextView(this); pkgLabel.setText("按应用隐藏（包名，逗号/空格/换行分隔）"); root.addView(pkgLabel);
         hidePackagesEdit = new EditText(this); hidePackagesEdit.setText(fs.prefs().getString(FloatSettings.K_HIDE_PACKAGES, "")); hidePackagesEdit.setHint("例如 com.example.game com.example.bank"); root.addView(hidePackagesEdit);
         hidePackagesEdit.setOnFocusChangeListener((v, hasFocus) -> { if (!hasFocus) saveHidePackages(); });
@@ -94,7 +94,7 @@ public class SettingsActivity extends AppCompatActivity {
         for (var e : map.entrySet()) spinner(root, e.getKey(), e.getValue(), ActionRegistry.defaultForPreference(e.getValue()));
 
         TextView note = new TextView(this);
-        note.setText("FV式位置逻辑：普通手势时图标只临时跟手，松手恢复原来的贴边位置；只有先触发“移动图标位置”动作，下一次拖动才保存新位置。高亮 View 连续停留达到设定时间后锁定，松手截取整个高亮 View。");
+        note.setText("FL 位置逻辑（参照 FV）：普通手势时图标只临时跟手，松手恢复原来的贴边位置；只有先触发“移动图标位置”动作，下一次拖动才保存新位置。高亮 View 连续停留达到设定时间后锁定，松手截取整个高亮 View。");
         note.setPadding(0, dp(28), 0, 0);
         root.addView(note);
         setContentView(sv);

@@ -41,7 +41,7 @@ public final class FloatActionMenu {
     private static final int NO_POSITION = Integer.MIN_VALUE;
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
-    private static FvOverlayWindowHost activeHost;
+    private static FlOverlayWindowHost activeHost;
     private static View activeView;
     private static int activeCenterX = NO_POSITION;
     private static int activeTopY = NO_POSITION;
@@ -90,7 +90,7 @@ public final class FloatActionMenu {
         Context app = c.getApplicationContext();
         WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
         if (wm == null) return;
-        FvOverlayWindowHost host = new FvOverlayWindowHost(app);
+        FlOverlayWindowHost host = new FlOverlayWindowHost(app);
         Palette palette = Palette.from(app);
 
         LinearLayout root = new LinearLayout(app);
@@ -554,7 +554,7 @@ public final class FloatActionMenu {
 
     public static synchronized void dismiss() {
         View v = activeView;
-        FvOverlayWindowHost host = activeHost;
+        FlOverlayWindowHost host = activeHost;
         activeView = null;
         activeHost = null;
         activeCenterX = NO_POSITION;

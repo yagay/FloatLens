@@ -62,7 +62,7 @@ public class LensAccessibilityService extends AccessibilityService {
     @Override public void onDestroy(){
         FloatService f=FloatService.get();
         if(f!=null) f.onAccessibilityOverlayHostChanged(false);
-        FvSystemPanelController.onAccessibilityDisconnected(this);
+        FlSystemPanelController.onAccessibilityDisconnected(this);
         if(s==this)s=null;
         super.onDestroy();
     }
@@ -78,10 +78,10 @@ public class LensAccessibilityService extends AccessibilityService {
         try {
             lp.type=WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
             ((WindowManager)getSystemService(WINDOW_SERVICE)).addView(view,lp);
-            DiagnosticLog.i(this,"FV_WINDOW","add accessibility overlay type="+lp.type);
+            DiagnosticLog.i(this,"FL_WINDOW","add accessibility overlay type="+lp.type);
             return true;
         } catch(Throwable t) {
-            DiagnosticLog.i(this,"FV_WINDOW","add accessibility overlay failed="+t);
+            DiagnosticLog.i(this,"FL_WINDOW","add accessibility overlay failed="+t);
             return false;
         }
     }
@@ -93,7 +93,7 @@ public class LensAccessibilityService extends AccessibilityService {
             ((WindowManager)getSystemService(WINDOW_SERVICE)).updateViewLayout(view,lp);
             return true;
         } catch(Throwable t) {
-            DiagnosticLog.i(this,"FV_WINDOW","update accessibility overlay failed="+t);
+            DiagnosticLog.i(this,"FL_WINDOW","update accessibility overlay failed="+t);
             return false;
         }
     }
@@ -421,7 +421,7 @@ public class LensAccessibilityService extends AccessibilityService {
     }
 
     private void publishEnvironment() {
-        FvSystemPanelController.onAccessibilityEnvironment(this, env);
+        FlSystemPanelController.onAccessibilityEnvironment(this, env);
         FloatService f=FloatService.get();
         if(f!=null) f.onAccessibilityEnvironment(env);
     }

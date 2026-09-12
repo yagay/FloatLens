@@ -8,7 +8,7 @@ import java.util.zip.*;
 
 public final class InspectorLog {
     private static final Object LOCK=new Object();
-    private static final String FILE="fv-runtime-inspector.log";
+    private static final String FILE="fl-runtime-inspector.log";
     private static final long MAX=16L*1024L*1024L;
     private static final int ROTATIONS=3; // current + 3 rotated ~= 64 MiB total
     private static final int STATUS_TAIL=768*1024; // never parse multi-MiB logs on the UI thread
@@ -27,7 +27,7 @@ public final class InspectorLog {
                 for(int i=1;i<=ROTATIONS&&s.isBlank();i++)s=readTail(new File(c.getFilesDir(),FILE+"."+i),STATUS_TAIL);
             }
         }
-        if(s.isBlank())return "FV Hook：尚未收到 fooView 运行时日志";
+        if(s.isBlank())return "FL Hook：尚未收到 fooView 运行时日志";
         boolean target=s.contains("[SELFTEST] target_loaded=true");
         boolean service=s.contains("class=com.fooview.android.fooview.fvprocess.FooViewService found=true");
         boolean c3=s.contains("class=com.fooview.android.fooview.fvprocess.FooViewService$c3 found=true");
@@ -36,7 +36,7 @@ public final class InspectorLog {
         boolean y1=s.contains("method=FooViewService.Y1 found=true")||s.contains("hooked=com.fooview.android.fooview.fvprocess.FooViewService#Y1");
         boolean full=s.contains("mode=FULL_CAPTURE")||s.contains("module=2.3.0-full");
         int runtime=countRuntimeEvents(s);
-        return "FV Hook 自检（仅扫描日志尾部，避免大日志导致闪退）\nfull capture: "+full+"\ntarget loaded: "+target+"\nFooViewService: "+service+"\nFooViewService$c3: "+c3+"\nGesturePanel: "+panel+"\nc3.onTouch: "+onTouch+"\nFooViewService.Y1: "+y1+"\nruntime events in tail: "+runtime;
+        return "FL Hook 自检（仅扫描日志尾部，避免大日志导致闪退）\nfull capture: "+full+"\ntarget loaded: "+target+"\nFooViewService: "+service+"\nFooViewService$c3: "+c3+"\nGesturePanel: "+panel+"\nc3.onTouch: "+onTouch+"\nFooViewService.Y1: "+y1+"\nruntime events in tail: "+runtime;
     }
     private static int countRuntimeEvents(String s){int n=0;for(String l:s.split("\n"))if(l.matches(".*\\[(TOUCH|SERVICE|GESTURE|POSITION|WINDOW|PREF|PREF_WRITE|SCREENSHOT|OCR|CANDIDATE|CIRCLE_CORE|CIRCLE_GUIDE|FULL_CAPTURE|FULL_INNER|ACTION_LAYER|ACTION_DOWNSTREAM|TIMING|SESSION_SUMMARY)\\].*"))n++;return n;}
 
@@ -64,7 +64,7 @@ public final class InspectorLog {
             }
         }
         StringBuilder o=new StringBuilder();
-        o.append("FloatLens FV Runtime Inspector FULL CAPTURE\nversion=").append(BuildConfig.VERSION_NAME)
+        o.append("FloatLens FL Runtime Inspector FULL CAPTURE\nversion=").append(BuildConfig.VERSION_NAME)
          .append("\nretention≈64MiB\nbytes=").append(bytes).append("\nlines=").append(lines)
          .append("\n\n").append(selfTestStatus(c)).append("\n\nCategory counts:\n");
         m.forEach((k,v)->o.append(k).append('=').append(v).append('\n'));

@@ -34,8 +34,8 @@ public class FloatIconView extends View {
         void onDirectSelectionEnd();
     }
 
-    private static final long FV_DIRECT_SELECT_DELAY_MS = 400L;
-    private static final float FV_DIRECT_MOVE_START_DP = 3f;
+    private static final long FL_DIRECT_SELECT_DELAY_MS = 400L;
+    private static final float FL_DIRECT_MOVE_START_DP = 3f;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final GestureSession session = new GestureSession();
@@ -67,7 +67,7 @@ public class FloatIconView extends View {
         this.cb = cb;
         renderer = new FloatIconRenderer(this);
         directRearmSlopPx = Math.max(1f,
-                FV_DIRECT_MOVE_START_DP * getResources().getDisplayMetrics().density);
+                FL_DIRECT_MOVE_START_DP * getResources().getDisplayMetrics().density);
         directSelectionRunnable = () -> {
             directTimerArmed = false;
             if (directSelectionActive || longPressActionTriggered || positionMoveMode || session.multiTouch
@@ -84,11 +84,11 @@ public class FloatIconView extends View {
             if (!ok) {
                 directSelectionActive = false;
                 cb.onDirectSelectionEnd();
-                DiagnosticLog.i(getContext(), "FV_DIRECT", "enter failed");
+                DiagnosticLog.i(getContext(), "FL_DIRECT", "enter failed");
                 return;
             }
-            DiagnosticLog.i(getContext(), "FV_DIRECT", "ENTER delay="
-                    + FV_DIRECT_SELECT_DELAY_MS + "ms raw=" + Math.round(lastSelectionRawX)
+            DiagnosticLog.i(getContext(), "FL_DIRECT", "ENTER delay="
+                    + FL_DIRECT_SELECT_DELAY_MS + "ms raw=" + Math.round(lastSelectionRawX)
                     + "," + Math.round(lastSelectionRawY)
                     + " anchor=" + Math.round(directTimerAnchorX) + "," + Math.round(directTimerAnchorY)
                     + " axisSlopPx=" + Math.round(directRearmSlopPx));
@@ -205,7 +205,7 @@ public class FloatIconView extends View {
                 if(!positionMoveMode){
                     longPressRunnable = () -> {
                         if (!session.multiTouch && !followStarted && session.phase == GestureSession.Phase.DOWN
-                                && session.distance() < dp(FV_DIRECT_MOVE_START_DP)) {
+                                && session.distance() < dp(FL_DIRECT_MOVE_START_DP)) {
                             session.longPressReady = true;
                             longPressActionTriggered = true;
                             cancelDirectSelectionTimer();
@@ -259,7 +259,7 @@ public class FloatIconView extends View {
                     return true;
                 }
 
-                if (dist >= dp(FV_DIRECT_MOVE_START_DP)) cancelLongPress();
+                if (dist >= dp(FL_DIRECT_MOVE_START_DP)) cancelLongPress();
 
                 if ((moveDx!=0||moveDy!=0) && dist>=dp(1.5f)) {
                     if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","fvTemporaryFollowStart distance="+Math.round(dist));}
@@ -355,9 +355,9 @@ public class FloatIconView extends View {
             directTimerAnchorY = rawY;
             directTimerArmed = true;
             handler.removeCallbacks(directSelectionRunnable);
-            handler.postDelayed(directSelectionRunnable, FV_DIRECT_SELECT_DELAY_MS);
-            DiagnosticLog.i(getContext(), "FV_DIRECT", "ARM anchor="+Math.round(rawX)+","+Math.round(rawY)
-                    +" delay="+FV_DIRECT_SELECT_DELAY_MS+" axisSlopPx="+Math.round(directRearmSlopPx));
+            handler.postDelayed(directSelectionRunnable, FL_DIRECT_SELECT_DELAY_MS);
+            DiagnosticLog.i(getContext(), "FL_DIRECT", "ARM anchor="+Math.round(rawX)+","+Math.round(rawY)
+                    +" delay="+FL_DIRECT_SELECT_DELAY_MS+" axisSlopPx="+Math.round(directRearmSlopPx));
             return;
         }
 
@@ -368,8 +368,8 @@ public class FloatIconView extends View {
         handler.removeCallbacks(directSelectionRunnable);
         directTimerAnchorX = rawX;
         directTimerAnchorY = rawY;
-        handler.postDelayed(directSelectionRunnable, FV_DIRECT_SELECT_DELAY_MS);
-        DiagnosticLog.i(getContext(), "FV_DIRECT", "REARM anchor="+Math.round(rawX)+","+Math.round(rawY)
+        handler.postDelayed(directSelectionRunnable, FL_DIRECT_SELECT_DELAY_MS);
+        DiagnosticLog.i(getContext(), "FL_DIRECT", "REARM anchor="+Math.round(rawX)+","+Math.round(rawY)
                 +" dx="+Math.round(dx)+" dy="+Math.round(dy)
                 +" axisSlopPx="+Math.round(directRearmSlopPx));
     }

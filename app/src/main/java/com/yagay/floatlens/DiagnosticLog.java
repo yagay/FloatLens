@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit;
 
 public final class DiagnosticLog {
     private static final Object LOCK = new Object();
-    private static final String FILE = "floatlens-fv-diagnostic.log";
+    private static final String FILE = "floatlens-fl-diagnostic.log";
     private static final long MAX_BYTES = 2L * 1024L * 1024L;
     private static final long HOT_LOG_INTERVAL_MS = 90L;
     private static final Map<String, Long> HOT_LAST = new HashMap<>();
@@ -62,10 +62,10 @@ public final class DiagnosticLog {
     private static String hotKey(String tag,String msg) {
         if(tag==null)return null;
         if("TOUCH".equals(tag))return "TOUCH";
-        if("FV_PROBE".equals(tag)&&(msg==null||!msg.startsWith("BEGIN")))return "FV_PROBE";
-        if("FV_PROBE_VIEW".equals(tag)&&msg!=null&&msg.startsWith("MOVE"))return "FV_PROBE_VIEW_MOVE";
-        if("FV_OP_HINT".equals(tag)&&msg!=null&&msg.startsWith("mode="))return "FV_OP_HINT_MOVE";
-        if("FV_DIRECT".equals(tag)&&msg!=null&&msg.startsWith("REARM"))return "FV_DIRECT_REARM";
+        if("FL_PROBE".equals(tag)&&(msg==null||!msg.startsWith("BEGIN")))return "FL_PROBE";
+        if("FL_PROBE_VIEW".equals(tag)&&msg!=null&&msg.startsWith("MOVE"))return "FL_PROBE_VIEW_MOVE";
+        if("FL_OP_HINT".equals(tag)&&msg!=null&&msg.startsWith("mode="))return "FL_OP_HINT_MOVE";
+        if("FL_DIRECT".equals(tag)&&msg!=null&&msg.startsWith("REARM"))return "FL_DIRECT_REARM";
         return null;
     }
     public static void sessionHeader(Context c) {

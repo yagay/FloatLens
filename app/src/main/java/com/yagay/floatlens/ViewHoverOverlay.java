@@ -24,16 +24,16 @@ public final class ViewHoverOverlay {
     private static final int LARGE_TARGET_PERCENT = 72;
 
     private final Context context;
-    private final FvOverlayWindowHost windowHost;
+    private final FlOverlayWindowHost windowHost;
     private final LensAccessibilityService accessibility;
     private final ScreenSelectionModel model = new ScreenSelectionModel();
     private HoverView view;
-    private FvRegionFrameOverlay largeCandidateFrame;
+    private FlRegionFrameOverlay largeCandidateFrame;
     private ScreenCandidate current;
 
     public ViewHoverOverlay(Context c) {
         context = c.getApplicationContext();
-        windowHost = new FvOverlayWindowHost(context);
+        windowHost = new FlOverlayWindowHost(context);
         accessibility = LensAccessibilityService.get();
     }
 
@@ -62,10 +62,10 @@ public final class ViewHoverOverlay {
                 if (candidate.type() == ScreenCandidate.Type.ROOT || candidate.fullscreenLike()) broad++;
                 if ("com.android.systemui".equals(candidate.packageName())) systemUi++;
             }
-            DiagnosticLog.i(context, "FV_TREE_CACHE", "READY total=" + cached.size()
+            DiagnosticLog.i(context, "FL_TREE_CACHE", "READY total=" + cached.size()
                     + " view=" + viewCount + " broad=" + broad + " systemUi=" + systemUi);
         } catch (Throwable t) {
-            DiagnosticLog.i(context, "FV_TREE_CACHE", "refresh failed=" + t);
+            DiagnosticLog.i(context, "FL_TREE_CACHE", "refresh failed=" + t);
             model.setAccessibility(Collections.emptyList());
         }
     }
@@ -86,7 +86,7 @@ public final class ViewHoverOverlay {
         } else {
             detachView();
             if (next != null) {
-                if (largeCandidateFrame == null) largeCandidateFrame = new FvRegionFrameOverlay(context);
+                if (largeCandidateFrame == null) largeCandidateFrame = new FlRegionFrameOverlay(context);
                 largeCandidateFrame.setConfirmed(false);
                 largeCandidateFrame.show(next.bounds());
             } else {

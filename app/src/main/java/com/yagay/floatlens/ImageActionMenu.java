@@ -19,7 +19,7 @@ import android.widget.TextView;
 
 /** Lightweight image long-press menu. Window hosting is shared with the text action menu. */
 public final class ImageActionMenu {
-    private static FvOverlayWindowHost activeHost;
+    private static FlOverlayWindowHost activeHost;
     private static View activeView;
 
     public static synchronized void show(Context c, Bitmap image, Rect anchor) {
@@ -29,7 +29,7 @@ public final class ImageActionMenu {
         Context app = c.getApplicationContext();
         WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
         if (wm == null) return;
-        FvOverlayWindowHost host = new FvOverlayWindowHost(app);
+        FlOverlayWindowHost host = new FlOverlayWindowHost(app);
 
         Palette palette = Palette.from(app);
         LinearLayout root = new LinearLayout(app);
@@ -102,7 +102,7 @@ public final class ImageActionMenu {
 
     public static synchronized void dismiss() {
         View view = activeView;
-        FvOverlayWindowHost host = activeHost;
+        FlOverlayWindowHost host = activeHost;
         activeView = null;
         activeHost = null;
         if (view != null && host != null) host.remove(view, "image_action_menu");

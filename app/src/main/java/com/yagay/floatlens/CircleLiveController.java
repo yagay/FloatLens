@@ -44,7 +44,7 @@ public final class CircleLiveController {
         private final Context context;
         private final WindowManager wm;
         private final FloatSettings settings;
-        private final FvSystemPanelController.CaptureState shadeState;
+        private final FlSystemPanelController.CaptureState shadeState;
         private final List<PointF> points = new ArrayList<>();
         private LiveView overlay;
         private Bitmap screenshot;
@@ -54,7 +54,7 @@ public final class CircleLiveController {
             context = c;
             wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
             settings = new FloatSettings(c);
-            shadeState = FvSystemPanelController.beginCapture(c, "circle_live");
+            shadeState = FlSystemPanelController.beginCapture(c, "circle_live");
             points.add(new PointF(x, y));
         }
 
@@ -118,7 +118,7 @@ public final class CircleLiveController {
         }
 
         private void onCandidateReady() {
-            FvSystemPanelController.onResultReady(context, shadeState, "circle_live_candidate_shown");
+            FlSystemPanelController.onResultReady(context, shadeState, "circle_live_candidate_shown");
         }
 
         private void onCaptureFailure(Throwable error) {

@@ -25,10 +25,10 @@ public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
 
     // FV m2/g posts its region action 5ms after the selection/helper windows are removed.
-    private static final long FV_RELEASE_ACTION_DELAY_MS = 5L;
+    private static final long FL_RELEASE_ACTION_DELAY_MS = 5L;
 
     private static final ExecutorService TARGET_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "FloatLens-FV-targets");
+        Thread t = new Thread(r, "FloatLens-FL-targets");
         t.setDaemon(true);
         return t;
     });
@@ -41,11 +41,11 @@ public final class ViewSelectionEngine {
 
     /** Optional View/text target layer. It is never required for region screenshot. */
     private ViewHoverOverlay overlay;
-    private FvProbePointOverlay probeOverlay;
-    private FvPointerOperationHintOverlay pointerHintOverlay;
+    private FlProbePointOverlay probeOverlay;
+    private FlPointerOperationHintOverlay pointerHintOverlay;
 
     /** Immediate FV m2/g-style region state, independent of Accessibility readiness. */
-    private FvRegionFrameOverlay directRegionFrame;
+    private FlRegionFrameOverlay directRegionFrame;
     private final Rect directRegion = new Rect();
     private float directStartX = Float.NaN, directStartY = Float.NaN;
     private boolean directRegionMode;
@@ -89,7 +89,7 @@ public final class ViewSelectionEngine {
             PointF p = pointTransformer.transform(e);
             selectionX = p.x;
             selectionY = p.y;
-            DiagnosticLog.i(context, "FV_SELECT", "DOWN probe="
+            DiagnosticLog.i(context, "FL_SELECT", "DOWN probe="
                     + Math.round(selectionX) + "," + Math.round(selectionY)
                     + " iconSide=" + (pointTransformer.gestureLeftSide() ? "L" : "R")
                     + " accessibility=" + (accessibility != null));
@@ -157,7 +157,7 @@ public final class ViewSelectionEngine {
         updateOperationHint();
         prepareTargetsAsync();
 
-        DiagnosticLog.i(context, "FV_SELECT", "DIRECT_ENTER_IMMEDIATE raw="
+        DiagnosticLog.i(context, "FL_SELECT", "DIRECT_ENTER_IMMEDIATE raw="
                 + Math.round(rawX) + "," + Math.round(rawY)
                 + " focusHit=" + Math.round(selectionX) + "," + Math.round(selectionY)
                 + " slop=" + Math.round(regionStartSlopPx)
@@ -190,9 +190,9 @@ public final class ViewSelectionEngine {
                 overlay = null;
             }
             targetGeneration++;
-            if (directRegionFrame == null) directRegionFrame = new FvRegionFrameOverlay(context);
+            if (directRegionFrame == null) directRegionFrame = new FlRegionFrameOverlay(context);
             directRegionFrame.setConfirmed(false);
-            DiagnosticLog.i(context, "FV_REGION", "ENTER immediate-frame dx=" + Math.round(dx)
+            DiagnosticLog.i(context, "FL_REGION", "ENTER immediate-frame dx=" + Math.round(dx)
                     + " dy=" + Math.round(dy));
         }
 
@@ -204,7 +204,7 @@ public final class ViewSelectionEngine {
             if (directRegion.left != l || directRegion.top != t
                     || directRegion.right != r || directRegion.bottom != b) {
                 directRegion.set(l, t, r, b);
-                if (directRegionFrame == null) directRegionFrame = new FvRegionFrameOverlay(context);
+                if (directRegionFrame == null) directRegionFrame = new FlRegionFrameOverlay(context);
                 directRegionFrame.setConfirmed(false);
                 directRegionFrame.show(directRegion);
             }
@@ -224,7 +224,7 @@ public final class ViewSelectionEngine {
         if (accessibility == null || state != State.DIRECT || directRegionMode) return;
         final long generation = ++targetGeneration;
         final long started = SystemClock.elapsedRealtime();
-        DiagnosticLog.i(context, "FV_TREE_CACHE", "ASYNC_START gen=" + generation);
+        DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_START gen=" + generation);
 
         TARGET_EXECUTOR.execute(() -> {
             ViewHoverOverlay prepared = null;
@@ -245,12 +245,12 @@ public final class ViewSelectionEngine {
             mainHandler.post(() -> {
                 if (generation != targetGeneration || state != State.DIRECT || directRegionMode) {
                     if (ready != null) ready.cancel();
-                    DiagnosticLog.i(context, "FV_TREE_CACHE", "ASYNC_DROP gen=" + generation
+                    DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_DROP gen=" + generation
                             + " current=" + targetGeneration + " region=" + directRegionMode);
                     return;
                 }
                 if (failure != null || ready == null) {
-                    DiagnosticLog.i(context, "FV_TREE_CACHE", "ASYNC_FAILED gen=" + generation
+                    DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_FAILED gen=" + generation
                             + " error=" + (failure == null ? "unavailable" : failure));
                     return;
                 }
@@ -259,7 +259,7 @@ public final class ViewSelectionEngine {
                 overlay = ready;
                 overlay.update(selectionX, selectionY);
                 updateOperationHint();
-                DiagnosticLog.i(context, "FV_TREE_CACHE", "ASYNC_APPLY gen=" + generation
+                DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_APPLY gen=" + generation
                         + " elapsedMs=" + (SystemClock.elapsedRealtime() - started)
                         + " region=false");
             });
@@ -296,12 +296,12 @@ public final class ViewSelectionEngine {
 
         final boolean region = directRegionMode && !directRegion.isEmpty();
         final ScreenCandidate candidate = overlay == null ? null : overlay.currentCandidate();
-        final FvPointerOperationHintOverlay.Mode op = currentOperationMode();
+        final FlPointerOperationHintOverlay.Mode op = currentOperationMode();
         final Rect bounds;
         final ViewNodeCandidate view;
         final String text;
 
-        if (op == FvPointerOperationHintOverlay.Mode.SCREENSHOT) {
+        if (op == FlPointerOperationHintOverlay.Mode.SCREENSHOT) {
             bounds = region ? new Rect(directRegion)
                     : candidate == null ? new Rect() : candidate.bounds();
             view = null;
@@ -329,20 +329,20 @@ public final class ViewSelectionEngine {
         final boolean result = !bounds.isEmpty();
         if (result) {
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                if (op == FvPointerOperationHintOverlay.Mode.SCREENSHOT) {
+                if (op == FlPointerOperationHintOverlay.Mode.SCREENSHOT) {
                     ScreenshotController.captureBoundsForRegion(context, bounds);
-                } else if (op == FvPointerOperationHintOverlay.Mode.TEXT) {
+                } else if (op == FlPointerOperationHintOverlay.Mode.TEXT) {
                     ScreenshotController.captureBoundsForViewCandidate(context, bounds, view, text);
                 } else {
                     ScreenshotController.captureBoundsForVisualCandidate(context, bounds, view);
                 }
-            }, FV_RELEASE_ACTION_DELAY_MS);
+            }, FL_RELEASE_ACTION_DELAY_MS);
         }
 
-        DiagnosticLog.i(context, "FV_SELECT", "DIRECT_UP region=" + region
+        DiagnosticLog.i(context, "FL_SELECT", "DIRECT_UP region=" + region
                 + " target=" + (candidate != null) + " result=" + result + " focusHit="
                 + Math.round(selectionX) + "," + Math.round(selectionY) + " op=" + op
-                + " fvDelayMs=" + FV_RELEASE_ACTION_DELAY_MS);
+                + " flDelayMs=" + FL_RELEASE_ACTION_DELAY_MS);
         return result;
     }
 
@@ -366,22 +366,22 @@ public final class ViewSelectionEngine {
         selectionX = selectionY = Float.NaN;
         closeDirectRegionFrame();
         closeVisuals();
-        if (active) DiagnosticLog.i(context, "FV_SELECT", "DIRECT_CANCEL");
+        if (active) DiagnosticLog.i(context, "FL_SELECT", "DIRECT_CANCEL");
     }
 
-    private FvPointerOperationHintOverlay.Mode currentOperationMode() {
-        if (directRegionMode) return FvPointerOperationHintOverlay.Mode.SCREENSHOT;
-        if (overlay == null) return FvPointerOperationHintOverlay.Mode.SCREENSHOT;
+    private FlPointerOperationHintOverlay.Mode currentOperationMode() {
+        if (directRegionMode) return FlPointerOperationHintOverlay.Mode.SCREENSHOT;
+        if (overlay == null) return FlPointerOperationHintOverlay.Mode.SCREENSHOT;
 
         ScreenCandidate candidate = overlay.currentCandidate();
-        if (candidate == null) return FvPointerOperationHintOverlay.Mode.SCREENSHOT;
+        if (candidate == null) return FlPointerOperationHintOverlay.Mode.SCREENSHOT;
         if (candidate.type() == ScreenCandidate.Type.TEXT && candidate.hasText()) {
-            return FvPointerOperationHintOverlay.Mode.TEXT;
+            return FlPointerOperationHintOverlay.Mode.TEXT;
         }
         if (candidate.type() == ScreenCandidate.Type.NON_TEXT) {
-            return FvPointerOperationHintOverlay.Mode.IMAGE;
+            return FlPointerOperationHintOverlay.Mode.IMAGE;
         }
-        return FvPointerOperationHintOverlay.Mode.SCREENSHOT;
+        return FlPointerOperationHintOverlay.Mode.SCREENSHOT;
     }
 
     /**
@@ -407,12 +407,12 @@ public final class ViewSelectionEngine {
     }
 
     private void ensureProbe() {
-        if (probeOverlay == null) probeOverlay = new FvProbePointOverlay(context);
+        if (probeOverlay == null) probeOverlay = new FlProbePointOverlay(context);
     }
 
     private void ensurePointerHint() {
         if (pointerHintOverlay == null) {
-            pointerHintOverlay = new FvPointerOperationHintOverlay(context);
+            pointerHintOverlay = new FlPointerOperationHintOverlay(context);
         }
     }
 

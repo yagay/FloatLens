@@ -24,7 +24,7 @@ public final class ViewSelectionOverlay {
             return;
         }
 
-        FvOverlayWindowHost host = new FvOverlayWindowHost(app);
+        FlOverlayWindowHost host = new FlOverlayWindowHost(app);
         PickView view = new PickView(app, accessibility, host);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -42,7 +42,7 @@ public final class ViewSelectionOverlay {
 
     private static final class PickView extends View {
         private final LensAccessibilityService accessibility;
-        private final FvOverlayWindowHost host;
+        private final FlOverlayWindowHost host;
         private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -50,7 +50,7 @@ public final class ViewSelectionOverlay {
         private long lastScan;
         private boolean closed;
 
-        PickView(Context c, LensAccessibilityService accessibility, FvOverlayWindowHost host) {
+        PickView(Context c, LensAccessibilityService accessibility, FlOverlayWindowHost host) {
             super(c);
             this.accessibility = accessibility;
             this.host = host;

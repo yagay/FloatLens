@@ -23,7 +23,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private static volatile FloatService instance;
 
     private WindowManager wm;
-    private FvOverlayWindowHost iconHost;
+    private FlOverlayWindowHost iconHost;
     private FloatingIconLayoutPolicy layout;
     private FloatSettings fs;
     private FloatVisibilityController visibility;
@@ -50,7 +50,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
         circleState = new CircleStateMachine(this);
         fs.prefs().registerOnSharedPreferenceChangeListener(this);
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-        iconHost = new FvOverlayWindowHost(this);
+        iconHost = new FlOverlayWindowHost(this);
         layout = new FloatingIconLayoutPolicy(this, fs);
         trail = new GestureTrailOverlay(this);
         createChannel();
@@ -126,7 +126,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
                     mirrorOrigin[1] = secondaryLp.y;
                     mirrorOriginReady[0] = true;
                 }
-                DiagnosticLog.i(FloatService.this, "POSITION", "fv follow origin="
+                DiagnosticLog.i(FloatService.this, "POSITION", "fl follow origin="
                         + origin[0] + "," + origin[1] + " moveMode=" + positionMoveArmed);
             }
 
@@ -232,7 +232,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
                     otherVisibility[0] = other.getVisibility();
                     other.setVisibility(View.INVISIBLE);
                 }
-                DiagnosticLog.i(FloatService.this, "FV_DIRECT", "keep compact touch owner window="
+                DiagnosticLog.i(FloatService.this, "FL_DIRECT", "keep compact touch owner window="
                         + lp.x + "," + lp.y + " " + lp.width + "x" + lp.height);
             }
 
@@ -241,7 +241,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
                 View other = mirrored ? primary : secondary;
                 if (other != null) other.setVisibility(otherVisibility[0]);
                 directExpanded[0] = false;
-                DiagnosticLog.i(FloatService.this, "FV_DIRECT", "compact touch owner end window="
+                DiagnosticLog.i(FloatService.this, "FL_DIRECT", "compact touch owner end window="
                         + lp.x + "," + lp.y + " " + lp.width + "x" + lp.height);
             }
         });
@@ -308,7 +308,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
                 ? WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
                 : WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
         if (primaryLp.type == target && (secondaryLp == null || secondaryLp.type == target)) return;
-        DiagnosticLog.i(this, "FV_WINDOW", "rehost icons target=" + target
+        DiagnosticLog.i(this, "FL_WINDOW", "rehost icons target=" + target
                 + " notif=" + visibility.notificationExpanded());
         rehostOne(primary, primaryLp, useAccessibility);
         if (secondary != null && secondaryLp != null) rehostOne(secondary, secondaryLp, useAccessibility);

@@ -28,10 +28,10 @@ public final class CircleSelectOverlay {
         if (screenshot == null || screenshot.isRecycled()) return false;
         dismissActive("replace");
         Context app = c.getApplicationContext();
-        FvOverlayWindowHost host = new FvOverlayWindowHost(app);
+        FlOverlayWindowHost host = new FlOverlayWindowHost(app);
         Rect contentBounds = CircleSelectFrame.contentBounds(app);
         Rect displayBounds = CircleSelectFrame.displayBounds(app);
-        boolean shadeExpanded = FvSystemPanelController.notificationShadeExpanded();
+        boolean shadeExpanded = FlSystemPanelController.notificationShadeExpanded();
 
         int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
@@ -91,7 +91,7 @@ public final class CircleSelectOverlay {
         private static final long SYSTEM_NAV_FOCUS_LOSS_DELAY_MS = 80L;
 
         private final Context context;
-        private final FvOverlayWindowHost host;
+        private final FlOverlayWindowHost host;
         private final WindowManager.LayoutParams windowLayout;
         private final Bitmap screenshot;
         private final Runnable onClosed;
@@ -117,7 +117,7 @@ public final class CircleSelectOverlay {
         private boolean closePressed;
         private Magnifier magnifier;
 
-        WorkspaceView(Context c, FvOverlayWindowHost host, WindowManager.LayoutParams windowLayout,
+        WorkspaceView(Context c, FlOverlayWindowHost host, WindowManager.LayoutParams windowLayout,
                       Bitmap screenshot, Runnable onClosed, boolean keyFocusEnabled) {
             super(c);
             context = c;

@@ -80,29 +80,29 @@ public class MainActivity extends AppCompatActivity {
                 MenuPickerActivity.targetIntent(this, TargetMenuStore.MODE_PROCESS)));
         root.addView(processMenu);
 
-        Button exportLog = button("导出 FV 诊断日志");
+        Button exportLog = button("导出 FL 诊断日志");
         exportLog.setOnClickListener(v -> {
             String text=DiagnosticLog.read(this);
-            if(text.isBlank()){Toast.makeText(this,"暂无诊断日志，请先在参数页开启 FV 诊断日志并操作悬浮图标",Toast.LENGTH_LONG).show();return;}
-            Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("text/plain").putExtra(Intent.EXTRA_TITLE,"FloatLens-FV-diagnostic.txt");
+            if(text.isBlank()){Toast.makeText(this,"暂无诊断日志，请先在参数页开启 FL 诊断日志并操作悬浮图标",Toast.LENGTH_LONG).show();return;}
+            Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("text/plain").putExtra(Intent.EXTRA_TITLE,"FloatLens-FL-diagnostic.txt");
             startActivityForResult(i,REQ_EXPORT_LOG);
         });
         root.addView(exportLog);
 
-        Button clearLog = button("清空 FV 诊断日志");
+        Button clearLog = button("清空 FL 诊断日志");
         clearLog.setOnClickListener(v -> { DiagnosticLog.clear(this); Toast.makeText(this,"诊断日志已清空",Toast.LENGTH_SHORT).show(); });
         root.addView(clearLog);
 
         inspectorStatus = new TextView(this);
         inspectorStatus.setPadding(0, dp(18), 0, dp(12));
-        inspectorStatus.setText("FV Hook 自检：点击刷新");
+        inspectorStatus.setText("FL Hook 自检：点击刷新");
         root.addView(inspectorStatus);
 
-        Button selfTest = button("刷新 FV Hook 自检");
+        Button selfTest = button("刷新 FL Hook 自检");
         selfTest.setOnClickListener(v -> { sendInspectorCommand("selftest"); inspectorStatus.postDelayed(this::refreshInspectorStatus, 700); });
         root.addView(selfTest);
 
-        Button inspectorOn = button("FV Runtime Inspector：全部记录开启");
+        Button inspectorOn = button("FL Runtime Inspector：全部记录开启");
         inspectorOn.setOnClickListener(v -> sendInspectorCommand("all_on"));
         root.addView(inspectorOn);
 
@@ -114,15 +114,15 @@ public class MainActivity extends AppCompatActivity {
         probeOff.setOnClickListener(v -> sendInspectorCommand("probe_off"));
         root.addView(probeOff);
 
-        Button exportInspector = button("导出 FV Runtime Inspector ZIP");
+        Button exportInspector = button("导出 FL Runtime Inspector ZIP");
         exportInspector.setOnClickListener(v -> {
             if(!InspectorLog.hasAny(this)){Toast.makeText(this,"暂无 Hook 日志。请先在 LSPosed 启用 FloatLens，并把作用域设为 fooView，然后强制停止并重新打开 fooView。",Toast.LENGTH_LONG).show();return;}
-            Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/zip").putExtra(Intent.EXTRA_TITLE,"FloatLens-FV-runtime-inspector.zip");
+            Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/zip").putExtra(Intent.EXTRA_TITLE,"FloatLens-FL-runtime-inspector.zip");
             startActivityForResult(i,REQ_EXPORT_INSPECTOR);
         });
         root.addView(exportInspector);
 
-        Button clearInspector = button("清空 FV Runtime Inspector 日志");
+        Button clearInspector = button("清空 FL Runtime Inspector 日志");
         clearInspector.setOnClickListener(v -> { InspectorLog.clear(this); refreshInspectorStatus(); Toast.makeText(this,"Runtime Inspector 日志已清空",Toast.LENGTH_SHORT).show(); });
         root.addView(clearInspector);
 
@@ -154,7 +154,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void sendInspectorCommand(String cmd){
-        try{Intent i=new Intent("com.yagay.floatlens.FV_HOOK_COMMAND").setPackage("com.fooview.android.fooview");i.putExtra("cmd",cmd);sendBroadcast(i);Toast.makeText(this,"已发送: "+cmd,Toast.LENGTH_SHORT).show();}
+        try{Intent i=new Intent("com.yagay.floatlens.FL_HOOK_COMMAND").setPackage("com.fooview.android.fooview");i.putExtra("cmd",cmd);sendBroadcast(i);Toast.makeText(this,"已发送: "+cmd,Toast.LENGTH_SHORT).show();}
         catch(Throwable t){Toast.makeText(this,"发送失败: "+t.getMessage(),Toast.LENGTH_LONG).show();}
     }
 

@@ -104,7 +104,7 @@ public final class ScreenSelectionModel {
 
     private void replacePrepared(ArrayList<ScreenCandidate> bucket) {
         if (bucket.size() < 2) return;
-        ArrayList<ScreenCandidate> prepared = fvPrepare(bucket);
+        ArrayList<ScreenCandidate> prepared = flPrepare(bucket);
         bucket.clear();
         bucket.addAll(prepared);
     }
@@ -115,7 +115,7 @@ public final class ScreenSelectionModel {
      * inserted before it. For partially overlapping candidates, the smaller rectangle is inserted
      * before the larger one. Unrelated candidates preserve traversal order.
      */
-    private ArrayList<ScreenCandidate> fvPrepare(List<ScreenCandidate> input) {
+    private ArrayList<ScreenCandidate> flPrepare(List<ScreenCandidate> input) {
         ArrayList<ScreenCandidate> out = new ArrayList<>();
         for (ScreenCandidate candidate : input) {
             if (candidate == null || candidate.bounds().isEmpty()) continue;

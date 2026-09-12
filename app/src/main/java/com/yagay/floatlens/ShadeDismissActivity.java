@@ -21,7 +21,7 @@ import android.view.WindowManager;
  */
 public final class ShadeDismissActivity extends Activity {
     private static final String EXTRA_REASON = "shade_reason";
-    private static final long FV_FINISH_DELAY_MS = 300L;
+    private static final long FL_FINISH_DELAY_MS = 300L;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Runnable finishRunnable = () -> {
         if (!isFinishing() && !isDestroyed()) finish();
@@ -38,11 +38,11 @@ public final class ShadeDismissActivity extends Activity {
                             | Intent.FLAG_ACTIVITY_NO_ANIMATION
                             | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
             context.startActivity(intent);
-            DiagnosticLog.i(context.getApplicationContext(), "FV_SHADE",
-                    "shadow activity launch reason=" + reason + " finishDelayMs=" + FV_FINISH_DELAY_MS);
+            DiagnosticLog.i(context.getApplicationContext(), "FL_SHADE",
+                    "shadow activity launch reason=" + reason + " finishDelayMs=" + FL_FINISH_DELAY_MS);
             return true;
         } catch (Throwable t) {
-            DiagnosticLog.i(context.getApplicationContext(), "FV_SHADE",
+            DiagnosticLog.i(context.getApplicationContext(), "FL_SHADE",
                     "shadow activity launch failed reason=" + reason + " error=" + t);
             return false;
         }
@@ -65,13 +65,13 @@ public final class ShadeDismissActivity extends Activity {
 
         String reason = getIntent() == null ? "unknown"
                 : getIntent().getStringExtra(EXTRA_REASON);
-        DiagnosticLog.i(this, "FV_SHADE", "shadow activity created reason=" + reason);
-        main.postDelayed(finishRunnable, FV_FINISH_DELAY_MS);
+        DiagnosticLog.i(this, "FL_SHADE", "shadow activity created reason=" + reason);
+        main.postDelayed(finishRunnable, FL_FINISH_DELAY_MS);
     }
 
     @Override protected void onDestroy() {
         main.removeCallbacks(finishRunnable);
-        DiagnosticLog.i(this, "FV_SHADE", "shadow activity destroyed");
+        DiagnosticLog.i(this, "FL_SHADE", "shadow activity destroyed");
         super.onDestroy();
     }
 }

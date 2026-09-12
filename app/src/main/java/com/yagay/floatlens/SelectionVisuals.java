@@ -9,12 +9,12 @@ import android.graphics.Rect;
 /** Shared FV 1.6.4 drag-selection visuals. */
 final class SelectionVisuals {
     /** FV o1/n1.onDraw(): normal selection is red. */
-    static final int FV_ACTIVE_COLOR = 0xFFFF0000;
+    static final int FL_ACTIVE_COLOR = 0xFFFF0000;
     /** FV o1/n1.onDraw(): confirmed/extractable selection is yellow. */
-    static final int FV_CONFIRMED_COLOR = 0xFFFFFF00;
+    static final int FL_CONFIRMED_COLOR = 0xFFFFFF00;
 
     static int frameColor(boolean confirmed) {
-        return confirmed ? FV_CONFIRMED_COLOR : FV_ACTIVE_COLOR;
+        return confirmed ? FL_CONFIRMED_COLOR : FL_ACTIVE_COLOR;
     }
 
     static int edgeThicknessPx(Context c) {

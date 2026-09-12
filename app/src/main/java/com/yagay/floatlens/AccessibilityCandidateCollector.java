@@ -51,11 +51,11 @@ public final class AccessibilityCandidateCollector {
                 collectNode(service, active, screen, 0, count, out);
             }
         } catch (Throwable t) {
-            DiagnosticLog.i(service, "FV_TREE", "collect failed=" + t);
+            DiagnosticLog.i(service, "FL_TREE", "collect failed=" + t);
         }
 
         List<ScreenCandidate> filtered = CandidateGeometryFilter.filter(out, screen);
-        DiagnosticLog.i(service, "FV_TREE", "text/image/view/root raw=" + out.size()
+        DiagnosticLog.i(service, "FL_TREE", "text/image/view/root raw=" + out.size()
                 + " filtered=" + filtered.size());
         return filtered;
     }
@@ -88,7 +88,7 @@ public final class AccessibilityCandidateCollector {
                 collectNodeAtPoint(service, active, screen, px, py, 0, count, out);
             }
         } catch (Throwable t) {
-            DiagnosticLog.i(service, "FV_TREE", "point collect failed=" + t);
+            DiagnosticLog.i(service, "FL_TREE", "point collect failed=" + t);
         }
         return CandidateGeometryFilter.filter(out, screen);
     }

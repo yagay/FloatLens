@@ -10,10 +10,10 @@ import android.view.WindowManager;
 
 /** Converts the original floating-icon touch stream into FV FooViewService.v3()-style coordinates. */
 public final class SelectionPointTransformer {
-    private static final float FV_EDGE_LEAD_DP = 10f;
-    private static final float FV_X_PROBE_OFFSET_DP = 25f;
-    private static final float FV_EDGE_SPAN_DP = 50f;
-    private static final float FV_Y_HELPER_INSET_DP = 20f;
+    private static final float FL_EDGE_LEAD_DP = 10f;
+    private static final float FL_X_PROBE_OFFSET_DP = 25f;
+    private static final float FL_EDGE_SPAN_DP = 50f;
+    private static final float FL_Y_HELPER_INSET_DP = 20f;
     private static final long LOG_INTERVAL_MS = 80L;
 
     private final Context context;
@@ -58,7 +58,7 @@ public final class SelectionPointTransformer {
                 || startIconLeft + iconWidth / 2f < screen.exactCenterX();
         initialized = true;
 
-        DiagnosticLog.i(context, "FV_PROBE", "BEGIN raw="
+        DiagnosticLog.i(context, "FL_PROBE", "BEGIN raw="
                 + Math.round(downRawX) + "," + Math.round(downRawY)
                 + " local=" + Math.round(touchOffsetX) + "," + Math.round(touchOffsetY)
                 + " startIcon=" + Math.round(startIconLeft) + "," + Math.round(startIconTop)
@@ -94,13 +94,13 @@ public final class SelectionPointTransformer {
         ensureInitializedFallback();
 
         Rect screen = gestureScreen;
-        float lead = dp(FV_EDGE_LEAD_DP);
-        float edgeSpan = dp(FV_EDGE_SPAN_DP);
-        float helperInset = dp(FV_Y_HELPER_INSET_DP);
+        float lead = dp(FL_EDGE_LEAD_DP);
+        float edgeSpan = dp(FL_EDGE_SPAN_DP);
+        float helperInset = dp(FL_Y_HELPER_INSET_DP);
         float iconLeft = startIconLeft + (rawX - downRawX);
 
         // Normal FV X path: K(false) + rawX - downRawX - 25dp.
-        float x = iconLeft - dp(FV_X_PROBE_OFFSET_DP);
+        float x = iconLeft - dp(FL_X_PROBE_OFFSET_DP);
         boolean rightCompensation = false;
         float rightThreshold = Float.NaN;
         if (!screen.isEmpty()) {
@@ -152,7 +152,7 @@ public final class SelectionPointTransformer {
         long now = SystemClock.uptimeMillis();
         if (now - lastLogAt < LOG_INTERVAL_MS && !rightCompensation && !bottomCompensation) return;
         lastLogAt = now;
-        DiagnosticLog.i(context, "FV_PROBE", "raw=" + Math.round(rawX) + "," + Math.round(rawY)
+        DiagnosticLog.i(context, "FL_PROBE", "raw=" + Math.round(rawX) + "," + Math.round(rawY)
                 + " iconLeft=" + Math.round(iconLeft)
                 + " side=" + (gestureLeftSide ? "L" : "R")
                 + " probe=" + Math.round(x) + "," + Math.round(y)
