@@ -8,11 +8,10 @@ import android.graphics.Rect;
 import android.text.InputType;
 import android.text.Selection;
 import android.text.Spannable;
-import android.view.ActionMode;
 import android.view.Gravity;
-import android.view.Menu;
-import android.view.MenuItem;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.Button;
@@ -30,7 +29,6 @@ public final class ScreenshotResultOverlay {
     private static final int TITLE_H_DP = 38;
     private static final int ACTION_H_DP = 50;
     private static final long OCR_INLINE_TIMEOUT_MS = 12_000L;
-    private static final long SELECTION_MENU_DELAY_MS = 180L;
     private static OverlaySession active;
 
     /**
@@ -129,7 +127,7 @@ public final class ScreenshotResultOverlay {
         OverlaySession session = new OverlaySession(app, host, box, image, selected,
                 lp, title, iv, ocrPanel, ocrText, ocr, imageH, height);
         active = session;
-        installSelectionCallbacks(session);
+        installManualSelection(session);
 
         DiagnosticLog.i(app, "SCREENSHOT_RESULT", "SHOW size=" + width + "x" + height
                 + " pos=center"
@@ -148,6 +146,7 @@ public final class ScreenshotResultOverlay {
         tv.setTextColor(Color.WHITE);
         tv.setTextSize(16);
         tv.setBackgroundColor(Color.TRANSPARENT);
+        tv.setHighlightColor(0x884285F4);
         tv.setGravity(Gravity.TOP | Gravity.START);
         tv.setSingleLine(false);
         tv.setHorizontallyScrolling(false);
@@ -156,8 +155,11 @@ public final class ScreenshotResultOverlay {
         tv.setKeyListener(null);
         tv.setCursorVisible(false);
         tv.setShowSoftInputOnFocus(false);
-        tv.setTextIsSelectable(true);
-        tv.setLongClickable(true);
+        // Do not rely on Android's contextual ActionMode inside TYPE_ACCESSIBILITY_OVERLAY.
+        // Selection is driven explicitly by touch below, which also keeps ScrollView behaviour intact.
+        tv.setTextIsSelectable(false);
+        tv.setLongClickable(false);
+        tv.setClickable(true);
         tv.setFocusable(true);
         tv.setFocusableInTouchMode(true);
         tv.setSelectAllOnFocus(false);
@@ -165,49 +167,176 @@ public final class ScreenshotResultOverlay {
         return tv;
     }
 
-    private static void installSelectionCallbacks(OverlaySession session) {
+    private static void installManualSelection(OverlaySession session) {
         SelectionAwareEditText tv = session.ocrText;
-        tv.setCustomSelectionActionModeCallback(new ActionMode.Callback() {
-            @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) {
-                if (menu != null) menu.clear();
-                session.selectionActionMode = mode;
-                session.selectionGeneration++;
-                tv.post(() -> showSelectionMenu(session));
-                DiagnosticLog.i(session.app, "SCREENSHOT_RESULT",
-                        "OCR_SELECTION_ACTION start=" + tv.getSelectionStart()
-                                + " end=" + tv.getSelectionEnd());
-                return true;
-            }
+        int touchSlop = ViewConfiguration.get(session.app).getScaledTouchSlop();
+        int longPressMs = ViewConfiguration.getLongPressTimeout();
 
-            @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
-                if (menu != null) menu.clear();
-                return true;
-            }
+        tv.setOnTouchListener((v, event) -> {
+            if (session.detached || event == null || tv.length() == 0) return false;
+            float x = event.getX();
+            float y = event.getY();
 
-            @Override public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
-                return true;
-            }
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN -> {
+                    session.touchDown = true;
+                    session.manualSelecting = false;
+                    session.downX = x;
+                    session.downY = y;
+                    FloatActionMenu.dismiss();
+                    FloatMenuAnchor.clear();
+                    cancelLongPress(session);
+                    session.longPressRunnable = () -> {
+                        if (session.detached || !session.touchDown || tv.length() == 0) return;
+                        int offset = offsetForTouch(tv, session.downX, session.downY);
+                        int[] word = wordBounds(tv.getText(), offset);
+                        if (word[1] <= word[0]) return;
+                        session.manualSelecting = true;
+                        session.selectionActive = true;
+                        session.selectionAnchorStart = word[0];
+                        session.selectionAnchorEnd = word[1];
+                        requestNoParentIntercept(tv, true);
+                        applySelection(session, word[0], word[1]);
+                        DiagnosticLog.i(session.app, "SCREENSHOT_RESULT",
+                                "OCR_SELECTION_BEGIN start=" + word[0] + " end=" + word[1]);
+                        tv.post(() -> showSelectionMenu(session));
+                    };
+                    tv.postDelayed(session.longPressRunnable, longPressMs);
+                    return false;
+                }
 
-            @Override public void onDestroyActionMode(ActionMode mode) {
-                if (session.selectionActionMode == mode) clearSelection(session);
-            }
-        });
+                case MotionEvent.ACTION_MOVE -> {
+                    if (!session.manualSelecting) {
+                        float dx = x - session.downX;
+                        float dy = y - session.downY;
+                        if (dx * dx + dy * dy > touchSlop * touchSlop) cancelLongPress(session);
+                        return false;
+                    }
+                    requestNoParentIntercept(tv, true);
+                    FloatActionMenu.dismiss();
+                    FloatMenuAnchor.clear();
+                    extendSelectionTo(session, offsetForTouch(tv, x, y));
+                    return true;
+                }
 
-        tv.setSelectionChangedListener((start, end) -> {
-            if (session.detached || session.selectionActionMode == null) return;
-            long generation = ++session.selectionGeneration;
-            FloatActionMenu.dismiss();
-            FloatMenuAnchor.clear();
-            tv.postDelayed(() -> {
-                if (session.detached || session.selectionActionMode == null
-                        || generation != session.selectionGeneration) return;
-                showSelectionMenu(session);
-            }, SELECTION_MENU_DELAY_MS);
+                case MotionEvent.ACTION_UP -> {
+                    session.touchDown = false;
+                    cancelLongPress(session);
+                    if (!session.manualSelecting) return false;
+                    extendSelectionTo(session, offsetForTouch(tv, x, y));
+                    session.manualSelecting = false;
+                    requestNoParentIntercept(tv, false);
+                    DiagnosticLog.i(session.app, "SCREENSHOT_RESULT",
+                            "OCR_SELECTION_END start=" + tv.getSelectionStart()
+                                    + " end=" + tv.getSelectionEnd());
+                    tv.post(() -> showSelectionMenu(session));
+                    return true;
+                }
+
+                case MotionEvent.ACTION_CANCEL -> {
+                    session.touchDown = false;
+                    cancelLongPress(session);
+                    if (session.manualSelecting) {
+                        session.manualSelecting = false;
+                        requestNoParentIntercept(tv, false);
+                        tv.post(() -> showSelectionMenu(session));
+                        return true;
+                    }
+                    return false;
+                }
+            }
+            return false;
         });
     }
 
+    private static void extendSelectionTo(OverlaySession session, int offset) {
+        if (session == null || !session.selectionActive) return;
+        CharSequence text = session.ocrText.getText();
+        if (text == null || text.length() == 0) return;
+        int safe = clamp(offset, 0, text.length());
+        int probe = safe >= text.length() ? text.length() - 1 : safe;
+        int[] word = wordBounds(text, probe);
+        if (safe <= session.selectionAnchorStart) {
+            applySelection(session, word[0], session.selectionAnchorEnd);
+        } else {
+            applySelection(session, session.selectionAnchorStart, word[1]);
+        }
+    }
+
+    private static void applySelection(OverlaySession session, int start, int end) {
+        if (session == null || session.detached) return;
+        SelectionAwareEditText tv = session.ocrText;
+        CharSequence raw = tv.getText();
+        if (!(raw instanceof Spannable span) || span.length() == 0) return;
+        int a = clamp(Math.min(start, end), 0, span.length());
+        int b = clamp(Math.max(start, end), 0, span.length());
+        if (a == b) {
+            if (b < span.length()) b++;
+            else if (a > 0) a--;
+        }
+        if (a >= b) return;
+        tv.requestFocus();
+        Selection.setSelection(span, a, b);
+        session.selectionActive = true;
+    }
+
+    private static int offsetForTouch(EditText tv, float x, float y) {
+        if (tv == null || tv.length() == 0) return 0;
+        try {
+            return clamp(tv.getOffsetForPosition(x, y), 0, tv.length());
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    private static int[] wordBounds(CharSequence text, int offset) {
+        if (text == null || text.length() == 0) return new int[]{0, 0};
+        int n = text.length();
+        int p = clamp(offset, 0, n - 1);
+        char c = text.charAt(p);
+
+        if (Character.isLowSurrogate(c) && p > 0 && Character.isHighSurrogate(text.charAt(p - 1))) {
+            return new int[]{p - 1, Math.min(n, p + 1)};
+        }
+        if (Character.isHighSurrogate(c) && p + 1 < n && Character.isLowSurrogate(text.charAt(p + 1))) {
+            return new int[]{p, p + 2};
+        }
+        if (isCjk(c) || !isLatinWordChar(c)) return new int[]{p, Math.min(n, p + 1)};
+
+        int left = p;
+        int right = p + 1;
+        while (left > 0 && isLatinWordChar(text.charAt(left - 1)) && !isCjk(text.charAt(left - 1))) left--;
+        while (right < n && isLatinWordChar(text.charAt(right)) && !isCjk(text.charAt(right))) right++;
+        return new int[]{left, right};
+    }
+
+    private static boolean isLatinWordChar(char c) {
+        return Character.isLetterOrDigit(c) || c == '_' || c == '\'' || c == '’';
+    }
+
+    private static boolean isCjk(char c) {
+        return (c >= 0x3400 && c <= 0x4DBF)
+                || (c >= 0x4E00 && c <= 0x9FFF)
+                || (c >= 0xF900 && c <= 0xFAFF);
+    }
+
+    private static void requestNoParentIntercept(View view, boolean disallow) {
+        try {
+            if (view != null && view.getParent() != null) {
+                view.getParent().requestDisallowInterceptTouchEvent(disallow);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void cancelLongPress(OverlaySession session) {
+        if (session == null || session.longPressRunnable == null) return;
+        try { session.ocrText.removeCallbacks(session.longPressRunnable); }
+        catch (Throwable ignored) {}
+        session.longPressRunnable = null;
+    }
+
     private static void showSelectionMenu(OverlaySession session) {
-        if (session == null || session.detached || session.selectionActionMode == null) return;
+        if (session == null || session.detached || !session.selectionActive) return;
         String value = selectedText(session.ocrText).trim();
         if (value.isEmpty()) return;
         Rect anchor = FloatMenuAnchor.forTextSelection(session.ocrText);
@@ -221,6 +350,9 @@ public final class ScreenshotResultOverlay {
         try {
             CharSequence raw = session.ocrText.getText();
             if (raw instanceof Spannable span && span.length() > 0) {
+                session.selectionActive = true;
+                session.selectionAnchorStart = 0;
+                session.selectionAnchorEnd = span.length();
                 Selection.setSelection(span, 0, span.length());
                 session.ocrText.post(() -> showSelectionMenu(session));
             }
@@ -239,10 +371,20 @@ public final class ScreenshotResultOverlay {
 
     private static void clearSelection(OverlaySession session) {
         if (session == null) return;
-        session.selectionActionMode = null;
-        session.selectionGeneration++;
+        cancelLongPress(session);
+        session.touchDown = false;
+        session.manualSelecting = false;
+        session.selectionActive = false;
+        requestNoParentIntercept(session.ocrText, false);
         FloatActionMenu.dismiss();
         FloatMenuAnchor.clear();
+        try {
+            CharSequence raw = session.ocrText.getText();
+            if (raw instanceof Spannable span) {
+                int end = span.length();
+                Selection.setSelection(span, end, end);
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static synchronized void beginInlineOcr(OverlaySession session) {
@@ -317,7 +459,7 @@ public final class ScreenshotResultOverlay {
         DiagnosticLog.i(session.app, "SCREENSHOT_RESULT", "OCR_INLINE_SHOW chars="
                 + value.length() + " blocks=" + (blocks == null ? 0 : blocks.size())
                 + " imageH=" + newImageH + " panelH=" + panelH
-                + " selectable=true sameWindow=true pos=center");
+                + " manualSelection=true sameWindow=true pos=center");
     }
 
     public static synchronized void dismissActive(String reason) {
@@ -384,14 +526,7 @@ public final class ScreenshotResultOverlay {
     }
 
     private static final class SelectionAwareEditText extends EditText {
-        interface SelectionListener { void onChanged(int start, int end); }
-        private SelectionListener listener;
         SelectionAwareEditText(Context context) { super(context); }
-        void setSelectionChangedListener(SelectionListener listener) { this.listener = listener; }
-        @Override protected void onSelectionChanged(int selStart, int selEnd) {
-            super.onSelectionChanged(selStart, selEnd);
-            if (listener != null) listener.onChanged(selStart, selEnd);
-        }
     }
 
     private static final class OverlaySession {
@@ -411,8 +546,14 @@ public final class ScreenshotResultOverlay {
         boolean detached;
         boolean ocrRunning;
         long ocrGeneration;
-        ActionMode selectionActionMode;
-        long selectionGeneration;
+        boolean touchDown;
+        boolean manualSelecting;
+        boolean selectionActive;
+        int selectionAnchorStart;
+        int selectionAnchorEnd;
+        float downX;
+        float downY;
+        Runnable longPressRunnable;
 
         OverlaySession(Context app, FvOverlayWindowHost host, LinearLayout box,
                        Bitmap image, Rect anchor, WindowManager.LayoutParams windowLayout,
