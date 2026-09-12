@@ -78,9 +78,6 @@ public final class CircleSelectOverlay {
         private static final int MODE_END_HANDLE = 3;
         private static final int MODE_CIRCLE = 4;
         private static final long RECT_SNAP_PREVIEW_MS = 170L;
-        // While a text selection is already active, Android-style handles should keep following the
-        // nearest readable text through inter-word/inter-line whitespace instead of requiring the
-        // finger to remain exactly inside a tiny OCR bounding box.
         private static final float HANDLE_SNAP_DISTANCE_DP = 96f;
 
         private final Context context;
@@ -143,7 +140,7 @@ public final class CircleSelectOverlay {
                     if (closed) return;
                     words = result == null ? List.of() : result;
                     ocrReady = true;
-                    DiagnosticLog.i(context, "CIRCLE_SELECT", "spatial words=" + words.size());
+                    DiagnosticLog.i(context, "CIRCLE_SELECT", "spatial units=" + words.size());
                     invalidate();
                 }
 
@@ -187,7 +184,7 @@ public final class CircleSelectOverlay {
             if (circleResolving) status = "已自动吸附为矩形…";
             else if (!ocrReady) status = "正在识别图片文字… · 空白处可直接圈选";
             else if (words.isEmpty()) status = "未检测到可选文字 · 圈画松手自动变为矩形";
-            else status = "点按文字选择 · 拖动蓝色手柄可跨行调整 · 空白处圈画";
+            else status = "点按文字选择 · 手柄可按字符跨行调整 · 空白处圈画";
             canvas.drawText(status, dp(16), dp(34), textPaint);
             drawClose(canvas);
         }
@@ -237,8 +234,6 @@ public final class CircleSelectOverlay {
                         }
                     }
 
-                    // Starting a selection still requires a real OCR hit. This preserves the
-                    // distinction between selecting text and starting a free-hand circle in blank space.
                     int hit = findWordAt(x, y);
                     if (hit >= 0) {
                         startIndex = endIndex = hit;
@@ -259,9 +254,6 @@ public final class CircleSelectOverlay {
                 case MotionEvent.ACTION_MOVE -> {
                     if (closePressed) return true;
                     if (mode == MODE_TEXT || mode == MODE_START_HANDLE || mode == MODE_END_HANDLE) {
-                        // Once text selection is active, snap to the nearest word/line. Requiring an
-                        // exact OCR rectangle hit is what previously made handle dragging appear
-                        // limited to one row, especially across the blank gap between two lines.
                         int hit = findSelectionWord(x, y);
                         if (hit >= 0) {
                             updateSelectionEndpoint(hit);
@@ -305,8 +297,6 @@ public final class CircleSelectOverlay {
                     }
 
                     if (mode == MODE_TEXT || mode == MODE_START_HANDLE || mode == MODE_END_HANDLE) {
-                        // ACTION_MOVE can be coalesced during a fast drag. Snap once more at release
-                        // so the final line/word under the finger is never lost.
                         int finalHit = findSelectionWord(x, y);
                         if (finalHit >= 0) updateSelectionEndpoint(finalHit);
 
@@ -356,8 +346,6 @@ public final class CircleSelectOverlay {
             RectF first = toViewRect(words.get(lo).bounds());
             RectF last = toViewRect(words.get(hi).bounds());
             float stem = dp(7);
-            // A 28dp radius is intentionally larger than the drawn dot. It feels much closer to
-            // Android's native selection handle hit target and is easier to grab over a screenshot.
             float r = dp(28);
             if (distance(x, y, first.left, first.bottom + stem) <= r) {
                 return startIndex <= endIndex ? MODE_START_HANDLE : MODE_END_HANDLE;
@@ -368,7 +356,6 @@ public final class CircleSelectOverlay {
             return MODE_NONE;
         }
 
-        /** Exact hit used only when deciding whether a fresh gesture starts text selection or circle. */
         private int findWordAt(float viewX, float viewY) {
             if (words.isEmpty() || getWidth() <= 0 || getHeight() <= 0) return -1;
             int bx = Math.round(viewX * screenshot.getWidth() / (float) getWidth());
@@ -387,11 +374,6 @@ public final class CircleSelectOverlay {
             return best;
         }
 
-        /**
-         * Handle/drag hit test. Prefer an exact word, otherwise snap to the geometrically nearest OCR
-         * box. This is deliberately screen-space rather than image-space so the touch radius is
-         * consistent across display densities and screenshot scaling.
-         */
         private int findSelectionWord(float viewX, float viewY) {
             int exact = findWordAt(viewX, viewY);
             if (exact >= 0) return exact;
@@ -408,9 +390,6 @@ public final class CircleSelectOverlay {
                 float dy = 0f;
                 if (viewY < r.top) dy = r.top - viewY;
                 else if (viewY > r.bottom) dy = viewY - r.bottom;
-
-                // Vertical movement is slightly favoured so crossing a normal line gap does not get
-                // stuck on the previous row merely because the next row starts at a different X.
                 float score = dx * dx + dy * dy * 0.72f;
                 if (score < bestScore) {
                     bestScore = score;
@@ -427,17 +406,24 @@ public final class CircleSelectOverlay {
             int hi = Math.max(startIndex, endIndex);
             StringBuilder out = new StringBuilder();
             int previousLine = -1;
+            int previousGroup = -1;
             String previous = "";
             for (int i = lo; i <= hi && i < words.size(); i++) {
                 SpatialOcrEngine.Word w = words.get(i);
                 String value = w.text();
                 if (value.isBlank()) continue;
                 if (out.length() > 0) {
-                    if (w.line() != previousLine) out.append('\n');
-                    else if (!noSpaceBetween(previous, value)) out.append(' ');
+                    if (w.line() != previousLine) {
+                        out.append('\n');
+                    } else if (w.group() != previousGroup && !noSpaceBetween(previous, value)) {
+                        // Symbol units from the same ML Kit Element form one word/phrase and must be
+                        // glued back together. Different Latin elements keep their natural word gap.
+                        out.append(' ');
+                    }
                 }
                 out.append(value);
                 previousLine = w.line();
+                previousGroup = w.group();
                 previous = value;
             }
             return out.toString().trim();
