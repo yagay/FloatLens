@@ -3,17 +3,19 @@ package com.yagay.floatlens;
 import android.content.Context;
 import android.graphics.PointF;
 import android.graphics.Rect;
-import android.graphics.RectF;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.MotionEvent;
-import android.view.WindowManager;
 
 /**
  * FV-style same-touch selection engine.
  *
  * The Accessibility tree is cached before FloatLens adds its own probe/highlight windows. MOVE then
  * updates the red/yellow probe and performs only cached rectangle hit testing.
+ *
+ * Important: FV has two different operation-hint systems. The direct-selection hint that sits next
+ * to the + probe belongs to m2/g.pointer_op_hint. It is NOT FooViewService.D4()'s 24dp owner-icon
+ * hint. This class therefore binds FvPointerOperationHintOverlay to the probe window coordinates.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
@@ -24,11 +26,10 @@ public final class ViewSelectionEngine {
     private final Context context;
     private final LensAccessibilityService accessibility;
     private final SelectionPointTransformer pointTransformer;
-    private final FloatIconView ownerIcon;
 
     private ViewHoverOverlay overlay;
     private FvProbePointOverlay probeOverlay;
-    private FvOperationHintOverlay operationOverlay;
+    private FvPointerOperationHintOverlay pointerHintOverlay;
     private State state = State.IDLE;
     private float selectionX = Float.NaN, selectionY = Float.NaN;
 
@@ -36,10 +37,13 @@ public final class ViewSelectionEngine {
         this(c, null);
     }
 
+    /**
+     * ownerIcon is intentionally retained in the constructor for call-site compatibility. FV's
+     * pointer_op_hint does not use the owner FloatIconView at all; its anchor is m2/g.x (pen window).
+     */
     public ViewSelectionEngine(Context c, FloatIconView ownerIcon) {
         context = c.getApplicationContext();
         accessibility = LensAccessibilityService.get();
-        this.ownerIcon = ownerIcon;
         FloatSettings fs = new FloatSettings(context);
         float px = fs.sizeDp() * context.getResources().getDisplayMetrics().density;
         pointTransformer = new SelectionPointTransformer(context, px, px);
@@ -82,8 +86,10 @@ public final class ViewSelectionEngine {
 
         ensureProbe();
         if (probeOverlay != null) probeOverlay.setTracking();
-        hideOperationHint();
+
         PointF shown = showProbeAt(transformed);
+        hideOperationHint();
+
         selectionX = shown.x;
         selectionY = shown.y;
 
@@ -93,7 +99,9 @@ public final class ViewSelectionEngine {
 
     public void hideProbe() {
         if (probeOverlay != null) probeOverlay.hide();
-        hideOperationHint();
+        probeOverlay = null;
+        if (pointerHintOverlay != null) pointerHintOverlay.close();
+        pointerHintOverlay = null;
     }
 
     /** Delayed move-idle state: keep the cached/highlighted target and enter DIRECT. */
@@ -123,7 +131,7 @@ public final class ViewSelectionEngine {
         selectionX = shown.x;
         selectionY = shown.y;
         overlay.beginDirect(selectionX, selectionY);
-        updateOperationHint(rawX, rawY);
+        updateOperationHint();
 
         DiagnosticLog.i(context, "FV_SELECT", "DIRECT_ENTER raw="
                 + Math.round(rawX) + "," + Math.round(rawY)
@@ -136,19 +144,31 @@ public final class ViewSelectionEngine {
         if (state != State.DIRECT || overlay == null) return;
         ensureProbe();
         if (probeOverlay != null) probeOverlay.setReady();
+
         PointF transformed = pointTransformer.transformRaw(rawX, rawY);
         PointF shown = showProbeAt(transformed);
         selectionX = shown.x;
         selectionY = shown.y;
+
         overlay.updateDirect(selectionX, selectionY);
-        updateOperationHint(rawX, rawY);
+        updateOperationHint();
     }
 
+    /**
+     * FV m2/g.D() moves float_pen_view and pointer_op_hint together. Keep the sibling hint window
+     * synchronized here on every point update, even while its internal icon is hidden.
+     */
     private PointF showProbeAt(PointF p) {
         if (p == null) return new PointF();
         ensureProbe();
         if (probeOverlay == null) return new PointF(Math.round(p.x), Math.round(p.y));
-        return probeOverlay.showAt(Math.round(p.x), Math.round(p.y));
+
+        PointF shown = probeOverlay.showAt(Math.round(p.x), Math.round(p.y));
+        ensurePointerHint();
+        if (pointerHintOverlay != null && probeOverlay.isAttached()) {
+            pointerHintOverlay.syncToProbeWindow(probeOverlay.windowX(), probeOverlay.windowY());
+        }
+        return shown;
     }
 
     /**
@@ -185,7 +205,7 @@ public final class ViewSelectionEngine {
             text = "";
         }
 
-        // FV removes m2/g and its helper windows before the delayed action callback runs.
+        // FV m2/g.s() removes the selection window, float_pen_view and pointer_op_hint first.
         if (overlay != null) overlay.cancel();
         overlay = null;
         state = State.IDLE;
@@ -245,43 +265,36 @@ public final class ViewSelectionEngine {
     }
 
     /**
-     * Exact FV FooViewService.D4() owner-coordinate source: read the active FloatIconView's current
-     * WindowManager.LayoutParams x/y/width directly. Do not reconstruct this from touch/probe data.
+     * FV m2/g.E() changes pointer_op_hint content. Position always comes from the + probe window,
+     * never from FloatIconView, raw touch coordinates, or SelectionPointTransformer icon bounds.
      */
-    private RectF currentOwnerWindowBounds() {
-        if (ownerIcon == null) return null;
-        try {
-            android.view.ViewGroup.LayoutParams base = ownerIcon.getLayoutParams();
-            if (base instanceof WindowManager.LayoutParams wlp) {
-                int width = wlp.width > 0 ? wlp.width : Math.max(1, ownerIcon.getWidth());
-                int height = wlp.height > 0 ? wlp.height : Math.max(1, ownerIcon.getHeight());
-                return new RectF(wlp.x, wlp.y, wlp.x + width, wlp.y + height);
-            }
-        } catch (Throwable ignored) {
-        }
-        return ownerIcon.currentFvWindowBounds();
-    }
-
-    private void updateOperationHint(float rawX, float rawY) {
-        if (state != State.DIRECT || overlay == null) {
+    private void updateOperationHint() {
+        if (state != State.DIRECT || overlay == null || probeOverlay == null
+                || !probeOverlay.isAttached()) {
             hideOperationHint();
             return;
         }
-        if (operationOverlay == null) operationOverlay = new FvOperationHintOverlay(context);
 
-        RectF icon = currentOwnerWindowBounds();
-        if (icon == null || icon.isEmpty()) {
-            icon = pointTransformer.iconBoundsForRaw(rawX, rawY);
-        }
-        operationOverlay.show(currentOperationMode(), icon, pointTransformer.gestureLeftSide());
+        ensurePointerHint();
+        if (pointerHintOverlay == null) return;
+        pointerHintOverlay.show(
+                currentOperationMode(),
+                probeOverlay.windowX(),
+                probeOverlay.windowY());
     }
 
     private void hideOperationHint() {
-        if (operationOverlay != null) operationOverlay.hide();
+        if (pointerHintOverlay != null) pointerHintOverlay.hideContent();
     }
 
     private void ensureProbe() {
         if (probeOverlay == null) probeOverlay = new FvProbePointOverlay(context);
+    }
+
+    private void ensurePointerHint() {
+        if (pointerHintOverlay == null) {
+            pointerHintOverlay = new FvPointerOperationHintOverlay(context);
+        }
     }
 
     private void ensureHoverOverlay() {
@@ -297,7 +310,7 @@ public final class ViewSelectionEngine {
     private void closeVisuals() {
         if (probeOverlay != null) probeOverlay.close();
         probeOverlay = null;
-        if (operationOverlay != null) operationOverlay.close();
-        operationOverlay = null;
+        if (pointerHintOverlay != null) pointerHintOverlay.close();
+        pointerHintOverlay = null;
     }
 }
