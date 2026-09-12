@@ -56,6 +56,7 @@ public final class ResultTextActivity extends AppCompatActivity {
     private static final int ACTION_AREA_DP = 50;
     private static final int ROOT_VPAD_DP = 18;
     private static final int BODY_GAP_DP = 6;
+    private static final long SELECTION_TOOLBAR_HIDE_MS = 350L;
 
     private static final int MENU_COPY = 0x46540001;
     private static final int MENU_SHARE = 0x46540002;
@@ -66,6 +67,8 @@ public final class ResultTextActivity extends AppCompatActivity {
     private Payload payload;
     private boolean circleFinished;
     private ActionMode activeBlockActionMode;
+    private ActionMode activeFullSelectionActionMode;
+    private EditText activeFullSelectionText;
 
     public interface InlineResultSink {
         void onResult(String text, List<String> blocks);
@@ -252,7 +255,7 @@ public final class ResultTextActivity extends AppCompatActivity {
      * visible ACTION_PROCESS_TEXT handler because some OEM frameworks only expose a shortened list.
      */
     private EditText selectableText(String text) {
-        EditText tv = new EditText(this);
+        SelectionAwareEditText tv = new SelectionAwareEditText(this);
         tv.setText(text == null ? "" : text);
         tv.setTextColor(Color.WHITE);
         tv.setTextSize(16);
@@ -274,6 +277,8 @@ public final class ResultTextActivity extends AppCompatActivity {
 
         tv.setCustomSelectionActionModeCallback(new ActionMode.Callback() {
             @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                activeFullSelectionActionMode = mode;
+                activeFullSelectionText = tv;
                 refreshFullSelectionProcessItems(menu, tv);
                 DiagnosticLog.i(ResultTextActivity.this, "RESULT_TEXT_MENU",
                         "FULL_CREATE selected=" + selectedText(tv).length()
@@ -308,10 +313,29 @@ public final class ResultTextActivity extends AppCompatActivity {
             }
 
             @Override public void onDestroyActionMode(ActionMode mode) {
+                if (activeFullSelectionActionMode == mode) {
+                    activeFullSelectionActionMode = null;
+                    activeFullSelectionText = null;
+                }
                 DiagnosticLog.i(ResultTextActivity.this, "RESULT_TEXT_MENU", "FULL_DESTROY");
             }
         });
+        tv.setSelectionChangedListener(() -> hideFullSelectionToolbarWhileAdjusting(tv));
         return tv;
+    }
+
+    private void hideFullSelectionToolbarWhileAdjusting(EditText tv) {
+        ActionMode mode = activeFullSelectionActionMode;
+        if (mode == null || activeFullSelectionText != tv) return;
+        int start = tv.getSelectionStart();
+        int end = tv.getSelectionEnd();
+        if (start < 0 || end < 0 || start == end) return;
+        try {
+            // Every handle movement changes the selection. Repeated hide() calls restart the
+            // timer, so the toolbar stays out of the way of the magnifier for the whole drag and
+            // automatically comes back shortly after the adjustment stops.
+            mode.hide(SELECTION_TOOLBAR_HIDE_MS);
+        } catch (Throwable ignored) {}
     }
 
     private String selectedText(EditText tv) {
@@ -651,6 +675,11 @@ public final class ResultTextActivity extends AppCompatActivity {
             try { activeBlockActionMode.finish(); } catch (Throwable ignored) {}
             activeBlockActionMode = null;
         }
+        if (activeFullSelectionActionMode != null) {
+            try { activeFullSelectionActionMode.finish(); } catch (Throwable ignored) {}
+            activeFullSelectionActionMode = null;
+            activeFullSelectionText = null;
+        }
         if (!circleFinished) {
             circleFinished = true;
             FloatService f = FloatService.get();
@@ -667,6 +696,13 @@ public final class ResultTextActivity extends AppCompatActivity {
             try { old.finish(); } catch (Throwable ignored) {}
             return;
         }
+        if (activeFullSelectionActionMode != null) {
+            ActionMode old = activeFullSelectionActionMode;
+            activeFullSelectionActionMode = null;
+            activeFullSelectionText = null;
+            try { old.finish(); } catch (Throwable ignored) {}
+            return;
+        }
         finishWithCircle("result_back");
     }
 
@@ -674,6 +710,11 @@ public final class ResultTextActivity extends AppCompatActivity {
         if (activeBlockActionMode != null) {
             try { activeBlockActionMode.finish(); } catch (Throwable ignored) {}
             activeBlockActionMode = null;
+        }
+        if (activeFullSelectionActionMode != null) {
+            try { activeFullSelectionActionMode.finish(); } catch (Throwable ignored) {}
+            activeFullSelectionActionMode = null;
+            activeFullSelectionText = null;
         }
         if (token != 0L) PENDING.remove(token);
         super.onDestroy();
@@ -684,6 +725,23 @@ public final class ResultTextActivity extends AppCompatActivity {
     private int clamp(int v, int min, int max) {
         if (max < min) return min;
         return Math.max(min, Math.min(v, max));
+    }
+
+    private static final class SelectionAwareEditText extends EditText {
+        private Runnable selectionChangedListener;
+
+        SelectionAwareEditText(Context context) {
+            super(context);
+        }
+
+        void setSelectionChangedListener(Runnable listener) {
+            selectionChangedListener = listener;
+        }
+
+        @Override protected void onSelectionChanged(int selStart, int selEnd) {
+            super.onSelectionChanged(selStart, selEnd);
+            if (selectionChangedListener != null) selectionChangedListener.run();
+        }
     }
 
     private static final class Payload {
