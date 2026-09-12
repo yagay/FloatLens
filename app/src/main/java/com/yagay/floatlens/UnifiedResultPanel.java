@@ -3,7 +3,6 @@ package com.yagay.floatlens;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
-import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.view.View;
 import android.widget.Button;
@@ -11,21 +10,16 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.Toast;
 
-import java.util.List;
-
 /**
- * The single visual implementation for every FloatLens result surface.
+ * The one visual implementation for every FloatLens result.
  *
- * Window ownership is intentionally outside this class: screenshot results may be hosted in a
- * TYPE_ACCESSIBILITY_OVERLAY while selectable text is hosted in ResultActivity. Both hosts render
- * this exact panel, so title/image/text/actions/layout changes are implemented once.
+ * The hierarchy never changes by mode: title, image slot, selectable text slot and the fixed
+ * OCR / Copy / Save / Close action row always exist. ResultSession only changes their content and
+ * enabled state, so adding a result capability never requires another popup implementation.
  */
 final class UnifiedResultPanel {
-    enum Mode { SCREENSHOT, VIEW_TEXT, VIEW_IMAGE, OCR }
-
     private final Context context;
-    private final Mode mode;
-    private final Bitmap image;
+    private final FloatSettings settings;
     private final LinearLayout root;
     private final android.widget.TextView title;
     private final ImageView imageView;
@@ -36,153 +30,164 @@ final class UnifiedResultPanel {
     private final Button saveButton;
     private final Button closeButton;
     private final int width;
-    private final int height;
+    private final int maxHeight;
+    private final int titleHeight;
+    private final int actionsHeight;
     private final int contentBudget;
 
-    UnifiedResultPanel(Context context, Mode mode, Bitmap image, String text, String meta,
-                       boolean allowNativeSelection) {
+    private ResultSession session;
+    private int height;
+    private boolean ocrRunning;
+
+    UnifiedResultPanel(Context context, ResultSession initial) {
         this.context = context;
-        this.mode = mode;
-        this.image = image;
+        this.settings = new FloatSettings(context.getApplicationContext());
 
         Rect usable = ResultUi.usableBounds(context);
         width = ResultUi.standardWidth(context, usable);
-        int maxH = ResultUi.standardMaxHeight(context, usable);
-        int titleH = ResultUi.dp(context, ResultUi.TITLE_H_DP);
-        int actionsH = ResultUi.dp(context, ResultUi.ACTION_H_DP);
+        maxHeight = ResultUi.standardMaxHeight(context, usable);
+        titleHeight = ResultUi.dp(context, ResultUi.TITLE_H_DP);
+        actionsHeight = ResultUi.dp(context, ResultUi.ACTION_H_DP);
         contentBudget = Math.max(ResultUi.dp(context, 90),
-                maxH - titleH - actionsH - ResultUi.dp(context, ResultUi.ROOT_VPAD_DP));
-
-        FloatSettings settings = new FloatSettings(context.getApplicationContext());
-        boolean showText = initialTextVisible(mode, settings);
-        boolean showImage = image != null && !image.isRecycled()
-                && (mode != Mode.OCR || settings.ocrShowImage());
+                maxHeight - titleHeight - actionsHeight - ResultUi.dp(context, ResultUi.ROOT_VPAD_DP));
 
         root = ResultUi.box(context);
-        title = ResultUi.heading(context, titleForMode(mode));
-        root.addView(title, new LinearLayout.LayoutParams(-1, titleH));
+        title = ResultUi.heading(context, "FloatLens");
+        root.addView(title, new LinearLayout.LayoutParams(-1, titleHeight));
 
-        int imageH = 0;
-        if (showImage) {
-            int cap = mode == Mode.VIEW_IMAGE ? ResultUi.dp(context, 190) : ResultUi.dp(context, 135);
-            if (mode == Mode.SCREENSHOT) cap = contentBudget;
-            imageH = ResultUi.imageHeight(context, image, width, cap);
-            imageView = new ImageView(context);
-            imageView.setImageBitmap(image);
-            imageView.setAdjustViewBounds(false);
-            imageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
-            ImageShareUtils.attachLongPressShare(context, imageView, image);
-            root.addView(imageView, new LinearLayout.LayoutParams(-1, imageH));
-        } else {
-            imageView = null;
-        }
+        imageView = new ImageView(context);
+        imageView.setAdjustViewBounds(false);
+        imageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        imageView.setVisibility(View.GONE);
+        root.addView(imageView, new LinearLayout.LayoutParams(-1, 0));
 
-        if (allowNativeSelection) {
-            textPanel = new LinearLayout(context);
-            textPanel.setOrientation(LinearLayout.VERTICAL);
-            textPanel.setPadding(0, ResultUi.dp(context, 4), 0, ResultUi.dp(context, 4));
-            selection = new TextSelectionSurface(context);
-            textPanel.addView(selection, new LinearLayout.LayoutParams(-1, 0, 1f));
-            textPanel.setVisibility(showText ? View.VISIBLE : View.GONE);
-            root.addView(textPanel, new LinearLayout.LayoutParams(-1, 0));
-            bindSelectionMenu();
-        } else {
-            textPanel = null;
-            selection = null;
-        }
-
-        int textH = showText && selection != null
-                ? Math.max(ResultUi.dp(context, 96), contentBudget - imageH) : 0;
-        if (showText && textPanel != null) {
-            textPanel.setLayoutParams(new LinearLayout.LayoutParams(-1, textH));
-            selection.setText(initialText(mode, text, meta));
-        }
+        textPanel = new LinearLayout(context);
+        textPanel.setOrientation(LinearLayout.VERTICAL);
+        textPanel.setPadding(0, ResultUi.dp(context, 4), 0, ResultUi.dp(context, 4));
+        selection = new TextSelectionSurface(context);
+        textPanel.addView(selection, new LinearLayout.LayoutParams(-1, 0, 1f));
+        textPanel.setVisibility(View.GONE);
+        root.addView(textPanel, new LinearLayout.LayoutParams(-1, 0));
+        bindSelectionMenu();
 
         LinearLayout actions = ResultUi.actionRow(context);
-        boolean canOcr = image != null && !image.isRecycled() && mode != Mode.OCR;
-        boolean canSave = image != null && !image.isRecycled()
-                && (mode == Mode.SCREENSHOT || mode == Mode.VIEW_IMAGE);
-
-        if (canOcr) {
-            ocrButton = ResultUi.button(context, "OCR");
-            actions.addView(ocrButton, new LinearLayout.LayoutParams(0, -1, 1));
-        } else {
-            ocrButton = null;
-        }
-
-        if (showText || (canOcr && allowNativeSelection)) {
-            copyButton = ResultUi.button(context, "复制全部");
-            copyButton.setVisibility(showText ? View.VISIBLE : View.GONE);
-            actions.addView(copyButton, new LinearLayout.LayoutParams(0, -1, 1));
-            copyButton.setOnClickListener(v -> copyAll());
-        } else {
-            copyButton = null;
-        }
-
-        if (canSave) {
-            saveButton = ResultUi.button(context, "保存图片");
-            actions.addView(saveButton, new LinearLayout.LayoutParams(0, -1, 1));
-        } else {
-            saveButton = null;
-        }
-
+        ocrButton = ResultUi.button(context, "OCR");
+        copyButton = ResultUi.button(context, "复制");
+        saveButton = ResultUi.button(context, "保存");
         closeButton = ResultUi.button(context, "关闭");
+        actions.addView(ocrButton, new LinearLayout.LayoutParams(0, -1, 1));
+        actions.addView(copyButton, new LinearLayout.LayoutParams(0, -1, 1));
+        actions.addView(saveButton, new LinearLayout.LayoutParams(0, -1, 1));
         actions.addView(closeButton, new LinearLayout.LayoutParams(0, -1, 1));
-        root.addView(actions, new LinearLayout.LayoutParams(-1, actionsH));
+        root.addView(actions, new LinearLayout.LayoutParams(-1, actionsHeight));
 
-        if (mode == Mode.SCREENSHOT) {
-            height = Math.max(ResultUi.dp(context, 158), Math.min(maxH,
-                    titleH + actionsH + imageH + ResultUi.dp(context, ResultUi.ROOT_VPAD_DP)));
-        } else {
-            height = Math.max(ResultUi.dp(context, 158), Math.min(maxH,
-                    titleH + actionsH + imageH + textH + ResultUi.dp(context, ResultUi.ROOT_VPAD_DP)));
-        }
+        copyButton.setOnClickListener(v -> copyAll());
+        render(initial);
     }
 
     LinearLayout root() { return root; }
     int width() { return width; }
     int height() { return height; }
     TextSelectionSurface selection() { return selection; }
+    ResultSession session() { return session; }
 
     void bindActions(Runnable onOcr, Runnable onSave, Runnable onClose) {
-        if (ocrButton != null) ocrButton.setOnClickListener(v -> { if (onOcr != null) onOcr.run(); });
-        if (saveButton != null) saveButton.setOnClickListener(v -> { if (onSave != null) onSave.run(); });
+        ocrButton.setOnClickListener(v -> { if (onOcr != null) onOcr.run(); });
+        saveButton.setOnClickListener(v -> { if (onSave != null) onSave.run(); });
         closeButton.setOnClickListener(v -> { if (onClose != null) onClose.run(); });
     }
 
-    void setOcrRunning(boolean running) {
-        if (ocrButton == null) return;
-        ocrButton.setEnabled(!running);
-        ocrButton.setText(running ? "识别中…" : "重新识别");
-    }
+    void render(ResultSession next) {
+        if (next == null) return;
+        session = next;
+        selection.clearSelection();
+        FloatActionMenu.dismiss();
+        FloatMenuAnchor.clear();
 
-    void resetOcrButton() {
-        if (ocrButton == null) return;
-        ocrButton.setEnabled(true);
-        ocrButton.setText("OCR");
-    }
+        title.setText(next.title());
+        boolean showImage = next.showImage(settings);
+        boolean showText = next.showText(settings);
 
-    void showOcrText(String text) {
-        if (selection == null || textPanel == null) return;
-        String shown = text == null || text.trim().isEmpty() ? "未识别到文字" : text.trim();
-        title.setText("OCR 结果");
-        selection.setText(shown);
-        textPanel.setVisibility(View.VISIBLE);
-        if (copyButton != null) copyButton.setVisibility(View.VISIBLE);
-
-        int imageH = 0;
-        if (imageView != null) {
-            imageH = Math.min(ResultUi.dp(context, 130), Math.max(0, contentBudget / 2));
-            imageView.setLayoutParams(new LinearLayout.LayoutParams(-1, imageH));
-            imageView.setVisibility(imageH > 0 ? View.VISIBLE : View.GONE);
+        int imageHeight = 0;
+        if (showImage) {
+            imageView.setImageBitmap(next.image());
+            imageView.setVisibility(View.VISIBLE);
+            int cap;
+            if (showText) {
+                cap = Math.min(ResultUi.dp(context, 130), Math.max(ResultUi.dp(context, 72), contentBudget / 2));
+            } else if (next.mode() == ResultSession.Mode.SCREENSHOT) {
+                cap = contentBudget;
+            } else if (next.mode() == ResultSession.Mode.VIEW_IMAGE) {
+                cap = ResultUi.dp(context, 190);
+            } else {
+                cap = ResultUi.dp(context, 135);
+            }
+            imageHeight = ResultUi.imageHeight(context, next.image(), width, cap);
+            imageView.setLayoutParams(new LinearLayout.LayoutParams(-1, imageHeight));
+            ImageShareUtils.attachLongPressShare(context, imageView, next.image());
+        } else {
+            imageView.setImageDrawable(null);
+            imageView.setVisibility(View.GONE);
+            imageView.setLayoutParams(new LinearLayout.LayoutParams(-1, 0));
         }
-        int textH = Math.max(ResultUi.dp(context, 96), contentBudget - imageH);
-        textPanel.setLayoutParams(new LinearLayout.LayoutParams(-1, textH));
+
+        int textHeight = 0;
+        if (showText) {
+            textHeight = Math.max(ResultUi.dp(context, 96), contentBudget - imageHeight);
+            textPanel.setVisibility(View.VISIBLE);
+            textPanel.setLayoutParams(new LinearLayout.LayoutParams(-1, textHeight));
+            selection.setText(next.displayText());
+        } else {
+            textPanel.setVisibility(View.GONE);
+            textPanel.setLayoutParams(new LinearLayout.LayoutParams(-1, 0));
+            selection.setText("");
+        }
+
+        height = Math.max(ResultUi.dp(context, 158), Math.min(maxHeight,
+                titleHeight + actionsHeight + imageHeight + textHeight
+                        + ResultUi.dp(context, ResultUi.ROOT_VPAD_DP)));
+        updateActions();
         root.requestLayout();
+
+        DiagnosticLog.i(context, "RESULT_PANEL", "render mode=" + next.mode()
+                + " origin=" + next.originMode()
+                + " image=" + showImage + " text=" + showText
+                + " size=" + width + "x" + height
+                + " buttons=ocr/copy/save/close");
     }
 
-    void clearSelection() {
-        if (selection != null) selection.clearSelection();
+    void setOcrRunning(boolean running) {
+        ocrRunning = running;
+        updateActions();
+    }
+
+    void clearSelection() { selection.clearSelection(); }
+
+    private void updateActions() {
+        ResultSession s = session;
+        boolean canOcr = s != null && s.canOcr();
+        boolean canCopy = s != null && s.canCopy();
+        boolean canSave = s != null && s.canSave();
+
+        ocrButton.setEnabled(canOcr && !ocrRunning);
+        ocrButton.setText(ocrRunning ? "识别中…"
+                : s != null && s.mode() == ResultSession.Mode.OCR ? "重新识别" : "OCR");
+        setEnabledVisual(ocrButton, canOcr && !ocrRunning);
+
+        copyButton.setEnabled(canCopy);
+        copyButton.setText("复制");
+        setEnabledVisual(copyButton, canCopy);
+
+        saveButton.setEnabled(canSave);
+        saveButton.setText("保存");
+        setEnabledVisual(saveButton, canSave);
+
+        closeButton.setEnabled(true);
+        setEnabledVisual(closeButton, true);
+    }
+
+    private void setEnabledVisual(Button button, boolean enabled) {
+        button.setAlpha(enabled ? 1f : 0.42f);
     }
 
     private void bindSelectionMenu() {
@@ -206,36 +211,11 @@ final class UnifiedResultPanel {
     }
 
     private void copyAll() {
-        if (selection == null) return;
+        if (session == null || !session.canCopy()) return;
         String value = selection.editor().getText().toString();
+        if (value.isBlank()) value = session.displayText();
         ClipboardManager cm = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
         if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("FloatLens", value));
         Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show();
-    }
-
-    private static boolean initialTextVisible(Mode mode, FloatSettings settings) {
-        if (mode == Mode.SCREENSHOT) return false;
-        if (mode == Mode.OCR) return settings.ocrShowText();
-        return true;
-    }
-
-    private static String initialText(Mode mode, String text, String meta) {
-        String safeText = text == null ? "" : text;
-        String safeMeta = meta == null ? "" : meta;
-        return switch (mode) {
-            case VIEW_TEXT -> safeText;
-            case VIEW_IMAGE -> safeMeta;
-            case OCR -> safeText.isBlank() ? "未识别到文字" : safeText;
-            default -> "";
-        };
-    }
-
-    private static String titleForMode(Mode mode) {
-        return switch (mode) {
-            case SCREENSHOT -> "区域截图";
-            case VIEW_TEXT -> "View 内容";
-            case VIEW_IMAGE -> "View / 图标";
-            case OCR -> "OCR 结果";
-        };
     }
 }
