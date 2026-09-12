@@ -102,7 +102,8 @@ final class ResultSession {
         };
     }
 
-    boolean notifyCircleOnClose() { return originMode == Mode.OCR; }
+    /** OcrEngine enters the shared Circle/OCR state machine for every recognition request. */
+    boolean notifyCircleOnClose() { return mode == Mode.OCR; }
 
     private static String buildViewMeta(ViewNodeCandidate view) {
         if (view == null) return "图片 View";
