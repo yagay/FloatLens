@@ -17,9 +17,9 @@ import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-/** Lightweight image long-press menu that also works from TYPE_APPLICATION_OVERLAY windows. */
+/** Lightweight image long-press menu. Window hosting is shared with the text action menu. */
 public final class ImageActionMenu {
-    private static WindowManager activeWm;
+    private static FvOverlayWindowHost activeHost;
     private static View activeView;
 
     public static synchronized void show(Context c, Bitmap image, Rect anchor) {
@@ -29,6 +29,7 @@ public final class ImageActionMenu {
         Context app = c.getApplicationContext();
         WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
         if (wm == null) return;
+        FvOverlayWindowHost host = new FvOverlayWindowHost(app);
 
         Palette palette = Palette.from(app);
         LinearLayout root = new LinearLayout(app);
@@ -72,15 +73,16 @@ public final class ImageActionMenu {
         lp.x = pos[0];
         lp.y = pos[1];
 
-        try {
-            wm.addView(root, lp);
-            activeWm = wm;
+        if (host.add(root, lp, "image_action_menu")) {
+            activeHost = host;
             activeView = root;
             DiagnosticLog.i(app, "IMAGE_ACTION_MENU", "SHOW anchor="
                     + (anchor == null ? "none" : anchor.toShortString())
-                    + " pos=" + lp.x + "," + lp.y);
-        } catch (Throwable t) {
-            DiagnosticLog.i(app, "IMAGE_ACTION_MENU", "SHOW_FAILED " + t);
+                    + " pos=" + lp.x + "," + lp.y
+                    + " accessibilityHost=" + host.isAccessibilityHosted()
+                    + " type=" + lp.type);
+        } else {
+            DiagnosticLog.i(app, "IMAGE_ACTION_MENU", "SHOW_FAILED all hosts");
             return;
         }
 
@@ -99,13 +101,11 @@ public final class ImageActionMenu {
     }
 
     public static synchronized void dismiss() {
-        View v = activeView;
-        WindowManager wm = activeWm;
+        View view = activeView;
+        FvOverlayWindowHost host = activeHost;
         activeView = null;
-        activeWm = null;
-        if (v != null && wm != null) {
-            try { wm.removeView(v); } catch (Throwable ignored) {}
-        }
+        activeHost = null;
+        if (view != null && host != null) host.remove(view, "image_action_menu");
     }
 
     private static TextView row(Context c, String text, Palette palette) {
@@ -162,7 +162,7 @@ public final class ImageActionMenu {
             r.right -= insets.right;
             r.bottom -= insets.bottom;
             if (!r.isEmpty()) return r;
-        } catch (Throwable ignored) {}
+        } catch (Throwable ignored) { }
         return new Rect(0, 0,
                 c.getResources().getDisplayMetrics().widthPixels,
                 c.getResources().getDisplayMetrics().heightPixels);
