@@ -7,11 +7,9 @@ import android.view.Gravity;
 import android.view.WindowManager;
 
 /**
- * Pure-ish layout/persistence policy for FloatService icon windows.
- *
- * Gesture code supplies movement; this class only translates settings + display bounds into stable
- * icon WindowManager coordinates. Keeping this out of the Service makes edge hiding, orientation
- * persistence and mirrored-icon placement one reusable source of truth.
+ * Layout/persistence policy for FloatService icon windows.
+ * Gesture code supplies movement; this class translates settings + display bounds into stable
+ * WindowManager coordinates without owning any View lifecycle.
  */
 final class FloatingIconLayoutPolicy {
     private final Context app;
@@ -24,9 +22,7 @@ final class FloatingIconLayoutPolicy {
         this.settings = settings;
     }
 
-    void updateSettings(FloatSettings settings) {
-        this.settings = settings;
-    }
+    void updateSettings(FloatSettings settings) { this.settings = settings; }
 
     int iconPx() {
         return Math.round(settings.sizeDp() * app.getResources().getDisplayMetrics().density);
@@ -63,7 +59,7 @@ final class FloatingIconLayoutPolicy {
         return lp;
     }
 
-    WindowManager.LayoutParams baseLayout(int px) {
+    private WindowManager.LayoutParams baseLayout(int px) {
         int type = LensAccessibilityService.ready()
                 ? WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
                 : WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
@@ -91,14 +87,15 @@ final class FloatingIconLayoutPolicy {
         lp.y = Math.max(0, Math.min(lp.y, wh[1] - lp.height));
     }
 
-    void snap(WindowManager.LayoutParams lp) {
+    /** First phase of FV-style snapping: move to the fully visible left/right edge. */
+    void snapToVisibleEdge(WindowManager.LayoutParams lp) {
         if (lp == null) return;
         int[] wh = displaySize();
         lp.x = isLeft(lp) ? 0 : wh[0] - lp.width;
         clamp(lp, false);
-        edgeHide(lp);
     }
 
+    /** Second phase: hide the configured percentage beyond the chosen edge. */
     void edgeHide(WindowManager.LayoutParams lp) {
         if (lp == null) return;
         int hiddenPercent = settings.hiddenPercent();
