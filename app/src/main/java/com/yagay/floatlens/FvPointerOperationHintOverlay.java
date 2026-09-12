@@ -24,6 +24,8 @@ import android.widget.TextView;
  * - E(color, drawable, text) changes the CircleImageView drawable/background and optional text.
  */
 public final class FvPointerOperationHintOverlay {
+    public enum Mode { TEXT, IMAGE, SCREENSHOT }
+
     private static final float HINT_HEIGHT_DP = 20f;
     private static final float PROBE_X_OFFSET_DP = 15f;
     private static final float ICON_SIZE_DP = 20f;
@@ -47,7 +49,7 @@ public final class FvPointerOperationHintOverlay {
 
     private boolean attached;
     private boolean contentVisible;
-    private FvOperationHintOverlay.Mode mode;
+    private Mode mode;
 
     public FvPointerOperationHintOverlay(Context c) {
         context = c.getApplicationContext();
@@ -133,15 +135,15 @@ public final class FvPointerOperationHintOverlay {
      * Mirrors m2/g.E(color, drawable, optionalText) for the states FloatLens currently exposes.
      * The screenshot/text drawables are clean-room XML equivalents of FV foo_screenshot_02/foo_text.
      */
-    public void show(FvOperationHintOverlay.Mode next, int probeWindowX, int probeWindowY) {
+    public void show(Mode next, int probeWindowX, int probeWindowY) {
         show(next, probeWindowX, probeWindowY, null);
     }
 
-    public void show(FvOperationHintOverlay.Mode next,
+    public void show(Mode next,
                      int probeWindowX,
                      int probeWindowY,
                      String optionalText) {
-        if (next == null) next = FvOperationHintOverlay.Mode.SCREENSHOT;
+        if (next == null) next = Mode.SCREENSHOT;
         syncToProbeWindow(probeWindowX, probeWindowY);
         if (!attached) return;
 
