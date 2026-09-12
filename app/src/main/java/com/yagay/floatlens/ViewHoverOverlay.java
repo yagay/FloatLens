@@ -26,7 +26,7 @@ public final class ViewHoverOverlay {
     private static final int LARGE_TARGET_PERCENT = 72;
 
     private final Context context;
-    private final WindowManager wm;
+    private final FvOverlayWindowHost windowHost;
     private final LensAccessibilityService accessibility;
     private final ScreenSelectionModel model = new ScreenSelectionModel();
     private final float regionStartSlopPx;
@@ -41,7 +41,7 @@ public final class ViewHoverOverlay {
 
     public ViewHoverOverlay(Context c) {
         context = c.getApplicationContext();
-        wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+        windowHost = new FvOverlayWindowHost(context);
         accessibility = LensAccessibilityService.get();
         regionStartSlopPx = Math.max(1f, ViewConfiguration.get(context).getScaledTouchSlop());
     }
@@ -71,12 +71,14 @@ public final class ViewHoverOverlay {
             List<ScreenCandidate> cached = model.accessibilityCandidates();
             int broad = 0;
             int viewCount = 0;
+            int systemUi = 0;
             for (ScreenCandidate c : cached) {
                 if (c.type() == ScreenCandidate.Type.VIEW) viewCount++;
                 if (c.type() == ScreenCandidate.Type.ROOT || c.fullscreenLike()) broad++;
+                if ("com.android.systemui".equals(c.packageName())) systemUi++;
             }
             DiagnosticLog.i(context, "FV_TREE_CACHE", "READY total=" + cached.size()
-                    + " view=" + viewCount + " broad=" + broad);
+                    + " view=" + viewCount + " broad=" + broad + " systemUi=" + systemUi);
         } catch (Throwable t) {
             DiagnosticLog.i(context, "FV_TREE_CACHE", "refresh failed=" + t);
             model.setAccessibility(Collections.emptyList());
@@ -96,19 +98,17 @@ public final class ViewHoverOverlay {
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
-        try {
-            wm.addView(next, lp);
+        if (windowHost.add(next, lp, "view_hover")) {
             view = next;
-            DiagnosticLog.i(context, "VIEW_HOVER", "visual_attach");
-        } catch (Throwable t) {
-            DiagnosticLog.i(context, "VIEW_HOVER", "add failed=" + t);
+            DiagnosticLog.i(context, "VIEW_HOVER", "visual_attach accessibilityHost="
+                    + windowHost.isAccessibilityHosted());
         }
     }
 
     /** Remove only the expensive visual surface; keep cached candidates and selection state. */
     private void detachView() {
         if (view != null) {
-            try { wm.removeView(view); } catch (Throwable ignored) {}
+            windowHost.remove(view, "view_hover");
             view = null;
             DiagnosticLog.i(context, "VIEW_HOVER", "visual_detach");
         }
@@ -213,6 +213,7 @@ public final class ViewHoverOverlay {
                         + " type=" + next.type() + " screenBounds=" + next.bounds()
                         + " depth=" + next.depth() + " textLen=" + next.text().length()
                         + " class=" + next.className() + " id=" + next.viewId()
+                        + " pkg=" + next.packageName()
                         + " fullscreenLike=" + next.fullscreenLike()
                         + " visual=" + shouldRenderCandidate(next));
             } else {
