@@ -8,7 +8,7 @@ import android.graphics.ColorMatrixColorFilter;
 import android.graphics.Paint;
 import android.graphics.Rect;
 
-/** Low-memory, on-demand OCR image preparation for screen-capture crops. */
+/** Low-memory, on-demand OCR image preparation with reversible source geometry. */
 final class OcrImagePreprocessor {
     static final int MODE_ORIGINAL = 0;
     static final int MODE_ENHANCED = 1;
@@ -21,11 +21,32 @@ final class OcrImagePreprocessor {
         final String name;
         final Bitmap bitmap;
         final boolean owned;
+        final float scale;
+        final int padX;
+        final int padY;
+        final int sourceWidth;
+        final int sourceHeight;
 
-        Prepared(String name, Bitmap bitmap, boolean owned) {
+        Prepared(String name, Bitmap bitmap, boolean owned,
+                 float scale, int padX, int padY, int sourceWidth, int sourceHeight) {
             this.name = name;
             this.bitmap = bitmap;
             this.owned = owned;
+            this.scale = Math.max(0.0001f, scale);
+            this.padX = Math.max(0, padX);
+            this.padY = Math.max(0, padY);
+            this.sourceWidth = Math.max(1, sourceWidth);
+            this.sourceHeight = Math.max(1, sourceHeight);
+        }
+
+        /** Map an OCR rectangle from the prepared image back to the original source bitmap. */
+        Rect toSourceRect(Rect preparedRect) {
+            if (preparedRect == null || preparedRect.isEmpty()) return new Rect();
+            int left = clamp(Math.round((preparedRect.left - padX) / scale), 0, sourceWidth - 1);
+            int top = clamp(Math.round((preparedRect.top - padY) / scale), 0, sourceHeight - 1);
+            int right = clamp(Math.round((preparedRect.right - padX) / scale), left + 1, sourceWidth);
+            int bottom = clamp(Math.round((preparedRect.bottom - padY) / scale), top + 1, sourceHeight);
+            return new Rect(left, top, right, bottom);
         }
     }
 
@@ -33,12 +54,13 @@ final class OcrImagePreprocessor {
         if (source == null || source.isRecycled() || source.getWidth() <= 0 || source.getHeight() <= 0) {
             return null;
         }
-        if (mode == MODE_ORIGINAL) return new Prepared("original", source, false);
+        if (mode == MODE_ORIGINAL) {
+            return new Prepared("original", source, false, 1f, 0, 0,
+                    source.getWidth(), source.getHeight());
+        }
 
         float scale = chooseScale(source.getWidth(), source.getHeight());
-        Bitmap rendered = render(source, scale, mode == MODE_MONO);
-        if (rendered == null) return null;
-        return new Prepared(mode == MODE_MONO ? "mono" : "enhanced", rendered, true);
+        return render(source, scale, mode == MODE_MONO);
     }
 
     static String modeName(int mode) {
@@ -62,7 +84,7 @@ final class OcrImagePreprocessor {
         return Math.max(1f, Math.min(wanted, Math.min(byDimension, byPixels)));
     }
 
-    private static Bitmap render(Bitmap source, float scale, boolean mono) {
+    private static Prepared render(Bitmap source, float scale, boolean mono) {
         Bitmap out = null;
         try {
             int sw = Math.max(1, Math.round(source.getWidth() * scale));
@@ -87,7 +109,8 @@ final class OcrImagePreprocessor {
             }
             p.setColorFilter(new ColorMatrixColorFilter(cm));
             canvas.drawBitmap(source, null, new Rect(pad, pad, pad + sw, pad + sh), p);
-            return out;
+            return new Prepared(mono ? "mono" : "enhanced", out, true,
+                    scale, pad, pad, source.getWidth(), source.getHeight());
         } catch (Throwable t) {
             if (out != null && !out.isRecycled()) {
                 try { out.recycle(); } catch (Throwable ignored) {}
@@ -128,6 +151,10 @@ final class OcrImagePreprocessor {
         if (prepared == null || !prepared.owned || prepared.bitmap == null
                 || prepared.bitmap.isRecycled()) return;
         try { prepared.bitmap.recycle(); } catch (Throwable ignored) {}
+    }
+
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private OcrImagePreprocessor() {}
