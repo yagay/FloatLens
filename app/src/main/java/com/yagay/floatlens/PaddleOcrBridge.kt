@@ -6,6 +6,7 @@ import android.graphics.Rect
 import com.paddle.ocr.EngineConfig
 import com.paddle.ocr.PaddleOCR
 import com.paddle.ocr.PaddleOCRConfig
+import com.paddle.ocr.model.OCRBox
 import com.paddle.ocr.model.OCRResult
 import com.paddle.ocr.util.OpenCVUtils
 import kotlinx.coroutines.CoroutineScope
@@ -16,16 +17,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
+/** PP-OCR adapter. Engine-specific output is normalized to OcrDocument here. */
 object PaddleOcrBridge {
     interface Callback {
-        fun onSuccess(
-            text: String,
-            blocks: List<String>,
-            words: List<SpatialOcrEngine.Word>,
-            totalMs: Long,
-            lineCount: Int,
-            averageConfidence: Float,
-        )
+        fun onSuccess(document: OcrDocument, totalMs: Long, lineCount: Int)
         fun onFailure(message: String)
     }
 
@@ -45,13 +40,9 @@ object PaddleOcrBridge {
                 if (!OcrModelManager.isReady(app, model)) throw IllegalStateException("model_not_downloaded")
                 val ocr = getOrCreate(app, model)
                 val result = runMutex.withLock { ocr.recognize(bitmap) }
-                val blocks = result.results.mapNotNull { item -> item.text.trim().takeIf { it.isNotEmpty() } }
-                val text = blocks.joinToString("\n").trim()
-                val avg = if (result.results.isEmpty()) 0f
-                else result.results.map { it.confidence }.average().toFloat()
-                val words = toSpatialWords(result.results, bitmap.width, bitmap.height)
+                val document = toDocument(result.results, bitmap.width, bitmap.height, model)
                 withContext(Dispatchers.Main) {
-                    callback.onSuccess(text, blocks, words, result.totalTimeMs, result.lineCount, avg)
+                    callback.onSuccess(document, result.totalTimeMs, result.lineCount)
                 }
             } catch (t: Throwable) {
                 val msg = describeThrowable(t)
@@ -61,48 +52,76 @@ object PaddleOcrBridge {
         }
     }
 
-    private fun toSpatialWords(
+    private fun toDocument(
         results: List<OCRResult>,
         imageWidth: Int,
         imageHeight: Int,
-    ): List<SpatialOcrEngine.Word> {
-        val out = mutableListOf<SpatialOcrEngine.Word>()
+        model: Int,
+    ): OcrDocument {
+        val lines = mutableListOf<OcrDocument.Line>()
+        val blocks = mutableListOf<String>()
         var order = 0
         var nextGroup = 0
+        var confSum = 0f
+        var confCount = 0
+
         results.forEachIndexed { lineIndex, item ->
-            val text = item.text.trim()
-            if (text.isEmpty()) return@forEachIndexed
-            val rect = boxRect(item, imageWidth, imageHeight) ?: return@forEachIndexed
-            val cpCount = text.codePointCount(0, text.length).coerceAtLeast(1)
-            var charOffset = 0
-            var cpIndex = 0
+            val lineText = item.text.trim()
+            if (lineText.isEmpty()) return@forEachIndexed
+            val lineRect = boxRect(item.box, imageWidth, imageHeight) ?: return@forEachIndexed
+            val chars = mutableListOf<OcrDocument.CharUnit>()
             var group = nextGroup++
-            while (charOffset < text.length) {
-                val cp = text.codePointAt(charOffset)
-                val charCount = Character.charCount(cp)
-                val value = String(Character.toChars(cp))
-                if (Character.isWhitespace(cp)) {
+
+            for (character in item.characters) {
+                val value = character.text
+                if (value.isEmpty()) continue
+                if (value.all { it.isWhitespace() }) {
                     group = nextGroup++
-                } else {
-                    val left = rect.left + ((rect.width().toLong() * cpIndex) / cpCount).toInt()
-                    val right = rect.left + ((rect.width().toLong() * (cpIndex + 1)) / cpCount).toInt()
-                    val unit = Rect(
-                        left.coerceIn(0, imageWidth - 1),
-                        rect.top.coerceIn(0, imageHeight - 1),
-                        right.coerceAtLeast(left + 1).coerceAtMost(imageWidth),
-                        rect.bottom.coerceAtLeast(rect.top + 1).coerceAtMost(imageHeight),
-                    )
-                    out.add(SpatialOcrEngine.Word(value, unit, lineIndex, group, order++))
+                    continue
                 }
-                charOffset += charCount
-                cpIndex++
+                val r = boxRect(character.box, imageWidth, imageHeight) ?: continue
+                chars += OcrDocument.CharUnit(
+                    value, r, character.confidence, lineIndex, group, order++,
+                )
             }
+
+            // Defensive compatibility fallback for model/runtime combinations that do not expose
+            // CTC character alignment. This is not the primary path anymore.
+            if (chars.isEmpty()) {
+                val cps = lineText.codePoints().toArray()
+                val visible = cps.count { !Character.isWhitespace(it) }.coerceAtLeast(1)
+                var visibleIndex = 0
+                for (cp in cps) {
+                    if (Character.isWhitespace(cp)) {
+                        group = nextGroup++
+                        continue
+                    }
+                    val left = lineRect.left + lineRect.width() * visibleIndex / visible
+                    val right = lineRect.left + lineRect.width() * (visibleIndex + 1) / visible
+                    chars += OcrDocument.CharUnit(
+                        String(Character.toChars(cp)),
+                        Rect(left, lineRect.top, right.coerceAtLeast(left + 1), lineRect.bottom),
+                        item.confidence, lineIndex, group, order++,
+                    )
+                    visibleIndex++
+                }
+            }
+
+            lines += OcrDocument.Line(lineText, lineRect, item.confidence, chars)
+            blocks += lineText
+            confSum += item.confidence
+            confCount++
         }
-        return out
+
+        val text = blocks.joinToString("\n").trim()
+        val avg = if (confCount == 0) 0f else confSum / confCount
+        return OcrDocument(
+            text, blocks, lines, "ppocr-$model", avg, 0.0, imageWidth, imageHeight,
+        )
     }
 
-    private fun boxRect(item: OCRResult, imageWidth: Int, imageHeight: Int): Rect? {
-        val points = item.box.points
+    private fun boxRect(box: OCRBox, imageWidth: Int, imageHeight: Int): Rect? {
+        val points = box.points
         if (points.isEmpty()) return null
         var minX = Float.MAX_VALUE
         var minY = Float.MAX_VALUE
@@ -138,17 +157,14 @@ object PaddleOcrBridge {
         synchronized(engines) { engines[model] }?.let { return it }
         return initMutex.withLock {
             synchronized(engines) { engines[model] }?.let { return@withLock it }
-            val created = try {
-                if (!OpenCVUtils.init(context)) {
-                    val detail = OpenCVUtils.lastError()?.takeIf { it.isNotBlank() }
-                        ?: "unknown native loader error"
-                    DiagnosticLog.i(context, "PPOCRV6_BRIDGE", "opencv_init_failed detail=$detail")
-                    throw IllegalStateException("OpenCV 初始化失败: $detail")
-                }
+            val created = if (!OpenCVUtils.init(context)) {
+                val detail = OpenCVUtils.lastError()?.takeIf { it.isNotBlank() }
+                    ?: "unknown native loader error"
+                DiagnosticLog.i(context, "PPOCRV6_BRIDGE", "opencv_init_failed detail=$detail")
+                throw IllegalStateException("OpenCV 初始化失败: $detail")
+            } else {
                 DiagnosticLog.i(context, "PPOCRV6_BRIDGE", "opencv_init_ok")
-                if (!OcrModelManager.isReady(context, model)) {
-                    throw IllegalStateException("model_not_downloaded")
-                }
+                if (!OcrModelManager.isReady(context, model)) throw IllegalStateException("model_not_downloaded")
                 val config = PaddleOCRConfig(
                     detThresh = 0.20f,
                     detBoxThresh = 0.45f,
@@ -164,8 +180,6 @@ object PaddleOcrBridge {
                     recModelAssetPath = OcrModelManager.recFile(context, model).absolutePath,
                     recConfigAssetPath = OcrModelManager.ymlFile(context, model).absolutePath,
                 )
-            } catch (t: Throwable) {
-                throw t
             }
             synchronized(engines) { engines[model] = created }
             DiagnosticLog.i(
