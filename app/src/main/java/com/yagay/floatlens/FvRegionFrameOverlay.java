@@ -2,7 +2,6 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
@@ -18,6 +17,7 @@ final class FvRegionFrameOverlay {
     private final Context context;
     private final WindowManager wm;
     private final int borderPx;
+    private final int innerBorderPx;
     private final int labelHeightPx;
     private final LabelView top;
     private final View bottom;
@@ -36,12 +36,13 @@ final class FvRegionFrameOverlay {
         context = c.getApplicationContext();
         wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         float d = Math.max(.1f, context.getResources().getDisplayMetrics().density);
-        borderPx = Math.max(2, Math.round(2.5f * d));
+        borderPx = SelectionVisuals.edgeThicknessPx(context);
+        innerBorderPx = SelectionVisuals.edgeInnerThicknessPx(context);
         labelHeightPx = Math.max(borderPx + 1, Math.round(27f * d));
-        top = new LabelView(context, borderPx);
-        bottom = edge(context);
-        left = edge(context);
-        right = edge(context);
+        top = new LabelView(context, borderPx, innerBorderPx);
+        bottom = new EdgeView(context, false, innerBorderPx);
+        left = new EdgeView(context, true, innerBorderPx);
+        right = new EdgeView(context, true, innerBorderPx);
         topLp = lp(1, labelHeightPx);
         bottomLp = lp(1, borderPx);
         leftLp = lp(borderPx, 1);
@@ -78,7 +79,7 @@ final class FvRegionFrameOverlay {
             wm.addView(left, leftLp);
             wm.addView(right, rightLp);
             attached = true;
-            DiagnosticLog.i(context, "FV_REGION_FRAME", "ATTACH thin-surfaces");
+            DiagnosticLog.i(context, "FV_REGION_FRAME", "ATTACH high-contrast thin-surfaces");
         } catch (Throwable t) {
             remove(top); remove(bottom); remove(left); remove(right);
             attached = false;
@@ -132,32 +133,45 @@ final class FvRegionFrameOverlay {
         return p;
     }
 
-    private View edge(Context c) {
-        View v = new View(c);
-        v.setBackgroundColor(Color.WHITE);
-        return v;
-    }
-
     private void remove(View v) {
         try { wm.removeView(v); } catch (Throwable ignored) {}
     }
 
+    private static final class EdgeView extends View {
+        private final Paint outer = new Paint();
+        private final Paint inner = new Paint();
+        private final boolean vertical;
+        private final int innerPx;
+
+        EdgeView(Context c, boolean vertical, int innerPx) {
+            super(c);
+            this.vertical = vertical;
+            this.innerPx = innerPx;
+            SelectionVisuals.configureEdgePaints(outer, inner);
+        }
+
+        @Override protected void onDraw(Canvas c) {
+            super.onDraw(c);
+            SelectionVisuals.drawEdge(c, getWidth(), getHeight(), vertical, innerPx, outer, inner);
+        }
+    }
+
     private static final class LabelView extends View {
-        private final Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint edgeOuter = new Paint();
+        private final Paint edgeInner = new Paint();
+        private final Paint textOutline = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint textFill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final int borderPx;
+        private final int innerBorderPx;
         private String size = "";
 
-        LabelView(Context c, int borderPx) {
+        LabelView(Context c, int borderPx, int innerBorderPx) {
             super(c);
             this.borderPx = borderPx;
-            line.setColor(Color.WHITE);
-            line.setStyle(Paint.Style.FILL);
-            text.setColor(Color.WHITE);
-            text.setTextSize(14f * getResources().getDisplayMetrics().scaledDensity);
-            text.setShadowLayer(3f * getResources().getDisplayMetrics().density, 0f,
-                    getResources().getDisplayMetrics().density, Color.BLACK);
-            setBackgroundColor(Color.TRANSPARENT);
+            this.innerBorderPx = innerBorderPx;
+            SelectionVisuals.configureEdgePaints(edgeOuter, edgeInner);
+            SelectionVisuals.configureTextPaints(c, textOutline, textFill, 14f);
+            setBackgroundColor(android.graphics.Color.TRANSPARENT);
         }
 
         void setSizeText(String value) {
@@ -169,10 +183,12 @@ final class FvRegionFrameOverlay {
 
         @Override protected void onDraw(Canvas c) {
             super.onDraw(c);
-            c.drawRect(0, 0, getWidth(), Math.min(borderPx, getHeight()), line);
+            SelectionVisuals.drawHorizontalEdge(c, getWidth(), Math.min(borderPx, getHeight()),
+                    innerBorderPx, edgeOuter, edgeInner);
             if (!size.isEmpty() && getHeight() > borderPx) {
-                c.drawText(size, Math.max(4f, 8f * getResources().getDisplayMetrics().density),
-                        getHeight() - 6f * getResources().getDisplayMetrics().density, text);
+                float d = getResources().getDisplayMetrics().density;
+                SelectionVisuals.drawText(c, size, Math.max(4f, 8f * d),
+                        getHeight() - 6f * d, textOutline, textFill);
             }
         }
     }
