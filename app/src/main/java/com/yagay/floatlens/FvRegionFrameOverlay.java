@@ -2,6 +2,7 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
@@ -10,25 +11,31 @@ import android.view.View;
 import android.view.WindowManager;
 
 /**
- * Lightweight rectangular region indicator for video-friendly direct selection.
- * Only four thin non-touchable surfaces are composed; no fullscreen translucent surface exists.
+ * Lightweight FV-style rectangular selection indicator.
+ * Four 2dp non-touchable edge windows reproduce FV's single red/yellow stroke without a
+ * fullscreen translucent surface. The FloatLens size label is a fifth independent window and is
+ * always placed outside the selected rectangle so it cannot be captured with the selected area.
  */
 final class FvRegionFrameOverlay {
     private final Context context;
     private final WindowManager wm;
     private final int borderPx;
-    private final int innerBorderPx;
     private final int labelHeightPx;
-    private final LabelView top;
-    private final View bottom;
-    private final View left;
-    private final View right;
+    private final int labelGapPx;
+    private final int labelMaxWidthPx;
+    private final EdgeView top;
+    private final EdgeView bottom;
+    private final EdgeView left;
+    private final EdgeView right;
+    private final LabelView label;
     private final WindowManager.LayoutParams topLp;
     private final WindowManager.LayoutParams bottomLp;
     private final WindowManager.LayoutParams leftLp;
     private final WindowManager.LayoutParams rightLp;
+    private final WindowManager.LayoutParams labelLp;
     private final Rect pending = new Rect();
     private boolean attached;
+    private boolean confirmed;
     private boolean framePosted;
     private final Runnable applyRunnable = this::applyPending;
 
@@ -37,16 +44,20 @@ final class FvRegionFrameOverlay {
         wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         float d = Math.max(.1f, context.getResources().getDisplayMetrics().density);
         borderPx = SelectionVisuals.edgeThicknessPx(context);
-        innerBorderPx = SelectionVisuals.edgeInnerThicknessPx(context);
-        labelHeightPx = Math.max(borderPx + 1, Math.round(27f * d));
-        top = new LabelView(context, borderPx, innerBorderPx);
-        bottom = new EdgeView(context, false, innerBorderPx);
-        left = new EdgeView(context, true, innerBorderPx);
-        right = new EdgeView(context, true, innerBorderPx);
-        topLp = lp(1, labelHeightPx);
+        labelHeightPx = Math.max(1, Math.round(22f * d));
+        labelGapPx = Math.max(1, Math.round(4f * d));
+        labelMaxWidthPx = Math.max(1, Math.round(150f * d));
+        top = new EdgeView(context, false);
+        bottom = new EdgeView(context, false);
+        left = new EdgeView(context, false);
+        right = new EdgeView(context, false);
+        label = new LabelView(context);
+        topLp = lp(1, borderPx);
         bottomLp = lp(1, borderPx);
         leftLp = lp(borderPx, 1);
         rightLp = lp(borderPx, 1);
+        labelLp = lp(1, labelHeightPx);
+        applyConfirmed(false);
     }
 
     void show(Rect screenRect) {
@@ -58,11 +69,26 @@ final class FvRegionFrameOverlay {
         top.postOnAnimation(applyRunnable);
     }
 
+    /** FV switches the same 2dp stroke from red to yellow once the target is confirmed. */
+    void setConfirmed(boolean value) {
+        if (confirmed == value) return;
+        confirmed = value;
+        applyConfirmed(value);
+    }
+
+    private void applyConfirmed(boolean value) {
+        top.setConfirmed(value);
+        bottom.setConfirmed(value);
+        left.setConfirmed(value);
+        right.setConfirmed(value);
+        label.setAccentColor(SelectionVisuals.frameColor(value));
+    }
+
     void close() {
         framePosted = false;
         try { top.removeCallbacks(applyRunnable); } catch (Throwable ignored) {}
         if (!attached) return;
-        remove(top); remove(bottom); remove(left); remove(right);
+        remove(top); remove(bottom); remove(left); remove(right); remove(label);
         attached = false;
         pending.setEmpty();
     }
@@ -74,14 +100,16 @@ final class FvRegionFrameOverlay {
             bottom.setVisibility(View.INVISIBLE);
             left.setVisibility(View.INVISIBLE);
             right.setVisibility(View.INVISIBLE);
+            label.setVisibility(View.INVISIBLE);
             wm.addView(top, topLp);
             wm.addView(bottom, bottomLp);
             wm.addView(left, leftLp);
             wm.addView(right, rightLp);
+            wm.addView(label, labelLp);
             attached = true;
-            DiagnosticLog.i(context, "FV_REGION_FRAME", "ATTACH high-contrast thin-surfaces");
+            DiagnosticLog.i(context, "FV_REGION_FRAME", "ATTACH fv-single-stroke label-outside");
         } catch (Throwable t) {
-            remove(top); remove(bottom); remove(left); remove(right);
+            remove(top); remove(bottom); remove(left); remove(right); remove(label);
             attached = false;
             DiagnosticLog.i(context, "FV_REGION_FRAME", "attach failed=" + t);
         }
@@ -94,17 +122,49 @@ final class FvRegionFrameOverlay {
         int w = Math.max(borderPx, r - l);
         int h = Math.max(borderPx, b - t);
 
-        update(top, topLp, l, t, w, Math.min(labelHeightPx, h));
+        // FV uses one 2dp STROKE rectangle. Four tiny windows reproduce the same appearance while
+        // keeping video/animations beneath the selected View unobstructed.
+        update(top, topLp, l, t, w, borderPx);
         update(bottom, bottomLp, l, Math.max(t, b - borderPx), w, borderPx);
-        int sideTop = Math.min(b - borderPx, t + Math.min(labelHeightPx, h));
-        int sideH = Math.max(borderPx, b - sideTop - borderPx);
+        int sideTop = t + borderPx;
+        int sideH = Math.max(1, h - borderPx * 2);
         update(left, leftLp, l, sideTop, borderPx, sideH);
         update(right, rightLp, Math.max(l, r - borderPx), sideTop, borderPx, sideH);
-        top.setSizeText((r - l) + " × " + (b - t));
+
+        label.setSizeText(Math.max(0, r - l) + " × " + Math.max(0, b - t));
+        placeLabelOutside(l, t, r, b, w);
+
         top.setVisibility(View.VISIBLE);
         bottom.setVisibility(View.VISIBLE);
         left.setVisibility(View.VISIBLE);
         right.setVisibility(View.VISIBLE);
+    }
+
+    private void placeLabelOutside(int l, int t, int r, int b, int frameWidth) {
+        Rect display;
+        try { display = new Rect(wm.getCurrentWindowMetrics().getBounds()); }
+        catch (Throwable ignored) { display = new Rect(0, 0,
+                context.getResources().getDisplayMetrics().widthPixels,
+                context.getResources().getDisplayMetrics().heightPixels); }
+
+        int minLabelWidth = Math.round(72f * context.getResources().getDisplayMetrics().density);
+        int labelWidth = Math.min(labelMaxWidthPx, Math.max(minLabelWidth, Math.min(frameWidth, labelMaxWidthPx)));
+        labelWidth = Math.min(labelWidth, Math.max(1, display.width()));
+        int x = clamp(l, display.left, Math.max(display.left, display.right - labelWidth));
+        int aboveY = t - labelGapPx - labelHeightPx;
+        int belowY = b + labelGapPx;
+
+        if (aboveY >= display.top) {
+            update(label, labelLp, x, aboveY, labelWidth, labelHeightPx);
+            label.setVisibility(View.VISIBLE);
+        } else if (belowY + labelHeightPx <= display.bottom) {
+            update(label, labelLp, x, belowY, labelWidth, labelHeightPx);
+            label.setVisibility(View.VISIBLE);
+        } else {
+            // Never place the label inside the selection: hiding it is safer than contaminating
+            // screenshots when the rectangle touches both display edges.
+            label.setVisibility(View.INVISIBLE);
+        }
     }
 
     private void update(View v, WindowManager.LayoutParams lp, int x, int y, int w, int h) {
@@ -137,41 +197,49 @@ final class FvRegionFrameOverlay {
         try { wm.removeView(v); } catch (Throwable ignored) {}
     }
 
-    private static final class EdgeView extends View {
-        private final Paint outer = new Paint();
-        private final Paint inner = new Paint();
-        private final boolean vertical;
-        private final int innerPx;
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
 
-        EdgeView(Context c, boolean vertical, int innerPx) {
+    private static final class EdgeView extends View {
+        private final Paint paint = new Paint();
+        private boolean confirmed;
+
+        EdgeView(Context c, boolean ignored) {
             super(c);
-            this.vertical = vertical;
-            this.innerPx = innerPx;
-            SelectionVisuals.configureEdgePaints(outer, inner);
+            setConfirmed(false);
+        }
+
+        void setConfirmed(boolean value) {
+            if (confirmed == value && paint.getColor() != 0) return;
+            confirmed = value;
+            SelectionVisuals.configureEdgePaints(paint, null, confirmed);
+            invalidate();
         }
 
         @Override protected void onDraw(Canvas c) {
             super.onDraw(c);
-            SelectionVisuals.drawEdge(c, getWidth(), getHeight(), vertical, innerPx, outer, inner);
+            SelectionVisuals.drawEdge(c, getWidth(), getHeight(), paint);
         }
     }
 
     private static final class LabelView extends View {
-        private final Paint edgeOuter = new Paint();
-        private final Paint edgeInner = new Paint();
-        private final Paint textOutline = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint textFill = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final int borderPx;
-        private final int innerBorderPx;
+        private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
         private String size = "";
 
-        LabelView(Context c, int borderPx, int innerBorderPx) {
+        LabelView(Context c) {
             super(c);
-            this.borderPx = borderPx;
-            this.innerBorderPx = innerBorderPx;
-            SelectionVisuals.configureEdgePaints(edgeOuter, edgeInner);
-            SelectionVisuals.configureTextPaints(c, textOutline, textFill, 14f);
-            setBackgroundColor(android.graphics.Color.TRANSPARENT);
+            text.setTextSize(12f * getResources().getDisplayMetrics().scaledDensity);
+            text.setTextAlign(Paint.Align.CENTER);
+            bg.setColor(0xB8000000);
+            setAccentColor(SelectionVisuals.FV_ACTIVE_COLOR);
+            setBackgroundColor(Color.TRANSPARENT);
+        }
+
+        void setAccentColor(int color) {
+            text.setColor(color);
+            invalidate();
         }
 
         void setSizeText(String value) {
@@ -183,13 +251,12 @@ final class FvRegionFrameOverlay {
 
         @Override protected void onDraw(Canvas c) {
             super.onDraw(c);
-            SelectionVisuals.drawHorizontalEdge(c, getWidth(), Math.min(borderPx, getHeight()),
-                    innerBorderPx, edgeOuter, edgeInner);
-            if (!size.isEmpty() && getHeight() > borderPx) {
-                float d = getResources().getDisplayMetrics().density;
-                SelectionVisuals.drawText(c, size, Math.max(4f, 8f * d),
-                        getHeight() - 6f * d, textOutline, textFill);
-            }
+            if (size.isEmpty()) return;
+            float radius = 5f * getResources().getDisplayMetrics().density;
+            c.drawRoundRect(0, 0, getWidth(), getHeight(), radius, radius, bg);
+            Paint.FontMetrics fm = text.getFontMetrics();
+            float y = (getHeight() - fm.bottom - fm.top) / 2f;
+            c.drawText(size, getWidth() / 2f, y, text);
         }
     }
 }
