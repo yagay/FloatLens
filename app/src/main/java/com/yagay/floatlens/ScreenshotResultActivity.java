@@ -217,41 +217,46 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
         String shown = value.isEmpty() ? "未识别到文字" : value;
         ocrText.setText(shown);
 
-        Rect usable = popupUsable == null ? usableBounds() : new Rect(popupUsable);
-        int width = popupWidth > 0 ? popupWidth : Math.min(dp(410), usable.width());
-        int maxTotalH = Math.min(dp(610), Math.round(usable.height() * .72f));
+        // The popup frame must not move or resize when OCR appears. Repositioning caused the first
+        // version to jump down; clamping a taller window caused the next version to jump up. Keep
+        // the Activity window's x/y/width/height exactly as-is and divide its existing content area
+        // between the screenshot preview and the OCR panel instead.
+        WindowManager.LayoutParams windowLp = getWindow().getAttributes();
+        int stableHeight = windowLp.height > 0 ? windowLp.height : dp(260);
+        int stableWidth = windowLp.width > 0 ? windowLp.width
+                : (popupWidth > 0 ? popupWidth : dp(320));
         int titleH = dp(38);
         int actionsH = dp(50);
         int verticalPadding = dp(16);
         int headingH = dp(26);
         int panelPad = dp(8);
-
-        // Once OCR is visible, the screenshot is a compact fixed-height preview. The old weight=1
-        // image region consumed all extra window height and FIT_CENTER exposed that as blank space.
-        int imageH = clamp(compactImageHeight, dp(88), dp(210));
-        int innerTextW = Math.max(dp(120), width - dp(40));
+        int contentBudget = Math.max(0, stableHeight - titleH - actionsH - verticalPadding);
+        int innerTextW = Math.max(dp(120), stableWidth - dp(40));
         int desiredTextH = estimateTextHeight(shown, innerTextW);
 
-        int fixedWithoutText = titleH + actionsH + verticalPadding + imageH + headingH + panelPad;
-        int availableTextH = Math.max(dp(56), maxTotalH - fixedWithoutText);
-        int textH = clamp(desiredTextH, dp(56), Math.min(dp(220), availableTextH));
-        int panelH = headingH + textH + panelPad;
-        int expandedH = fixedWithoutText + textH;
+        // Prefer to retain a small screenshot preview. On very short result windows the OCR panel
+        // wins the space and the preview may collapse to zero rather than resizing the outer frame.
+        int minTextH = Math.min(dp(48), Math.max(0, contentBudget - headingH - panelPad));
+        int preferredImageH = Math.min(clamp(compactImageHeight, dp(64), dp(160)),
+                Math.max(0, contentBudget - headingH - panelPad - minTextH));
+        int maxTextH = Math.max(0,
+                contentBudget - preferredImageH - headingH - panelPad);
+        int textH = Math.min(desiredTextH, maxTextH);
+        if (textH < minTextH) textH = minTextH;
+        int panelH = Math.min(contentBudget, headingH + textH + panelPad);
+        int imageH = Math.max(0, contentBudget - panelH);
 
         LinearLayout.LayoutParams imageLp = new LinearLayout.LayoutParams(-1, imageH);
         imageLp.weight = 0f;
         resultImage.setLayoutParams(imageLp);
+        resultImage.setVisibility(imageH > 0 ? View.VISIBLE : View.GONE);
         ocrPanel.setLayoutParams(new LinearLayout.LayoutParams(-1, panelH));
         ocrPanel.setVisibility(View.VISIBLE);
 
-        // Do not run choosePosition() again when OCR expands. Re-anchoring against the original
-        // screenshot rectangle can select a different side and causes a one-frame visible jump.
-        // Keep the current top-left position and only clamp it if the taller window would leave
-        // the usable display bounds.
-        resizeWindowStable(usable, width, expandedH);
         DiagnosticLog.i(this, "SCREENSHOT_RESULT", "OCR_INLINE chars=" + value.length()
+                + " frame=" + stableWidth + "x" + stableHeight
                 + " imageH=" + imageH + " textH=" + textH + " panelH=" + panelH
-                + " expandedH=" + expandedH);
+                + " windowFixed=true pos=" + windowLp.x + "," + windowLp.y);
     }
 
     private int estimateTextHeight(String value, int widthPx) {
@@ -286,30 +291,6 @@ public final class ScreenshotResultActivity extends AppCompatActivity {
         DiagnosticLog.i(this, "SCREENSHOT_RESULT", "WINDOW size=" + width + "x" + height
                 + " pos=" + lp.x + "," + lp.y
                 + " anchor=" + (anchor == null ? "none" : anchor.toShortString()));
-    }
-
-    /** Resize an already visible popup without re-running the anchor-side selection algorithm. */
-    private void resizeWindowStable(Rect usable, int width, int height) {
-        Window w = getWindow();
-        WindowManager.LayoutParams lp = w.getAttributes();
-        int oldX = lp.x;
-        int oldY = lp.y;
-        int margin = dp(MARGIN_DP);
-        int minX = usable.left + margin;
-        int maxX = Math.max(minX, usable.right - margin - width);
-        int minY = usable.top + margin;
-        int maxY = Math.max(minY, usable.bottom - margin - height);
-
-        lp.width = width;
-        lp.height = height;
-        lp.gravity = Gravity.TOP | Gravity.START;
-        lp.x = clamp(oldX, minX, maxX);
-        lp.y = clamp(oldY, minY, maxY);
-        w.setAttributes(lp);
-
-        DiagnosticLog.i(this, "SCREENSHOT_RESULT", "WINDOW_RESIZE_STABLE size="
-                + width + "x" + height + " pos=" + oldX + "," + oldY
-                + " -> " + lp.x + "," + lp.y);
     }
 
     private int[] choosePosition(Rect usable, Rect anchor, int w, int h) {
