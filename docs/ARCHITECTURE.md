@@ -47,11 +47,15 @@ This is the shared owner of ordinary FloatLens overlay add/update/remove/migrati
 It tracks host ownership per `View` and supports both:
 
 - `TYPE_ACCESSIBILITY_OVERLAY` (2032), used when content must appear above SystemUI;
-- `TYPE_APPLICATION_OVERLAY`, used when native focus/selection behavior is required.
+- `TYPE_APPLICATION_OVERLAY`, used for ordinary application overlays.
 
 Do not duplicate Accessibility-vs-Application overlay fallback logic in feature classes.
 Specialized edge/wake/system helper windows may keep direct `WindowManager` code when their lifetime
 or window type is intentionally different.
+
+Native Android Editor selection (handles, magnifier and ActionMode) is considered Activity-only on
+the target OxygenOS/Android build. Do not move selectable result text back into overlay windows unless
+a real device diagnostic proves equivalent framework behavior.
 
 ## 3. Screenshot capture
 
@@ -85,20 +89,50 @@ It must not implement backend selection or duplicate overlay/result UI.
 
 ### `ResultSurfaceRouter`
 Single policy entry point for result destination and fallback.
-Captured screenshot/View paths also own their shade-cleanup/fallback coordination here.
+
+- image-first screenshot results may use `FloatingResultWindow` so they can be shown above SystemUI;
+- View/OCR text results use `ResultActivity` because native text selection is reliable there;
+- captured screenshot/View paths keep their shade-cleanup/fallback coordination here.
+
+The host may differ, but the visible panel must not.
+
+### `UnifiedResultPanel`
+The **only** implementation of the visible FloatLens result popup.
+
+It owns:
+
+- title;
+- image area and image scaling;
+- optional selectable text area;
+- OCR / copy / save / close action row;
+- shared width/height/layout policy;
+- selection callback wiring to `FloatActionMenu`;
+- screenshot-to-OCR visual state inside an Activity host.
+
+`FloatingResultWindow` and `ResultActivity` must both instantiate this component instead of building
+parallel title/image/text/button trees. Any visual or action-layout change belongs here first.
 
 ### `FloatingResultWindow`
-Primary result UI for screenshot, View and OCR output.
+Overlay host for image-first screenshot results only.
 
-When SystemUI is expanded, a text-capable View result uses a two-stage host:
+It owns:
 
-1. show the frozen result immediately as 2032/non-focusable;
-2. clean the notification shade in the background;
-3. migrate the same View to a focusable application overlay for native text selection.
+- overlay attach/remove lifecycle;
+- screenshot OCR request lifecycle;
+- hand-off to `ResultActivity` once OCR text needs native selection.
+
+It must not implement another result layout or another text-selection UI.
 
 ### `ResultActivity`
-Fallback only. It reuses shared UI/selection/OCR components and must not become a second independent
-result implementation.
+Native Activity host for selectable View/OCR results and screenshot fallback.
+
+It owns:
+
+- Activity Window lifecycle;
+- OCR request lifetime when OCR is run inside the Activity;
+- closing/cleanup.
+
+It renders `UnifiedResultPanel`; it must not create an independent result UI.
 
 ### `ResultOverlay`
 A package-private source-compatibility adapter used by `EditableRegionOverlay`. It contains no window,
@@ -106,10 +140,12 @@ selection or result implementation and immediately forwards to `ResultSurfaceRou
 not depend on this adapter.
 
 ### `ResultUi`
-Shared sizing, title/button and result-layout primitives.
+Low-level sizing and widget primitives used by `UnifiedResultPanel`. Feature/host classes should not
+assemble a separate result surface from these helpers.
 
 ### `TextSelectionSurface`
 Single implementation of native selectable result text, selection handles and magnifier callbacks.
+It must be hosted by an Activity Window on the target device family.
 
 ## 5. OCR
 
@@ -126,7 +162,7 @@ It must not choose an Activity/overlay or build result UI.
 ### `OcrResultDispatcher`
 Single OCR result-delivery boundary:
 
-- deliver to an inline result sink when a live result window is waiting;
+- deliver to an inline result sink when a live result host is waiting;
 - otherwise route through `ResultSurfaceRouter`.
 
 Do not add another static "next OCR result" mechanism to an Activity or View.
@@ -184,7 +220,7 @@ coordinate space whenever possible; do not crop status/navigation bars before en
 ## 8. Notification shade
 
 ### `FvSystemPanelController`
-Owns live SystemUI shade detection and the Activity-fallback FV compatibility sequence.
+Owns live SystemUI shade detection and the Activity-result FV compatibility sequence.
 
 ### `OverlayShadeCoordinator`
 Owns modern overlay-result cleanup. It may use the Android 12+ dismiss-shade action and a scoped BACK
@@ -199,9 +235,12 @@ The BACK fallback is a FloatLens/OxygenOS compatibility adaptation, not original
 3. UI surfaces do not select screenshot/OCR backends.
 4. OCR engines do not decide result UI.
 5. Feature classes do not duplicate overlay-host fallback logic.
-6. Keep FV touch timing and pointer order stable unless diagnostics prove a behavior mismatch.
-7. Preserve Activity fallbacks until the floating path has equivalent failure handling.
-8. For modern Android compatibility adaptations, document them explicitly instead of presenting them
-   as FV-original behavior.
-9. Run the Debug Build workflow after structural changes and test the floating icon, View extraction,
-   region screenshot, notification-shade capture, OCR inline result and Circle Select on-device.
+6. `UnifiedResultPanel` is the only result popup UI; hosts must not rebuild it.
+7. Native selectable result text stays in an Activity Window on the target device family.
+8. Keep FV touch timing and pointer order stable unless diagnostics prove a behavior mismatch.
+9. Preserve Activity fallbacks until the floating path has equivalent failure handling.
+10. For modern Android compatibility adaptations, document them explicitly instead of presenting them
+    as FV-original behavior.
+11. Run the Debug Build workflow after structural changes and test the floating icon, View extraction,
+    region screenshot, notification-shade capture, OCR result, text selection/magnifier and Circle
+    Select on-device.
