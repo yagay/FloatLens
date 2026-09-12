@@ -189,7 +189,6 @@ public final class FloatLensApp extends Application implements Application.Activ
 
     @Override public void onActivityCreated(Activity activity, Bundle state) {}
     @Override public void onActivityStarted(Activity activity) {}
-    @Override public void onActivityPaused(Activity activity, android.os.PersistableBundle bundle) {}
     @Override public void onActivityStopped(Activity activity) {}
     @Override public void onActivitySaveInstanceState(Activity activity, Bundle outState) {}
 }
