@@ -57,6 +57,7 @@ public final class ImageShareUtils {
             clipboard.setPrimaryClip(clip);
             DiagnosticLog.i(app, "IMAGE_CLIPBOARD", "COPY " + shared.file.getName()
                     + " " + image.getWidth() + "x" + image.getHeight());
+            Toast.makeText(app, "已复制图片", Toast.LENGTH_SHORT).show();
             return true;
         } catch (Throwable t) {
             DiagnosticLog.i(app, "IMAGE_CLIPBOARD", "FAILED " + t);
