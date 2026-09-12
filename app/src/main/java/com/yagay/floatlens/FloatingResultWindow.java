@@ -95,13 +95,19 @@ final class FloatingResultWindow {
             box.addView(imageView, new LinearLayout.LayoutParams(-1, imageH));
         }
 
-        LinearLayout textPanel = new LinearLayout(app);
-        textPanel.setOrientation(LinearLayout.VERTICAL);
-        textPanel.setPadding(0, ResultUi.dp(app, 4), 0, ResultUi.dp(app, 4));
-        TextSelectionSurface selection = new TextSelectionSurface(app);
-        textPanel.addView(selection, new LinearLayout.LayoutParams(-1, 0, 1f));
-        textPanel.setVisibility(showText ? View.VISIBLE : View.GONE);
-        box.addView(textPanel, new LinearLayout.LayoutParams(-1, 0));
+        // Important: pure screenshot results do not need a text editor at all. Constructing the
+        // native Editor/ActionMode stack for every screenshot was both wasteful and made a failure
+        // in text-selection setup abort otherwise valid screenshot results.
+        LinearLayout textPanel = null;
+        TextSelectionSurface selection = null;
+        if (showText) {
+            textPanel = new LinearLayout(app);
+            textPanel.setOrientation(LinearLayout.VERTICAL);
+            textPanel.setPadding(0, ResultUi.dp(app, 4), 0, ResultUi.dp(app, 4));
+            selection = new TextSelectionSurface(app);
+            textPanel.addView(selection, new LinearLayout.LayoutParams(-1, 0, 1f));
+            box.addView(textPanel, new LinearLayout.LayoutParams(-1, 0));
+        }
 
         LinearLayout actions = ResultUi.actionRow(app);
         Button ocr = canOcr(spec) ? ResultUi.button(app, "OCR") : null;
@@ -116,7 +122,9 @@ final class FloatingResultWindow {
         box.addView(actions, new LinearLayout.LayoutParams(-1, actionsH));
 
         int textH = showText ? Math.max(ResultUi.dp(app, 96), contentBudget - imageH) : 0;
-        if (showText) textPanel.setLayoutParams(new LinearLayout.LayoutParams(-1, textH));
+        if (showText && textPanel != null) {
+            textPanel.setLayoutParams(new LinearLayout.LayoutParams(-1, textH));
+        }
 
         int height;
         if (spec.mode == Mode.SCREENSHOT) {
@@ -145,9 +153,9 @@ final class FloatingResultWindow {
         if (!attached) return false;
 
         Session session = new Session(app, spec, host, box, lp, title, imageView,
-                textPanel, selection, ocr, copy, save, close, imageH, height, shadeBootstrap);
+                textPanel, selection, actions, ocr, copy, save, close, imageH, height, shadeBootstrap);
         active = session;
-        bindSelection(session);
+        if (selection != null) bindSelection(session);
         if (showText) setTextMode(session, spec.text, spec.blocks, false);
 
         if (ocr != null) ocr.setOnClickListener(v -> beginOcr(session));
@@ -159,6 +167,7 @@ final class FloatingResultWindow {
                 + " size=" + lp.width + "x" + lp.height
                 + " host=" + (host.isAccessibilityHosted() ? "accessibility" : "application")
                 + " type=" + lp.type + " shadeBootstrap=" + shadeBootstrap
+                + " textSurface=" + (selection != null)
                 + " actions=" + count);
 
         if (shadeBootstrap) {
@@ -171,6 +180,7 @@ final class FloatingResultWindow {
     }
 
     private static void bindSelection(Session session) {
+        if (session.selection == null) return;
         session.selection.setListener(new TextSelectionSurface.Listener() {
             @Override public void onSelectionStarted() {
                 FloatActionMenu.dismiss();
@@ -183,13 +193,35 @@ final class FloatingResultWindow {
             }
 
             @Override public void onSelectionFinished(String selectedText, Rect anchorOnScreen) {
-                if (session.detached) return;
+                if (session.detached || session.selection == null) return;
                 String value = safe(selectedText).trim();
                 if (value.isEmpty()) return;
                 FloatActionMenu.showTextAt(session.app, value,
                         session.selection::selectAllText, anchorOnScreen);
             }
         });
+    }
+
+    private static boolean ensureTextSurface(Session session) {
+        if (session.selection != null && session.textPanel != null) return true;
+        try {
+            LinearLayout panel = new LinearLayout(session.app);
+            panel.setOrientation(LinearLayout.VERTICAL);
+            panel.setPadding(0, ResultUi.dp(session.app, 4), 0, ResultUi.dp(session.app, 4));
+            TextSelectionSurface selection = new TextSelectionSurface(session.app);
+            panel.addView(selection, new LinearLayout.LayoutParams(-1, 0, 1f));
+            int actionIndex = Math.max(0, session.box.indexOfChild(session.actions));
+            session.box.addView(panel, actionIndex, new LinearLayout.LayoutParams(-1, 0));
+            session.textPanel = panel;
+            session.selection = selection;
+            bindSelection(session);
+            DiagnosticLog.i(session.app, "RESULT_WINDOW", "text surface created lazily");
+            return true;
+        } catch (Throwable t) {
+            DiagnosticLog.i(session.app, "RESULT_WINDOW", "text surface create failed="
+                    + ScreenCaptureBackend.safeMessage(t));
+            return false;
+        }
     }
 
     private static synchronized void promoteNativeTextHost(Session session, String reason) {
@@ -203,7 +235,7 @@ final class FloatingResultWindow {
     private static synchronized void beginOcr(Session session) {
         if (session == null || session.detached || active != session || session.spec.image == null
                 || session.spec.image.isRecycled() || session.ocrRunning) return;
-        session.selection.clearSelection();
+        if (session.selection != null) session.selection.clearSelection();
         FloatActionMenu.dismiss();
         FloatMenuAnchor.clear();
 
@@ -248,7 +280,7 @@ final class FloatingResultWindow {
     }
 
     private static void setTextMode(Session session, String text, List<String> blocks, boolean fromOcr) {
-        if (session.detached) return;
+        if (session.detached || !ensureTextSurface(session)) return;
         if (!session.nativeHostDeferred) ensureNativeTextHost(session);
         String shown = text == null || text.trim().isEmpty() ? "未识别到文字" : text.trim();
         session.selection.setText(shown);
@@ -289,6 +321,7 @@ final class FloatingResultWindow {
     }
 
     private static void copyAll(Session session) {
+        if (session.selection == null) return;
         String value = session.selection.editor().getText().toString();
         if (value.isEmpty()) value = session.spec.text;
         ClipboardManager cm = (ClipboardManager) session.app.getSystemService(Context.CLIPBOARD_SERVICE);
@@ -305,7 +338,7 @@ final class FloatingResultWindow {
         session.detached = true;
         session.ocrGeneration++;
         if (active == session) active = null;
-        session.selection.clearSelection();
+        if (session.selection != null) session.selection.clearSelection();
         FloatActionMenu.dismiss();
         FloatMenuAnchor.clear();
         if (session.ocrRunning && session.spec.image != null) {
@@ -388,8 +421,9 @@ final class FloatingResultWindow {
         final WindowManager.LayoutParams windowLayout;
         final TextView title;
         final ImageView imageView;
-        final LinearLayout textPanel;
-        final TextSelectionSurface selection;
+        LinearLayout textPanel;
+        TextSelectionSurface selection;
+        final LinearLayout actions;
         final Button ocrButton;
         final Button copyButton;
         final Button saveButton;
@@ -403,8 +437,8 @@ final class FloatingResultWindow {
 
         Session(Context app, Spec spec, FvOverlayWindowHost host, LinearLayout box,
                 WindowManager.LayoutParams windowLayout, TextView title, ImageView imageView,
-                LinearLayout textPanel, TextSelectionSurface selection, Button ocrButton,
-                Button copyButton, Button saveButton, Button closeButton,
+                LinearLayout textPanel, TextSelectionSurface selection, LinearLayout actions,
+                Button ocrButton, Button copyButton, Button saveButton, Button closeButton,
                 int initialImageHeight, int windowHeight, boolean nativeHostDeferred) {
             this.app = app;
             this.spec = spec;
@@ -415,6 +449,7 @@ final class FloatingResultWindow {
             this.imageView = imageView;
             this.textPanel = textPanel;
             this.selection = selection;
+            this.actions = actions;
             this.ocrButton = ocrButton;
             this.copyButton = copyButton;
             this.saveButton = saveButton;
