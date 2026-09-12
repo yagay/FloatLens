@@ -1,6 +1,7 @@
 package com.yagay.floatlens;
 
 import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
@@ -39,6 +40,29 @@ public final class ImageShareUtils {
     /** Compatibility alias: all existing callers now get the long-press menu automatically. */
     public static void attachLongPressShare(Context c, ImageView view, Bitmap image) {
         attachLongPressMenu(c, view, image);
+    }
+
+    /** Put the exact popup bitmap on Android's clipboard as an image content URI. */
+    public static boolean copyToClipboard(Context c, Bitmap image) {
+        if (c == null || image == null || image.isRecycled()) return false;
+        Context app = c.getApplicationContext();
+        try {
+            SharedImage shared = prepareSharedImage(app, image);
+            ClipboardManager clipboard =
+                    (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard == null) throw new IllegalStateException("Clipboard unavailable");
+
+            ClipData clip = ClipData.newUri(
+                    app.getContentResolver(), "FloatLens image", shared.uri);
+            clipboard.setPrimaryClip(clip);
+            DiagnosticLog.i(app, "IMAGE_CLIPBOARD", "COPY " + shared.file.getName()
+                    + " " + image.getWidth() + "x" + image.getHeight());
+            return true;
+        } catch (Throwable t) {
+            DiagnosticLog.i(app, "IMAGE_CLIPBOARD", "FAILED " + t);
+            Toast.makeText(app, "无法复制图片", Toast.LENGTH_SHORT).show();
+            return false;
+        }
     }
 
     public static void share(Context c, Bitmap image) {
@@ -88,8 +112,8 @@ public final class ImageShareUtils {
     }
 
     /**
-     * Share and Open-With must expose the exact same temporary image/URI semantics. Keeping this in
-     * one helper also guarantees the FileProvider grant path stays consistent between both actions.
+     * Clipboard, Share and Open-With must expose the exact same temporary image/URI semantics.
+     * Keeping this in one helper also guarantees the FileProvider path stays consistent.
      */
     private static SharedImage prepareSharedImage(Context app, Bitmap image) throws Exception {
         File dir = new File(app.getCacheDir(), DIR);
