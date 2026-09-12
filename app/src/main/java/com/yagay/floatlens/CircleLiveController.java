@@ -40,17 +40,17 @@ public final class CircleLiveController {
         private final Context context;
         private final WindowManager wm;
         private final FloatSettings fs;
-        private final boolean shadeExpandedBeforeCapture;
+        private final FvSystemPanelController.CaptureState shadeState;
         private final List<PointF> points=new ArrayList<>();
         private LiveView overlay;
         private Bitmap screenshot;
-        private boolean ended,cancelled,processed,shadeDismissRequested;
+        private boolean ended,cancelled,processed;
 
         Session(Context c,float x,float y){
             context=c;
             wm=(WindowManager)c.getSystemService(Context.WINDOW_SERVICE);
             fs=new FloatSettings(c);
-            shadeExpandedBeforeCapture=FvSystemPanelController.notificationShadeExpanded();
+            shadeState=FvSystemPanelController.beginCapture(c,"circle_live");
             points.add(new PointF(x,y));
         }
 
@@ -59,7 +59,7 @@ public final class CircleLiveController {
             if(service!=null)service.onCircleCaptureStarted();
             DiagnosticLog.i(context,"CIRCLE_LIVE","ENTER code="+GestureCode.ENTER_CIRCLE
                     +" x="+Math.round(points.get(0).x)+" y="+Math.round(points.get(0).y)
-                    +" shadeExpanded="+shadeExpandedBeforeCapture);
+                    +" shadeExpanded="+shadeState.expandedAtCapture());
             // Do not set the icon INVISIBLE here: that can terminate the current MotionEvent stream.
             captureScreen(this::onScreenshot,this::onCaptureFailure);
         }
@@ -90,16 +90,31 @@ public final class CircleLiveController {
         private void onScreenshot(Bitmap b){
             if(cancelled){if(b!=null)b.recycle();return;}
             screenshot=b;
-            if(!ended)showOverlay();
-            dismissShadeAfterCapture();
+
+            // Re-verified FV timing: create the frozen/candidate surface before closing the live
+            // SystemUI shade. Always attempt the frozen layer even if the finger was released before
+            // takeScreenshot() returned; that removes the old race where the shade could be closed
+            // before any replacement result surface existed.
+            showOverlay();
+
+            if(ended&&overlay!=null){
+                // Give an already-finished gesture one UI turn with the frozen layer attached before
+                // maybeProcess() removes it and launches OCR. The CaptureState itself is one-shot.
+                overlay.postDelayed(() -> {
+                    if(cancelled)return;
+                    onCandidateReady();
+                    maybeProcess();
+                },16L);
+                return;
+            }
+
+            onCandidateReady();
             maybeProcess();
         }
 
-        private void dismissShadeAfterCapture(){
-            if(shadeDismissRequested)return;
-            shadeDismissRequested=true;
-            FvSystemPanelController.dismissAfterCapture(
-                    context,shadeExpandedBeforeCapture,"circle_live_frame_ready");
+        private void onCandidateReady(){
+            FvSystemPanelController.onResultReady(
+                    context,shadeState,"circle_live_candidate_shown");
         }
 
         private void onCaptureFailure(Throwable t){
