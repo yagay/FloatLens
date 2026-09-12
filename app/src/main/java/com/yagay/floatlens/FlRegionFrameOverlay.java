@@ -43,7 +43,9 @@ final class FlRegionFrameOverlay {
         frame.setScreenRect(screenRect);
     }
 
-    void setConfirmed(boolean ignored) { }
+    void setVisualState(SelectionVisualState state) {
+        frame.setVisualState(state);
+    }
 
     void close() {
         if (!attached) {
@@ -61,8 +63,8 @@ final class FlRegionFrameOverlay {
         attached = windowHost.add(frame, lp, "region_frame");
         if (attached) {
             DiagnosticLog.i(context, "FL_REGION_FRAME",
-                    "ATTACH single-window yellow-2dp no-label accessibilityHost="
-                            + windowHost.isAccessibilityHosted());
+                    "ATTACH single-window 2dp state=" + frame.state()
+                            + " accessibilityHost=" + windowHost.isAccessibilityHosted());
         }
     }
 
@@ -70,16 +72,31 @@ final class FlRegionFrameOverlay {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Rect screenRect = new Rect();
         private final int[] windowOrigin = new int[2];
+        private SelectionVisualState state = SelectionVisualState.TRACKING;
 
         FrameView(Context c) {
             super(c);
             setBackgroundColor(Color.TRANSPARENT);
             paint.setAntiAlias(true);
-            paint.setColor(0xFFFFFF00);
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeJoin(Paint.Join.ROUND);
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setStrokeWidth(dp(c, 2f));
+            updateColor();
+        }
+
+        SelectionVisualState state() { return state; }
+
+        void setVisualState(SelectionVisualState next) {
+            if (next == null) next = SelectionVisualState.TRACKING;
+            if (state == next) return;
+            state = next;
+            updateColor();
+            invalidate();
+        }
+
+        private void updateColor() {
+            paint.setColor(SelectionVisuals.frameColor(state));
         }
 
         void setScreenRect(Rect rect) {
