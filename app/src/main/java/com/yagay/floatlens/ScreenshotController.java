@@ -21,22 +21,24 @@ import java.util.function.Consumer;
 public final class ScreenshotController {
     public static void capture(Context c, boolean region) {
         Context app = c.getApplicationContext();
-        final boolean shadeExpandedBeforeCapture = FvSystemPanelController.notificationShadeExpanded();
+        final FvSystemPanelController.CaptureState shadeState = FvSystemPanelController.beginCapture(
+                app, region ? "screenshot_region" : "screenshot_full");
         getBitmap(app, b -> {
             if (region) RegionOverlay.show(app, b, false);
             else save(app, b);
-            FvSystemPanelController.dismissAfterCapture(
-                    app, shadeExpandedBeforeCapture, region ? "region_overlay_shown" : "screenshot_saved");
+            FvSystemPanelController.onResultReady(
+                    app, shadeState, region ? "region_overlay_shown" : "screenshot_saved");
         });
     }
 
     public static void captureForOcr(Context c) {
         Context app = c.getApplicationContext();
-        final boolean shadeExpandedBeforeCapture = FvSystemPanelController.notificationShadeExpanded();
+        final FvSystemPanelController.CaptureState shadeState = FvSystemPanelController.beginCapture(
+                app, "ocr_region_capture");
         getBitmap(app, b -> {
             RegionOverlay.show(app, b, true);
-            FvSystemPanelController.dismissAfterCapture(
-                    app, shadeExpandedBeforeCapture, "ocr_region_overlay_shown");
+            FvSystemPanelController.onResultReady(
+                    app, shadeState, "ocr_region_overlay_shown");
         });
     }
 
@@ -50,7 +52,8 @@ public final class ScreenshotController {
     /** Capture an uncropped full-screen frame and open the adjustable rectangular region editor. */
     public static void captureForRegionEditor(Context c) {
         Context app = c.getApplicationContext();
-        final boolean shadeExpandedBeforeCapture = FvSystemPanelController.notificationShadeExpanded();
+        final FvSystemPanelController.CaptureState shadeState = FvSystemPanelController.beginCapture(
+                app, "editable_region_capture");
         FloatSettings fs = new FloatSettings(app);
         FloatService service = FloatService.get();
         boolean hideIcon = !fs.keepInScreenshot() && service != null;
@@ -63,8 +66,8 @@ public final class ScreenshotController {
             }
             DiagnosticLog.i(app, "REGION_EDIT", "open screenshot=" + raw.getWidth() + "x" + raw.getHeight());
             EditableRegionOverlay.show(app, raw);
-            FvSystemPanelController.dismissAfterCapture(
-                    app, shadeExpandedBeforeCapture, "editable_region_overlay_shown");
+            FvSystemPanelController.onResultReady(
+                    app, shadeState, "editable_region_overlay_shown");
         }, t -> {
             restoreIcon(service, hideIcon);
             Toast.makeText(app, "区域截图失败: " + safeMessage(t), Toast.LENGTH_LONG).show();
@@ -78,12 +81,13 @@ public final class ScreenshotController {
             return;
         }
         Context app = c.getApplicationContext();
-        final boolean shadeExpandedBeforeCapture = FvSystemPanelController.notificationShadeExpanded();
+        final FvSystemPanelController.CaptureState shadeState = FvSystemPanelController.beginCapture(
+                app, "view_ocr_capture");
         Rect anchor = new Rect(screenBounds);
         captureBounds(app, anchor, crop -> {
                     OcrEngine.recognize(app, crop, anchor);
-                    FvSystemPanelController.dismissAfterCapture(
-                            app, shadeExpandedBeforeCapture, "view_ocr_capture_ready");
+                    FvSystemPanelController.onResultReady(
+                            app, shadeState, "view_ocr_capture_ready");
                 },
                 "View OCR 失败，改用自由圈选", true);
     }
@@ -92,7 +96,8 @@ public final class ScreenshotController {
     public static void captureBoundsForRegion(Context c, Rect screenBounds) {
         if (screenBounds == null || screenBounds.isEmpty()) return;
         Context app = c.getApplicationContext();
-        final boolean shadeExpandedBeforeCapture = FvSystemPanelController.notificationShadeExpanded();
+        final FvSystemPanelController.CaptureState shadeState = FvSystemPanelController.beginCapture(
+                app, "fv_region_capture");
         Rect bounds = new Rect(screenBounds);
         captureBounds(app, bounds, crop -> {
             DiagnosticLog.i(app, "FV_REGION_CAPTURE", "crop=" + crop.getWidth() + "x" + crop.getHeight()
@@ -100,8 +105,8 @@ public final class ScreenshotController {
             if (!ScreenshotResultActivity.show(app, crop, bounds)) {
                 ScreenshotResultOverlay.show(app, crop, bounds);
             }
-            FvSystemPanelController.dismissAfterCapture(
-                    app, shadeExpandedBeforeCapture, "fv_region_result_shown");
+            FvSystemPanelController.onResultReady(
+                    app, shadeState, "fv_region_result_shown");
         }, "区域截图失败", false);
     }
 
@@ -113,7 +118,8 @@ public final class ScreenshotController {
                                                      ViewNodeCandidate candidate, String directText) {
         if (screenBounds == null || screenBounds.isEmpty()) return;
         Context app = c.getApplicationContext();
-        final boolean shadeExpandedBeforeCapture = FvSystemPanelController.notificationShadeExpanded();
+        final FvSystemPanelController.CaptureState shadeState = FvSystemPanelController.beginCapture(
+                app, "view_candidate_capture");
         Rect bounds = new Rect(screenBounds);
         captureBounds(app, bounds, crop -> {
             String text = directText == null ? "" : directText.trim();
@@ -132,8 +138,8 @@ public final class ScreenshotController {
                     ResultOverlay.showVisual(app, crop, candidate, bounds);
                 }
             }
-            FvSystemPanelController.dismissAfterCapture(
-                    app, shadeExpandedBeforeCapture, "view_result_shown");
+            FvSystemPanelController.onResultReady(
+                    app, shadeState, "view_result_shown");
         }, "View 截图失败", false);
     }
 
@@ -141,7 +147,8 @@ public final class ScreenshotController {
     public static void captureBoundsForVisualCandidate(Context c, Rect screenBounds, ViewNodeCandidate candidate) {
         if (screenBounds == null || screenBounds.isEmpty()) return;
         Context app = c.getApplicationContext();
-        final boolean shadeExpandedBeforeCapture = FvSystemPanelController.notificationShadeExpanded();
+        final FvSystemPanelController.CaptureState shadeState = FvSystemPanelController.beginCapture(
+                app, "visual_candidate_capture");
         Rect bounds = new Rect(screenBounds);
         captureBounds(app, bounds, crop -> {
             DiagnosticLog.i(app, "VIEW_SCREENSHOT", "visual candidate crop="
@@ -149,8 +156,8 @@ public final class ScreenshotController {
             if (!ViewImageResultActivity.show(app, crop, candidate, bounds)) {
                 ResultOverlay.showVisual(app, crop, candidate, bounds);
             }
-            FvSystemPanelController.dismissAfterCapture(
-                    app, shadeExpandedBeforeCapture, "visual_result_shown");
+            FvSystemPanelController.onResultReady(
+                    app, shadeState, "visual_result_shown");
         }, "View 截图失败", false);
     }
 
