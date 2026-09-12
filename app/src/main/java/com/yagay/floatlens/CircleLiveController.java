@@ -40,17 +40,26 @@ public final class CircleLiveController {
         private final Context context;
         private final WindowManager wm;
         private final FloatSettings fs;
+        private final boolean shadeExpandedBeforeCapture;
         private final List<PointF> points=new ArrayList<>();
         private LiveView overlay;
         private Bitmap screenshot;
-        private boolean ended,cancelled,processed;
+        private boolean ended,cancelled,processed,shadeDismissRequested;
 
-        Session(Context c,float x,float y){context=c;wm=(WindowManager)c.getSystemService(Context.WINDOW_SERVICE);fs=new FloatSettings(c);points.add(new PointF(x,y));}
+        Session(Context c,float x,float y){
+            context=c;
+            wm=(WindowManager)c.getSystemService(Context.WINDOW_SERVICE);
+            fs=new FloatSettings(c);
+            shadeExpandedBeforeCapture=FvSystemPanelController.notificationShadeExpanded();
+            points.add(new PointF(x,y));
+        }
 
         void start(){
             FloatService service=FloatService.get();
             if(service!=null)service.onCircleCaptureStarted();
-            DiagnosticLog.i(context,"CIRCLE_LIVE","ENTER code="+GestureCode.ENTER_CIRCLE+" x="+Math.round(points.get(0).x)+" y="+Math.round(points.get(0).y));
+            DiagnosticLog.i(context,"CIRCLE_LIVE","ENTER code="+GestureCode.ENTER_CIRCLE
+                    +" x="+Math.round(points.get(0).x)+" y="+Math.round(points.get(0).y)
+                    +" shadeExpanded="+shadeExpandedBeforeCapture);
             // Do not set the icon INVISIBLE here: that can terminate the current MotionEvent stream.
             captureScreen(this::onScreenshot,this::onCaptureFailure);
         }
@@ -82,7 +91,15 @@ public final class CircleLiveController {
             if(cancelled){if(b!=null)b.recycle();return;}
             screenshot=b;
             if(!ended)showOverlay();
+            dismissShadeAfterCapture();
             maybeProcess();
+        }
+
+        private void dismissShadeAfterCapture(){
+            if(shadeDismissRequested)return;
+            shadeDismissRequested=true;
+            FvSystemPanelController.dismissAfterCapture(
+                    context,shadeExpandedBeforeCapture,"circle_live_frame_ready");
         }
 
         private void onCaptureFailure(Throwable t){
