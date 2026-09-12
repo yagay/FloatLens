@@ -4,9 +4,20 @@
         <item name="android:windowLightStatusBar">true</item>
     </style>
 
+    <!-- Transparent Activity host only; the visible result card belongs to ResultDialog. -->
     <style name="Theme.FloatLens.ResultText" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:fontFamily">sans</item>
+    </style>
+
+    <!-- The single visible screenshot / View / OCR result window. -->
+    <style name="Theme.FloatLens.ResultDialog" parent="Theme.MaterialComponents.DayNight.Dialog">
+        <item name="android:windowNoTitle">true</item>
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:windowDisablePreview">true</item>
         <item name="android:backgroundDimEnabled">false</item>
