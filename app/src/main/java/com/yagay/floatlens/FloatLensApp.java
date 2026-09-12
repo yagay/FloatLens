@@ -12,15 +12,14 @@ import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
-import android.widget.Button;
 import android.widget.TextView;
 
 import java.util.Map;
 import java.util.WeakHashMap;
 
-/** Installs FloatLens' own selection menu on selectable text inside FloatLens activities. */
+/** Installs FloatLens' app-wide selection menu outside the unified result surface. */
 public final class FloatLensApp extends Application implements Application.ActivityLifecycleCallbacks {
-    /** Keeps result popups centered even when their content/height changes after creation. */
+    /** Keeps the unified result popup centered even when its internal content changes. */
     private final Map<Activity, View.OnLayoutChangeListener> resultCenterLocks = new WeakHashMap<>();
 
     @Override public void onCreate() {
@@ -40,14 +39,12 @@ public final class FloatLensApp extends Application implements Application.Activ
 
     private void install(Activity activity) {
         if (activity == null || activity.getWindow() == null) return;
+        // ResultActivity owns its selectable text, native ActionMode and handle-drag lifecycle.
+        // Do not overwrite those callbacks with the app-wide FloatActionMenu installer.
+        if (activity instanceof ResultActivity) return;
         installRecursive(activity, activity.getWindow().getDecorView());
     }
 
-    /**
-     * Result windows used to follow their source View/OCR anchor. Keep all of them in the screen
-     * center instead. The layout listener re-applies CENTER after dynamic changes such as expanding
-     * the screenshot result with inline OCR text.
-     */
     private void installResultCenterLock(Activity activity) {
         if (!isResultActivity(activity) || activity.getWindow() == null) return;
         View decor = activity.getWindow().getDecorView();
@@ -68,10 +65,7 @@ public final class FloatLensApp extends Application implements Application.Activ
     }
 
     private boolean isResultActivity(Activity activity) {
-        return activity instanceof ResultTextActivity
-                || activity instanceof ViewContentActivity
-                || activity instanceof ViewImageResultActivity
-                || activity instanceof ScreenshotResultActivity;
+        return activity instanceof ResultActivity;
     }
 
     private void centerResultWindow(Activity activity) {
@@ -95,15 +89,8 @@ public final class FloatLensApp extends Application implements Application.Activ
 
     private void installRecursive(Activity activity, View view) {
         if (view == null) return;
-        if (view instanceof TextView tv) {
-            if (tv.isTextSelectable()) {
-                tv.setCustomSelectionActionModeCallback(new FloatSelectionCallback(activity, tv));
-            } else if (activity instanceof ResultTextActivity
-                    && !(tv instanceof Button) && tv.isClickable()
-                    && tv.getText() != null && !tv.getText().toString().isBlank()) {
-                tv.setOnClickListener(v -> FloatActionMenu.showTextAt(
-                        activity, tv.getText().toString(), null, FloatMenuAnchor.forView(tv)));
-            }
+        if (view instanceof TextView tv && tv.isTextSelectable()) {
+            tv.setCustomSelectionActionModeCallback(new FloatSelectionCallback(activity, tv));
         }
         if (view instanceof ViewGroup group) {
             for (int i = 0; i < group.getChildCount(); i++) {
