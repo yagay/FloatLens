@@ -13,6 +13,7 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 
@@ -23,6 +24,12 @@ import java.util.Set;
  * resize and compare multiple passes for accuracy; that is excellent for final recognition but its
  * coordinates no longer map 1:1 to the screen. Circle Select needs stable hit boxes, so this layer
  * performs one original-image pass and keeps every ML Kit element bounding box.
+ *
+ * ML Kit does not promise that TextBlock iteration order is the same as visual reading order across
+ * independent blocks. Circle Select represents a selection as one contiguous start/end index, so
+ * every returned word must first be normalized into deterministic screen reading order. Otherwise a
+ * handle dragged to the next visible row can still point at a non-contiguous index and appear stuck
+ * on one row.
  */
 public final class SpatialOcrEngine {
     public interface Callback {
@@ -95,33 +102,89 @@ public final class SpatialOcrEngine {
     }
 
     private static ArrayList<Word> parse(Text text) {
-        ArrayList<Word> out = new ArrayList<>();
-        if (text == null) return out;
-        int lineIndex = 0;
-        int order = 0;
+        ArrayList<LineCandidate> lines = new ArrayList<>();
+        if (text == null) return new ArrayList<>();
+
         for (Text.TextBlock block : text.getTextBlocks()) {
             for (Text.Line line : block.getLines()) {
-                int before = out.size();
+                Rect lineBox = line.getBoundingBox();
+                ArrayList<ElementCandidate> elements = new ArrayList<>();
+                Rect union = null;
+
                 for (Text.Element element : line.getElements()) {
                     String value = element.getText() == null ? "" : element.getText().trim();
                     Rect box = element.getBoundingBox();
-                    if (!value.isEmpty() && box != null && !box.isEmpty()) {
-                        out.add(new Word(value, box, lineIndex, order++));
-                    }
+                    if (value.isEmpty() || box == null || box.isEmpty()) continue;
+                    elements.add(new ElementCandidate(value, box));
+                    if (union == null) union = new Rect(box);
+                    else union.union(box);
                 }
-                // Some scripts/devices expose a useful line box but no elements. Keep the line as
-                // one selectable unit instead of silently making that text impossible to touch.
-                if (out.size() == before) {
+
+                // Some scripts/devices expose useful line text but no elements. Keep the complete
+                // line as one selectable unit instead of making that row impossible to select.
+                if (elements.isEmpty()) {
                     String value = line.getText() == null ? "" : line.getText().trim();
-                    Rect box = line.getBoundingBox();
+                    Rect box = lineBox;
                     if (!value.isEmpty() && box != null && !box.isEmpty()) {
-                        out.add(new Word(value, box, lineIndex, order++));
+                        elements.add(new ElementCandidate(value, box));
+                        union = new Rect(box);
                     }
                 }
-                lineIndex++;
+
+                if (elements.isEmpty()) continue;
+                elements.sort(Comparator
+                        .comparingInt((ElementCandidate e) -> e.bounds.left)
+                        .thenComparingInt(e -> e.bounds.top)
+                        .thenComparingInt(e -> e.bounds.right));
+
+                Rect stableLineBox = lineBox != null && !lineBox.isEmpty()
+                        ? new Rect(lineBox)
+                        : union == null ? new Rect() : new Rect(union);
+                if (stableLineBox.isEmpty() && union != null) stableLineBox.set(union);
+                lines.add(new LineCandidate(stableLineBox, elements));
+            }
+        }
+
+        // Sort rows geometrically rather than trusting TextBlock iteration order. Use vertical centre
+        // first so slightly different ascender/descender boxes from the same visual row do not swap.
+        lines.sort((a, b) -> {
+            int ah = Math.max(1, a.bounds.height());
+            int bh = Math.max(1, b.bounds.height());
+            int tolerance = Math.max(3, Math.min(ah, bh) / 2);
+            int dy = a.bounds.centerY() - b.bounds.centerY();
+            if (Math.abs(dy) > tolerance) return Integer.compare(a.bounds.centerY(), b.bounds.centerY());
+            int top = Integer.compare(a.bounds.top, b.bounds.top);
+            if (Math.abs(a.bounds.top - b.bounds.top) > tolerance) return top;
+            return Integer.compare(a.bounds.left, b.bounds.left);
+        });
+
+        ArrayList<Word> out = new ArrayList<>();
+        int order = 0;
+        for (int lineIndex = 0; lineIndex < lines.size(); lineIndex++) {
+            LineCandidate line = lines.get(lineIndex);
+            for (ElementCandidate element : line.elements) {
+                out.add(new Word(element.text, element.bounds, lineIndex, order++));
             }
         }
         return out;
+    }
+
+    private static final class LineCandidate {
+        final Rect bounds;
+        final List<ElementCandidate> elements;
+        LineCandidate(Rect bounds, List<ElementCandidate> elements) {
+            this.bounds = bounds == null ? new Rect() : new Rect(bounds);
+            this.elements = elements;
+        }
+    }
+
+    private static final class ElementCandidate {
+        final String text;
+        final Rect bounds;
+        ElementCandidate(String text, Rect bounds) {
+            this.text = text == null ? "" : text.trim();
+            this.bounds = bounds == null ? new Rect() : new Rect(bounds);
+        }
     }
 
     private static String safe(Throwable t) {
