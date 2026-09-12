@@ -405,11 +405,32 @@ final class FloatingResultWindow {
 
     private enum Mode { SCREENSHOT, VIEW_TEXT, VIEW_IMAGE, OCR }
 
-    private record Spec(Mode mode, String title, String text, List<String> blocks,
-                        Bitmap image, Rect anchor, ViewNodeCandidate view,
-                        boolean shadeExpandedAtCapture) {
-        Spec {
-            anchor = anchor == null ? null : new Rect(anchor);
+    /**
+     * Plain class instead of a Java record. Some Android/R8 combinations desugar records to
+     * com.android.tools.r8.RecordTag; on the target device that synthetic runtime type was absent,
+     * causing NoClassDefFoundError before the floating result window could be constructed.
+     */
+    private static final class Spec {
+        final Mode mode;
+        final String title;
+        final String text;
+        final List<String> blocks;
+        final Bitmap image;
+        final Rect anchor;
+        final ViewNodeCandidate view;
+        final boolean shadeExpandedAtCapture;
+
+        Spec(Mode mode, String title, String text, List<String> blocks,
+             Bitmap image, Rect anchor, ViewNodeCandidate view,
+             boolean shadeExpandedAtCapture) {
+            this.mode = mode;
+            this.title = title;
+            this.text = text;
+            this.blocks = blocks;
+            this.image = image;
+            this.anchor = anchor == null ? null : new Rect(anchor);
+            this.view = view;
+            this.shadeExpandedAtCapture = shadeExpandedAtCapture;
         }
     }
 
