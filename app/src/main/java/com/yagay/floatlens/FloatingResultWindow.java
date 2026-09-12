@@ -6,22 +6,15 @@ import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.view.Gravity;
 import android.view.WindowManager;
-import android.widget.Button;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.List;
 
 /**
- * Image-only floating result surface.
+ * Floating host for image-first results.
  *
- * TYPE_ACCESSIBILITY_OVERLAY is reliable for frozen screenshot/image presentation but Android's
- * native text Editor stack (selection handles, magnifier and ActionMode) is not reliable in overlay
- * windows on the target OxygenOS/Android build. Selectable text therefore lives exclusively in
- * ResultActivity. This class owns only screenshot presentation and hands OCR results to that native
- * Activity host after recognition completes.
+ * The visible content is always UnifiedResultPanel. This class owns only the overlay WindowManager
+ * lifecycle and OCR handoff to ResultActivity when native text selection is required.
  */
 final class FloatingResultWindow {
     private static final long OCR_TIMEOUT_MS = 12_000L;
@@ -32,7 +25,7 @@ final class FloatingResultWindow {
         return showImageResult(c, image, anchor);
     }
 
-    /** Compatibility entry points: all selectable text is intentionally Activity-hosted. */
+    /** Selectable text is intentionally Activity-hosted but renders the same UnifiedResultPanel. */
     static boolean showOcr(Context c, String text, List<String> blocks, Bitmap image, Rect anchor) {
         dismissActive("native_text_activity");
         return ResultActivity.showOcr(c, text, blocks, image, anchor);
@@ -61,39 +54,11 @@ final class FloatingResultWindow {
     private static synchronized boolean showImageResult(Context c, Bitmap image, Rect anchor) {
         dismissActive("replace");
         Context app = c.getApplicationContext();
-        Rect usable = ResultUi.usableBounds(app);
-        int width = ResultUi.standardWidth(app, usable);
-        int maxH = ResultUi.standardMaxHeight(app, usable);
-        int titleH = ResultUi.dp(app, ResultUi.TITLE_H_DP);
-        int actionsH = ResultUi.dp(app, ResultUi.ACTION_H_DP);
-        int contentBudget = Math.max(ResultUi.dp(app, 90),
-                maxH - titleH - actionsH - ResultUi.dp(app, ResultUi.ROOT_VPAD_DP));
+        UnifiedResultPanel panel = new UnifiedResultPanel(app,
+                UnifiedResultPanel.Mode.SCREENSHOT, image, "", "", false);
 
-        LinearLayout box = ResultUi.box(app);
-        TextView title = ResultUi.heading(app, "区域截图");
-        box.addView(title, new LinearLayout.LayoutParams(-1, titleH));
-
-        int imageH = ResultUi.imageHeight(app, image, width, contentBudget);
-        ImageView imageView = new ImageView(app);
-        imageView.setImageBitmap(image);
-        imageView.setAdjustViewBounds(false);
-        imageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        ImageShareUtils.attachLongPressShare(app, imageView, image);
-        box.addView(imageView, new LinearLayout.LayoutParams(-1, imageH));
-
-        LinearLayout actions = ResultUi.actionRow(app);
-        Button ocr = ResultUi.button(app, "OCR");
-        Button save = ResultUi.button(app, "保存图片");
-        Button close = ResultUi.button(app, "关闭");
-        actions.addView(ocr, new LinearLayout.LayoutParams(0, -1, 1));
-        actions.addView(save, new LinearLayout.LayoutParams(0, -1, 1));
-        actions.addView(close, new LinearLayout.LayoutParams(0, -1, 1));
-        box.addView(actions, new LinearLayout.LayoutParams(-1, actionsH));
-
-        int height = Math.min(maxH,
-                titleH + actionsH + imageH + ResultUi.dp(app, ResultUi.ROOT_VPAD_DP));
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                width, Math.max(ResultUi.dp(app, 158), height),
+                panel.width(), panel.height(),
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                         | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
@@ -103,18 +68,18 @@ final class FloatingResultWindow {
         lp.y = 0;
 
         FvOverlayWindowHost host = new FvOverlayWindowHost(app);
-        if (!host.add(box, lp, "result_window")) return false;
+        if (!host.add(panel.root(), lp, "result_window")) return false;
 
-        Session session = new Session(app, image, anchor, host, box, ocr);
+        Session session = new Session(app, image, anchor, host, panel);
         active = session;
-        ocr.setOnClickListener(v -> beginOcr(session));
-        save.setOnClickListener(v -> ScreenshotController.save(app, image));
-        close.setOnClickListener(v -> detach(session, "close"));
+        panel.bindActions(() -> beginOcr(session),
+                () -> ScreenshotController.save(app, image),
+                () -> detach(session, "close"));
 
         DiagnosticLog.i(app, "RESULT_WINDOW", "show mode=SCREENSHOT size="
                 + lp.width + "x" + lp.height
                 + " host=" + (host.isAccessibilityHosted() ? "accessibility" : "application")
-                + " type=" + lp.type + " textSurface=false actions=3");
+                + " type=" + lp.type + " unifiedPanel=true textSurface=false actions=3");
         return true;
     }
 
@@ -126,28 +91,26 @@ final class FloatingResultWindow {
         FloatMenuAnchor.clear();
         long gen = ++session.ocrGeneration;
         session.ocrRunning = true;
-        session.ocrButton.setEnabled(false);
-        session.ocrButton.setText("识别中…");
+        session.panel.setOcrRunning(true);
 
         Bitmap image = session.image;
         Rect anchor = session.anchor == null ? null : new Rect(session.anchor);
-        OcrResultDispatcher.register(image, (text, blocks) -> session.box.post(() ->
+        OcrResultDispatcher.register(image, (text, blocks) -> session.panel.root().post(() ->
                 onOcrReady(session, gen, text, blocks)));
 
-        session.box.postDelayed(() -> {
+        session.panel.root().postDelayed(() -> {
             synchronized (FloatingResultWindow.class) {
                 if (session.detached || active != session || !session.ocrRunning
                         || session.ocrGeneration != gen) return;
                 OcrResultDispatcher.cancel(image);
                 session.ocrRunning = false;
-                session.ocrButton.setEnabled(true);
-                session.ocrButton.setText("OCR");
+                session.panel.resetOcrButton();
                 DiagnosticLog.i(session.app, "RESULT_WINDOW", "ocr timeout gen=" + gen);
             }
         }, OCR_TIMEOUT_MS);
 
         DiagnosticLog.i(session.app, "RESULT_WINDOW", "ocr begin gen=" + gen
-                + " nativeTextHost=activity");
+                + " nativeTextHost=activity unifiedPanel=true");
         OcrEngine.recognize(session.app, image, anchor);
     }
 
@@ -155,15 +118,15 @@ final class FloatingResultWindow {
                                                 String text, List<String> blocks) {
         if (session == null || session.detached || active != session || gen != session.ocrGeneration) return;
         session.ocrRunning = false;
-        session.ocrButton.setEnabled(true);
-        session.ocrButton.setText("重新识别");
+        session.panel.setOcrRunning(false);
 
         String value = text == null ? "" : text.trim();
         List<String> safeBlocks = blocks == null ? List.of() : blocks;
         boolean shown = ResultActivity.showOcr(session.app, value, safeBlocks,
                 session.image, session.anchor);
         DiagnosticLog.i(session.app, "RESULT_WINDOW", "ocr native activity handoff shown=" + shown
-                + " chars=" + value.length() + " blocks=" + safeBlocks.size());
+                + " chars=" + value.length() + " blocks=" + safeBlocks.size()
+                + " unifiedPanel=true");
         if (shown) {
             detach(session, "ocr_native_activity");
         } else {
@@ -187,7 +150,7 @@ final class FloatingResultWindow {
             OcrEngine.invalidatePending(session.app, "result_window_" + reason);
             session.ocrRunning = false;
         }
-        session.host.remove(session.box, "result_window");
+        session.host.remove(session.panel.root(), "result_window");
         DiagnosticLog.i(session.app, "RESULT_WINDOW", "detach reason=" + reason);
     }
 
@@ -196,20 +159,18 @@ final class FloatingResultWindow {
         final Bitmap image;
         final Rect anchor;
         final FvOverlayWindowHost host;
-        final LinearLayout box;
-        final Button ocrButton;
+        final UnifiedResultPanel panel;
         boolean detached;
         boolean ocrRunning;
         long ocrGeneration;
 
         Session(Context app, Bitmap image, Rect anchor, FvOverlayWindowHost host,
-                LinearLayout box, Button ocrButton) {
+                UnifiedResultPanel panel) {
             this.app = app;
             this.image = image;
             this.anchor = anchor == null ? null : new Rect(anchor);
             this.host = host;
-            this.box = box;
-            this.ocrButton = ocrButton;
+            this.panel = panel;
         }
     }
 
