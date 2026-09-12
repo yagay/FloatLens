@@ -59,6 +59,9 @@ public final class ViewSelectionEngine {
         int action = e.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
             cancel();
+            // Starting a new pointer/selection interaction owns the UI from this point forward.
+            // Any OCR callback from an older screenshot must not be allowed to open a stale popup.
+            OcrEngine.invalidatePending(context, "new_float_selection");
             pointTransformer.begin(e);
             PointF p = pointTransformer.transform(e);
             selectionX = p.x;
