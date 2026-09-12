@@ -116,7 +116,10 @@ public final class ResultActivity extends AppCompatActivity {
         w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
         w.setDimAmount(0f);
-        w.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
+        // ResultActivity is the real native-selection host. Do not opt into LAYOUT_IN_SCREEN here:
+        // the panel already computes geometry from the usable display bounds, and forcing the decor
+        // under system bars can steal space from the fixed bottom action row on OEM dialog windows.
+        w.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
         setFinishOnTouchOutside(true);
     }
 
@@ -124,13 +127,20 @@ public final class ResultActivity extends AppCompatActivity {
         if (panel == null || getWindow() == null) return;
         WindowManager.LayoutParams lp = getWindow().getAttributes();
         lp.width = panel.width();
-        lp.height = panel.height();
+        // Let WindowManager include its decor/insets around the panel. Using the exact panel height
+        // made the bottom OCR / Copy / Save / Close row the first thing clipped on some OEMs when a
+        // screenshot filled the whole content budget.
+        lp.height = WindowManager.LayoutParams.WRAP_CONTENT;
         lp.gravity = Gravity.CENTER;
         lp.x = 0;
         lp.y = 0;
         getWindow().setAttributes(lp);
-        DiagnosticLog.i(this, "RESULT_ACTIVITY", "PANEL size=" + lp.width + "x" + lp.height
-                + " mode=" + (session == null ? "none" : session.mode()));
+        panel.root().requestLayout();
+        panel.root().post(() -> DiagnosticLog.i(this, "RESULT_ACTIVITY",
+                "PANEL requested=" + panel.width() + "x" + panel.height()
+                        + " measured=" + panel.root().getWidth() + "x" + panel.root().getHeight()
+                        + " windowHeight=wrap_content mode="
+                        + (session == null ? "none" : session.mode())));
     }
 
     private void beginInlineOcr() {
