@@ -30,7 +30,7 @@ public final class FloatLensApp extends Application implements Application.Activ
     @Override public void onActivityResumed(Activity activity) {
         install(activity);
         installResultCenterLock(activity);
-        if (activity instanceof ResultActivity || activity instanceof CircleSelectActivity) {
+        if (activity instanceof ResultActivity) {
             ResultReadyCoordinator.onResultActivityResumed(activity);
         }
         View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
@@ -43,8 +43,7 @@ public final class FloatLensApp extends Application implements Application.Activ
     private void install(Activity activity) {
         if (activity == null || activity.getWindow() == null) return;
         // ResultActivity owns its selectable text, native ActionMode and handle-drag lifecycle.
-        // CircleSelectActivity delegates selection UI to CircleSelectOverlay.
-        if (activity instanceof ResultActivity || activity instanceof CircleSelectActivity) return;
+        if (activity instanceof ResultActivity) return;
         installRecursive(activity, activity.getWindow().getDecorView());
     }
 
