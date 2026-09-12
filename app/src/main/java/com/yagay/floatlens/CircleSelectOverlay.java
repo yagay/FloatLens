@@ -14,6 +14,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.Magnifier;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -104,6 +105,7 @@ public final class CircleSelectOverlay {
         private int startIndex = -1;
         private int endIndex = -1;
         private boolean closePressed;
+        private Magnifier magnifier;
 
         WorkspaceView(Context c, WindowManager wm, Bitmap screenshot, Runnable onClosed) {
             super(c);
@@ -218,6 +220,7 @@ public final class CircleSelectOverlay {
                 case MotionEvent.ACTION_DOWN -> {
                     snappedCircleRect.setEmpty();
                     if (closeRect.contains(x, y)) {
+                        dismissMagnifier();
                         closePressed = true;
                         return true;
                     }
@@ -229,6 +232,7 @@ public final class CircleSelectOverlay {
                         int handle = hitSelectionHandle(x, y);
                         if (handle != MODE_NONE) {
                             mode = handle;
+                            showMagnifier(x, y);
                             DiagnosticLog.i(context, "CIRCLE_TEXT", "handle_down mode=" + mode);
                             return true;
                         }
@@ -240,9 +244,11 @@ public final class CircleSelectOverlay {
                         mode = MODE_TEXT;
                         circlePoints.clear();
                         invalidate();
+                        showMagnifier(x, y);
                         return true;
                     }
 
+                    dismissMagnifier();
                     startIndex = endIndex = -1;
                     mode = MODE_CIRCLE;
                     circlePoints.clear();
@@ -259,6 +265,7 @@ public final class CircleSelectOverlay {
                             updateSelectionEndpoint(hit);
                             invalidate();
                         }
+                        showMagnifier(x, y);
                         return true;
                     }
                     if (mode == MODE_CIRCLE) {
@@ -273,6 +280,7 @@ public final class CircleSelectOverlay {
                 }
 
                 case MotionEvent.ACTION_UP -> {
+                    dismissMagnifier();
                     if (closePressed) {
                         closePressed = false;
                         if (closeRect.contains(x, y)) close("user_close");
@@ -322,6 +330,7 @@ public final class CircleSelectOverlay {
                 }
 
                 case MotionEvent.ACTION_CANCEL -> {
+                    dismissMagnifier();
                     closePressed = false;
                     mode = MODE_NONE;
                     circlePoints.clear();
@@ -526,9 +535,38 @@ public final class CircleSelectOverlay {
             return Bitmap.createBitmap(screenshot, left, top, w, h);
         }
 
+        private void showMagnifier(float x, float y) {
+            if (closed || getWidth() <= 0 || getHeight() <= 0 || !isAttachedToWindow()) return;
+            try {
+                if (magnifier == null) {
+                    magnifier = new Magnifier.Builder(this)
+                            .setSize(Math.round(dp(144)), Math.round(dp(72)))
+                            .setInitialZoom(2.0f)
+                            .setCornerRadius(dp(18))
+                            .setElevation(dp(8))
+                            .build();
+                }
+                float sourceX = Math.max(0f, Math.min(getWidth(), x));
+                float sourceY = Math.max(0f, Math.min(getHeight(), y - dp(4)));
+                float lensX = sourceX;
+                float lensY = Math.max(dp(42), sourceY - dp(96));
+                magnifier.show(sourceX, sourceY, lensX, lensY);
+            } catch (Throwable t) {
+                DiagnosticLog.i(context, "CIRCLE_MAGNIFIER", "show failed=" + safe(t));
+            }
+        }
+
+        private void dismissMagnifier() {
+            Magnifier m = magnifier;
+            if (m == null) return;
+            try { m.dismiss(); } catch (Throwable ignored) {}
+        }
+
         void close(String reason) {
             if (closed) return;
             closed = true;
+            dismissMagnifier();
+            magnifier = null;
             FloatActionMenu.dismiss();
             FloatMenuAnchor.clear();
             removeCallbacks(null);
