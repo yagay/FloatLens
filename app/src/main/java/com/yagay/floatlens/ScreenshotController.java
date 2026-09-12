@@ -102,11 +102,18 @@ public final class ScreenshotController {
         captureBounds(app, bounds, crop -> {
             DiagnosticLog.i(app, "FV_REGION_CAPTURE", "crop=" + crop.getWidth() + "x" + crop.getHeight()
                     + " bounds=" + bounds);
-            if (!ScreenshotResultActivity.show(app, crop, bounds)) {
-                ScreenshotResultOverlay.show(app, crop, bounds);
-            }
-            FvSystemPanelController.onResultReady(
+
+            // startActivity() returning true is not the same as FV's candidate dialog being shown.
+            // Arm the lifecycle bridge before launching; it will deliver after ResultActivity's
+            // first real frame. Overlay fallback remains immediate because it is already attached.
+            ResultReadyCoordinator.Ticket ticket = ResultReadyCoordinator.arm(
                     app, shadeState, "fv_region_result_shown");
+            if (!ScreenshotResultActivity.show(app, crop, bounds)) {
+                ResultReadyCoordinator.cancel(ticket, app, "result_activity_start_failed");
+                ScreenshotResultOverlay.show(app, crop, bounds);
+                FvSystemPanelController.onResultReady(
+                        app, shadeState, "fv_region_overlay_shown");
+            }
         }, "区域截图失败", false);
     }
 
@@ -126,20 +133,30 @@ public final class ScreenshotController {
             DiagnosticLog.i(app, "VIEW_CAPTURE", "crop=" + crop.getWidth() + "x" + crop.getHeight()
                     + " bounds=" + bounds + " textLen=" + text.length()
                     + " kind=" + (candidate == null ? "view" : candidate.kind()));
+
+            ResultReadyCoordinator.Ticket ticket = ResultReadyCoordinator.arm(
+                    app, shadeState, "view_result_shown");
+            boolean activityShown;
             if (!text.isEmpty()) {
                 DiagnosticLog.i(app, "VIEW_EXTRACT", "direct Accessibility text chars=" + text.length()
                         + " bounds=" + bounds);
-                if (!ViewContentActivity.show(app, text, crop, bounds)) {
+                activityShown = ViewContentActivity.show(app, text, crop, bounds);
+                if (!activityShown) {
                     ResultOverlay.show(app, text, java.util.List.of(text), crop, bounds);
                 }
             } else {
                 DiagnosticLog.i(app, "VIEW_SCREENSHOT", "no Accessibility text; show cropped View bounds=" + bounds);
-                if (!ViewImageResultActivity.show(app, crop, candidate, bounds)) {
+                activityShown = ViewImageResultActivity.show(app, crop, candidate, bounds);
+                if (!activityShown) {
                     ResultOverlay.showVisual(app, crop, candidate, bounds);
                 }
             }
-            FvSystemPanelController.onResultReady(
-                    app, shadeState, "view_result_shown");
+
+            if (!activityShown) {
+                ResultReadyCoordinator.cancel(ticket, app, "result_activity_start_failed");
+                FvSystemPanelController.onResultReady(
+                        app, shadeState, "view_overlay_shown");
+            }
         }, "View 截图失败", false);
     }
 
@@ -153,11 +170,15 @@ public final class ScreenshotController {
         captureBounds(app, bounds, crop -> {
             DiagnosticLog.i(app, "VIEW_SCREENSHOT", "visual candidate crop="
                     + crop.getWidth() + "x" + crop.getHeight() + " bounds=" + bounds);
-            if (!ViewImageResultActivity.show(app, crop, candidate, bounds)) {
-                ResultOverlay.showVisual(app, crop, candidate, bounds);
-            }
-            FvSystemPanelController.onResultReady(
+
+            ResultReadyCoordinator.Ticket ticket = ResultReadyCoordinator.arm(
                     app, shadeState, "visual_result_shown");
+            if (!ViewImageResultActivity.show(app, crop, candidate, bounds)) {
+                ResultReadyCoordinator.cancel(ticket, app, "result_activity_start_failed");
+                ResultOverlay.showVisual(app, crop, candidate, bounds);
+                FvSystemPanelController.onResultReady(
+                        app, shadeState, "visual_overlay_shown");
+            }
         }, "View 截图失败", false);
     }
 
