@@ -6,6 +6,8 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
@@ -16,22 +18,28 @@ import java.util.List;
 /**
  * Cached Accessibility candidate + highlight layer used by ViewSelectionEngine.
  *
- * This class deliberately owns no gesture/direct-region state. Region selection belongs exclusively
- * to ViewSelectionEngine; this layer snapshots candidates once, performs cheap cached hit-testing,
- * and renders only the currently selected View/text candidate. Visual readiness is supplied by the
- * engine so the candidate frame follows FV's red TRACKING -> yellow READY state.
+ * FV's red/yellow readiness belongs to the selected View candidate itself. A new candidate always
+ * starts red, then becomes yellow only after it remains selected for 400ms. Region dragging is a
+ * separate visual and never participates in this state.
  */
 public final class ViewHoverOverlay {
     private static final int LARGE_TARGET_PERCENT = 72;
+    private static final long FV_CANDIDATE_READY_DELAY_MS = 400L;
 
     private final Context context;
     private final FlOverlayWindowHost windowHost;
     private final LensAccessibilityService accessibility;
     private final ScreenSelectionModel model = new ScreenSelectionModel();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private HoverView view;
-    private FlRegionFrameOverlay largeCandidateFrame;
+    private ViewCandidateFrameOverlay largeCandidateFrame;
     private ScreenCandidate current;
     private SelectionVisualState visualState = SelectionVisualState.TRACKING;
+
+    private final Runnable candidateReadyRunnable = () -> {
+        if (current == null) return;
+        setCandidateVisualState(SelectionVisualState.READY, "candidate_stable_400ms");
+    };
 
     public ViewHoverOverlay(Context c) {
         context = c.getApplicationContext();
@@ -41,14 +49,22 @@ public final class ViewHoverOverlay {
 
     public boolean available() { return accessibility != null; }
 
+    /**
+     * Engine movement can revoke READY, but READY is never cached before a View candidate exists.
+     * This is important because Accessibility candidates may arrive asynchronously after DIRECT has
+     * already entered its ready state.
+     */
     public void setVisualState(SelectionVisualState next) {
         if (next == null) next = SelectionVisualState.TRACKING;
-        if (visualState == next) return;
-        visualState = next;
-        if (view != null) view.setVisualState(next);
-        if (largeCandidateFrame != null) largeCandidateFrame.setVisualState(next);
-        DiagnosticLog.i(context, "VIEW_HOVER", "visualState=" + next
-                + " candidate=" + (current == null ? "none" : current.type()));
+        if (current == null) {
+            if (next == SelectionVisualState.TRACKING) {
+                mainHandler.removeCallbacks(candidateReadyRunnable);
+                visualState = SelectionVisualState.TRACKING;
+            }
+            return;
+        }
+        setCandidateVisualState(next, "engine_" + next.name().toLowerCase());
+        if (next == SelectionVisualState.TRACKING) armCandidateReady();
     }
 
     /** Snapshot the Accessibility target tree once; MOVE later uses only cached geometry. */
@@ -89,20 +105,23 @@ public final class ViewHoverOverlay {
 
         ScreenCandidate next = model.selectAt(selectionX, selectionY);
         if (sameCandidate(current, next)) return;
+
+        mainHandler.removeCallbacks(candidateReadyRunnable);
         current = next;
+        visualState = SelectionVisualState.TRACKING;
 
         if (shouldRenderCandidate(next)) {
             closeLargeCandidateFrame();
             ensureView();
             if (view != null) {
-                view.setVisualState(visualState);
+                view.setVisualState(SelectionVisualState.TRACKING);
                 view.setCandidate(next);
             }
         } else {
             detachView();
             if (next != null) {
-                if (largeCandidateFrame == null) largeCandidateFrame = new FlRegionFrameOverlay(context);
-                largeCandidateFrame.setVisualState(visualState);
+                if (largeCandidateFrame == null) largeCandidateFrame = new ViewCandidateFrameOverlay(context);
+                largeCandidateFrame.setVisualState(SelectionVisualState.TRACKING);
                 largeCandidateFrame.show(next.bounds());
             } else {
                 closeLargeCandidateFrame();
@@ -110,30 +129,50 @@ public final class ViewHoverOverlay {
         }
 
         if (next != null) {
-            DiagnosticLog.i(context, "VIEW_HOVER", "cacheHit=true source=" + next.source()
+            DiagnosticLog.i(context, "VIEW_HOVER", "candidate_changed tracking=true source=" + next.source()
                     + " type=" + next.type() + " screenBounds=" + next.bounds()
                     + " depth=" + next.depth() + " textLen=" + next.text().length()
                     + " class=" + next.className() + " id=" + next.viewId()
                     + " pkg=" + next.packageName()
                     + " fullscreenLike=" + next.fullscreenLike()
-                    + " visual=" + shouldRenderCandidate(next)
-                    + " state=" + visualState);
+                    + " visual=" + shouldRenderCandidate(next));
+            armCandidateReady();
         } else {
             DiagnosticLog.i(context, "VIEW_HOVER", "cacheHit=false selection="
                     + Math.round(selectionX) + "," + Math.round(selectionY)
-                    + " cached=" + model.size() + " state=" + visualState);
+                    + " cached=" + model.size());
         }
     }
 
     public ScreenCandidate currentCandidate() { return current; }
 
     public void cancel() {
+        mainHandler.removeCallbacks(candidateReadyRunnable);
         detachView();
         closeLargeCandidateFrame();
         current = null;
         visualState = SelectionVisualState.TRACKING;
         model.setAccessibility(Collections.emptyList());
         model.setVisual(Collections.emptyList());
+    }
+
+    private void armCandidateReady() {
+        mainHandler.removeCallbacks(candidateReadyRunnable);
+        if (current == null) return;
+        mainHandler.postDelayed(candidateReadyRunnable, FV_CANDIDATE_READY_DELAY_MS);
+        DiagnosticLog.i(context, "VIEW_HOVER", "ready_timer delayMs="
+                + FV_CANDIDATE_READY_DELAY_MS + " candidate=" + current.type());
+    }
+
+    private void setCandidateVisualState(SelectionVisualState next, String reason) {
+        if (next == null) next = SelectionVisualState.TRACKING;
+        if (visualState == next) return;
+        visualState = next;
+        if (view != null) view.setVisualState(next);
+        if (largeCandidateFrame != null) largeCandidateFrame.setVisualState(next);
+        DiagnosticLog.i(context, "VIEW_HOVER", "visualState=" + next
+                + " reason=" + reason
+                + " candidate=" + (current == null ? "none" : current.type()));
     }
 
     private void ensureView() {
