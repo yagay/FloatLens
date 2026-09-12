@@ -18,7 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Same-touch-session Circle capture used by the floating icon.
+ * Same-touch-session Circle screenshot capture used by the floating icon.
  * The icon remains the MotionEvent owner; this full-screen frozen layer stays NOT_TOUCHABLE.
  */
 public final class CircleLiveController {
@@ -165,11 +165,39 @@ public final class CircleLiveController {
                 if (f != null) f.onCircleFinished("selection_too_small");
                 return;
             }
-            DiagnosticLog.i(context, "CIRCLE_LIVE", "masked crop=" + masked.getWidth() + "x"
-                    + masked.getHeight() + " sourcePoints=" + points.size());
+
+            Rect anchor = selectionBounds(display);
+            DiagnosticLog.i(context, "CIRCLE_LIVE", "masked screenshot=" + masked.getWidth() + "x"
+                    + masked.getHeight() + " sourcePoints=" + points.size()
+                    + " anchor=" + anchor.toShortString());
+
+            boolean shown = ResultSurfaceRouter.showCapturedScreenshot(
+                    context, masked, anchor, shadeState);
+            if (!shown) {
+                DiagnosticLog.i(context, "CIRCLE_LIVE", "result surface failed -> save fallback");
+                ScreenshotController.save(context, masked);
+                FlSystemPanelController.onResultReady(context, shadeState, "circle_live_saved_fallback");
+            }
             FloatService f = FloatService.get();
-            if (f != null) f.onCircleRecognizeStarted();
-            OcrEngine.recognize(context, masked);
+            if (f != null) f.onCircleFinished("circle_screenshot_ready");
+        }
+
+        private Rect selectionBounds(Rect display) {
+            float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
+            float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
+            for (PointF p : points) {
+                if (p == null) continue;
+                minX = Math.min(minX, p.x);
+                minY = Math.min(minY, p.y);
+                maxX = Math.max(maxX, p.x);
+                maxY = Math.max(maxY, p.y);
+            }
+            if (minX == Float.MAX_VALUE) return new Rect(display);
+            int left = Math.max(display.left, Math.min(display.right - 1, Math.round(minX)));
+            int top = Math.max(display.top, Math.min(display.bottom - 1, Math.round(minY)));
+            int right = Math.max(left + 1, Math.min(display.right, Math.round(maxX)));
+            int bottom = Math.max(top + 1, Math.min(display.bottom, Math.round(maxY)));
+            return new Rect(left, top, right, bottom);
         }
 
         private void closeOverlay() {
@@ -228,7 +256,7 @@ public final class CircleLiveController {
                 }
                 canvas.drawPath(path, line);
             }
-            canvas.drawText("圈选内容 · 松手识别", dp(18), dp(38), text);
+            canvas.drawText("圈选截图 · 松手生成截图", dp(18), dp(38), text);
         }
 
         private float dp(float value) {
