@@ -3,32 +3,28 @@ package com.yagay.floatlens;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
-import android.graphics.Color;
 import android.graphics.Rect;
-import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
-import android.view.Gravity;
-import android.view.Window;
-import android.view.WindowManager;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.fragment.app.Fragment;
 
 import java.util.List;
 
-/** The one official screenshot / View / OCR result host. */
+/**
+ * Transparent native-selection host for the one UnifiedResultDialogFragment.
+ *
+ * This Activity no longer owns result UI, OCR state or popup geometry. Every screenshot / View /
+ * OCR result is rendered by one DialogFragment + one UnifiedResultPanel implementation.
+ */
 public final class ResultActivity extends AppCompatActivity {
-    private static final long OCR_TIMEOUT_MS = 12_000L;
+    private static final String DIALOG_TAG = "floatlens_result_dialog";
 
     public interface InlineResultSink {
         void onResult(String text, List<String> blocks);
     }
 
-    private ResultSession session;
-    private UnifiedResultPanel panel;
-    private boolean ocrRunning;
-    private long ocrGeneration;
-
-    /** Compatibility entry points; all routes now converge on ResultController. */
+    /** Compatibility entry points; all routes converge on ResultController. */
     public static boolean showScreenshot(Context c, Bitmap image, Rect anchor) {
         if (c == null || image == null || image.isRecycled()) return false;
         return ResultController.show(c, ResultSession.screenshot(image, anchor));
@@ -60,8 +56,6 @@ public final class ResultActivity extends AppCompatActivity {
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
-        requestWindowFeature(Window.FEATURE_NO_TITLE);
-        configureWindow();
         if (!acceptIntent(getIntent(), false)) {
             finishNoAnim();
             return;
@@ -72,7 +66,12 @@ public final class ResultActivity extends AppCompatActivity {
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        acceptIntent(intent, true);
+        if (!acceptIntent(intent, true)) finishNoAnim();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        ResultReadyCoordinator.onResultActivityResumed(this);
     }
 
     private boolean acceptIntent(Intent intent, boolean reuse) {
@@ -84,131 +83,36 @@ public final class ResultActivity extends AppCompatActivity {
             return false;
         }
 
-        cancelCurrentOcr(reuse ? "new_intent" : "create");
-        session = next;
-        if (panel == null) {
-            panel = new UnifiedResultPanel(this, session);
-            panel.bindActions(this::beginInlineOcr,
-                    () -> {
-                        if (session != null && session.canSave()) {
-                            ScreenshotController.save(this, session.image());
-                        }
-                    }, this::closeResult);
-            setContentView(panel.root());
+        Fragment existing = getSupportFragmentManager().findFragmentByTag(DIALOG_TAG);
+        UnifiedResultDialogFragment dialog = existing instanceof UnifiedResultDialogFragment
+                ? (UnifiedResultDialogFragment) existing : null;
+
+        if (dialog == null) {
+            dialog = new UnifiedResultDialogFragment();
+            dialog.setInitialSession(next);
+            try {
+                dialog.showNow(getSupportFragmentManager(), DIALOG_TAG);
+            } catch (Throwable t) {
+                DiagnosticLog.i(this, "RESULT_ACTIVITY", "dialog show failed token=" + token
+                        + " error=" + ScreenCaptureBackend.safeMessage(t));
+                return false;
+            }
         } else {
-            panel.render(session);
+            dialog.showSession(next);
         }
-        panel.setOcrRunning(false);
-        applyWindowLayout();
 
         DiagnosticLog.i(this, "RESULT_ACTIVITY", (reuse ? "REUSE" : "CREATED")
-                + " token=" + token + " mode=" + session.mode()
-                + " origin=" + session.originMode() + " unifiedSession=true");
-
-        // A captured result may reuse an already resumed singleTop Activity. Re-attach the
-        // first-frame coordinator here instead of relying only on ActivityLifecycleCallbacks.
-        if (reuse) panel.root().post(() -> ResultReadyCoordinator.onResultActivityResumed(this));
+                + " token=" + token + " mode=" + next.mode()
+                + " origin=" + next.originMode() + " dialogHost=true");
         return true;
     }
 
-    private void configureWindow() {
-        Window w = getWindow();
-        w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-        w.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
-        w.setDimAmount(0f);
-        // The Activity is only a transparent native-selection host. The visible popup geometry is
-        // owned entirely by UnifiedResultPanel's centered card, not by the Window itself.
-        setFinishOnTouchOutside(false);
-    }
-
-    private void applyWindowLayout() {
-        if (panel == null || getWindow() == null) return;
-        WindowManager.LayoutParams lp = getWindow().getAttributes();
-        lp.width = WindowManager.LayoutParams.MATCH_PARENT;
-        lp.height = WindowManager.LayoutParams.MATCH_PARENT;
-        lp.gravity = Gravity.FILL;
-        lp.x = 0;
-        lp.y = 0;
-        getWindow().setAttributes(lp);
-        panel.root().requestLayout();
-        panel.root().post(() -> DiagnosticLog.i(this, "RESULT_ACTIVITY",
-                "HOST fullscreen measured=" + panel.root().getWidth() + "x" + panel.root().getHeight()
-                        + " card=" + panel.width() + "x" + panel.height()
-                        + " fixedActions=true mode="
-                        + (session == null ? "none" : session.mode())));
-    }
-
-    private void beginInlineOcr() {
-        if (ocrRunning || session == null || !session.canOcr()) return;
-        if (panel != null) panel.clearSelection();
-        FloatActionMenu.dismiss();
-        FloatMenuAnchor.clear();
-
-        long gen = ++ocrGeneration;
-        ocrRunning = true;
-        panel.setOcrRunning(true);
-        Bitmap image = session.image();
-        Rect anchor = session.anchor();
-        OcrResultDispatcher.register(image, (text, blocks) -> runOnUiThread(() ->
-                applyInlineOcr(gen, text, blocks)));
-
-        panel.root().postDelayed(() -> {
-            if (isFinishing() || isDestroyed() || !ocrRunning || ocrGeneration != gen) return;
-            OcrResultDispatcher.cancel(image);
-            ocrRunning = false;
-            if (panel != null) panel.setOcrRunning(false);
-            DiagnosticLog.i(this, "RESULT_ACTIVITY", "OCR_INLINE_TIMEOUT gen=" + gen);
-        }, OCR_TIMEOUT_MS);
-
-        DiagnosticLog.i(this, "RESULT_ACTIVITY", "OCR_INLINE_BEGIN gen=" + gen
-                + " sameSession=true mode=" + session.mode());
-        OcrEngine.recognize(getApplicationContext(), image, anchor);
-    }
-
-    private void applyInlineOcr(long gen, String text, List<String> blocks) {
-        if (isFinishing() || isDestroyed() || session == null || panel == null
-                || gen != ocrGeneration) return;
-        ocrRunning = false;
-        session.applyOcr(text, blocks);
-        panel.render(session);
-        panel.setOcrRunning(false);
-        applyWindowLayout();
-        DiagnosticLog.i(this, "RESULT_ACTIVITY", "OCR_INLINE chars=" + session.text().length()
-                + " blocks=" + session.blocks().size()
-                + " sameSession=true nativeSelection=true magnifier=true");
-    }
-
-    private void cancelCurrentOcr(String reason) {
-        if (session != null && ocrRunning && session.hasImage()) {
-            OcrResultDispatcher.cancel(session.image());
-            OcrEngine.invalidatePending(getApplicationContext(), "result_activity_" + reason);
-        }
-        ocrRunning = false;
-        ocrGeneration++;
-        if (panel != null) panel.setOcrRunning(false);
-    }
-
-    private void closeResult() {
-        if (session != null && session.notifyCircleOnClose()) {
-            FloatService f = FloatService.get();
-            if (f != null) f.onCircleFinished("result_closed");
-        }
+    void finishFromDialog() {
         finishNoAnim();
     }
 
     private void finishNoAnim() {
         finish();
         overridePendingTransition(0, 0);
-    }
-
-    @Override protected void onDestroy() {
-        cancelCurrentOcr("destroy");
-        if (panel != null) panel.clearSelection();
-        FloatActionMenu.dismiss();
-        FloatMenuAnchor.clear();
-        panel = null;
-        session = null;
-        super.onDestroy();
     }
 }
