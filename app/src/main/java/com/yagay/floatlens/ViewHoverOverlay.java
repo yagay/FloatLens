@@ -315,10 +315,13 @@ public final class ViewHoverOverlay {
 
     private static final class HoverView extends View {
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint borderOuter = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint borderInner = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint regionFill = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint regionBorder = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint label = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint regionBorderOuter = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint regionBorderInner = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint labelOutline = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint labelFill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final int[] overlayLocation = new int[2];
         private ScreenCandidate candidate;
         private boolean confirmed;
@@ -331,16 +334,10 @@ public final class ViewHoverOverlay {
             super(c);
             setBackgroundColor(Color.TRANSPARENT);
             fill.setStyle(Paint.Style.FILL);
-            border.setStyle(Paint.Style.STROKE);
-            border.setColor(0xFFFFFFFF);
             regionFill.setStyle(Paint.Style.FILL);
             regionFill.setColor(0x2233B5E5);
-            regionBorder.setStyle(Paint.Style.STROKE);
-            regionBorder.setColor(Color.WHITE);
-            regionBorder.setStrokeWidth(dp(2.5f));
-            label.setColor(Color.WHITE);
-            label.setTextSize(dp(14));
-            label.setShadowLayer(dp(3), 0, dp(1), Color.BLACK);
+            SelectionVisuals.configureFramePaints(c, regionBorderOuter, regionBorderInner, false);
+            SelectionVisuals.configureTextPaints(c, labelOutline, labelFill, 14f);
             updatePaints();
         }
 
@@ -353,9 +350,9 @@ public final class ViewHoverOverlay {
         }
 
         /**
-         * No pointer is drawn in this fullscreen layer; the real 15dp probe lives in
-         * FvProbePointOverlay. Therefore non-region MOVE events must not invalidate the whole
-         * screen. Only a region-mode transition or changed rectangle requires a redraw.
+         * No pointer is drawn in this fullscreen layer; the real probe lives in FvProbePointOverlay.
+         * Therefore non-region MOVE events must not invalidate the whole screen. Only a region-mode
+         * transition or changed rectangle requires a redraw.
          */
         void setDirectState(boolean regionMode, Rect screenRegion) {
             boolean changed = directRegionMode != regionMode;
@@ -375,7 +372,7 @@ public final class ViewHoverOverlay {
 
         private void updatePaints() {
             fill.setColor(confirmed ? 0x552196F3 : 0x332196F3);
-            border.setStrokeWidth(dp(confirmed ? 4 : 2));
+            SelectionVisuals.configureFramePaints(getContext(), borderOuter, borderInner, confirmed);
         }
 
         @Override protected void onDraw(Canvas c) {
@@ -395,18 +392,19 @@ public final class ViewHoverOverlay {
                 rr.offset(-overlayLocation[0], -overlayLocation[1]);
                 if (Rect.intersects(localFrame, rr)) {
                     c.drawRect(rr, regionFill);
-                    c.drawRect(rr, regionBorder);
+                    SelectionVisuals.drawFrame(c, rr, regionBorderOuter, regionBorderInner);
                     String size = Math.max(0, directRegion.width()) + " × " + Math.max(0, directRegion.height());
                     float lx = Math.max(dp(8), Math.min(rr.left, getWidth() - dp(120)));
-                    float ly = rr.top > dp(28) ? rr.top - dp(8) : Math.min(getHeight() - dp(8), rr.bottom + dp(20));
-                    c.drawText(size, lx, ly, label);
+                    float ly = rr.top > dp(28) ? rr.top - dp(8)
+                            : Math.min(getHeight() - dp(8), rr.bottom + dp(20));
+                    SelectionVisuals.drawText(c, size, lx, ly, labelOutline, labelFill);
                 }
             } else if (candidate != null) {
                 Rect r = candidate.bounds();
                 r.offset(-overlayLocation[0], -overlayLocation[1]);
                 if (Rect.intersects(localFrame, r)) {
                     c.drawRect(r, fill);
-                    c.drawRect(r, border);
+                    SelectionVisuals.drawFrame(c, r, borderOuter, borderInner);
                     String base = (candidate.type() == ScreenCandidate.Type.ROOT || candidate.fullscreenLike())
                             ? "整屏 View" : candidate.label();
                     String text = confirmed ? "已锁定 · " + base : base;
@@ -414,7 +412,7 @@ public final class ViewHoverOverlay {
                     float y = r.top > dp(28) ? r.top - dp(8)
                             : Math.min(getHeight() - dp(8), r.bottom + dp(20));
                     if (text.length() > 90) text = text.substring(0, 90) + "…";
-                    c.drawText(text, x, y, label);
+                    SelectionVisuals.drawText(c, text, x, y, labelOutline, labelFill);
                 }
             }
         }
