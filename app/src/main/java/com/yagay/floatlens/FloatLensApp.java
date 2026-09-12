@@ -30,6 +30,9 @@ public final class FloatLensApp extends Application implements Application.Activ
     @Override public void onActivityResumed(Activity activity) {
         install(activity);
         installResultCenterLock(activity);
+        if (activity instanceof ResultActivity) {
+            ResultReadyCoordinator.onResultActivityResumed(activity);
+        }
         View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
         if (decor != null) decor.post(() -> {
             install(activity);
