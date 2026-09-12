@@ -244,7 +244,6 @@ public final class CircleSelectOverlay {
                         mode = MODE_TEXT;
                         circlePoints.clear();
                         invalidate();
-                        showMagnifier(x, y);
                         return true;
                     }
 
@@ -265,7 +264,7 @@ public final class CircleSelectOverlay {
                             updateSelectionEndpoint(hit);
                             invalidate();
                         }
-                        showMagnifier(x, y);
+                        if (mode == MODE_START_HANDLE || mode == MODE_END_HANDLE) showMagnifier(x, y);
                         return true;
                     }
                     if (mode == MODE_CIRCLE) {
@@ -535,22 +534,15 @@ public final class CircleSelectOverlay {
             return Bitmap.createBitmap(screenshot, left, top, w, h);
         }
 
+        /** Use Android's default Magnifier configuration, matching ResultActivity's native
+         * selectable EditText instead of imposing a separate FloatLens lens size/zoom/style. */
         private void showMagnifier(float x, float y) {
             if (closed || getWidth() <= 0 || getHeight() <= 0 || !isAttachedToWindow()) return;
             try {
-                if (magnifier == null) {
-                    magnifier = new Magnifier.Builder(this)
-                            .setSize(Math.round(dp(144)), Math.round(dp(72)))
-                            .setInitialZoom(2.0f)
-                            .setCornerRadius(dp(18))
-                            .setElevation(dp(8))
-                            .build();
-                }
+                if (magnifier == null) magnifier = new Magnifier(this);
                 float sourceX = Math.max(0f, Math.min(getWidth(), x));
-                float sourceY = Math.max(0f, Math.min(getHeight(), y - dp(4)));
-                float lensX = sourceX;
-                float lensY = Math.max(dp(42), sourceY - dp(96));
-                magnifier.show(sourceX, sourceY, lensX, lensY);
+                float sourceY = Math.max(0f, Math.min(getHeight(), y));
+                magnifier.show(sourceX, sourceY);
             } catch (Throwable t) {
                 DiagnosticLog.i(context, "CIRCLE_MAGNIFIER", "show failed=" + safe(t));
             }
