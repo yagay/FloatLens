@@ -185,6 +185,7 @@ final class CircleTextSelectionModel {
         StringBuilder out = new StringBuilder();
         int previousLine = -1;
         int previousGroup = -1;
+        OcrDocument.CharUnit previousUnit = null;
         String previous = "";
         for (int index : indexes) {
             if (!validIndex(index)) continue;
@@ -192,12 +193,17 @@ final class CircleTextSelectionModel {
             String value = c.text();
             if (value.isBlank()) continue;
             if (out.length() > 0) {
-                if (c.line() != previousLine) out.append('\n');
-                else if (c.group() != previousGroup && !noSpaceBetween(previous, value)) out.append(' ');
+                if (c.line() != previousLine) {
+                    out.append('\n');
+                } else if (c.group() != previousGroup
+                        && shouldInsertVisualSpace(previousUnit, c, previous, value)) {
+                    out.append(' ');
+                }
             }
             out.append(value);
             previousLine = c.line();
             previousGroup = c.group();
+            previousUnit = c;
             previous = value;
         }
         return out.toString().trim();
@@ -270,11 +276,62 @@ final class CircleTextSelectionModel {
         return List.copyOf(out);
     }
 
+    /**
+     * Group boundaries are OCR hints, not proof of a real blank. Before inserting a copied-text
+     * space, verify the glyph boxes are visually separated. This fixes adjacent characters/tokens
+     * that OCR happened to split into different groups.
+     */
+    private static boolean shouldInsertVisualSpace(OcrDocument.CharUnit a,
+                                                   OcrDocument.CharUnit b,
+                                                   String leftText,
+                                                   String rightText) {
+        if (a == null || b == null) return true;
+        if (noSpaceBetween(leftText, rightText)) return false;
+
+        Rect ar = a.bounds();
+        Rect br = b.bounds();
+        if (ar == null || br == null || ar.isEmpty() || br.isEmpty()) return true;
+
+        int gap = br.left - ar.right;
+        if (gap <= 0) return false;
+
+        float minHeight = Math.max(1f, Math.min(ar.height(), br.height()));
+        float minWidth = Math.max(1f, Math.min(ar.width(), br.width()));
+        // Keep this more forgiving than normalize()'s grouping threshold. OCR boxes often leave a
+        // small artificial gap between visually touching tokens, especially after ROI refinement.
+        float visuallyJoined = Math.max(3f, Math.min(minHeight * 0.48f, minWidth * 0.85f));
+        return gap > visuallyJoined;
+    }
+
     private static boolean noSpaceBetween(String a, String b) {
         if (a == null || b == null || a.isEmpty() || b.isEmpty()) return false;
         int ac = a.codePointBefore(a.length());
         int bc = b.codePointAt(0);
-        return isCjk(ac) && isCjk(bc);
+        if (isCjk(ac) && isCjk(bc)) return true;
+        if (isClosingPunctuation(bc) || isOpeningPunctuation(ac)) return true;
+        // Chinese text should not gain artificial blanks around punctuation or adjacent Latin
+        // fragments merely because OCR split the tokens into separate groups.
+        if ((isCjk(ac) && isPunctuationLike(bc)) || (isPunctuationLike(ac) && isCjk(bc))) return true;
+        return false;
+    }
+
+    private static boolean isOpeningPunctuation(int cp) {
+        return "([{（【《〈「『〔〖〘〚“‘".indexOf(cp) >= 0;
+    }
+
+    private static boolean isClosingPunctuation(int cp) {
+        return ")]}）】》〉」』〕〗〙〛，。！？；：、,.!?;:%‰…’”".indexOf(cp) >= 0;
+    }
+
+    private static boolean isPunctuationLike(int cp) {
+        int type = Character.getType(cp);
+        return type == Character.CONNECTOR_PUNCTUATION
+                || type == Character.DASH_PUNCTUATION
+                || type == Character.START_PUNCTUATION
+                || type == Character.END_PUNCTUATION
+                || type == Character.INITIAL_QUOTE_PUNCTUATION
+                || type == Character.FINAL_QUOTE_PUNCTUATION
+                || type == Character.OTHER_PUNCTUATION;
     }
 
     private static boolean isCjk(int cp) {
