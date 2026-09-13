@@ -14,9 +14,10 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
-/** Minimal OpenAI-compatible chat client shared by OpenRouter, Gemini, Groq and custom endpoints. */
+/** Minimal OpenAI-compatible chat client shared by all FloatLens AI providers. */
 public final class AiChatClient {
     private static final int MAX_RESPONSE_CHARS = 4_000_000;
 
@@ -54,9 +55,6 @@ public final class AiChatClient {
         JSONArray messageArray = new JSONArray();
         try {
             body.put("model", model);
-            // Keep the common request surface deliberately small. Provider/model-specific sampling
-            // parameters are not sent because Gemini/Groq/OpenRouter do not support exactly the
-            // same optional fields across all current models.
             for (Message message : messages) {
                 if (message == null || message.content.isBlank()) continue;
                 JSONObject one = new JSONObject();
@@ -71,17 +69,8 @@ public final class AiChatClient {
 
         HttpURLConnection conn = null;
         try {
-            conn = (HttpURLConnection) new URL(endpoint).openConnection();
-            conn.setRequestMethod("POST");
+            conn = open(endpoint, "POST", apiKey);
             conn.setDoOutput(true);
-            conn.setConnectTimeout(15_000);
-            conn.setReadTimeout(90_000);
-            conn.setInstanceFollowRedirects(true);
-            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-            conn.setRequestProperty("Accept", "application/json");
-            conn.setRequestProperty("Accept-Encoding", "identity");
-            conn.setRequestProperty("User-Agent", "FloatLens/1.0 AI client");
-            if (!apiKey.isBlank()) conn.setRequestProperty("Authorization", "Bearer " + apiKey);
             if (AiConfigStore.PROVIDER_OPENROUTER.equals(AiConfigStore.provider(context))) {
                 conn.setRequestProperty("HTTP-Referer", "https://github.com/yagay/FloatLens");
                 conn.setRequestProperty("X-Title", "FloatLens");
@@ -110,11 +99,64 @@ public final class AiChatClient {
         }
     }
 
+    /** Reads the standard OpenAI-compatible /v1/models endpoint. */
+    public static List<String> listModels(Context context, String provider) throws IOException {
+        if (context == null) throw new IOException("无效的应用上下文");
+        String endpoint = AiConfigStore.modelsEndpoint(context, provider);
+        if (endpoint.isBlank()) throw new IOException("模型接口地址为空");
+        String apiKey = AiConfigStore.apiKey(context, provider);
+
+        HttpURLConnection conn = null;
+        try {
+            conn = open(endpoint, "GET", apiKey);
+            int code = conn.getResponseCode();
+            InputStream stream = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+            String response = stream == null ? "" : readUtf8(stream);
+            if (code < 200 || code >= 300) {
+                throw new IOException("HTTP " + code + formatApiError(response));
+            }
+            JSONObject root = new JSONObject(response);
+            JSONArray data = root.optJSONArray("data");
+            if (data == null) throw new IOException("模型列表中没有 data");
+            ArrayList<String> models = new ArrayList<>();
+            for (int i = 0; i < data.length(); i++) {
+                JSONObject item = data.optJSONObject(i);
+                if (item == null) continue;
+                String id = item.optString("id", "").trim();
+                if (!id.isEmpty() && !models.contains(id)) models.add(id);
+            }
+            Collections.sort(models, String.CASE_INSENSITIVE_ORDER);
+            return models;
+        } catch (IOException e) {
+            throw e;
+        } catch (Throwable t) {
+            throw new IOException("读取模型列表失败: " + messageOf(t), t);
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
     public static Result test(Context context) throws IOException {
         ArrayList<Message> messages = new ArrayList<>();
         messages.add(new Message("system", "You are testing an API connection. Reply briefly."));
         messages.add(new Message("user", "Reply with OK."));
         return chat(context, messages);
+    }
+
+    private static HttpURLConnection open(String endpoint, String method, String apiKey) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(endpoint).openConnection();
+        conn.setRequestMethod(method);
+        conn.setConnectTimeout(15_000);
+        conn.setReadTimeout(90_000);
+        conn.setInstanceFollowRedirects(true);
+        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        conn.setRequestProperty("Accept", "application/json");
+        conn.setRequestProperty("Accept-Encoding", "identity");
+        conn.setRequestProperty("User-Agent", "FloatLens/1.0 AI client");
+        if (apiKey != null && !apiKey.isBlank()) {
+            conn.setRequestProperty("Authorization", "Bearer " + apiKey.trim());
+        }
+        return conn;
     }
 
     private static Result parseResult(String json, String requestedModel) throws Exception {
