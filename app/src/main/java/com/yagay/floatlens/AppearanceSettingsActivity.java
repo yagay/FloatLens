@@ -24,7 +24,7 @@ public final class AppearanceSettingsActivity extends AppCompatActivity {
         AppUi.addSection(root, theme);
 
         AppUi.Section textMenu = AppUi.section(this, "文字菜单主栏",
-                "数字直接表示主菜单总项目数，复制、全选、分享和“⋮”也计算在内。" );
+                "数字表示实际操作项目数量；“⋮”始终额外显示，不计入数量。" );
         addMainItemCountSlider(textMenu.body);
         AppUi.addSection(root, textMenu);
 
@@ -76,7 +76,7 @@ public final class AppearanceSettingsActivity extends AppCompatActivity {
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = AppUi.text(this, "主菜单项目总数", 14, false);
+        TextView title = AppUi.text(this, "主菜单操作数量", 14, false);
         TextView value = AppUi.caption(this, current + " 个", 13);
         value.setGravity(Gravity.END);
         top.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -106,7 +106,8 @@ public final class AppearanceSettingsActivity extends AppCompatActivity {
         block.addView(slider, lp);
 
         TextView hint = AppUi.caption(this,
-                "可设置 4～8 个；主栏只显示这个总数，内置项目也计算在内。",
+                "可设置 4～8 个实际操作；复制、全选、分享会计入，“ +
+                        "“⋮”不计入并始终额外显示。",
                 12);
         hint.setPadding(0, AppUi.dp(this, 2), 0, 0);
         block.addView(hint);
