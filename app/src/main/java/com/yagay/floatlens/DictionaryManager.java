@@ -274,9 +274,11 @@ public final class DictionaryManager {
         deleteQuietly(dbFile);
         SQLiteDatabase db = SQLiteDatabase.openOrCreateDatabase(dbFile, null);
         try {
-            db.execSQL("PRAGMA journal_mode=OFF");
-            db.execSQL("PRAGMA synchronous=OFF");
-            db.execSQL("PRAGMA temp_store=MEMORY");
+            // Android treats PRAGMA statements as queries. execSQL() throws
+            // "Queries can be performed using query or rawQuery only" even for assignment pragmas.
+            applyPragma(db, "PRAGMA journal_mode=OFF");
+            applyPragma(db, "PRAGMA synchronous=OFF");
+            applyPragma(db, "PRAGMA temp_store=MEMORY");
             db.execSQL("CREATE TABLE entries ("
                     + "word TEXT NOT NULL COLLATE NOCASE PRIMARY KEY,"
                     + "phonetic TEXT, definition TEXT, translation TEXT, pos TEXT,"
@@ -341,6 +343,16 @@ public final class DictionaryManager {
             progress(callback, "校验", 99);
         } finally {
             db.close();
+        }
+    }
+
+    private static void applyPragma(SQLiteDatabase db, String sql) {
+        Cursor cursor = null;
+        try {
+            cursor = db.rawQuery(sql, null);
+            cursor.moveToFirst();
+        } finally {
+            if (cursor != null) cursor.close();
         }
     }
 
