@@ -20,7 +20,7 @@ final class TextMenuSettings {
     static void setPinnedCustomCount(Context c, int count) {
         if (c == null) return;
         c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putInt(KEY_PINNED_CUSTOM_COUNT, clamp(count)).apply();
+                .edit().putInt(KEY_PINNED_CUSTOM_COUNT, clamp(count)).commit();
     }
 
     private static int clamp(int count) {
