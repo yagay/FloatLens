@@ -82,8 +82,8 @@ public class MainActivity extends AppCompatActivity {
                 () -> startActivity(SettingsActivity.intent(this, SettingsActivity.SECTION_ICON))));
         AppUi.addRow(settings.body, AppUi.navRow(this,
                 "手势与轨迹",
-                "点击、长按、滑动阈值和轨迹反馈",
-                () -> startActivity(SettingsActivity.intent(this, SettingsActivity.SECTION_GESTURE))));
+                "手势参数、轨迹反馈和动作映射",
+                () -> startActivity(new Intent(this, GestureHubActivity.class))));
         AppUi.addRow(settings.body, AppUi.navRow(this,
                 "截图与 OCR",
                 "截图来源、OCR 引擎、模型和识别语言",
@@ -94,29 +94,9 @@ public class MainActivity extends AppCompatActivity {
                 () -> startActivity(SettingsActivity.intent(this, SettingsActivity.SECTION_ENVIRONMENT))));
         AppUi.addRow(settings.body, AppUi.navRow(this,
                 "界面与菜单",
-                "跟随系统 / 浅色 / 深色，以及文字菜单主栏数量",
+                "主题、文字菜单数量和菜单管理",
                 () -> startActivity(new Intent(this, AppearanceSettingsActivity.class))));
-        AppUi.addRow(settings.body, AppUi.navRow(this,
-                "手势动作映射",
-                "指定单击、长按和各方向滑动动作",
-                () -> startActivity(SettingsActivity.intent(this, SettingsActivity.SECTION_ACTIONS))));
         AppUi.addSection(root, settings);
-
-        AppUi.Section menus = AppUi.section(this, "菜单管理",
-                "管理 FloatLens 结果菜单中的外部应用入口。" );
-        AppUi.addRow(menus.body, AppUi.navRow(this,
-                "文字操作菜单",
-                "给选中文字添加外部应用或 Intent 操作",
-                () -> startActivity(MenuPickerActivity.customIntent(this))));
-        AppUi.addRow(menus.body, AppUi.navRow(this,
-                "分享菜单",
-                "管理分享目标和显示顺序",
-                () -> startActivity(MenuPickerActivity.targetIntent(this, TargetMenuStore.MODE_SHARE))));
-        AppUi.addRow(menus.body, AppUi.navRow(this,
-                "打开 / 处理菜单",
-                "管理 PROCESS_TEXT 目标和显示顺序",
-                () -> startActivity(MenuPickerActivity.targetIntent(this, TargetMenuStore.MODE_PROCESS))));
-        AppUi.addSection(root, menus);
 
         AppUi.Section advanced = AppUi.section(this, "高级", null);
         AppUi.addRow(advanced.body, AppUi.navRow(this,
