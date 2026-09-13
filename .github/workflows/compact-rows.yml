@@ -1,0 +1,93 @@
+name: Compact Rows Patch
+
+on:
+  push:
+    branches: [ refactor/ui-structure-v2 ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compact rows without subtitles
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          p = Path('app/src/main/java/com/yagay/floatlens/AppUi.java')
+          s = p.read_text(encoding='utf-8')
+
+          old = '        LinearLayout row = baseRow(c);\n'
+          if s.count(old) == 2:
+              s = s.replace(old,
+                  '        boolean compact = subtitle == null || subtitle.isBlank();\n'
+                  '        LinearLayout row = baseRow(c, compact);\n')
+          elif 'LinearLayout row = baseRow(c, compact);' not in s:
+              raise SystemExit('Unexpected baseRow call count')
+
+          old_arrow = '        row.addView(arrow, new LinearLayout.LayoutParams(dp(c, 30), dp(c, 44)));\n'
+          new_arrow = '        row.addView(arrow, new LinearLayout.LayoutParams(dp(c, 30), dp(c, compact ? 40 : 44)));\n'
+          if old_arrow in s:
+              s = s.replace(old_arrow, new_arrow, 1)
+          elif new_arrow not in s:
+              raise SystemExit('nav arrow layout marker not found')
+
+          old_base = '''    static LinearLayout baseRow(Context c) {
+        LinearLayout row = new LinearLayout(c);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(c, 14), dp(c, 10), dp(c, 10), dp(c, 10));
+        row.setMinimumHeight(dp(c, 56));
+        return row;
+    }
+'''
+          new_base = '''    static LinearLayout baseRow(Context c) {
+        return baseRow(c, false);
+    }
+
+    private static LinearLayout baseRow(Context c, boolean compact) {
+        LinearLayout row = new LinearLayout(c);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        int verticalPadding = compact ? 2 : 10;
+        row.setPadding(dp(c, 14), dp(c, verticalPadding), dp(c, 10), dp(c, verticalPadding));
+        row.setMinimumHeight(dp(c, compact ? 48 : 56));
+        return row;
+    }
+'''
+          if old_base in s:
+              s = s.replace(old_base, new_base, 1)
+          elif new_base not in s:
+              raise SystemExit('baseRow block marker not found')
+
+          p.write_text(s, encoding='utf-8')
+          PY
+
+          git diff --check
+          if ! git diff --quiet; then
+            git config user.name "FloatLens CI"
+            git config user.email "actions@users.noreply.github.com"
+            git add app/src/main/java/com/yagay/floatlens/AppUi.java
+            git commit -m "refactor(ui): compact rows without descriptions"
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 9.4.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.4.1'
+
+      - name: Build debug APK
+        run: gradle --stacktrace assembleDebug
