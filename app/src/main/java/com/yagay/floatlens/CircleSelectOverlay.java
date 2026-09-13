@@ -17,6 +17,10 @@ import android.view.View;
 import android.view.WindowManager;
 import android.widget.Magnifier;
 
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -319,17 +323,32 @@ public final class CircleSelectOverlay {
             else if (!fastIndexReady) status = "正在建立快速文字索引… · 圈画截图";
             else if (selection.isEmpty()) status = "未检测到可选文字 · 轻点或横划可精识别 · 圈画截图";
             else status = "点按文字提取 · 手柄调整范围 · 圈画截图";
-            canvas.drawText(status, dp(16), dp(34), textPaint);
+            // Keep Circle Select full-screen for 1:1 capture/touch coordinates, but place
+            // transient controls above the navigation bar instead of over the status bar.
             drawClose(canvas);
+            float statusBaseline = Math.max(dp(24), closeRect.top - dp(10));
+            canvas.drawText(status, dp(16), statusBaseline, textPaint);
         }
 
         private void drawClose(Canvas c) {
             float size = dp(38);
-            closeRect.set(getWidth() - size - dp(12), dp(10), getWidth() - dp(12), dp(10) + size);
+            float bottomInset = bottomSystemInset();
+            float bottom = getHeight() - bottomInset - dp(12);
+            float top = bottom - size;
+            closeRect.set(getWidth() - size - dp(12), top, getWidth() - dp(12), bottom);
             c.drawRoundRect(closeRect, size / 2f, size / 2f, toolbarPaint);
             Paint p = new Paint(toolbarTextPaint);
             p.setTextSize(dp(22));
             c.drawText("×", closeRect.centerX(), closeRect.centerY() + dp(7), p);
+        }
+
+        private int bottomSystemInset() {
+            WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(this);
+            if (insets == null) return 0;
+            Insets safe = insets.getInsetsIgnoringVisibility(
+                    WindowInsetsCompat.Type.navigationBars()
+                            | WindowInsetsCompat.Type.displayCutout());
+            return Math.max(0, safe.bottom);
         }
 
         private void drawHandles(Canvas c, int lo, int hi) {
