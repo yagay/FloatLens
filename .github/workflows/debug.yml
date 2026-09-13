@@ -2,11 +2,11 @@ name: Debug Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, refactor/ui-structure-v2 ]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-debug:
@@ -14,6 +14,45 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Patch target labels
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/yagay/floatlens/FloatActionMenu.java')
+          s = p.read_text(encoding='utf-8')
+          old = '''                CharSequence label;
+                try { label = ri.loadLabel(pm); }
+                catch (Throwable ignored) { label = ri.activityInfo.name; }
+                Drawable icon = null;
+                try { icon = ri.loadIcon(pm); } catch (Throwable ignored) {}
+                TextView target = menuRow(app,
+                        label == null ? ri.activityInfo.name : label.toString(), icon, palette);'''
+          new = '''                CharSequence rawLabel;
+                try { rawLabel = ri.loadLabel(pm); }
+                catch (Throwable ignored) { rawLabel = ri.activityInfo.name; }
+                String fallbackLabel = rawLabel == null
+                        ? ri.activityInfo.name : rawLabel.toString();
+                String displayLabel = TargetMenuStore.displayLabel(app, targetMode,
+                        ri.activityInfo.packageName + "|" + ri.activityInfo.name, fallbackLabel);
+                Drawable icon = null;
+                try { icon = ri.loadIcon(pm); } catch (Throwable ignored) {}
+                TextView target = menuRow(app, displayLabel, icon, palette);'''
+          if old in s:
+              p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          elif 'TargetMenuStore.displayLabel(app, targetMode' not in s:
+              raise SystemExit('target label patch anchor not found')
+          PY
+
+          git config user.name "FloatLens CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add app/src/main/java/com/yagay/floatlens/FloatActionMenu.java
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git commit -m "feat: use custom labels in target menus"
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
