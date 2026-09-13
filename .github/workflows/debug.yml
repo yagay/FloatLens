@@ -16,126 +16,28 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Apply one-row total-count menu fix
-        if: github.event_name == 'push' && github.event.head_commit.message == 'ci: apply text menu total count fix'
+        if: >-
+          github.event_name == 'push' &&
+          github.event.head_commit.message == 'ci: apply text menu total count fix v2'
         shell: bash
         run: |
           python3 <<'PY'
+          import base64
           from pathlib import Path
-
           path = Path('app/src/main/java/com/yagay/floatlens/FloatActionMenu.java')
           s = path.read_text(encoding='utf-8')
-
-          s = s.replace(
-              '+ (mode == MODE_MAIN ? " pinnedCustom=" + TextMenuSettings.pinnedCustomCount(app) : "")',
-              '+ (mode == MODE_MAIN ? " mainItems=" + TextMenuSettings.mainItemCount(app) : "")'
-          )
-
+          s = s.replace('+ (mode == MODE_MAIN ? " pinnedCustom=" + TextMenuSettings.pinnedCustomCount(app) : "")', '+ (mode == MODE_MAIN ? " mainItems=" + TextMenuSettings.mainItemCount(app) : "")')
           start = s.index('    private static void buildMainToolbar(')
           end = s.index('    private static void buildMoreMenu(', start)
-          new_block = '''    private static void buildMainToolbar(Context app, LinearLayout root, String text,
-                                         Runnable selectAll, Palette palette) {
-        List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
-        boolean hasSelectAll = selectAll != null;
-        int customLimit = mainCustomCount(app, customs.size(), hasSelectAll);
-
-        ArrayList<View> items = new ArrayList<>();
-
-        TextView copy = action(app, "复制", palette, 58);
-        items.add(copy);
-
-        TextView all = null;
-        if (hasSelectAll) {
-            all = action(app, "全选", palette, 58);
-            items.add(all);
-        }
-
-        TextView share = action(app, "分享", palette, 58);
-        items.add(share);
-
-        for (int i = 0; i < customLimit; i++) {
-            CustomMenuActionStore.Item item = customs.get(i);
-            TextView custom = action(app, item.label, palette, 58);
-            custom.setEllipsize(TextUtils.TruncateAt.END);
-            custom.setSingleLine(true);
-            custom.setOnClickListener(v -> launchCustom(app, item, text));
-            items.add(custom);
-        }
-
-        TextView more = action(app, "⋮", palette, 46);
-        more.setTextSize(22);
-        items.add(more);
-
-        copy.setOnClickListener(v -> {
-            ClipboardManager cm = (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
-            if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("FloatLens", text));
-            Toast.makeText(app, "已复制", Toast.LENGTH_SHORT).show();
-            dismiss();
-        });
-        if (all != null) {
-            all.setOnClickListener(v -> {
-                try { selectAll.run(); } catch (Throwable ignored) {}
-                dismiss();
-            });
-        }
-        share.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_SHARE));
-        more.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_MORE));
-
-        int maxRowWidth = Math.max(dp(app, 180),
-                app.getResources().getDisplayMetrics().widthPixels - dp(app, 16));
-        WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
-        if (wm != null) {
-            Rect usable = usableBounds(app, wm);
-            if (!usable.isEmpty()) {
-                maxRowWidth = Math.max(dp(app, 180), usable.width() - dp(app, 16));
-            }
-        }
-
-        // The configured number is the TOTAL toolbar item count. Keep every item on one row and
-        // shrink slots as needed instead of silently wrapping into a second row.
-        int slotWidth = Math.max(dp(app, 32),
-                Math.min(dp(app, 72), maxRowWidth / Math.max(1, items.size())));
-        LinearLayout row = toolbarRow(app);
-        for (View item : items) {
-            if (item instanceof TextView tv) {
-                tv.setMinWidth(0);
-                tv.setPadding(dp(app, 4), 0, dp(app, 4), 0);
-                tv.setSingleLine(true);
-                tv.setEllipsize(TextUtils.TruncateAt.END);
-                if (items.size() >= 7 && !"⋮".contentEquals(tv.getText())) {
-                    tv.setTextSize(13);
-                }
-            }
-            row.addView(item, new LinearLayout.LayoutParams(slotWidth, dp(app, 46)));
-        }
-        root.addView(row, new LinearLayout.LayoutParams(-2, -2));
-    }
-
-    private static LinearLayout toolbarRow(Context app) {
-        LinearLayout row = new LinearLayout(app);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(app, 2), dp(app, 2), dp(app, 2), dp(app, 2));
-        return row;
-    }
-
-    private static int mainCustomCount(Context app, int size, boolean hasSelectAll) {
-        return TextMenuSettings.customSlots(app, hasSelectAll, size);
-    }
-
-'''
+          new_block = base64.b64decode('ICAgIHByaXZhdGUgc3RhdGljIHZvaWQgYnVpbGRNYWluVG9vbGJhcihDb250ZXh0IGFwcCwgTGluZWFyTGF5b3V0IHJvb3QsIFN0cmluZyB0ZXh0LAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIFJ1bm5hYmxlIHNlbGVjdEFsbCwgUGFsZXR0ZSBwYWxldHRlKSB7CiAgICAgICAgTGlzdDxDdXN0b21NZW51QWN0aW9uU3RvcmUuSXRlbT4gY3VzdG9tcyA9IEN1c3RvbU1lbnVBY3Rpb25TdG9yZS5sb2FkKGFwcCk7CiAgICAgICAgYm9vbGVhbiBoYXNTZWxlY3RBbGwgPSBzZWxlY3RBbGwgIT0gbnVsbDsKICAgICAgICBpbnQgY3VzdG9tTGltaXQgPSBtYWluQ3VzdG9tQ291bnQoYXBwLCBjdXN0b21zLnNpemUoKSwgaGFzU2VsZWN0QWxsKTsKCiAgICAgICAgQXJyYXlMaXN0PFZpZXc+IGl0ZW1zID0gbmV3IEFycmF5TGlzdDw+KCk7CgogICAgICAgIFRleHRWaWV3IGNvcHkgPSBhY3Rpb24oYXBwLCAi5aSN5Yi2IiwgcGFsZXR0ZSwgNTgpOwogICAgICAgIGl0ZW1zLmFkZChjb3B5KTsKCiAgICAgICAgVGV4dFZpZXcgYWxsID0gbnVsbDsKICAgICAgICBpZiAoaGFzU2VsZWN0QWxsKSB7CiAgICAgICAgICAgIGFsbCA9IGFjdGlvbihhcHAsICLlhajpgIkiLCBwYWxldHRlLCA1OCk7CiAgICAgICAgICAgIGl0ZW1zLmFkZChhbGwpOwogICAgICAgIH0KCiAgICAgICAgVGV4dFZpZXcgc2hhcmUgPSBhY3Rpb24oYXBwLCAi5YiG5LqrIiwgcGFsZXR0ZSwgNTgpOwogICAgICAgIGl0ZW1zLmFkZChzaGFyZSk7CgogICAgICAgIGZvciAoaW50IGkgPSAwOyBpIDwgY3VzdG9tTGltaXQ7IGkrKykgewogICAgICAgICAgICBDdXN0b21NZW51QWN0aW9uU3RvcmUuSXRlbSBpdGVtID0gY3VzdG9tcy5nZXQoaSk7CiAgICAgICAgICAgIFRleHRWaWV3IGN1c3RvbSA9IGFjdGlvbihhcHAsIGl0ZW0ubGFiZWwsIHBhbGV0dGUsIDU4KTsKICAgICAgICAgICAgY3VzdG9tLnNldEVsbGlwc2l6ZShUZXh0VXRpbHMuVHJ1bmNhdGVBdC5FTkQpOwogICAgICAgICAgICBjdXN0b20uc2V0U2luZ2xlTGluZSh0cnVlKTsKICAgICAgICAgICAgY3VzdG9tLnNldE9uQ2xpY2tMaXN0ZW5lcih2IC0+IGxhdW5jaEN1c3RvbShhcHAsIGl0ZW0sIHRleHQpKTsKICAgICAgICAgICAgaXRlbXMuYWRkKGN1c3RvbSk7CiAgICAgICAgfQoKICAgICAgICBUZXh0VmlldyBtb3JlID0gYWN0aW9uKGFwcCwgIuKLriIsIHBhbGV0dGUsIDQ2KTsKICAgICAgICBtb3JlLnNldFRleHRTaXplKDIyKTsKICAgICAgICBpdGVtcy5hZGQobW9yZSk7CgogICAgICAgIGNvcHkuc2V0T25DbGlja0xpc3RlbmVyKHYgLT4gewogICAgICAgICAgICBDbGlwYm9hcmRNYW5hZ2VyIGNtID0gKENsaXBib2FyZE1hbmFnZXIpIGFwcC5nZXRTeXN0ZW1TZXJ2aWNlKENvbnRleHQuQ0xJUEJPQVJEX1NFUlZJQ0UpOwogICAgICAgICAgICBpZiAoY20gIT0gbnVsbCkgY20uc2V0UHJpbWFyeUNsaXAoQ2xpcERhdGEubmV3UGxhaW5UZXh0KCJGbG9hdExlbnMiLCB0ZXh0KSk7CiAgICAgICAgICAgIFRvYXN0Lm1ha2VUZXh0KGFwcCwgIuW3suWkjeWItiIsIFRvYXN0LkxFTkdUSF9TSE9SVCkuc2hvdygpOwogICAgICAgICAgICBkaXNtaXNzKCk7CiAgICAgICAgfSk7CiAgICAgICAgaWYgKGFsbCAhPSBudWxsKSB7CiAgICAgICAgICAgIGFsbC5zZXRPbkNsaWNrTGlzdGVuZXIodiAtPiB7CiAgICAgICAgICAgICAgICB0cnkgeyBzZWxlY3RBbGwucnVuKCk7IH0gY2F0Y2ggKFRocm93YWJsZSBpZ25vcmVkKSB7fQogICAgICAgICAgICAgICAgZGlzbWlzcygpOwogICAgICAgICAgICB9KTsKICAgICAgICB9CiAgICAgICAgc2hhcmUuc2V0T25DbGlja0xpc3RlbmVyKHYgLT4gc2hvd09uQ3VycmVudFJvdyhhcHAsIHRleHQsIHNlbGVjdEFsbCwgTU9ERV9TSEFSRSkpOwogICAgICAgIG1vcmUuc2V0T25DbGlja0xpc3RlbmVyKHYgLT4gc2hvd09uQ3VycmVudFJvdyhhcHAsIHRleHQsIHNlbGVjdEFsbCwgTU9ERV9NT1JFKSk7CgogICAgICAgIGludCBtYXhSb3dXaWR0aCA9IE1hdGgubWF4KGRwKGFwcCwgMTgwKSwKICAgICAgICAgICAgICAgIGFwcC5nZXRSZXNvdXJjZXMoKS5nZXREaXNwbGF5TWV0cmljcygpLndpZHRoUGl4ZWxzIC0gZHAoYXBwLCAxNikpOwogICAgICAgIFdpbmRvd01hbmFnZXIgd20gPSAoV2luZG93TWFuYWdlcikgYXBwLmdldFN5c3RlbVNlcnZpY2UoQ29udGV4dC5XSU5ET1dfU0VSVklDRSk7CiAgICAgICAgaWYgKHdtICE9IG51bGwpIHsKICAgICAgICAgICAgUmVjdCB1c2FibGUgPSB1c2FibGVCb3VuZHMoYXBwLCB3bSk7CiAgICAgICAgICAgIGlmICghdXNhYmxlLmlzRW1wdHkoKSkgewogICAgICAgICAgICAgICAgbWF4Um93V2lkdGggPSBNYXRoLm1heChkcChhcHAsIDE4MCksIHVzYWJsZS53aWR0aCgpIC0gZHAoYXBwLCAxNikpOwogICAgICAgICAgICB9CiAgICAgICAgfQoKICAgICAgICAvLyBUaGUgY29uZmlndXJlZCBudW1iZXIgaXMgdGhlIFRPVEFMIHRvb2xiYXIgaXRlbSBjb3VudC4gS2VlcCBldmVyeSBpdGVtIG9uIG9uZSByb3cgYW5kCiAgICAgICAgLy8gc2hyaW5rIHNsb3RzIGFzIG5lZWRlZCBpbnN0ZWFkIG9mIHNpbGVudGx5IHdyYXBwaW5nIGludG8gYSBzZWNvbmQgcm93LgogICAgICAgIGludCBzbG90V2lkdGggPSBNYXRoLm1heChkcChhcHAsIDMyKSwKICAgICAgICAgICAgICAgIE1hdGgubWluKGRwKGFwcCwgNzIpLCBtYXhSb3dXaWR0aCAvIE1hdGgubWF4KDEsIGl0ZW1zLnNpemUoKSkpKTsKICAgICAgICBMaW5lYXJMYXlvdXQgcm93ID0gdG9vbGJhclJvdyhhcHApOwogICAgICAgIGZvciAoVmlldyBpdGVtIDogaXRlbXMpIHsKICAgICAgICAgICAgaWYgKGl0ZW0gaW5zdGFuY2VvZiBUZXh0VmlldyB0dikgewogICAgICAgICAgICAgICAgdHYuc2V0TWluV2lkdGgoMCk7CiAgICAgICAgICAgICAgICB0di5zZXRQYWRkaW5nKGRwKGFwcCwgNCksIDAsIGRwKGFwcCwgNCksIDApOwogICAgICAgICAgICAgICAgdHYuc2V0U2luZ2xlTGluZSh0cnVlKTsKICAgICAgICAgICAgICAgIHR2LnNldEVsbGlwc2l6ZShUZXh0VXRpbHMuVHJ1bmNhdGVBdC5FTkQpOwogICAgICAgICAgICAgICAgaWYgKGl0ZW1zLnNpemUoKSA+PSA3ICYmICEi4ouuIi5jb250ZW50RXF1YWxzKHR2LmdldFRleHQoKSkpIHsKICAgICAgICAgICAgICAgICAgICB0di5zZXRUZXh0U2l6ZSgxMyk7CiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgIH0KICAgICAgICAgICAgcm93LmFkZFZpZXcoaXRlbSwgbmV3IExpbmVhckxheW91dC5MYXlvdXRQYXJhbXMoc2xvdFdpZHRoLCBkcChhcHAsIDQ2KSkpOwogICAgICAgIH0KICAgICAgICByb290LmFkZFZpZXcocm93LCBuZXcgTGluZWFyTGF5b3V0LkxheW91dFBhcmFtcygtMiwgLTIpKTsKICAgIH0KCiAgICBwcml2YXRlIHN0YXRpYyBMaW5lYXJMYXlvdXQgdG9vbGJhclJvdyhDb250ZXh0IGFwcCkgewogICAgICAgIExpbmVhckxheW91dCByb3cgPSBuZXcgTGluZWFyTGF5b3V0KGFwcCk7CiAgICAgICAgcm93LnNldE9yaWVudGF0aW9uKExpbmVhckxheW91dC5IT1JJWk9OVEFMKTsKICAgICAgICByb3cuc2V0R3Jhdml0eShHcmF2aXR5LkNFTlRFUl9WRVJUSUNBTCk7CiAgICAgICAgcm93LnNldFBhZGRpbmcoZHAoYXBwLCAyKSwgZHAoYXBwLCAyKSwgZHAoYXBwLCAyKSwgZHAoYXBwLCAyKSk7CiAgICAgICAgcmV0dXJuIHJvdzsKICAgIH0KCiAgICBwcml2YXRlIHN0YXRpYyBpbnQgbWFpbkN1c3RvbUNvdW50KENvbnRleHQgYXBwLCBpbnQgc2l6ZSwgYm9vbGVhbiBoYXNTZWxlY3RBbGwpIHsKICAgICAgICByZXR1cm4gVGV4dE1lbnVTZXR0aW5ncy5jdXN0b21TbG90cyhhcHAsIGhhc1NlbGVjdEFsbCwgc2l6ZSk7CiAgICB9Cgo=').decode('utf-8')
           s = s[:start] + new_block + s[end:]
-          s = s.replace(
-              'int skip = mainCustomCount(app, customs.size());',
-              'int skip = mainCustomCount(app, customs.size(), selectAll != null);'
-          )
-
+          s = s.replace('int skip = mainCustomCount(app, customs.size());', 'int skip = mainCustomCount(app, customs.size(), selectAll != null);')
           if 'pinnedCustomCount' in s:
               raise SystemExit('old pinnedCustomCount reference still present')
           if 'mainCustomCount(app, customs.size());' in s:
               raise SystemExit('old mainCustomCount call still present')
           path.write_text(s, encoding='utf-8')
           PY
-
           git config user.name "FloatLens CI"
           git config user.email "actions@users.noreply.github.com"
           git add app/src/main/java/com/yagay/floatlens/FloatActionMenu.java
