@@ -36,6 +36,15 @@ final class FlRegionFrameOverlay {
         lp.y = 0;
     }
 
+    void prepare() {
+        ensureAttached();
+        frame.clear();
+    }
+
+    void hide() {
+        frame.clear();
+    }
+
     void show(Rect screenRect) {
         if (screenRect == null || screenRect.width() < 2 || screenRect.height() < 2) return;
         ensureAttached();

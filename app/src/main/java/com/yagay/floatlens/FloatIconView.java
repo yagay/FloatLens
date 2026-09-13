@@ -9,6 +9,7 @@ import android.os.SystemClock;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.WindowManager;
 
 import java.util.List;
 
@@ -69,6 +70,9 @@ public class FloatIconView extends View {
     private int fvWindowStartX, fvWindowStartY;
     private int fvWindowX, fvWindowY;
 
+    private boolean fvOwnerFullscreen;
+    private int fvOwnerSavedX, fvOwnerSavedY, fvOwnerSavedWidth, fvOwnerSavedHeight;
+
     public FloatIconView(Context c, Callback cb) {
         super(c);
         this.cb = cb;
@@ -86,9 +90,11 @@ public class FloatIconView extends View {
             cancelLongPress();
             directSelectionActive = true;
             cb.onGestureEnd(session.snapshot());
+            enterFvFullscreenOwner();
             cb.onDirectSelectionStart();
             boolean ok = selectionEngine.activateDirect(lastSelectionRawX, lastSelectionRawY);
             if (!ok) {
+                exitFvFullscreenOwner();
                 directSelectionActive = false;
                 cb.onDirectSelectionEnd();
                 DiagnosticLog.i(getContext(), "FL_DIRECT", "enter failed");
@@ -146,6 +152,7 @@ public class FloatIconView extends View {
     @Override protected void onDetachedFromWindow() {
         cancelLongPress();
         cancelDirectSelectionTimer();
+        exitFvFullscreenOwner();
         if(selectionEngine!=null)selectionEngine.cancel();
         if(circleActive)CircleLiveController.cancel("icon_detached");
         renderer.detach();
@@ -175,7 +182,7 @@ public class FloatIconView extends View {
             cancelLongPress();
             cancelDirectSelectionTimer();
             longPressActionTriggered=false;
-            if(directSelectionActive){if(selectionEngine!=null)selectionEngine.cancel();cb.onDirectSelectionEnd();directSelectionActive=false;}
+            if(directSelectionActive){if(selectionEngine!=null)selectionEngine.cancel();exitFvFullscreenOwner();cb.onDirectSelectionEnd();directSelectionActive=false;}
             else if(selectionEngine!=null)selectionEngine.cancel();
             if(circleActive){CircleLiveController.cancel("multitouch");circleActive=false;}
             if(positionMoveMode){FloatService f=FloatService.get();if(f!=null)f.cancelPositionMove();}
@@ -239,9 +246,11 @@ public class FloatIconView extends View {
                 if(longPressActionTriggered) return true;
 
                 if(directSelectionActive){
+                    // FV q0 has already expanded the same owner to fullscreen. Keep only the
+                    // virtual compact-icon trajectory; moving the actual WM window here would
+                    // destroy the fullscreen touch owner.
                     if ((moveDx!=0||moveDy!=0) && followStarted) {
                         updateFvWindowTracking(moveDx, moveDy);
-                        cb.onMove(moveDx, moveDy);
                         session.moved=true;
                     }
                     if(selectionEngine!=null)selectionEngine.updateDirect(rx,ry);
@@ -299,6 +308,7 @@ public class FloatIconView extends View {
                 }
                 if(directSelectionActive){
                     selectionTookOver=selectionEngine!=null&&selectionEngine.finishDirect(rx,ry);
+                    exitFvFullscreenOwner();
                     cb.onDirectSelectionEnd();
                     directSelectionActive=false;
                     cb.onGestureEnd(session.snapshot());
@@ -331,6 +341,7 @@ public class FloatIconView extends View {
                 longPressActionTriggered=false;
                 if(directSelectionActive){
                     if(selectionEngine!=null)selectionEngine.cancel();
+                    exitFvFullscreenOwner();
                     cb.onDirectSelectionEnd();
                     directSelectionActive=false;
                 }else if(selectionEngine!=null)selectionEngine.cancel();
@@ -444,6 +455,66 @@ public class FloatIconView extends View {
                 +" axisSlopPx="+Math.round(directRearmSlopPx));
     }
 
+    /** FV FloatIconView.q0(): turn the existing touch owner into a fullscreen transparent window. */
+    private void enterFvFullscreenOwner() {
+        if (fvOwnerFullscreen) return;
+        if (!(getLayoutParams() instanceof WindowManager.LayoutParams lp)) {
+            DiagnosticLog.i(getContext(), "FL_DIRECT", "FULLSCREEN_OWNER unavailable layoutParams");
+            return;
+        }
+
+        fvOwnerSavedX = lp.x;
+        fvOwnerSavedY = lp.y;
+        fvOwnerSavedWidth = lp.width;
+        fvOwnerSavedHeight = lp.height;
+
+        lp.x = 0;
+        lp.y = 0;
+        lp.width = WindowManager.LayoutParams.MATCH_PARENT;
+        lp.height = WindowManager.LayoutParams.MATCH_PARENT;
+        if (updateOwnerWindow(lp)) {
+            fvOwnerFullscreen = true;
+            DiagnosticLog.i(getContext(), "FL_DIRECT", "FULLSCREEN_OWNER ENTER from="
+                    + fvOwnerSavedX + "," + fvOwnerSavedY + " "
+                    + fvOwnerSavedWidth + "x" + fvOwnerSavedHeight
+                    + " now=" + getWidth() + "x" + getHeight());
+        } else {
+            lp.x = fvOwnerSavedX;
+            lp.y = fvOwnerSavedY;
+            lp.width = fvOwnerSavedWidth;
+            lp.height = fvOwnerSavedHeight;
+        }
+    }
+
+    private void exitFvFullscreenOwner() {
+        if (!fvOwnerFullscreen) return;
+        if (!(getLayoutParams() instanceof WindowManager.LayoutParams lp)) {
+            fvOwnerFullscreen = false;
+            return;
+        }
+        lp.x = fvOwnerSavedX;
+        lp.y = fvOwnerSavedY;
+        lp.width = fvOwnerSavedWidth;
+        lp.height = fvOwnerSavedHeight;
+        updateOwnerWindow(lp);
+        fvOwnerFullscreen = false;
+        DiagnosticLog.i(getContext(), "FL_DIRECT", "FULLSCREEN_OWNER EXIT restore="
+                + lp.x + "," + lp.y + " " + lp.width + "x" + lp.height);
+    }
+
+    private boolean updateOwnerWindow(WindowManager.LayoutParams lp) {
+        LensAccessibilityService accessibility = LensAccessibilityService.get();
+        if (accessibility != null && accessibility.updateAccessibilityOverlay(this, lp)) return true;
+        try {
+            WindowManager wm = (WindowManager) getContext().getSystemService(Context.WINDOW_SERVICE);
+            wm.updateViewLayout(this, lp);
+            return true;
+        } catch (Throwable t) {
+            DiagnosticLog.i(getContext(), "FL_DIRECT", "FULLSCREEN_OWNER update failed=" + t);
+            return false;
+        }
+    }
+
     private void finish(long now, boolean cancelled) {
         GestureSession.Phase ended = session.phase;
         DiagnosticLog.i(getContext(), "FINISH", "ended="+ended+" cancelled="+cancelled
@@ -477,6 +548,7 @@ public class FloatIconView extends View {
     }
 
     private void resetSession(){
+        exitFvFullscreenOwner();
         cancelLongPress();
         cancelDirectSelectionTimer();
         selectionEngine=null;

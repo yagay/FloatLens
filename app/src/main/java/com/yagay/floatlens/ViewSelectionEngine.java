@@ -135,6 +135,8 @@ public final class ViewSelectionEngine {
         directRegion.setEmpty();
         regionValid = false;
         closeDirectRegionFrame();
+        directRegionFrame = new FlRegionFrameOverlay(context);
+        directRegionFrame.prepare();
         resetViewReadiness();
 
         ensureProbe();
@@ -228,7 +230,7 @@ public final class ViewSelectionEngine {
      */
     private void updateRegionVisual() {
         if (state != State.DIRECT || !shouldUseRegionNow()) {
-            closeDirectRegionFrame();
+            if (directRegionFrame != null) directRegionFrame.hide();
             return;
         }
         if (directRegion.isEmpty()) return;
@@ -236,7 +238,7 @@ public final class ViewSelectionEngine {
         directRegionFrame.show(directRegion);
     }
 
-    /** Create the View layer once and let it refresh only the candidate chain at the current point. */
+    /** Create the View layer once; MOVE reads only the prepared Accessibility geometry cache. */
     private void ensureTargetOverlay(boolean forceBegin) {
         if (accessibility == null || state != State.DIRECT) return;
         if (overlay == null) {

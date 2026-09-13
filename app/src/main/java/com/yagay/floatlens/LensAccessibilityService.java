@@ -36,6 +36,7 @@ public class LensAccessibilityService extends AccessibilityService {
     @Override protected void onServiceConnected(){
         super.onServiceConnected();
         s=this;
+        AccessibilityCandidateCache.requestRefresh(this, "service_connected", 0L);
         try {
             AccessibilityServiceInfo info=getServiceInfo();
             if(info!=null){
@@ -60,6 +61,7 @@ public class LensAccessibilityService extends AccessibilityService {
     }
 
     @Override public void onDestroy(){
+        AccessibilityCandidateCache.clear();
         FloatService f=FloatService.get();
         if(f!=null) f.onAccessibilityOverlayHostChanged(false);
         FlSystemPanelController.onAccessibilityDisconnected(this);
@@ -105,6 +107,8 @@ public class LensAccessibilityService extends AccessibilityService {
     }
 
     @Override public void onAccessibilityEvent(AccessibilityEvent e) {
+        AccessibilityCandidateCache.requestRefresh(this,
+                "event_" + (e == null ? 0 : e.getEventType()));
         try {
             // A focusable TYPE_APPLICATION_OVERLAY is not guaranteed to lose focus when the user
             // presses Home or Recents. Detect the actual launcher/overview window transition instead.
