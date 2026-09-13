@@ -2,11 +2,11 @@ name: Debug Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, refactor/ui-structure-v2 ]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-debug:
@@ -14,6 +14,136 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Apply one-row total-count menu fix
+        if: github.event_name == 'push' && github.event.head_commit.message == 'ci: apply text menu total count fix'
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('app/src/main/java/com/yagay/floatlens/FloatActionMenu.java')
+          s = path.read_text(encoding='utf-8')
+
+          s = s.replace(
+              '+ (mode == MODE_MAIN ? " pinnedCustom=" + TextMenuSettings.pinnedCustomCount(app) : "")',
+              '+ (mode == MODE_MAIN ? " mainItems=" + TextMenuSettings.mainItemCount(app) : "")'
+          )
+
+          start = s.index('    private static void buildMainToolbar(')
+          end = s.index('    private static void buildMoreMenu(', start)
+          new_block = '''    private static void buildMainToolbar(Context app, LinearLayout root, String text,
+                                         Runnable selectAll, Palette palette) {
+        List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
+        boolean hasSelectAll = selectAll != null;
+        int customLimit = mainCustomCount(app, customs.size(), hasSelectAll);
+
+        ArrayList<View> items = new ArrayList<>();
+
+        TextView copy = action(app, "复制", palette, 58);
+        items.add(copy);
+
+        TextView all = null;
+        if (hasSelectAll) {
+            all = action(app, "全选", palette, 58);
+            items.add(all);
+        }
+
+        TextView share = action(app, "分享", palette, 58);
+        items.add(share);
+
+        for (int i = 0; i < customLimit; i++) {
+            CustomMenuActionStore.Item item = customs.get(i);
+            TextView custom = action(app, item.label, palette, 58);
+            custom.setEllipsize(TextUtils.TruncateAt.END);
+            custom.setSingleLine(true);
+            custom.setOnClickListener(v -> launchCustom(app, item, text));
+            items.add(custom);
+        }
+
+        TextView more = action(app, "⋮", palette, 46);
+        more.setTextSize(22);
+        items.add(more);
+
+        copy.setOnClickListener(v -> {
+            ClipboardManager cm = (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("FloatLens", text));
+            Toast.makeText(app, "已复制", Toast.LENGTH_SHORT).show();
+            dismiss();
+        });
+        if (all != null) {
+            all.setOnClickListener(v -> {
+                try { selectAll.run(); } catch (Throwable ignored) {}
+                dismiss();
+            });
+        }
+        share.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_SHARE));
+        more.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_MORE));
+
+        int maxRowWidth = Math.max(dp(app, 180),
+                app.getResources().getDisplayMetrics().widthPixels - dp(app, 16));
+        WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
+        if (wm != null) {
+            Rect usable = usableBounds(app, wm);
+            if (!usable.isEmpty()) {
+                maxRowWidth = Math.max(dp(app, 180), usable.width() - dp(app, 16));
+            }
+        }
+
+        // The configured number is the TOTAL toolbar item count. Keep every item on one row and
+        // shrink slots as needed instead of silently wrapping into a second row.
+        int slotWidth = Math.max(dp(app, 32),
+                Math.min(dp(app, 72), maxRowWidth / Math.max(1, items.size())));
+        LinearLayout row = toolbarRow(app);
+        for (View item : items) {
+            if (item instanceof TextView tv) {
+                tv.setMinWidth(0);
+                tv.setPadding(dp(app, 4), 0, dp(app, 4), 0);
+                tv.setSingleLine(true);
+                tv.setEllipsize(TextUtils.TruncateAt.END);
+                if (items.size() >= 7 && !"⋮".contentEquals(tv.getText())) {
+                    tv.setTextSize(13);
+                }
+            }
+            row.addView(item, new LinearLayout.LayoutParams(slotWidth, dp(app, 46)));
+        }
+        root.addView(row, new LinearLayout.LayoutParams(-2, -2));
+    }
+
+    private static LinearLayout toolbarRow(Context app) {
+        LinearLayout row = new LinearLayout(app);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(app, 2), dp(app, 2), dp(app, 2), dp(app, 2));
+        return row;
+    }
+
+    private static int mainCustomCount(Context app, int size, boolean hasSelectAll) {
+        return TextMenuSettings.customSlots(app, hasSelectAll, size);
+    }
+
+'''
+          s = s[:start] + new_block + s[end:]
+          s = s.replace(
+              'int skip = mainCustomCount(app, customs.size());',
+              'int skip = mainCustomCount(app, customs.size(), selectAll != null);'
+          )
+
+          if 'pinnedCustomCount' in s:
+              raise SystemExit('old pinnedCustomCount reference still present')
+          if 'mainCustomCount(app, customs.size());' in s:
+              raise SystemExit('old mainCustomCount call still present')
+          path.write_text(s, encoding='utf-8')
+          PY
+
+          git config user.name "FloatLens CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add app/src/main/java/com/yagay/floatlens/FloatActionMenu.java
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git commit -m "fix: make text menu count control total items"
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
