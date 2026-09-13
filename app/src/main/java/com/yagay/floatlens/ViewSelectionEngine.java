@@ -5,19 +5,14 @@ import android.graphics.PointF;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.view.MotionEvent;
-import android.view.ViewConfiguration;
-
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 /**
- * FV-style same-touch selection engine.
+ * FV-style same-touch View selection engine.
  *
- * Region dragging and selected-View readiness are intentionally separate. FV's FooViewService owns
- * the dwell/re-arm state and calls o1/n1.d(false/true) on the selected View rectangle. FloatLens
- * mirrors that relationship: ViewHoverOverlay is passive; this engine owns the 400ms / ±3dp state.
+ * Dragging the floating icon is a continuous View hit-test operation. Ordinary movement must never
+ * be reinterpreted as region selection: FV keeps the pointer/probe alive, changes the highlighted
+ * View as the pointer crosses candidates, then executes the currently selected candidate on UP.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
@@ -26,40 +21,25 @@ public final class ViewSelectionEngine {
     private static final long FL_VIEW_READY_DELAY_MS = 400L;
     private static final float FL_VIEW_READY_AXIS_SLOP_DP = 3f;
 
-    private static final ExecutorService TARGET_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "FloatLens-FL-targets");
-        t.setDaemon(true);
-        return t;
-    });
-
     private final Context context;
     private final LensAccessibilityService accessibility;
     private final SelectionPointTransformer pointTransformer;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final float regionStartSlopPx;
     private final float viewReadyAxisSlopPx;
 
-    /** Optional View/text target layer. It is never required for region screenshot. */
     private ViewHoverOverlay overlay;
     private FlProbePointOverlay probeOverlay;
     private FlPointerOperationHintOverlay pointerHintOverlay;
 
-    /** Immediate FV m2/g-style region state, independent of Accessibility readiness. */
-    private FlRegionFrameOverlay directRegionFrame;
-    private final Rect directRegion = new Rect();
-    private float directStartX = Float.NaN, directStartY = Float.NaN;
-    private boolean directRegionMode;
-
     private State state = State.IDLE;
     private float selectionX = Float.NaN, selectionY = Float.NaN;
-    private long targetGeneration;
 
     /** FV o1/n1.d state applies only to the selected View rectangle. */
     private SelectionVisualState viewVisualState = SelectionVisualState.TRACKING;
     private float viewReadyAnchorX = Float.NaN, viewReadyAnchorY = Float.NaN;
     private String viewReadyCandidateKey = "";
     private final Runnable viewReadyRunnable = () -> {
-        if (state != State.DIRECT || directRegionMode || overlay == null) return;
+        if (state != State.DIRECT || overlay == null) return;
         ScreenCandidate candidate = overlay.currentCandidate();
         if (candidate == null || !candidate.stableKey().equals(viewReadyCandidateKey)) return;
         setViewVisualState(SelectionVisualState.READY, "candidate_stable_400ms");
@@ -80,11 +60,10 @@ public final class ViewSelectionEngine {
         float density = context.getResources().getDisplayMetrics().density;
         float px = fs.sizeDp() * density;
         pointTransformer = new SelectionPointTransformer(context, px, px);
-        regionStartSlopPx = Math.max(1f, ViewConfiguration.get(context).getScaledTouchSlop());
         viewReadyAxisSlopPx = Math.max(1f, FL_VIEW_READY_AXIS_SLOP_DP * density);
     }
 
-    /** FV m2/g.v() is unconditional: region/select mode is not gated by Accessibility. */
+    /** FV pointer selection is available even before Accessibility connects. */
     public boolean available() { return true; }
     public boolean isActive() { return state == State.DIRECT; }
     public State state() { return state; }
@@ -130,7 +109,7 @@ public final class ViewSelectionEngine {
         pointerHintOverlay = null;
     }
 
-    /** Initial FloatIconView dwell has expired; enter direct selection immediately. */
+    /** Initial FloatIconView dwell has expired; enter FV direct View selection immediately. */
     public boolean activateDirect(float rawX, float rawY) {
         if (state == State.DIRECT) {
             updateDirect(rawX, rawY);
@@ -138,9 +117,6 @@ public final class ViewSelectionEngine {
         }
 
         state = State.DIRECT;
-        directRegionMode = false;
-        directRegion.setEmpty();
-        closeDirectRegionFrame();
         resetViewReadiness();
 
         ensureProbe();
@@ -150,21 +126,24 @@ public final class ViewSelectionEngine {
         PointF shown = showProbeAt(transformed);
         selectionX = shown.x;
         selectionY = shown.y;
-        directStartX = selectionX;
-        directStartY = selectionY;
 
+        // FV can highlight a View immediately. Do a point-pruned Accessibility lookup here instead
+        // of waiting for a whole-window tree scan that may finish after ACTION_UP.
+        ensureTargetOverlay(true);
         updateOperationHint();
-        prepareTargetsAsync();
 
         DiagnosticLog.i(context, "FL_SELECT", "DIRECT_ENTER_IMMEDIATE raw="
                 + Math.round(rawX) + "," + Math.round(rawY)
                 + " focusHit=" + Math.round(selectionX) + "," + Math.round(selectionY)
-                + " slop=" + Math.round(regionStartSlopPx)
                 + " viewAxisSlopPx=" + Math.round(viewReadyAxisSlopPx)
-                + " accessibilityAsync=" + (accessibility != null));
+                + " pointLookup=" + (accessibility != null));
         return true;
     }
 
+    /**
+     * Continuous FV View picking. Movement only moves the probe and changes the candidate; it never
+     * switches to region screenshot mode merely because the finger travelled beyond touch slop.
+     */
     public void updateDirect(float rawX, float rawY) {
         if (state != State.DIRECT) return;
         ensureProbe();
@@ -175,38 +154,8 @@ public final class ViewSelectionEngine {
         selectionX = shown.x;
         selectionY = shown.y;
 
-        if (Float.isNaN(directStartX) || Float.isNaN(directStartY)) {
-            directStartX = selectionX;
-            directStartY = selectionY;
-        }
-
-        float dx = selectionX - directStartX;
-        float dy = selectionY - directStartY;
-        if (!directRegionMode && dx * dx + dy * dy >= regionStartSlopPx * regionStartSlopPx) {
-            directRegionMode = true;
-            cancelViewReadyTimer();
-            if (overlay != null) {
-                overlay.cancel();
-                overlay = null;
-            }
-            targetGeneration++;
-            if (directRegionFrame == null) directRegionFrame = new FlRegionFrameOverlay(context);
-            DiagnosticLog.i(context, "FL_REGION", "ENTER fixed-yellow-frame dx=" + Math.round(dx)
-                    + " dy=" + Math.round(dy));
-        }
-
-        if (directRegionMode) {
-            int l = Math.round(Math.min(directStartX, selectionX));
-            int t = Math.round(Math.min(directStartY, selectionY));
-            int r = Math.round(Math.max(directStartX, selectionX));
-            int b = Math.round(Math.max(directStartY, selectionY));
-            if (directRegion.left != l || directRegion.top != t
-                    || directRegion.right != r || directRegion.bottom != b) {
-                directRegion.set(l, t, r, b);
-                if (directRegionFrame == null) directRegionFrame = new FlRegionFrameOverlay(context);
-                directRegionFrame.show(directRegion);
-            }
-        } else if (overlay != null) {
+        ensureTargetOverlay(false);
+        if (overlay != null) {
             overlay.update(selectionX, selectionY);
             updateViewCandidateStability(selectionX, selectionY);
         }
@@ -214,52 +163,23 @@ public final class ViewSelectionEngine {
         updateOperationHint();
     }
 
-    /** Accessibility candidates arrive as an optional late result, after direct selection is active. */
-    private void prepareTargetsAsync() {
-        if (accessibility == null || state != State.DIRECT || directRegionMode) return;
-        final long generation = ++targetGeneration;
-        final long started = SystemClock.elapsedRealtime();
-        DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_START gen=" + generation);
-
-        TARGET_EXECUTOR.execute(() -> {
-            ViewHoverOverlay prepared = null;
-            Throwable error = null;
-            try {
-                ViewHoverOverlay next = new ViewHoverOverlay(context);
-                if (next.available()) {
-                    next.begin();
-                    prepared = next;
-                }
-            } catch (Throwable t) {
-                error = t;
+    /** Create the View layer once and let it refresh only the candidate chain at the current point. */
+    private void ensureTargetOverlay(boolean forceBegin) {
+        if (accessibility == null || state != State.DIRECT) return;
+        if (overlay == null) {
+            overlay = new ViewHoverOverlay(context);
+            if (!overlay.available()) {
+                overlay = null;
+                return;
             }
-
-            final ViewHoverOverlay ready = prepared;
-            final Throwable failure = error;
-            mainHandler.post(() -> {
-                if (generation != targetGeneration || state != State.DIRECT || directRegionMode) {
-                    if (ready != null) ready.cancel();
-                    DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_DROP gen=" + generation
-                            + " current=" + targetGeneration + " region=" + directRegionMode);
-                    return;
-                }
-                if (failure != null || ready == null) {
-                    DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_FAILED gen=" + generation
-                            + " error=" + (failure == null ? "unavailable" : failure));
-                    return;
-                }
-
-                if (overlay != null) overlay.cancel();
-                overlay = ready;
-                overlay.setCandidateListener(this::onViewCandidateChanged);
-                overlay.setVisualState(SelectionVisualState.TRACKING);
-                overlay.update(selectionX, selectionY);
-                updateOperationHint();
-                DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_APPLY gen=" + generation
-                        + " elapsedMs=" + (SystemClock.elapsedRealtime() - started)
-                        + " region=false fvViewState=" + viewVisualState);
-            });
-        });
+            overlay.setCandidateListener(this::onViewCandidateChanged);
+            overlay.setVisualState(SelectionVisualState.TRACKING);
+            overlay.beginAt(selectionX, selectionY);
+            DiagnosticLog.i(context, "FL_TREE_CACHE", "POINT_LAYER_READY x="
+                    + Math.round(selectionX) + " y=" + Math.round(selectionY));
+            return;
+        }
+        if (forceBegin) overlay.beginAt(selectionX, selectionY);
     }
 
     /** FV FooViewService -> o1/n1.d(false): every newly selected View starts red. */
@@ -302,7 +222,7 @@ public final class ViewSelectionEngine {
 
     private void armViewReadyTimer(String reason) {
         mainHandler.removeCallbacks(viewReadyRunnable);
-        if (overlay == null || overlay.currentCandidate() == null || directRegionMode) return;
+        if (overlay == null || overlay.currentCandidate() == null) return;
         mainHandler.postDelayed(viewReadyRunnable, FL_VIEW_READY_DELAY_MS);
         DiagnosticLog.i(context, "FL_VIEW_READY", "ARM reason=" + reason
                 + " delayMs=" + FL_VIEW_READY_DELAY_MS
@@ -341,7 +261,7 @@ public final class ViewSelectionEngine {
         return shown;
     }
 
-    /** Same-touch ACTION_UP: snapshot, remove helpers, then execute after FV's 5ms delay. */
+    /** Same-touch ACTION_UP: snapshot the current View, remove helpers, then execute after 5ms. */
     public boolean finishDirect(float rawX, float rawY) {
         if (state != State.DIRECT) {
             cancel();
@@ -349,19 +269,13 @@ public final class ViewSelectionEngine {
         }
         updateDirect(rawX, rawY);
 
-        final boolean region = directRegionMode && !directRegion.isEmpty();
         final ScreenCandidate candidate = overlay == null ? null : overlay.currentCandidate();
         final FlPointerOperationHintOverlay.Mode op = currentOperationMode();
         final Rect bounds;
         final ViewNodeCandidate view;
         final String text;
 
-        if (op == FlPointerOperationHintOverlay.Mode.SCREENSHOT) {
-            bounds = region ? new Rect(directRegion)
-                    : candidate == null ? new Rect() : candidate.bounds();
-            view = null;
-            text = "";
-        } else if (candidate != null && !candidate.bounds().isEmpty()) {
+        if (candidate != null && !candidate.bounds().isEmpty()) {
             bounds = candidate.bounds();
             view = candidate.toViewNodeCandidate();
             text = candidate.hasText() ? candidate.text() : "";
@@ -371,32 +285,29 @@ public final class ViewSelectionEngine {
             text = "";
         }
 
-        targetGeneration++;
         resetViewReadiness();
         if (overlay != null) overlay.cancel();
         overlay = null;
         state = State.IDLE;
-        closeDirectRegionFrame();
-        directRegionMode = false;
-        directRegion.setEmpty();
-        directStartX = directStartY = Float.NaN;
         closeVisuals();
 
         final boolean result = !bounds.isEmpty();
         if (result) {
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                if (op == FlPointerOperationHintOverlay.Mode.SCREENSHOT) {
-                    ScreenshotController.captureBoundsForRegion(context, bounds);
-                } else if (op == FlPointerOperationHintOverlay.Mode.TEXT) {
+                if (op == FlPointerOperationHintOverlay.Mode.TEXT) {
                     ScreenshotController.captureBoundsForViewCandidate(context, bounds, view, text);
-                } else {
+                } else if (op == FlPointerOperationHintOverlay.Mode.IMAGE) {
                     ScreenshotController.captureBoundsForVisualCandidate(context, bounds, view);
+                } else {
+                    // Generic VIEW is still a valid FV target. SCREENSHOT here means capture exactly
+                    // that View rectangle, not an arbitrary finger-drag region.
+                    ScreenshotController.captureBoundsForRegion(context, bounds);
                 }
             }, FL_RELEASE_ACTION_DELAY_MS);
         }
 
-        DiagnosticLog.i(context, "FL_SELECT", "DIRECT_UP region=" + region
-                + " target=" + (candidate != null) + " result=" + result + " focusHit="
+        DiagnosticLog.i(context, "FL_SELECT", "DIRECT_UP region=false target="
+                + (candidate != null) + " result=" + result + " focusHit="
                 + Math.round(selectionX) + "," + Math.round(selectionY) + " op=" + op
                 + " flDelayMs=" + FL_RELEASE_ACTION_DELAY_MS);
         return result;
@@ -412,22 +323,16 @@ public final class ViewSelectionEngine {
 
     public void cancel() {
         boolean active = state == State.DIRECT;
-        targetGeneration++;
         resetViewReadiness();
         if (overlay != null) overlay.cancel();
         overlay = null;
         state = State.IDLE;
-        directRegionMode = false;
-        directRegion.setEmpty();
-        directStartX = directStartY = Float.NaN;
         selectionX = selectionY = Float.NaN;
-        closeDirectRegionFrame();
         closeVisuals();
         if (active) DiagnosticLog.i(context, "FL_SELECT", "DIRECT_CANCEL");
     }
 
     private FlPointerOperationHintOverlay.Mode currentOperationMode() {
-        if (directRegionMode) return FlPointerOperationHintOverlay.Mode.SCREENSHOT;
         if (overlay == null) return FlPointerOperationHintOverlay.Mode.SCREENSHOT;
 
         ScreenCandidate candidate = overlay.currentCandidate();
@@ -467,11 +372,6 @@ public final class ViewSelectionEngine {
         if (pointerHintOverlay == null) {
             pointerHintOverlay = new FlPointerOperationHintOverlay(context);
         }
-    }
-
-    private void closeDirectRegionFrame() {
-        if (directRegionFrame != null) directRegionFrame.close();
-        directRegionFrame = null;
     }
 
     private void closeVisuals() {
