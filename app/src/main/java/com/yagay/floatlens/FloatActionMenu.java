@@ -419,14 +419,17 @@ public final class FloatActionMenu {
             list.addView(none, new LinearLayout.LayoutParams(-1, dp(app, 48)));
         } else {
             for (ResolveInfo ri : resolved) {
-                CharSequence label;
-                try { label = ri.loadLabel(pm); }
-                catch (Throwable ignored) { label = ri.activityInfo.name; }
-                Drawable icon = null;
-                try { icon = ri.loadIcon(pm); } catch (Throwable ignored) {}
-                TextView target = menuRow(app,
-                        label == null ? ri.activityInfo.name : label.toString(), icon, palette);
-                target.setOnClickListener(v -> launchExplicit(app, base, ri));
+                CharSequence rawLabel;
+      try { rawLabel = ri.loadLabel(pm); }
+      catch (Throwable ignored) { rawLabel = ri.activityInfo.name; }
+      String fallbackLabel = rawLabel == null
+              ? ri.activityInfo.name : rawLabel.toString();
+      String displayLabel = TargetMenuStore.displayLabel(app, targetMode,
+              ri.activityInfo.packageName + "|" + ri.activityInfo.name, fallbackLabel);
+      Drawable icon = null;
+      try { icon = ri.loadIcon(pm); } catch (Throwable ignored) {}
+      TextView target = menuRow(app, displayLabel, icon, palette);
+                    target.setOnClickListener(v -> launchExplicit(app, base, ri));
                 list.addView(target, new LinearLayout.LayoutParams(-1, dp(app, 50)));
             }
         }
