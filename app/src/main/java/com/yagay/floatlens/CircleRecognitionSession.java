@@ -21,9 +21,9 @@ import java.util.Set;
 /**
  * Per-Circle-Select recognition session.
  *
- * Accessibility provides an immediate provisional index. One original-frame ML Kit pass then
- * replaces overlapping provisional geometry with real symbol/element boxes. The configured
- * OcrEngine is only used for small on-demand ROI refinement, never as a full-screen background job.
+ * Accessibility View text is authoritative whenever available. Image OCR is used only to fill
+ * regions that do not expose usable View text. The configured OcrEngine is reserved for small
+ * on-demand ROI refinement and must not replace existing View text.
  */
 final class CircleRecognitionSession {
     enum Stage { ACCESSIBILITY, FAST_MLKIT, ROI_PRECISE }
@@ -68,7 +68,7 @@ final class CircleRecognitionSession {
         startFastMlKit(run);
     }
 
-    /** Refine only a missed tap-sized ROI with the configured high-accuracy OCR engine. */
+    /** Refine only a missed tap/line ROI with the configured high-accuracy OCR engine. */
     void refine(Rect imageRegion) {
         if (closed || imageRegion == null || imageRegion.isEmpty()
                 || screenshot == null || screenshot.isRecycled()) return;
@@ -92,7 +92,7 @@ final class CircleRecognitionSession {
                     if (!isCurrent(run)) return;
                     OcrDocument translated = document.translated(region.left, region.top,
                             screenshot.getWidth(), screenshot.getHeight());
-                    current = replaceRegion(current, translated, region);
+                    current = replaceRegionPreservingView(current, translated, region);
                     DiagnosticLog.i(app, "CIRCLE_INDEX", "roi precise ready engine="
                             + document.engine() + " chars=" + document.chars().size()
                             + " region=" + region.toShortString());
@@ -147,11 +147,11 @@ final class CircleRecognitionSession {
                             if (!isCurrent(run)) return;
                             OcrDocument fast = mlKitDocument(text, engine,
                                     screenshot.getWidth(), screenshot.getHeight());
-                            OcrDocument fallback = current;
-                            current = mergePreferPrecise(fast, fallback);
+                            OcrDocument viewFirst = current;
+                            current = mergePreferViewText(viewFirst, fast);
                             DiagnosticLog.i(app, "CIRCLE_INDEX", "fast ready engine=" + engine
-                                    + " preciseChars=" + fast.chars().size()
-                                    + " fallbackChars=" + (fallback == null ? 0 : fallback.chars().size())
+                                    + " ocrChars=" + fast.chars().size()
+                                    + " viewChars=" + (viewFirst == null ? 0 : viewFirst.chars().size())
                                     + " merged=" + (current == null ? 0 : current.chars().size())
                                     + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
                             emit(current, Stage.FAST_MLKIT, true);
@@ -179,7 +179,7 @@ final class CircleRecognitionSession {
         try { recognizer.close(); } catch (Throwable ignored) {}
     }
 
-    /** Build a provisional index from Accessibility. Geometry is intentionally low-confidence. */
+    /** Build authoritative selectable text directly from Accessibility Views. */
     private OcrDocument accessibilityDocument() {
         LensAccessibilityService service = LensAccessibilityService.get();
         if (service == null) return emptyDocument("accessibility");
@@ -230,21 +230,21 @@ final class CircleRecognitionSession {
                     int right = lineRect.left + lineRect.width() * (visibleIndex + 1) / Math.max(1, visible);
                     chars.add(new OcrDocument.CharUnit(new String(Character.toChars(cp)),
                             new Rect(left, lineRect.top, Math.max(left + 1, right), lineRect.bottom),
-                            0.18f, lineId, localGroup, order++));
+                            1.0f, lineId, localGroup, order++, OcrDocument.Source.VIEW));
                     visibleIndex++;
                 }
                 if (!chars.isEmpty()) {
-                    lines.add(new OcrDocument.Line(row, lineRect, 0.18f, chars));
+                    lines.add(new OcrDocument.Line(row, lineRect, 1.0f, chars, OcrDocument.Source.VIEW));
                     lineId++;
                 }
                 rowIndex++;
             }
         }
-        return documentFromLines(lines, "accessibility-provisional", 0.18f,
+        return documentFromLines(lines, "accessibility-view", 1.0f,
                 screenshot.getWidth(), screenshot.getHeight());
     }
 
-    /** Build precise symbol-level geometry from a single original-frame ML Kit pass. */
+    /** Build OCR-only symbol geometry from the screenshot. */
     private static OcrDocument mlKitDocument(Text text, String engine, int width, int height) {
         ArrayList<OcrDocument.Line> lines = new ArrayList<>();
         int lineId = 0;
@@ -284,7 +284,6 @@ final class CircleRecognitionSession {
                                 && compact(symbolsText.toString()).equals(compact(value))) {
                             chars.addAll(symbolsOut);
                         } else {
-                            // Roll back speculative symbol order if symbol text did not match.
                             order -= symbolsOut.size();
                             appendSplit(chars, value, elementBox, lineId, elementGroup, order);
                             order += countVisible(value);
@@ -309,77 +308,89 @@ final class CircleRecognitionSession {
     }
 
     /**
-     * ML Kit geometry wins wherever it covers visible text. Accessibility remains only as a fast
-     * fallback for regions ML Kit did not see. This is the inverse of the old merge rule.
+     * Accessibility View text wins. OCR lines are added only where no matching View text exists.
+     * This keeps copied View strings independent from screenshot-derived spacing/character guesses.
      */
-    private static OcrDocument mergePreferPrecise(OcrDocument precise, OcrDocument fallback) {
-        if (precise == null || precise.lines().isEmpty()) return fallback;
-        if (fallback == null || fallback.lines().isEmpty()) return precise;
+    private static OcrDocument mergePreferViewText(OcrDocument viewText, OcrDocument ocr) {
+        if (viewText == null || viewText.lines().isEmpty()) return ocr;
+        if (ocr == null || ocr.lines().isEmpty()) return viewText;
 
-        ArrayList<OcrDocument.Line> lines = new ArrayList<>(precise.lines());
-        int keptFallback = 0;
-        int replacedFallback = 0;
-        for (OcrDocument.Line fallbackLine : fallback.lines()) {
-            if (fallbackLine == null || fallbackLine.bounds().isEmpty()) continue;
-            boolean covered = false;
-            for (OcrDocument.Line preciseLine : precise.lines()) {
-                if (preciseLine == null || preciseLine.bounds().isEmpty()) continue;
-                if (sameVisualText(fallbackLine, preciseLine)) {
-                    covered = true;
+        ArrayList<OcrDocument.Line> lines = new ArrayList<>(viewText.lines());
+        for (OcrDocument.Line ocrLine : ocr.lines()) {
+            if (ocrLine == null || ocrLine.bounds().isEmpty()) continue;
+            boolean coveredByView = false;
+            for (OcrDocument.Line viewLine : viewText.lines()) {
+                if (viewLine == null || viewLine.source() != OcrDocument.Source.VIEW
+                        || viewLine.bounds().isEmpty()) continue;
+                if (sameVisualText(viewLine, ocrLine)) {
+                    coveredByView = true;
                     break;
                 }
             }
-            if (covered) {
-                replacedFallback++;
-            } else {
-                lines.add(fallbackLine);
-                keptFallback++;
-            }
+            if (!coveredByView) lines.add(ocrLine);
         }
 
-        OcrDocument merged = documentFromLines(lines,
-                precise.engine() + "+accessibility-fallback",
-                precise.confidence(), precise.imageWidth(), precise.imageHeight());
-        // This method is static; detailed counts are surfaced by the caller's fast-ready log.
-        return merged;
+        return documentFromLines(lines,
+                "accessibility-view+" + ocr.engine() + "-fallback",
+                Math.max(viewText.confidence(), ocr.confidence()),
+                ocr.imageWidth(), ocr.imageHeight());
     }
 
-    private static boolean sameVisualText(OcrDocument.Line fallback, OcrDocument.Line precise) {
-        Rect fb = fallback.bounds();
-        Rect pb = precise.bounds();
+    private static boolean sameVisualText(OcrDocument.Line viewLine, OcrDocument.Line ocrLine) {
+        Rect vb = viewLine.bounds();
+        Rect ob = ocrLine.bounds();
         Rect overlap = new Rect();
-        if (!overlap.setIntersect(fb, pb)) return false;
+        if (!overlap.setIntersect(vb, ob)) return false;
 
         long overlapArea = Math.max(0L, (long) overlap.width() * overlap.height());
-        long fallbackArea = Math.max(1L, (long) fb.width() * fb.height());
-        long preciseArea = Math.max(1L, (long) pb.width() * pb.height());
-        float preciseCoverage = overlapArea / (float) preciseArea;
-        float fallbackCoverage = overlapArea / (float) fallbackArea;
+        long viewArea = Math.max(1L, (long) vb.width() * vb.height());
+        long ocrArea = Math.max(1L, (long) ob.width() * ob.height());
+        float ocrCoverage = overlapArea / (float) ocrArea;
+        float viewCoverage = overlapArea / (float) viewArea;
 
-        String ft = compact(fallback.text());
-        String pt = compact(precise.text());
-        boolean textRelated = !ft.isEmpty() && !pt.isEmpty()
-                && (ft.equals(pt) || ft.contains(pt) || pt.contains(ft));
+        String vt = compact(viewLine.text());
+        String ot = compact(ocrLine.text());
+        boolean textRelated = !vt.isEmpty() && !ot.isEmpty()
+                && (vt.equals(ot) || vt.contains(ot) || ot.contains(vt));
 
-        if (textRelated && preciseCoverage >= 0.32f) return true;
-        // Accessibility bounds are often a large TextView/container. If a precise OCR line sits
-        // almost entirely inside that coarse box, prefer the precise geometry even when OCR text
-        // differs by punctuation or a character.
-        if (preciseCoverage >= 0.78f && fb.contains(pb.centerX(), pb.centerY())) return true;
-        return fallbackCoverage >= 0.58f;
+        if (textRelated && ocrCoverage >= 0.22f) return true;
+        // Accessibility bounds can be broader than glyphs. If the OCR line sits mostly inside an
+        // existing View text rectangle, keep the View text even when OCR punctuation differs.
+        if (ocrCoverage >= 0.72f && vb.contains(ob.centerX(), ob.centerY())) return true;
+        return viewCoverage >= 0.58f && textRelated;
     }
 
-    private static OcrDocument replaceRegion(OcrDocument base, OcrDocument patch, Rect region) {
+    private static OcrDocument replaceRegionPreservingView(OcrDocument base,
+                                                            OcrDocument patch,
+                                                            Rect region) {
         if (patch == null || patch.lines().isEmpty()) return base == null ? patch : base;
         ArrayList<OcrDocument.Line> lines = new ArrayList<>();
+        ArrayList<OcrDocument.Line> viewLines = new ArrayList<>();
         if (base != null) {
             for (OcrDocument.Line line : base.lines()) {
-                Rect r = line.bounds();
-                if (!Rect.intersects(r, region)) lines.add(line);
+                if (line == null || line.bounds().isEmpty()) continue;
+                if (line.source() == OcrDocument.Source.VIEW) {
+                    lines.add(line);
+                    viewLines.add(line);
+                } else if (!Rect.intersects(line.bounds(), region)) {
+                    lines.add(line);
+                }
             }
         }
-        lines.addAll(patch.lines());
-        return documentFromLines(lines, patch.engine() + "+index",
+
+        for (OcrDocument.Line patchLine : patch.lines()) {
+            if (patchLine == null || patchLine.bounds().isEmpty()) continue;
+            boolean coveredByView = false;
+            for (OcrDocument.Line viewLine : viewLines) {
+                if (sameVisualText(viewLine, patchLine)) {
+                    coveredByView = true;
+                    break;
+                }
+            }
+            if (!coveredByView) lines.add(patchLine);
+        }
+
+        return documentFromLines(lines, patch.engine() + "+view-preserved-index",
                 patch.confidence(), patch.imageWidth(), patch.imageHeight());
     }
 
