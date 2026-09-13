@@ -60,6 +60,7 @@ public final class CircleSelectOverlay {
                 + screenshot.getWidth() + "x" + screenshot.getHeight()
                 + " bounds=" + contentBounds.toShortString()
                 + " display=" + displayBounds.toShortString()
+                + " display=" + displayBounds.toShortString()
                 + " accessibilityHost=" + host.isAccessibilityHosted());
         return true;
     }
@@ -153,6 +154,8 @@ public final class CircleSelectOverlay {
             this.screenshot = screenshot;
             this.onClosed = onClosed;
             this.keyFocusEnabled = keyFocusEnabled;
+            this.coordinateWidth = Math.max(1, coordinateWidth);
+            this.coordinateHeight = Math.max(1, coordinateHeight);
             this.coordinateWidth = Math.max(1, coordinateWidth);
             this.coordinateHeight = Math.max(1, coordinateHeight);
             selection = new CircleTextSelectionModel(screenshot.getWidth(), screenshot.getHeight());
@@ -393,7 +396,7 @@ public final class CircleSelectOverlay {
                         }
                     }
 
-                    int hit = selection.findSelectionWord(x, y, getWidth(), getHeight(),
+                    int hit = selection.findSelectionWord(x, y, coordinateWidth, coordinateHeight,
                             dp(TEXT_TAP_SNAP_DISTANCE_DP));
                     if (hit >= 0) {
                         selection.selectSingle(hit);
