@@ -86,6 +86,14 @@ public final class CircleSelectOverlay {
         private static final float TEXT_TAP_SNAP_DISTANCE_DP = 18f;
         private static final float ROI_RESULT_SNAP_DISTANCE_DP = 42f;
         private static final float TAP_GESTURE_SLOP_DP = 18f;
+        private static final float LINE_REFINE_MIN_LENGTH_DP = 48f;
+        private static final float LINE_REFINE_MAX_SLOPE = 0.42f;
+        private static final float LINE_REFINE_ROI_PAD_X_DP = 20f;
+        private static final float LINE_REFINE_ROI_HALF_HEIGHT_DP = 42f;
+        private static final float LINE_REFINE_SELECTION_HALF_HEIGHT_DP = 14f;
+        private static final int REFINE_NONE = 0;
+        private static final int REFINE_TAP = 1;
+        private static final int REFINE_LINE = 2;
         private static final long SYSTEM_NAV_FOCUS_LOSS_DELAY_MS = 80L;
 
         private final Context context;
@@ -109,9 +117,14 @@ public final class CircleSelectOverlay {
         private CircleRecognitionSession recognitionSession;
         private OcrDocument pendingDocument;
         private boolean fastIndexReady;
-        private boolean tapRefining;
+        private int refinementMode = REFINE_NONE;
         private float refinementTapX;
         private float refinementTapY;
+        private float refinementLineStartX;
+        private float refinementLineStartY;
+        private float refinementLineEndX;
+        private float refinementLineEndY;
+        private Rect refinementLineSelectionImageRect;
         private boolean closed;
         private boolean circleResolving;
         private boolean hadWindowFocus;
@@ -175,20 +188,47 @@ public final class CircleSelectOverlay {
                             if (closed) return;
                             fastIndexReady = fastIndexReady || ready;
                             if (stage == CircleRecognitionSession.Stage.ROI_PRECISE) {
-                                tapRefining = false;
+                                int completedRefinement = refinementMode;
+                                refinementMode = REFINE_NONE;
                                 pendingDocument = null;
                                 selection.setDocument(document);
-                                int hit = selection.findSelectionWord(refinementTapX, refinementTapY,
-                                        getWidth(), getHeight(), dp(ROI_RESULT_SNAP_DISTANCE_DP));
-                                if (hit >= 0) {
-                                    selection.selectSingle(hit);
-                                    invalidate();
-                                    post(WorkspaceView.this::showSelectionMenu);
+                                boolean selected = false;
+                                int startHit = -1;
+                                int endHit = -1;
+                                if (completedRefinement == REFINE_LINE) {
+                                    float snap = dp(ROI_RESULT_SNAP_DISTANCE_DP);
+                                    startHit = selection.findSelectionWord(
+                                            refinementLineStartX, refinementLineStartY,
+                                            getWidth(), getHeight(), snap);
+                                    endHit = selection.findSelectionWord(
+                                            refinementLineEndX, refinementLineEndY,
+                                            getWidth(), getHeight(), snap);
+                                    if (startHit >= 0 && endHit >= 0) {
+                                        selection.selectSingle(startHit);
+                                        selection.updateEnd(endHit);
+                                        selected = selection.hasSelection();
+                                    } else if (startHit >= 0 || endHit >= 0) {
+                                        selection.selectSingle(startHit >= 0 ? startHit : endHit);
+                                        selected = true;
+                                    } else if (refinementLineSelectionImageRect != null) {
+                                        selected = selection.selectIntersecting(refinementLineSelectionImageRect);
+                                    }
                                 } else {
-                                    invalidate();
+                                    int hit = selection.findSelectionWord(refinementTapX, refinementTapY,
+                                            getWidth(), getHeight(), dp(ROI_RESULT_SNAP_DISTANCE_DP));
+                                    startHit = hit;
+                                    if (hit >= 0) {
+                                        selection.selectSingle(hit);
+                                        selected = true;
+                                    }
                                 }
+                                refinementLineSelectionImageRect = null;
+                                invalidate();
+                                if (selected) post(WorkspaceView.this::showSelectionMenu);
                                 DiagnosticLog.i(context, "CIRCLE_SELECT", "roi update chars="
-                                        + selection.size() + " hit=" + hit);
+                                        + selection.size() + " mode=" + completedRefinement
+                                        + " startHit=" + startHit + " endHit=" + endHit
+                                        + " selected=" + selected);
                                 return;
                             }
 
@@ -209,7 +249,10 @@ public final class CircleSelectOverlay {
                                                         Throwable error, boolean ready) {
                             if (closed) return;
                             fastIndexReady = fastIndexReady || ready;
-                            if (stage == CircleRecognitionSession.Stage.ROI_PRECISE) tapRefining = false;
+                            if (stage == CircleRecognitionSession.Stage.ROI_PRECISE) {
+                                refinementMode = REFINE_NONE;
+                                refinementLineSelectionImageRect = null;
+                            }
                             DiagnosticLog.i(context, "CIRCLE_SELECT", "index failure stage=" + stage
                                     + " error=" + safe(error) + " ready=" + fastIndexReady);
                             invalidate();
@@ -266,10 +309,11 @@ public final class CircleSelectOverlay {
 
             String status;
             if (circleResolving) status = "正在生成圈画截图…";
-            else if (tapRefining) status = "正在精识别点击位置… · 圈画仍是截图";
+            else if (refinementMode == REFINE_LINE) status = "正在精识别横划区域… · 圈画仍是截图";
+            else if (refinementMode == REFINE_TAP) status = "正在精识别点击位置… · 圈画仍是截图";
             else if (!fastIndexReady && !selection.isEmpty()) status = "View 文字已可选 · 正在补充图片文字 · 圈画截图";
             else if (!fastIndexReady) status = "正在建立快速文字索引… · 圈画截图";
-            else if (selection.isEmpty()) status = "未检测到可选文字 · 轻点可局部精识别 · 圈画截图";
+            else if (selection.isEmpty()) status = "未检测到可选文字 · 轻点或横划可精识别 · 圈画截图";
             else status = "点按文字提取 · 手柄调整范围 · 圈画截图";
             canvas.drawText(status, dp(16), dp(34), textPaint);
             drawClose(canvas);
@@ -378,6 +422,8 @@ public final class CircleSelectOverlay {
                             circleResolving = true;
                             invalidate();
                             postDelayed(() -> finishSnappedCircle(new RectF(snapped)), RECT_SNAP_PREVIEW_MS);
+                        } else if (isHorizontalRefinementGesture(gesture)) {
+                            startLineRefinement(gesture);
                         } else if (isTapLike(gesture)) {
                             startTapRefinement(x, y);
                         } else {
@@ -404,6 +450,78 @@ public final class CircleSelectOverlay {
             return true;
         }
 
+        private boolean isHorizontalRefinementGesture(List<PointF> points) {
+            if (points == null || points.size() < 2) return false;
+            PointF first = points.get(0);
+            PointF last = points.get(points.size() - 1);
+            if (first == null || last == null) return false;
+            float dx = last.x - first.x;
+            float dy = last.y - first.y;
+            float minLength = dp(LINE_REFINE_MIN_LENGTH_DP);
+            if (Math.abs(dx) < minLength) return false;
+            if (Math.abs(dy) > Math.abs(dx) * LINE_REFINE_MAX_SLOPE) return false;
+
+            float minY = Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
+            float minX = Float.MAX_VALUE, maxX = -Float.MAX_VALUE;
+            for (PointF point : points) {
+                if (point == null) continue;
+                minX = Math.min(minX, point.x);
+                maxX = Math.max(maxX, point.x);
+                minY = Math.min(minY, point.y);
+                maxY = Math.max(maxY, point.y);
+            }
+            if (minX == Float.MAX_VALUE) return false;
+            float width = Math.max(1f, maxX - minX);
+            float height = Math.max(0f, maxY - minY);
+            return height <= Math.max(dp(28f), width * LINE_REFINE_MAX_SLOPE);
+        }
+
+        private void startLineRefinement(List<PointF> gesture) {
+            if (recognitionSession == null || refinementMode != REFINE_NONE || closed
+                    || gesture == null || gesture.size() < 2) {
+                invalidate();
+                return;
+            }
+            PointF first = gesture.get(0);
+            PointF last = gesture.get(gesture.size() - 1);
+            if (first == null || last == null) {
+                invalidate();
+                return;
+            }
+
+            refinementLineStartX = first.x;
+            refinementLineStartY = first.y;
+            refinementLineEndX = last.x;
+            refinementLineEndY = last.y;
+
+            float left = Math.min(first.x, last.x);
+            float right = Math.max(first.x, last.x);
+            float centerY = (first.y + last.y) * 0.5f;
+            RectF roiView = new RectF(
+                    Math.max(0f, left - dp(LINE_REFINE_ROI_PAD_X_DP)),
+                    Math.max(0f, centerY - dp(LINE_REFINE_ROI_HALF_HEIGHT_DP)),
+                    Math.min(getWidth(), right + dp(LINE_REFINE_ROI_PAD_X_DP)),
+                    Math.min(getHeight(), centerY + dp(LINE_REFINE_ROI_HALF_HEIGHT_DP)));
+            Rect region = imageRectFromView(roiView);
+            if (region == null || region.isEmpty()) {
+                invalidate();
+                return;
+            }
+
+            RectF selectionBand = new RectF(
+                    Math.max(0f, left),
+                    Math.max(0f, centerY - dp(LINE_REFINE_SELECTION_HALF_HEIGHT_DP)),
+                    Math.min(getWidth(), right),
+                    Math.min(getHeight(), centerY + dp(LINE_REFINE_SELECTION_HALF_HEIGHT_DP)));
+            refinementLineSelectionImageRect = imageRectFromView(selectionBand);
+            refinementMode = REFINE_LINE;
+            DiagnosticLog.i(context, "CIRCLE_SELECT", "line miss -> roi precise "
+                    + region.toShortString() + " from=" + Math.round(first.x) + "," + Math.round(first.y)
+                    + " to=" + Math.round(last.x) + "," + Math.round(last.y));
+            invalidate();
+            recognitionSession.refine(region);
+        }
+
         private boolean isTapLike(List<PointF> points) {
             if (points == null || points.isEmpty()) return false;
             float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
@@ -418,7 +536,7 @@ public final class CircleSelectOverlay {
         }
 
         private void startTapRefinement(float viewX, float viewY) {
-            if (recognitionSession == null || tapRefining || closed) {
+            if (recognitionSession == null || refinementMode != REFINE_NONE || closed) {
                 invalidate();
                 return;
             }
@@ -429,7 +547,7 @@ public final class CircleSelectOverlay {
             }
             refinementTapX = viewX;
             refinementTapY = viewY;
-            tapRefining = true;
+            refinementMode = REFINE_TAP;
             DiagnosticLog.i(context, "CIRCLE_SELECT", "tap miss -> roi precise "
                     + region.toShortString());
             invalidate();
