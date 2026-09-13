@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-debug:
@@ -14,6 +14,151 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Apply menu management and rename refactor
+        if: github.event_name == 'push' && github.event.head_commit.message == 'ci: apply menu management and rename refactor'
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              if old not in text:
+                  raise SystemExit(f'missing patch anchor: {label}')
+              return text.replace(old, new, 1)
+
+          # Move menu management off the home page and into AppearanceSettingsActivity.
+          p = Path('app/src/main/java/com/yagay/floatlens/MainActivity.java')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace(
+              '"跟随系统 / 浅色 / 深色，以及文字菜单主栏数量",',
+              '"主题、文字菜单数量和菜单管理",', 1)
+          start = s.index('        AppUi.Section menus = AppUi.section(this, "菜单管理",')
+          end = s.index('        AppUi.Section advanced = AppUi.section(this, "高级", null);', start)
+          s = s[:start] + s[end:]
+          p.write_text(s, encoding='utf-8')
+
+          p = Path('app/src/main/java/com/yagay/floatlens/AppearanceSettingsActivity.java')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('"主题模式和文字菜单主栏显示数量。" );',
+                        '"主题、文字菜单显示和各类菜单管理。" );', 1)
+          anchor = '''        root.addView(note);\n\n        setContentView(AppUi.scrollPage(this, root));'''
+          menus = '''        root.addView(note);\n\n        AppUi.Section menus = AppUi.section(this, "菜单管理",\n                "管理结果菜单中的项目、顺序、隐藏状态和显示名称。" );\n        AppUi.addRow(menus.body, AppUi.navRow(this,\n                "文字操作菜单",\n                "添加、排序、移除并修改自定义操作名称",\n                () -> startActivity(MenuPickerActivity.customIntent(this))));\n        AppUi.addRow(menus.body, AppUi.navRow(this,\n                "分享菜单",\n                "管理分享目标、顺序、隐藏状态和显示名称",\n                () -> startActivity(MenuPickerActivity.targetIntent(this, TargetMenuStore.MODE_SHARE))));\n        AppUi.addRow(menus.body, AppUi.navRow(this,\n                "打开 / 处理菜单",\n                "管理 PROCESS_TEXT 目标、顺序和显示名称",\n                () -> startActivity(MenuPickerActivity.targetIntent(this, TargetMenuStore.MODE_PROCESS))));\n        AppUi.addSection(root, menus);\n\n        setContentView(AppUi.scrollPage(this, root));'''
+          s = replace_once(s, anchor, menus, 'appearance menu section')
+          p.write_text(s, encoding='utf-8')
+
+          # Custom text actions: allow renaming persisted labels.
+          p = Path('app/src/main/java/com/yagay/floatlens/CustomMenuActionStore.java')
+          s = p.read_text(encoding='utf-8')
+          anchor = '''    public static void remove(Context c, String id) {\n        List<Item> items = load(c);\n        items.removeIf(i -> i.id.equals(id));\n        save(c, items);\n    }\n'''
+          repl = anchor + '''\n    /** Rename only the FloatLens display label; launch identity and behavior stay unchanged. */\n    public static boolean rename(Context c, String id, String label) {\n        if (c == null || id == null) return false;\n        String clean = label == null ? "" : label.trim();\n        if (clean.isEmpty()) return false;\n        List<Item> items = load(c);\n        int index = indexOf(items, id);\n        if (index < 0) return false;\n        Item old = items.get(index);\n        if (clean.equals(old.label)) return false;\n        items.set(index, new Item(old.id, clean, old.packageName, old.className, old.type));\n        save(c, items);\n        return true;\n    }\n'''
+          s = replace_once(s, anchor, repl, 'custom rename method')
+          p.write_text(s, encoding='utf-8')
+
+          # Share/process targets: save aliases separately from system labels/order.
+          p = Path('app/src/main/java/com/yagay/floatlens/TargetMenuStore.java')
+          s = p.read_text(encoding='utf-8')
+          s = replace_once(s,
+              '''    public static boolean isCustomized(Context c, String mode) {\n        return prefs(c).getBoolean(customizedKey(mode), false);\n    }''',
+              '''    public static boolean isCustomized(Context c, String mode) {\n        return prefs(c).getBoolean(customizedKey(mode), false)\n                || !loadAliases(c, mode).isEmpty();\n    }''',
+              'target isCustomized aliases')
+          s = s.replace('if (live != null && added.add(live.key())) out.add(live);',
+                        'if (live != null && added.add(live.key())) out.add(withAlias(c, mode, live));', 1)
+          s = s.replace('if (added.add(live.key())) out.add(live);',
+                        'if (added.add(live.key())) out.add(withAlias(c, mode, live));', 1)
+          s = replace_once(s,
+              '''                .remove(itemsKey(mode))\n                .remove(hiddenKey(mode))\n                .apply();''',
+              '''                .remove(itemsKey(mode))\n                .remove(hiddenKey(mode))\n                .remove(aliasesKey(mode))\n                .apply();''',
+              'target reset aliases')
+          anchor = '''    public static boolean move(Context c, String mode, String key, int delta) {'''
+          methods = '''    /** Save a FloatLens-only display-name override without changing the target component. */\n    public static boolean rename(Context c, String mode, String key, String label) {\n        if (c == null || key == null || key.isBlank()) return false;\n        String clean = label == null ? "" : label.trim();\n        if (clean.isEmpty()) return false;\n        Map<String, String> aliases = loadAliases(c, mode);\n        String old = aliases.put(key, clean);\n        if (clean.equals(old)) return false;\n        saveAliases(c, mode, aliases);\n        return true;\n    }\n\n    public static String displayLabel(Context c, String mode, String key, String fallback) {\n        String value = key == null ? null : loadAliases(c, mode).get(key);\n        if (value != null && !value.isBlank()) return value;\n        return fallback == null || fallback.isBlank() ? "应用" : fallback;\n    }\n\n    private static Item withAlias(Context c, String mode, Item item) {\n        if (item == null) return null;\n        return new Item(displayLabel(c, mode, item.key(), item.label),\n                item.packageName, item.className);\n    }\n\n    private static Map<String, String> loadAliases(Context c, String mode) {\n        HashMap<String, String> out = new HashMap<>();\n        String raw = prefs(c).getString(aliasesKey(mode), "{}");\n        try {\n            JSONObject o = new JSONObject(raw == null ? "{}" : raw);\n            var names = o.keys();\n            while (names.hasNext()) {\n                String key = names.next();\n                String value = o.optString(key, "").trim();\n                if (!key.isBlank() && !value.isBlank()) out.put(key, value);\n            }\n        } catch (Throwable t) {\n            DiagnosticLog.i(c, "TARGET_MENU", "load aliases " + mode + " failed=" + t);\n        }\n        return out;\n    }\n\n    private static void saveAliases(Context c, String mode, Map<String, String> aliases) {\n        JSONObject o = new JSONObject();\n        if (aliases != null) {\n            for (Map.Entry<String, String> entry : aliases.entrySet()) {\n                try { o.put(entry.getKey(), entry.getValue()); } catch (Throwable ignored) {}\n            }\n        }\n        prefs(c).edit().putString(aliasesKey(mode), o.toString()).apply();\n    }\n\n''' + anchor
+          s = replace_once(s, anchor, methods, 'target alias methods')
+          s = replace_once(s,
+              '''    private static String customizedKey(String mode) {\n        return "customized_" + safeMode(mode);\n    }''',
+              '''    private static String customizedKey(String mode) {\n        return "customized_" + safeMode(mode);\n    }\n\n    private static String aliasesKey(String mode) {\n        return "aliases_" + safeMode(mode);\n    }''',
+              'target aliases key')
+          p.write_text(s, encoding='utf-8')
+
+          # MenuPicker: add per-row rename action and dialog.
+          p = Path('app/src/main/java/com/yagay/floatlens/MenuPickerActivity.java')
+          s = p.read_text(encoding='utf-8')
+          s = replace_once(s,
+              'import android.widget.ImageView;\n',
+              'import android.widget.EditText;\nimport android.widget.ImageView;\n',
+              'menu picker EditText import')
+          s = s.replace(
+              '"长按 ≡ 可拖动排序，也可以使用右侧按钮精确移动。" );',
+              '"长按 ≡ 可拖动排序；点击 ✎ 可修改菜单显示名称。" );', 1)
+          s = s.replace(
+              '"长按 ≡ 拖动排序；移除只是从 FloatLens 菜单隐藏，不会修改系统应用。" );',
+              '"长按 ≡ 拖动排序；点击 ✎ 可改显示名称；移除只在 FloatLens 中隐藏。" );', 1)
+
+          old = '''                        () -> {\n                            if (CustomMenuActionStore.move(this, item.id, 1)) showCustomHome();\n                        },\n                        () -> {\n                            CustomMenuActionStore.remove(this, item.id);'''
+          new = '''                        () -> {\n                            if (CustomMenuActionStore.move(this, item.id, 1)) showCustomHome();\n                        },\n                        () -> showRenameDialog(item.label, newName -> {\n                            if (CustomMenuActionStore.rename(this, item.id, newName)) {\n                                Toast.makeText(this, "名称已修改", Toast.LENGTH_SHORT).show();\n                                showCustomHome();\n                            }\n                        }),\n                        () -> {\n                            CustomMenuActionStore.remove(this, item.id);'''
+          s = replace_once(s, old, new, 'custom row rename callback')
+
+          old = '''                        () -> {\n                            saveCurrentTargetOrder(items);\n                            if (TargetMenuStore.move(this, targetMode, item.key(), 1)) showTargetManager();\n                        },\n                        () -> {\n                            saveCurrentTargetOrder(items);\n                            TargetMenuStore.remove(this, targetMode, item.key());'''
+          new = '''                        () -> {\n                            saveCurrentTargetOrder(items);\n                            if (TargetMenuStore.move(this, targetMode, item.key(), 1)) showTargetManager();\n                        },\n                        () -> showRenameDialog(item.label, newName -> {\n                            saveCurrentTargetOrder(items);\n                            if (TargetMenuStore.rename(this, targetMode, item.key(), newName)) {\n                                Toast.makeText(this, "名称已修改", Toast.LENGTH_SHORT).show();\n                                showTargetManager();\n                            }\n                        }),\n                        () -> {\n                            saveCurrentTargetOrder(items);\n                            TargetMenuStore.remove(this, targetMode, item.key());'''
+          s = replace_once(s, old, new, 'target row rename callback')
+
+          s = replace_once(s,
+              '''                             Runnable moveUp,\n                             Runnable moveDown,\n                             Runnable remove) {''',
+              '''                             Runnable moveUp,\n                             Runnable moveDown,\n                             Runnable rename,\n                             Runnable remove) {''',
+              'sortableRow signature')
+          s = replace_once(s,
+              '''        TextView delete = sortButton("×", true);\n        delete.setContentDescription("移除");''',
+              '''        TextView edit = sortButton("✎", true);\n        edit.setContentDescription("修改显示名称");\n        edit.setOnClickListener(v -> { if (rename != null) rename.run(); });\n        row.addView(edit, new LinearLayout.LayoutParams(dp(36), dp(42)));\n\n        TextView delete = sortButton("×", true);\n        delete.setContentDescription("移除");''',
+              'sortable edit button')
+
+          anchor = '''    private void addIcon(LinearLayout row, Drawable icon, int sizeDp, int endMarginDp) {'''
+          helper = '''    private void showRenameDialog(String current, java.util.function.Consumer<String> onSave) {\n        EditText input = new EditText(this);\n        input.setSingleLine(true);\n        input.setText(current == null ? "" : current);\n        input.setSelectAllOnFocus(true);\n\n        LinearLayout box = new LinearLayout(this);\n        box.setPadding(dp(20), dp(4), dp(20), 0);\n        box.addView(input, new LinearLayout.LayoutParams(-1, -2));\n\n        new androidx.appcompat.app.AlertDialog.Builder(this)\n                .setTitle("修改显示名称")\n                .setView(box)\n                .setNegativeButton("取消", null)\n                .setPositiveButton("保存", (dialog, which) -> {\n                    String name = input.getText() == null ? "" : input.getText().toString().trim();\n                    if (name.isEmpty()) {\n                        Toast.makeText(this, "名称不能为空", Toast.LENGTH_SHORT).show();\n                        return;\n                    }\n                    if (onSave != null) onSave.accept(name);\n                })\n                .show();\n    }\n\n''' + anchor
+          s = replace_once(s, anchor, helper, 'rename dialog helper')
+          p.write_text(s, encoding='utf-8')
+
+          # Floating share/process menu must render the saved aliases, not only system labels.
+          p = Path('app/src/main/java/com/yagay/floatlens/FloatActionMenu.java')
+          s = p.read_text(encoding='utf-8')
+          old = '''                CharSequence label;\n                try { label = ri.loadLabel(pm); }\n                catch (Throwable ignored) { label = ri.activityInfo.name; }\n                Drawable icon = null;\n                try { icon = ri.loadIcon(pm); } catch (Throwable ignored) {}\n                TextView target = menuRow(app,\n                        label == null ? ri.activityInfo.name : label.toString(), icon, palette);'''
+          new = '''                CharSequence rawLabel;\n                try { rawLabel = ri.loadLabel(pm); }\n                catch (Throwable ignored) { rawLabel = ri.activityInfo.name; }\n                String fallbackLabel = rawLabel == null\n                        ? ri.activityInfo.name : rawLabel.toString();\n                String displayLabel = TargetMenuStore.displayLabel(app, targetMode,\n                        ri.activityInfo.packageName + "|" + ri.activityInfo.name, fallbackLabel);\n                Drawable icon = null;\n                try { icon = ri.loadIcon(pm); } catch (Throwable ignored) {}\n                TextView target = menuRow(app, displayLabel, icon, palette);'''
+          s = replace_once(s, old, new, 'floating target alias label')
+          p.write_text(s, encoding='utf-8')
+
+          # Basic source sanity checks before committing.
+          for file in [
+              'app/src/main/java/com/yagay/floatlens/MainActivity.java',
+              'app/src/main/java/com/yagay/floatlens/AppearanceSettingsActivity.java',
+              'app/src/main/java/com/yagay/floatlens/CustomMenuActionStore.java',
+              'app/src/main/java/com/yagay/floatlens/TargetMenuStore.java',
+              'app/src/main/java/com/yagay/floatlens/MenuPickerActivity.java',
+              'app/src/main/java/com/yagay/floatlens/FloatActionMenu.java',
+          ]:
+              text = Path(file).read_text(encoding='utf-8')
+              if '\u0000' in text:
+                  raise SystemExit(f'NUL byte in {file}')
+
+          git_files = [
+              'app/src/main/java/com/yagay/floatlens/MainActivity.java',
+              'app/src/main/java/com/yagay/floatlens/AppearanceSettingsActivity.java',
+              'app/src/main/java/com/yagay/floatlens/CustomMenuActionStore.java',
+              'app/src/main/java/com/yagay/floatlens/TargetMenuStore.java',
+              'app/src/main/java/com/yagay/floatlens/MenuPickerActivity.java',
+              'app/src/main/java/com/yagay/floatlens/FloatActionMenu.java',
+          ]
+          PY
+
+          git config user.name "FloatLens CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add app/src/main/java/com/yagay/floatlens/MainActivity.java \
+                  app/src/main/java/com/yagay/floatlens/AppearanceSettingsActivity.java \
+                  app/src/main/java/com/yagay/floatlens/CustomMenuActionStore.java \
+                  app/src/main/java/com/yagay/floatlens/TargetMenuStore.java \
+                  app/src/main/java/com/yagay/floatlens/MenuPickerActivity.java \
+                  app/src/main/java/com/yagay/floatlens/FloatActionMenu.java
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git commit -m "feat: move menu management and support custom labels"
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
