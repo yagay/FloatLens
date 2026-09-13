@@ -22,7 +22,7 @@
         </intent>
     </queries>
 
-    <application android:name=".FloatLensApp" android:theme="@style/Theme.FloatLens" android:label="FloatLens" android:description="@string/app_description" android:allowBackup="false" android:supportsRtl="true">
+    <application android:name=".FloatLensApp" android:theme="@style/Theme.FloatLens" android:label="FloatLens" android:description="@string/app_description" android:allowBackup="false" android:supportsRtl="true" android:usesCleartextTraffic="true">
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -60,6 +60,18 @@
         <activity
             android:name=".DictionaryCatalogActivity"
             android:label="在线词库中心"
+            android:exported="false" />
+        <activity
+            android:name=".AiAssistantActivity"
+            android:theme="@style/Theme.FloatLens.DictionaryDialog"
+            android:label="AI 助手"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:taskAffinity="" />
+        <activity
+            android:name=".AiSettingsActivity"
+            android:label="AI 助手设置"
             android:exported="false" />
         <activity
             android:name=".ShadeDismissActivity"
