@@ -160,7 +160,7 @@ public final class FloatActionMenu {
                     + " lockedRow=" + (hasLockedRow() ? lockedTopY : -1)
                     + " width=" + menuWidth
                     + " height=" + menuHeight
-                    + (mode == MODE_MAIN ? " pinnedCustom=" + TextMenuSettings.pinnedCustomCount(app) : "")
+                    + (mode == MODE_MAIN ? " mainItems=" + TextMenuSettings.mainItemCount(app) : "")
                     + " pos=" + lp.x + "," + lp.y
                     + " accessibilityHost=" + host.isAccessibilityHosted()
                     + " type=" + lp.type);
@@ -260,41 +260,35 @@ public final class FloatActionMenu {
     private static void buildMainToolbar(Context app, LinearLayout root, String text,
                                          Runnable selectAll, Palette palette) {
         List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
-        int customLimit = mainCustomCount(app, customs.size());
+        boolean hasSelectAll = selectAll != null;
+        int customLimit = mainCustomCount(app, customs.size(), hasSelectAll);
 
         ArrayList<View> items = new ArrayList<>();
-        ArrayList<Integer> widths = new ArrayList<>();
 
         TextView copy = action(app, "复制", palette, 58);
         items.add(copy);
-        widths.add(dp(app, 58));
 
         TextView all = null;
-        if (selectAll != null) {
+        if (hasSelectAll) {
             all = action(app, "全选", palette, 58);
             items.add(all);
-            widths.add(dp(app, 58));
         }
 
         TextView share = action(app, "分享", palette, 58);
         items.add(share);
-        widths.add(dp(app, 58));
 
         for (int i = 0; i < customLimit; i++) {
             CustomMenuActionStore.Item item = customs.get(i);
-            TextView custom = action(app, item.label, palette, 72);
-            custom.setMaxWidth(dp(app, 88));
+            TextView custom = action(app, item.label, palette, 58);
             custom.setEllipsize(TextUtils.TruncateAt.END);
             custom.setSingleLine(true);
             custom.setOnClickListener(v -> launchCustom(app, item, text));
             items.add(custom);
-            widths.add(dp(app, 78));
         }
 
         TextView more = action(app, "⋮", palette, 46);
-        more.setTextSize(24);
+        more.setTextSize(22);
         items.add(more);
-        widths.add(dp(app, 46));
 
         copy.setOnClickListener(v -> {
             ClipboardManager cm = (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
@@ -316,25 +310,29 @@ public final class FloatActionMenu {
         WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
         if (wm != null) {
             Rect usable = usableBounds(app, wm);
-            if (!usable.isEmpty()) maxRowWidth = Math.max(dp(app, 180), usable.width() - dp(app, 16));
+            if (!usable.isEmpty()) {
+                maxRowWidth = Math.max(dp(app, 180), usable.width() - dp(app, 16));
+            }
         }
 
+        // The configured number is the TOTAL toolbar item count. Keep every item on one row and
+        // shrink slots as needed instead of silently wrapping into a second row.
+        int slotWidth = Math.max(dp(app, 32),
+                Math.min(dp(app, 72), maxRowWidth / Math.max(1, items.size())));
         LinearLayout row = toolbarRow(app);
-        int used = dp(app, 4);
-        for (int i = 0; i < items.size(); i++) {
-            View item = items.get(i);
-            int itemWidth = widths.get(i);
-            if (row.getChildCount() > 0 && used + itemWidth > maxRowWidth) {
-                root.addView(row, new LinearLayout.LayoutParams(-2, -2));
-                row = toolbarRow(app);
-                used = dp(app, 4);
+        for (View item : items) {
+            if (item instanceof TextView tv) {
+                tv.setMinWidth(0);
+                tv.setPadding(dp(app, 4), 0, dp(app, 4), 0);
+                tv.setSingleLine(true);
+                tv.setEllipsize(TextUtils.TruncateAt.END);
+                if (items.size() >= 7 && !"⋮".contentEquals(tv.getText())) {
+                    tv.setTextSize(13);
+                }
             }
-            row.addView(item, new LinearLayout.LayoutParams(itemWidth, dp(app, 46)));
-            used += itemWidth;
+            row.addView(item, new LinearLayout.LayoutParams(slotWidth, dp(app, 46)));
         }
-        if (row.getChildCount() > 0) {
-            root.addView(row, new LinearLayout.LayoutParams(-2, -2));
-        }
+        root.addView(row, new LinearLayout.LayoutParams(-2, -2));
     }
 
     private static LinearLayout toolbarRow(Context app) {
@@ -345,9 +343,8 @@ public final class FloatActionMenu {
         return row;
     }
 
-    private static int mainCustomCount(Context app, int size) {
-        int max = TextMenuSettings.pinnedCustomCount(app);
-        return Math.min(max, Math.max(0, size));
+    private static int mainCustomCount(Context app, int size, boolean hasSelectAll) {
+        return TextMenuSettings.customSlots(app, hasSelectAll, size);
     }
 
     private static void buildMoreMenu(Context app, LinearLayout root, String text,
@@ -358,7 +355,7 @@ public final class FloatActionMenu {
         back.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_MAIN));
 
         List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
-        int skip = mainCustomCount(app, customs.size());
+        int skip = mainCustomCount(app, customs.size(), selectAll != null);
         for (int i = skip; i < customs.size(); i++) {
             CustomMenuActionStore.Item item = customs.get(i);
             Drawable icon = null;
