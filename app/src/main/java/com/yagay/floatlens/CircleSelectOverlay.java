@@ -156,8 +156,6 @@ public final class CircleSelectOverlay {
             this.keyFocusEnabled = keyFocusEnabled;
             this.coordinateWidth = Math.max(1, coordinateWidth);
             this.coordinateHeight = Math.max(1, coordinateHeight);
-            this.coordinateWidth = Math.max(1, coordinateWidth);
-            this.coordinateHeight = Math.max(1, coordinateHeight);
             selection = new CircleTextSelectionModel(screenshot.getWidth(), screenshot.getHeight());
             setClickable(true);
             setFocusable(true);
