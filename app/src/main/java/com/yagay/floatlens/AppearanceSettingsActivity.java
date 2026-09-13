@@ -11,13 +11,13 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import com.google.android.material.slider.Slider;
 
-/** App appearance plus text-toolbar density settings. */
+/** App appearance plus text-toolbar density and menu-management settings. */
 public final class AppearanceSettingsActivity extends AppCompatActivity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
 
         LinearLayout root = AppUi.pageRoot(this, "界面与菜单",
-                "主题模式和文字菜单主栏显示数量。" );
+                "主题、文字菜单显示和各类菜单管理。" );
 
         AppUi.Section theme = AppUi.section(this, "主题", null);
         addThemeSpinner(theme.body);
@@ -33,6 +33,26 @@ public final class AppearanceSettingsActivity extends AppCompatActivity {
                 12);
         note.setPadding(AppUi.dp(this, 4), 0, AppUi.dp(this, 4), AppUi.dp(this, 4));
         root.addView(note);
+
+        AppUi.Section menus = AppUi.section(this, "菜单管理",
+                "管理结果菜单中的项目、顺序、隐藏状态和显示名称。" );
+        AppUi.addRow(menus.body, AppUi.navRow(this,
+                "文字操作菜单",
+                "添加、排序和移除自定义文字操作",
+                () -> startActivity(MenuPickerActivity.customIntent(this))));
+        AppUi.addRow(menus.body, AppUi.navRow(this,
+                "分享菜单",
+                "管理分享目标和显示顺序",
+                () -> startActivity(MenuPickerActivity.targetIntent(this, TargetMenuStore.MODE_SHARE))));
+        AppUi.addRow(menus.body, AppUi.navRow(this,
+                "打开 / 处理菜单",
+                "管理 PROCESS_TEXT 目标和显示顺序",
+                () -> startActivity(MenuPickerActivity.targetIntent(this, TargetMenuStore.MODE_PROCESS))));
+        AppUi.addRow(menus.body, AppUi.navRow(this,
+                "修改菜单显示名称",
+                "统一缩短文字、分享和处理菜单中的项目名称",
+                () -> startActivity(new android.content.Intent(this, MenuLabelEditorActivity.class))));
+        AppUi.addSection(root, menus);
 
         setContentView(AppUi.scrollPage(this, root));
     }
