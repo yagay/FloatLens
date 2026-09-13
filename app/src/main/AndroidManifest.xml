@@ -70,6 +70,13 @@
             android:launchMode="singleTop"
             android:taskAffinity="" />
         <activity
+            android:name=".EmbeddedWebAiActivity"
+            android:label="内置网页 AI"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:taskAffinity="" />
+        <activity
             android:name=".AiSettingsActivity"
             android:label="AI 助手设置"
             android:exported="false" />
