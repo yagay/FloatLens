@@ -2,9 +2,7 @@ package com.yagay.floatlens;
 
 import android.content.ClipData;
 import android.content.ClipboardManager;
-import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.text.InputType;
@@ -12,7 +10,6 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.Window;
-import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -21,7 +18,6 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
 import java.util.ArrayList;
@@ -29,16 +25,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /** Compact contextual chatbot for selected text, OCR output and free-form questions. */
-public final class AiAssistantActivity extends AppCompatActivity implements BrowserAiBridge.Listener {
-    public static final String EXTRA_BROWSER_TARGET = "floatlens_browser_ai_target";
-    public static final String EXTRA_BROWSER_RESULT = "floatlens_browser_ai_result";
-    public static final String EXTRA_BROWSER_ERROR = "floatlens_browser_ai_error";
-
-    private static final String BROWSER_PREFS = "floatlens_browser_ai";
-    private static final String KEY_BROWSER_TARGET = "target";
-
+public final class AiAssistantActivity extends AppCompatActivity {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final ArrayList<AiChatClient.Message> messages = new ArrayList<>();
+
     private TextView contextView;
     private TextView transcriptView;
     private TextView statusView;
@@ -47,11 +37,8 @@ public final class AiAssistantActivity extends AppCompatActivity implements Brow
     private ProgressBar progress;
     private Button sendButton;
     private Button copyButton;
-    private Button browserModeButton;
     private String selectedText = "";
     private String lastAnswer = "";
-    private String browserTarget = BrowserAiBridge.TARGET_CHATGPT;
-    private boolean browserMode;
     private volatile boolean destroyed;
     private volatile boolean sending;
 
@@ -59,16 +46,12 @@ public final class AiAssistantActivity extends AppCompatActivity implements Brow
         super.onCreate(state);
         setFinishOnTouchOutside(false);
         selectedText = textFromIntent(getIntent()).trim();
-        browserTarget = loadBrowserTarget();
         setContentView(buildUi());
-        BrowserAiBridge.setListener(this);
         resetConversation();
-        handleBrowserResultIntent(getIntent());
     }
 
     @Override protected void onStart() {
         super.onStart();
-        BrowserAiBridge.setListener(this);
         Window window = getWindow();
         if (window == null) return;
         int sw = getResources().getDisplayMetrics().widthPixels;
@@ -82,17 +65,17 @@ public final class AiAssistantActivity extends AppCompatActivity implements Brow
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        if (hasBrowserResult(intent)) {
-            handleBrowserResultIntent(intent);
-            return;
-        }
         selectedText = textFromIntent(intent).trim();
         resetConversation();
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        updateProviderStatus();
+    }
+
     @Override protected void onDestroy() {
         destroyed = true;
-        BrowserAiBridge.clearListener(this);
         executor.shutdownNow();
         super.onDestroy();
     }
@@ -114,13 +97,8 @@ public final class AiAssistantActivity extends AppCompatActivity implements Brow
         title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        browserModeButton = new Button(this);
-        browserModeButton.setText("网页AI");
-        browserModeButton.setOnClickListener(v -> showBrowserTargetPicker());
-        header.addView(browserModeButton, new LinearLayout.LayoutParams(-2, -2));
-
         Button settings = new Button(this);
-        settings.setText("API设置");
+        settings.setText("AI设置");
         settings.setOnClickListener(v -> startActivity(new Intent(this, AiSettingsActivity.class)));
         header.addView(settings, new LinearLayout.LayoutParams(-2, -2));
         root.addView(header, new LinearLayout.LayoutParams(-1, -2));
@@ -176,6 +154,7 @@ public final class AiAssistantActivity extends AppCompatActivity implements Brow
         inputEdit.setMaxLines(4);
         inputEdit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         composer.addView(inputEdit, new LinearLayout.LayoutParams(0, -2, 1f));
+
         sendButton = new Button(this);
         sendButton.setText("发送");
         sendButton.setOnClickListener(v -> sendFreeQuestion());
@@ -220,14 +199,9 @@ public final class AiAssistantActivity extends AppCompatActivity implements Brow
         messages.add(new AiChatClient.Message("system", system));
         lastAnswer = "";
         if (transcriptView != null) {
-            if (browserMode) {
-                transcriptView.setText("网页 AI 模式：" + BrowserAiBridge.targetLabel(browserTarget)
-                        + "。使用浏览器已登录会话，不需要 API Key 或自建服务器。可以选择上方动作或直接输入问题。");
-            } else {
-                transcriptView.setText(AiConfigStore.isConfigured(this)
-                        ? "可以选择上方动作，或者直接输入问题。"
-                        : "API AI 尚未配置。可以点“网页AI”直接使用浏览器会话，或点“API设置”配置在线接口。" );
-            }
+            transcriptView.setText(AiConfigStore.isConfigured(this)
+                    ? "可以选择上方动作，或者直接输入问题。AI 请求会直接在 FloatLens 内完成，不会打开浏览器。"
+                    : "AI Provider 尚未配置。请点右上角“AI设置”选择 OpenRouter、Gemini、Groq 或自定义 OpenAI Compatible 接口。" );
         }
         if (contextView != null) {
             if (selectedText.isBlank()) contextView.setText("自由聊天模式");
@@ -235,33 +209,6 @@ public final class AiAssistantActivity extends AppCompatActivity implements Brow
         }
         if (copyButton != null) copyButton.setEnabled(false);
         updateProviderStatus();
-    }
-
-    private void showBrowserTargetPicker() {
-        String[] labels = BrowserAiBridge.TARGET_LABELS;
-        int selected = 0;
-        for (int i = 0; i < BrowserAiBridge.TARGET_IDS.length; i++) {
-            if (BrowserAiBridge.TARGET_IDS[i].equals(browserTarget)) selected = i;
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("网页 AI · 无 API / 无服务器")
-                .setSingleChoiceItems(labels, selected, null)
-                .setPositiveButton("使用", (dialog, which) -> {
-                    AlertDialog d = (AlertDialog) dialog;
-                    int position = d.getListView().getCheckedItemPosition();
-                    if (position < 0 || position >= BrowserAiBridge.TARGET_IDS.length) position = 0;
-                    browserTarget = BrowserAiBridge.TARGET_IDS[position];
-                    saveBrowserTarget(browserTarget);
-                    browserMode = true;
-                    resetConversation();
-                    Toast.makeText(this, "已切换到网页 " + BrowserAiBridge.targetLabel(browserTarget), Toast.LENGTH_SHORT).show();
-                })
-                .setNeutralButton("使用 API Provider", (dialog, which) -> {
-                    browserMode = false;
-                    resetConversation();
-                })
-                .setNegativeButton("取消", null)
-                .show();
     }
 
     private void sendFreeQuestion() {
@@ -272,19 +219,16 @@ public final class AiAssistantActivity extends AppCompatActivity implements Brow
     }
 
     private void sendPrompt(String prompt, String label) {
-        if (sending || BrowserAiBridge.isRunning()) {
+        if (sending) {
             Toast.makeText(this, "AI 正在回答", Toast.LENGTH_SHORT).show();
             return;
         }
-        if (browserMode) {
-            sendBrowserPrompt(prompt, label);
-            return;
-        }
         if (!AiConfigStore.isConfigured(this)) {
-            Toast.makeText(this, "请先配置 AI 提供商，或选择网页AI", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "请先配置 AI Provider", Toast.LENGTH_LONG).show();
             startActivity(new Intent(this, AiSettingsActivity.class));
             return;
         }
+
         sending = true;
         messages.add(new AiChatClient.Message("user", prompt));
         appendTranscript("\n\n你 · " + label + "\n" + visibleUserText(prompt, label));
@@ -316,86 +260,6 @@ public final class AiAssistantActivity extends AppCompatActivity implements Brow
         });
     }
 
-    private void sendBrowserPrompt(String prompt, String label) {
-        sending = true;
-        messages.add(new AiChatClient.Message("user", prompt));
-        appendTranscript("\n\n你 · " + label + "\n" + visibleUserText(prompt, label));
-        setBusy(true);
-        BrowserAiBridge.setListener(this);
-        try {
-            BrowserAiBridge.start(this, browserTarget, prompt);
-            BrowserAiBridgeTicker.start();
-            statusView.setText("网页 AI · " + BrowserAiBridge.targetLabel(browserTarget) + " · 正在打开浏览器");
-        } catch (Throwable t) {
-            sending = false;
-            setBusy(false);
-            appendTranscript("\n\n请求失败\n" + messageOf(t));
-            updateProviderStatus();
-        }
-    }
-
-    @Override public void onBrowserAiStatus(String message) {
-        runOnUiThread(() -> {
-            if (destroyed || statusView == null) return;
-            statusView.setText("网页 AI · " + BrowserAiBridge.targetLabel(browserTarget) + " · " + message);
-        });
-    }
-
-    @Override public void onBrowserAiResult(String target, String targetLabel, String text, String error) {
-        BrowserAiBridgeTicker.stop();
-        LensAccessibilityService service = LensAccessibilityService.get();
-        if (service != null) {
-            try {
-                Intent result = new Intent(service, AiAssistantActivity.class)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-                        .putExtra(EXTRA_BROWSER_TARGET, targetLabel)
-                        .putExtra(EXTRA_BROWSER_RESULT, text == null ? "" : text)
-                        .putExtra(EXTRA_BROWSER_ERROR, error == null ? "" : error);
-                service.startActivity(result);
-                return;
-            } catch (Throwable ignored) {}
-        }
-        runOnUiThread(() -> applyBrowserResult(targetLabel, text, error));
-    }
-
-    private boolean hasBrowserResult(Intent intent) {
-        return intent != null && (intent.hasExtra(EXTRA_BROWSER_RESULT) || intent.hasExtra(EXTRA_BROWSER_ERROR));
-    }
-
-    private void handleBrowserResultIntent(Intent intent) {
-        if (!hasBrowserResult(intent)) return;
-        String target = intent.getStringExtra(EXTRA_BROWSER_TARGET);
-        String text = intent.getStringExtra(EXTRA_BROWSER_RESULT);
-        String error = intent.getStringExtra(EXTRA_BROWSER_ERROR);
-        intent.removeExtra(EXTRA_BROWSER_TARGET);
-        intent.removeExtra(EXTRA_BROWSER_RESULT);
-        intent.removeExtra(EXTRA_BROWSER_ERROR);
-        applyBrowserResult(target, text, error);
-    }
-
-    private void applyBrowserResult(String targetLabel, String text, String error) {
-        sending = false;
-        setBusy(false);
-        String label = targetLabel == null || targetLabel.isBlank()
-                ? BrowserAiBridge.targetLabel(browserTarget) : targetLabel;
-        if (error != null && !error.isBlank()) {
-            appendTranscript("\n\n网页 AI 请求失败\n" + error);
-            statusView.setText("网页 AI · " + label + " · 失败");
-            return;
-        }
-        String answer = text == null ? "" : text.trim();
-        if (answer.isEmpty()) {
-            appendTranscript("\n\n网页 AI 没有读取到回答");
-            statusView.setText("网页 AI · " + label + " · 未读取到回答");
-            return;
-        }
-        messages.add(new AiChatClient.Message("assistant", answer));
-        lastAnswer = answer;
-        appendTranscript("\n\n" + label + "\n" + answer);
-        statusView.setText("网页 AI · " + label + " · 已完成");
-        copyButton.setEnabled(true);
-    }
-
     private String visibleUserText(String prompt, String label) {
         if (!selectedText.isBlank() && !"提问".equals(label)) return compact(selectedText, 500);
         return compact(prompt, 700);
@@ -414,15 +278,8 @@ public final class AiAssistantActivity extends AppCompatActivity implements Brow
 
     private void updateProviderStatus() {
         if (statusView == null) return;
-        if (browserMode) {
-            String ready = LensAccessibilityService.ready() ? "无障碍已连接" : "请开启 FloatLens 无障碍";
-            statusView.setText("网页 AI · " + BrowserAiBridge.targetLabel(browserTarget) + " · " + ready);
-            if (browserModeButton != null) browserModeButton.setText("网页AI·" + BrowserAiBridge.targetLabel(browserTarget));
-        } else {
-            statusView.setText(AiConfigStore.providerLabel(this) + " · "
-                    + (AiConfigStore.isConfigured(this) ? AiConfigStore.model(this) : "未配置"));
-            if (browserModeButton != null) browserModeButton.setText("网页AI");
-        }
+        statusView.setText(AiConfigStore.providerLabel(this) + " · "
+                + (AiConfigStore.isConfigured(this) ? AiConfigStore.model(this) : "未配置"));
     }
 
     private void copyLastAnswer() {
@@ -430,16 +287,6 @@ public final class AiAssistantActivity extends AppCompatActivity implements Brow
         ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
         if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("FloatLens AI", lastAnswer));
         Toast.makeText(this, "回答已复制", Toast.LENGTH_SHORT).show();
-    }
-
-    private String loadBrowserTarget() {
-        SharedPreferences p = getSharedPreferences(BROWSER_PREFS, Context.MODE_PRIVATE);
-        return BrowserAiBridge.normalizeTarget(p.getString(KEY_BROWSER_TARGET, BrowserAiBridge.TARGET_CHATGPT));
-    }
-
-    private void saveBrowserTarget(String target) {
-        getSharedPreferences(BROWSER_PREFS, Context.MODE_PRIVATE).edit()
-                .putString(KEY_BROWSER_TARGET, BrowserAiBridge.normalizeTarget(target)).apply();
     }
 
     private static String textFromIntent(Intent intent) {
