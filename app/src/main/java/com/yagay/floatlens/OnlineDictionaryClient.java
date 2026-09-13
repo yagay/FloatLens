@@ -124,7 +124,7 @@ public final class OnlineDictionaryClient {
         Result cached = CACHE.get(key);
         if (cached != null) return cached;
 
-        String encoded = URLEncoder.encode(query, StandardCharsets.UTF_8).replace("+", "%20");
+        String encoded = URLEncoder.encode(query, "UTF-8").replace("+", "%20");
         String url = "https://" + host + "/api/rest_v1/page/definition/" + encoded;
         HttpURLConnection conn = null;
         try {
