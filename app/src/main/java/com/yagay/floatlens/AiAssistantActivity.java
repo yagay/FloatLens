@@ -26,6 +26,11 @@ import java.util.concurrent.Executors;
 
 /** Compact contextual chatbot for selected text, OCR output and free-form questions. */
 public final class AiAssistantActivity extends AppCompatActivity {
+    /** Kept only so the legacy browser bridge source can compile; the API-only assistant never consumes them. */
+    public static final String EXTRA_BROWSER_TARGET = "floatlens_browser_ai_target";
+    public static final String EXTRA_BROWSER_RESULT = "floatlens_browser_ai_result";
+    public static final String EXTRA_BROWSER_ERROR = "floatlens_browser_ai_error";
+
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final ArrayList<AiChatClient.Message> messages = new ArrayList<>();
 
