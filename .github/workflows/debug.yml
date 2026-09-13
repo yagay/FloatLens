@@ -37,7 +37,7 @@ jobs:
                 Drawable icon = null;
                 try { icon = ri.loadIcon(pm); } catch (Throwable ignored) {}
                 TextView target = menuRow(app, displayLabel, icon, palette);
-'''
+              '''
               s = s[:start] + replacement + s[end:]
               p.write_text(s, encoding='utf-8')
           PY
