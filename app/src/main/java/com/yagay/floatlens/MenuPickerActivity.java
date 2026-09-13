@@ -151,15 +151,10 @@ public final class MenuPickerActivity extends AppCompatActivity {
         apps.removeIf(a -> a == null || !a.enabled || getPackageName().equals(a.packageName));
         apps.sort(Comparator.comparing(this::appLabel, String.CASE_INSENSITIVE_ORDER));
 
-        AppUi.Section list = AppUi.section(this, "应用 · " + apps.size() + " 个", null);
-        for (ApplicationInfo app : apps) {
-            String label = appLabel(app);
-            Drawable icon = null;
-            try { icon = app.loadIcon(pm()); } catch (Throwable ignored) {}
-            final String pkg = app.packageName;
-            AppUi.addRow(list.body,
-                    actionRow(label, pkg, icon, () -> showCustomAppActions(pkg, label), null));
-        }
+        AppUi.Section list = AppUi.section(this, "应用", null);
+        renderCustomApps(list.body, apps, "");
+        addSearchField(root, "搜索应用名称或包名", query ->
+                renderCustomApps(list.body, apps, query));
         AppUi.addSection(root, list);
         show(root);
     }
@@ -236,21 +231,132 @@ public final class MenuPickerActivity extends AppCompatActivity {
         handlers.removeIf(ri -> ri.activityInfo == null || getPackageName().equals(ri.activityInfo.packageName));
         handlers.sort(Comparator.comparing(this::resolveAppThenActivityLabel, String.CASE_INSENSITIVE_ORDER));
 
-        AppUi.Section entries = AppUi.section(this, "可用应用 · " + handlers.size() + " 个", null);
-        if (handlers.isEmpty()) {
-            addEmpty(entries.body, "没有找到可处理此 Intent 的应用");
-        } else {
-            for (ResolveInfo ri : handlers) {
-                ActivityInfo ai = ri.activityInfo;
-                Discovered d = new Discovered(
-                        appLabel(ai.applicationInfo) + " · " + spec.title,
-                        resolveLabel(ri), appIcon(ai.packageName),
-                        ai.packageName, ai.name, spec.type);
-                AppUi.addRow(entries.body, customDiscoveredRow(d));
-            }
-        }
+        AppUi.Section entries = AppUi.section(this, "可用应用", null);
+        renderIntentHandlers(entries.body, handlers, spec, "");
+        addSearchField(root, "搜索应用名称、包名或 Activity", query ->
+                renderIntentHandlers(entries.body, handlers, spec, query));
         AppUi.addSection(root, entries);
         show(root);
+    }
+
+    private android.widget.EditText addSearchField(LinearLayout root,
+                                                   String hint,
+                                                   java.util.function.Consumer<String> onQuery) {
+        LinearLayout box = AppUi.settingBlock(this);
+        box.setPadding(AppUi.dp(this, 2), AppUi.dp(this, 2),
+                AppUi.dp(this, 2), AppUi.dp(this, 7));
+
+        android.widget.EditText input = new android.widget.EditText(this);
+        AppUi.styleInput(this, input);
+        input.setSingleLine(true);
+        input.setHint(hint);
+        input.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+        box.addView(input, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = AppUi.dp(this, 3);
+        root.addView(box, lp);
+
+        input.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(android.text.Editable editable) {
+                if (onQuery != null) onQuery.accept(editable == null ? "" : editable.toString());
+            }
+        });
+        return input;
+    }
+
+    private int renderCustomApps(LinearLayout body,
+                                 List<ApplicationInfo> apps,
+                                 String query) {
+        body.removeAllViews();
+        int shown = 0;
+        for (ApplicationInfo app : apps) {
+            String label = appLabel(app);
+            String pkg = app.packageName;
+            if (!matchesSearch(query, label, pkg)) continue;
+            Drawable icon = null;
+            try { icon = app.loadIcon(pm()); } catch (Throwable ignored) {}
+            AppUi.addRow(body,
+                    actionRow(label, pkg, icon, () -> showCustomAppActions(pkg, label), null));
+            shown++;
+        }
+        if (shown == 0) addEmpty(body, "没有匹配的应用");
+        return shown;
+    }
+
+    private int renderIntentHandlers(LinearLayout body,
+                                     List<ResolveInfo> handlers,
+                                     IntentTypeCatalog.Spec spec,
+                                     String query) {
+        body.removeAllViews();
+        int shown = 0;
+        for (ResolveInfo ri : handlers) {
+            if (ri == null || ri.activityInfo == null) continue;
+            ActivityInfo ai = ri.activityInfo;
+            String appName = appLabel(ai.applicationInfo);
+            String activityName = resolveLabel(ri);
+            if (!matchesSearch(query,
+                    appName,
+                    ai.packageName,
+                    activityName,
+                    ai.name,
+                    shortClass(ai.name))) continue;
+            Discovered d = new Discovered(
+                    appName + " · " + spec.title,
+                    activityName, appIcon(ai.packageName),
+                    ai.packageName, ai.name, spec.type);
+            AppUi.addRow(body, customDiscoveredRow(d));
+            shown++;
+        }
+        if (shown == 0) {
+            addEmpty(body, query == null || query.isBlank()
+                    ? "没有找到可处理此 Intent 的应用"
+                    : "没有匹配的应用或 Activity");
+        }
+        return shown;
+    }
+
+    private int renderTargetAdd(LinearLayout body,
+                                List<TargetMenuStore.Item> available,
+                                List<TargetMenuStore.Item> current,
+                                String query) {
+        body.removeAllViews();
+        int shown = 0;
+        for (TargetMenuStore.Item item : available) {
+            if (!matchesSearch(query,
+                    item.label,
+                    item.packageName,
+                    item.className,
+                    shortClass(item.className))) continue;
+            AppUi.addRow(body,
+                    actionRow(item.label, shortClass(item.className), targetIcon(item), () -> {
+                        saveCurrentTargetOrder(current);
+                        if (TargetMenuStore.add(this, targetMode, item)) {
+                            Toast.makeText(this, "已加入", Toast.LENGTH_SHORT).show();
+                            showTargetManager();
+                        }
+                    }, "加入"));
+            shown++;
+        }
+        if (shown == 0) {
+            addEmpty(body, available.isEmpty()
+                    ? "没有可重新加入的系统目标"
+                    : "没有匹配的应用或组件");
+        }
+        return shown;
+    }
+
+    private boolean matchesSearch(String query, String... values) {
+        String q = query == null ? "" : query.trim().toLowerCase(java.util.Locale.ROOT);
+        if (q.isEmpty()) return true;
+        if (values == null) return false;
+        for (String value : values) {
+            if (value != null && value.toLowerCase(java.util.Locale.ROOT).contains(q)) return true;
+        }
+        return false;
     }
 
     private View customDiscoveredRow(Discovered d) {
@@ -358,21 +464,10 @@ public final class MenuPickerActivity extends AppCompatActivity {
             if (!selected.contains(item.key())) available.add(item);
         }
 
-        AppUi.Section list = AppUi.section(this, "可重新加入 · " + available.size() + " 项", null);
-        if (available.isEmpty()) {
-            addEmpty(list.body, "没有可重新加入的系统目标");
-        } else {
-            for (TargetMenuStore.Item item : available) {
-                AppUi.addRow(list.body,
-                        actionRow(item.label, shortClass(item.className), targetIcon(item), () -> {
-                            saveCurrentTargetOrder(current);
-                            if (TargetMenuStore.add(this, targetMode, item)) {
-                                Toast.makeText(this, "已加入", Toast.LENGTH_SHORT).show();
-                                showTargetManager();
-                            }
-                        }, "加入"));
-            }
-        }
+        AppUi.Section list = AppUi.section(this, "可重新加入", null);
+        renderTargetAdd(list.body, available, current, "");
+        addSearchField(root, "搜索应用名称、包名或组件", query ->
+                renderTargetAdd(list.body, available, current, query));
         AppUi.addSection(root, list);
         show(root);
     }
