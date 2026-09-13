@@ -219,7 +219,7 @@ public final class AiAssistantActivity extends AppCompatActivity {
         addQuick(quick2, "润色", "请在保持原意的前提下把这段文字润色得更自然。如果是英文就输出自然英文，如果是中文就输出自然中文：\n\n");
         Button clear = new Button(this);
         clear.setText("清空");
-        clear.setOnClickListener(v -> resetConversation());
+        clear.setOnClickListener(v -> clearConversation());
         quick2.addView(clear, new LinearLayout.LayoutParams(0, -2, 1f));
         root.addView(quick2, new LinearLayout.LayoutParams(-1, -2));
 
@@ -317,6 +317,17 @@ public final class AiAssistantActivity extends AppCompatActivity {
                 .show();
     }
 
+    private void clearConversation() {
+        resetConversation();
+        if (webMode && webAiEngine != null) {
+            webAiEngine.startNewConversation(webTarget);
+            if (statusView != null) {
+                statusView.setText("网页 AI · " + EmbeddedWebAiActivity.targetLabel(webTarget)
+                        + " · 已新建 FloatLens 专用对话");
+            }
+        }
+    }
+
     private void resetConversation() {
         if (webAiEngine != null) webAiEngine.cancel();
         sending = false;
@@ -334,6 +345,7 @@ public final class AiAssistantActivity extends AppCompatActivity {
             if (webMode) {
                 transcriptView.setText("网页 AI 使用 " + EmbeddedWebAiActivity.targetLabel(webTarget)
                         + " 的网页版，不需要 API Key。正常提问时网页会隐藏在后台，回答直接显示在这个 FloatLens 窗口。"
+                        + "关闭再打开时会继续这个 Provider 上一次的 FloatLens 专用网页对话；点“清空”才会真正新建对话。"
                         + "只有首次登录、验证码或网页登录失效时，才需要点下方“网页登录”进入内置网页处理一次。" );
             } else {
                 transcriptView.setText(AiConfigStore.isConfigured(this)
