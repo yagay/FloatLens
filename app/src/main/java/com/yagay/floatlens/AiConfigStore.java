@@ -17,37 +17,63 @@ import javax.crypto.spec.GCMParameterSpec;
 /** Stores AI settings. API keys are encrypted with Android Keystore and never hard-coded. */
 public final class AiConfigStore {
     public static final String PROVIDER_OPENROUTER = "openrouter";
+    public static final String PROVIDER_GEMINI = "gemini";
+    public static final String PROVIDER_GROQ = "groq";
     public static final String PROVIDER_CUSTOM = "custom";
 
     private static final String PREFS = "floatlens_ai";
     private static final String KEY_PROVIDER = "provider";
     private static final String KEY_BASE_URL = "base_url";
-    private static final String KEY_MODEL = "model";
+    private static final String KEY_MODEL_LEGACY = "model";
+    private static final String KEY_MODEL_PREFIX = "model_";
     private static final String KEY_SYSTEM_PROMPT = "system_prompt";
-    private static final String KEY_API_KEY_CIPHER = "api_key_cipher";
-    private static final String KEY_API_KEY_IV = "api_key_iv";
-    private static final String KEYSTORE_ALIAS = "floatlens_ai_api_key_v1";
+
+    // v1 used one shared API key. Keep it as an OpenRouter migration fallback only.
+    private static final String KEY_API_KEY_CIPHER_LEGACY = "api_key_cipher";
+    private static final String KEY_API_KEY_IV_LEGACY = "api_key_iv";
+    private static final String KEY_API_KEY_CIPHER_PREFIX = "api_key_cipher_";
+    private static final String KEY_API_KEY_IV_PREFIX = "api_key_iv_";
+    private static final String KEYSTORE_ALIAS_LEGACY = "floatlens_ai_api_key_v1";
+    private static final String KEYSTORE_ALIAS_PREFIX = "floatlens_ai_api_key_v2_";
 
     private static final String OPENROUTER_BASE = "https://openrouter.ai/api/v1";
     private static final String OPENROUTER_MODEL = "openrouter/free";
+    private static final String GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai";
+    private static final String GEMINI_MODEL = "gemini-3.8-flash";
+    private static final String GROQ_BASE = "https://api.groq.com/openai/v1";
+    private static final String GROQ_MODEL = "qwen/qwen3.8-27b";
     private static final String DEFAULT_SYSTEM = "You are a concise helpful assistant inside FloatLens. Reply in the user's language unless they ask for another language.";
 
     public static String provider(Context c) {
-        String value = prefs(c).getString(KEY_PROVIDER, PROVIDER_OPENROUTER);
-        return PROVIDER_CUSTOM.equals(value) ? PROVIDER_CUSTOM : PROVIDER_OPENROUTER;
+        return normalizeProvider(prefs(c).getString(KEY_PROVIDER, PROVIDER_OPENROUTER));
     }
 
     public static void setProvider(Context c, String value) {
-        prefs(c).edit().putString(KEY_PROVIDER,
-                PROVIDER_CUSTOM.equals(value) ? PROVIDER_CUSTOM : PROVIDER_OPENROUTER).apply();
+        prefs(c).edit().putString(KEY_PROVIDER, normalizeProvider(value)).apply();
     }
 
     public static String providerLabel(Context c) {
-        return PROVIDER_CUSTOM.equals(provider(c)) ? "自定义 OpenAI Compatible" : "OpenRouter Free";
+        return providerLabel(provider(c));
+    }
+
+    public static String providerLabel(String provider) {
+        return switch (normalizeProvider(provider)) {
+            case PROVIDER_GEMINI -> "Gemini · Free Tier";
+            case PROVIDER_GROQ -> "Groq · Free Tier";
+            case PROVIDER_CUSTOM -> "自定义 OpenAI Compatible";
+            default -> "OpenRouter · Free Models Router";
+        };
     }
 
     public static String baseUrl(Context c) {
-        if (PROVIDER_OPENROUTER.equals(provider(c))) return OPENROUTER_BASE;
+        return baseUrl(c, provider(c));
+    }
+
+    public static String baseUrl(Context c, String provider) {
+        String p = normalizeProvider(provider);
+        if (PROVIDER_OPENROUTER.equals(p)) return OPENROUTER_BASE;
+        if (PROVIDER_GEMINI.equals(p)) return GEMINI_BASE;
+        if (PROVIDER_GROQ.equals(p)) return GROQ_BASE;
         String value = prefs(c).getString(KEY_BASE_URL, "");
         return value == null ? "" : value.trim();
     }
@@ -57,14 +83,32 @@ public final class AiConfigStore {
     }
 
     public static String model(Context c) {
-        String saved = prefs(c).getString(KEY_MODEL, "");
+        return model(c, provider(c));
+    }
+
+    public static String model(Context c, String provider) {
+        String p = normalizeProvider(provider);
+        SharedPreferences preferences = prefs(c);
+        String saved = preferences.getString(KEY_MODEL_PREFIX + p, "");
         saved = saved == null ? "" : saved.trim();
         if (!saved.isEmpty()) return saved;
-        return PROVIDER_OPENROUTER.equals(provider(c)) ? OPENROUTER_MODEL : "";
+
+        // Preserve the model selected before multi-provider support. That version only had OpenRouter/custom.
+        if (PROVIDER_OPENROUTER.equals(p)) {
+            String legacy = preferences.getString(KEY_MODEL_LEGACY, "");
+            legacy = legacy == null ? "" : legacy.trim();
+            if (!legacy.isEmpty()) return legacy;
+        }
+        return defaultModel(p);
     }
 
     public static void setModel(Context c, String value) {
-        prefs(c).edit().putString(KEY_MODEL, value == null ? "" : value.trim()).apply();
+        setModel(c, provider(c), value);
+    }
+
+    public static void setModel(Context c, String provider, String value) {
+        String p = normalizeProvider(provider);
+        prefs(c).edit().putString(KEY_MODEL_PREFIX + p, value == null ? "" : value.trim()).apply();
     }
 
     public static String systemPrompt(Context c) {
@@ -78,55 +122,85 @@ public final class AiConfigStore {
     }
 
     public static String apiKey(Context c) {
-        if (c == null) return "";
-        SharedPreferences p = prefs(c);
-        String cipherText = p.getString(KEY_API_KEY_CIPHER, "");
-        String ivText = p.getString(KEY_API_KEY_IV, "");
-        if (cipherText == null || cipherText.isBlank() || ivText == null || ivText.isBlank()) return "";
-        try {
-            KeyStore store = KeyStore.getInstance("AndroidKeyStore");
-            store.load(null);
-            SecretKey key = (SecretKey) store.getKey(KEYSTORE_ALIAS, null);
-            if (key == null) return "";
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            byte[] iv = Base64.decode(ivText, Base64.NO_WRAP);
-            cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, iv));
-            byte[] plain = cipher.doFinal(Base64.decode(cipherText, Base64.NO_WRAP));
-            return new String(plain, StandardCharsets.UTF_8);
-        } catch (Throwable t) {
-            DiagnosticLog.i(c, "AI_CONFIG", "decrypt api key failed=" + t.getClass().getSimpleName());
-            return "";
-        }
+        return apiKey(c, provider(c));
     }
 
-    public static boolean hasApiKey(Context c) { return !apiKey(c).isBlank(); }
+    public static String apiKey(Context c, String provider) {
+        if (c == null) return "";
+        String p = normalizeProvider(provider);
+        String value = decryptStored(c,
+                KEY_API_KEY_CIPHER_PREFIX + p,
+                KEY_API_KEY_IV_PREFIX + p,
+                KEYSTORE_ALIAS_PREFIX + p);
+        if (!value.isBlank()) return value;
+
+        // Migrate the old single key only as OpenRouter's key. Never reuse it for Gemini/Groq.
+        if (PROVIDER_OPENROUTER.equals(p)) {
+            return decryptStored(c,
+                    KEY_API_KEY_CIPHER_LEGACY,
+                    KEY_API_KEY_IV_LEGACY,
+                    KEYSTORE_ALIAS_LEGACY);
+        }
+        return "";
+    }
+
+    public static boolean hasApiKey(Context c) {
+        return hasApiKey(c, provider(c));
+    }
+
+    public static boolean hasApiKey(Context c, String provider) {
+        return !apiKey(c, provider).isBlank();
+    }
 
     public static void setApiKey(Context c, String value) throws Exception {
+        setApiKey(c, provider(c), value);
+    }
+
+    public static void setApiKey(Context c, String provider, String value) throws Exception {
         if (c == null) return;
+        String p = normalizeProvider(provider);
         String clean = value == null ? "" : value.trim();
         if (clean.isEmpty()) {
-            clearApiKey(c);
+            clearApiKey(c, p);
             return;
         }
-        SecretKey key = getOrCreateKey();
+        String alias = KEYSTORE_ALIAS_PREFIX + p;
+        SecretKey key = getOrCreateKey(alias);
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, key);
         byte[] encrypted = cipher.doFinal(clean.getBytes(StandardCharsets.UTF_8));
         prefs(c).edit()
-                .putString(KEY_API_KEY_CIPHER, Base64.encodeToString(encrypted, Base64.NO_WRAP))
-                .putString(KEY_API_KEY_IV, Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP))
+                .putString(KEY_API_KEY_CIPHER_PREFIX + p, Base64.encodeToString(encrypted, Base64.NO_WRAP))
+                .putString(KEY_API_KEY_IV_PREFIX + p, Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP))
                 .apply();
     }
 
     public static void clearApiKey(Context c) {
-        if (c != null) prefs(c).edit().remove(KEY_API_KEY_CIPHER).remove(KEY_API_KEY_IV).apply();
+        if (c != null) clearApiKey(c, provider(c));
+    }
+
+    public static void clearApiKey(Context c, String provider) {
+        if (c == null) return;
+        String p = normalizeProvider(provider);
+        SharedPreferences.Editor editor = prefs(c).edit()
+                .remove(KEY_API_KEY_CIPHER_PREFIX + p)
+                .remove(KEY_API_KEY_IV_PREFIX + p);
+        if (PROVIDER_OPENROUTER.equals(p)) {
+            editor.remove(KEY_API_KEY_CIPHER_LEGACY).remove(KEY_API_KEY_IV_LEGACY);
+        }
+        editor.apply();
     }
 
     public static boolean isConfigured(Context c) {
-        if (PROVIDER_OPENROUTER.equals(provider(c))) {
-            return hasApiKey(c) && !model(c).isBlank();
+        return isConfigured(c, provider(c));
+    }
+
+    public static boolean isConfigured(Context c, String provider) {
+        String p = normalizeProvider(provider);
+        if (PROVIDER_CUSTOM.equals(p)) {
+            return !baseUrl(c, p).isBlank() && !model(c, p).isBlank();
         }
-        return !baseUrl(c).isBlank() && !model(c).isBlank();
+        return hasApiKey(c, p) && !model(c, p).isBlank();
     }
 
     public static String endpoint(Context c) {
@@ -136,22 +210,68 @@ public final class AiConfigStore {
         return base + "/chat/completions";
     }
 
+    public static String defaultBase(String provider) {
+        return switch (normalizeProvider(provider)) {
+            case PROVIDER_GEMINI -> GEMINI_BASE;
+            case PROVIDER_GROQ -> GROQ_BASE;
+            case PROVIDER_CUSTOM -> "";
+            default -> OPENROUTER_BASE;
+        };
+    }
+
+    public static String defaultModel(String provider) {
+        return switch (normalizeProvider(provider)) {
+            case PROVIDER_GEMINI -> GEMINI_MODEL;
+            case PROVIDER_GROQ -> GROQ_MODEL;
+            case PROVIDER_CUSTOM -> "";
+            default -> OPENROUTER_MODEL;
+        };
+    }
+
     public static String defaultOpenRouterBase() { return OPENROUTER_BASE; }
     public static String defaultOpenRouterModel() { return OPENROUTER_MODEL; }
 
-    private static SecretKey getOrCreateKey() throws Exception {
+    private static String decryptStored(Context c, String cipherPref, String ivPref, String alias) {
+        SharedPreferences p = prefs(c);
+        String cipherText = p.getString(cipherPref, "");
+        String ivText = p.getString(ivPref, "");
+        if (cipherText == null || cipherText.isBlank() || ivText == null || ivText.isBlank()) return "";
+        try {
+            KeyStore store = KeyStore.getInstance("AndroidKeyStore");
+            store.load(null);
+            SecretKey key = (SecretKey) store.getKey(alias, null);
+            if (key == null) return "";
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            byte[] iv = Base64.decode(ivText, Base64.NO_WRAP);
+            cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, iv));
+            byte[] plain = cipher.doFinal(Base64.decode(cipherText, Base64.NO_WRAP));
+            return new String(plain, StandardCharsets.UTF_8);
+        } catch (Throwable t) {
+            DiagnosticLog.i(c, "AI_CONFIG", "decrypt " + alias + " failed=" + t.getClass().getSimpleName());
+            return "";
+        }
+    }
+
+    private static SecretKey getOrCreateKey(String alias) throws Exception {
         KeyStore store = KeyStore.getInstance("AndroidKeyStore");
         store.load(null);
-        SecretKey existing = (SecretKey) store.getKey(KEYSTORE_ALIAS, null);
+        SecretKey existing = (SecretKey) store.getKey(alias, null);
         if (existing != null) return existing;
         KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
-        generator.init(new KeyGenParameterSpec.Builder(KEYSTORE_ALIAS,
+        generator.init(new KeyGenParameterSpec.Builder(alias,
                 KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                 .setKeySize(256)
                 .build());
         return generator.generateKey();
+    }
+
+    private static String normalizeProvider(String value) {
+        if (PROVIDER_GEMINI.equals(value)) return PROVIDER_GEMINI;
+        if (PROVIDER_GROQ.equals(value)) return PROVIDER_GROQ;
+        if (PROVIDER_CUSTOM.equals(value)) return PROVIDER_CUSTOM;
+        return PROVIDER_OPENROUTER;
     }
 
     private static SharedPreferences prefs(Context c) {
