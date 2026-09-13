@@ -22,8 +22,8 @@ import java.util.Set;
  * Per-Circle-Select recognition session.
  *
  * Accessibility View text is authoritative whenever available. Image OCR is used only to fill
- * regions that do not expose usable View text. The configured OcrEngine is reserved for small
- * on-demand ROI refinement and must not replace existing View text.
+ * regions/content that do not expose usable View text. The configured OcrEngine is reserved for
+ * small on-demand ROI refinement and must not replace existing View text.
  */
 final class CircleRecognitionSession {
     enum Stage { ACCESSIBILITY, FAST_MLKIT, ROI_PRECISE }
@@ -308,8 +308,9 @@ final class CircleRecognitionSession {
     }
 
     /**
-     * Accessibility View text wins. OCR lines are added only where no matching View text exists.
-     * This keeps copied View strings independent from screenshot-derived spacing/character guesses.
+     * Accessibility View text wins only for OCR lines that represent the same visible text.
+     * Geometry alone never suppresses OCR, so a mixed image+text View can still expose independent
+     * text that exists inside the image portion while its View-provided label avoids re-OCR.
      */
     private static OcrDocument mergePreferViewText(OcrDocument viewText, OcrDocument ocr) {
         if (viewText == null || viewText.lines().isEmpty()) return ocr;
@@ -318,16 +319,16 @@ final class CircleRecognitionSession {
         ArrayList<OcrDocument.Line> lines = new ArrayList<>(viewText.lines());
         for (OcrDocument.Line ocrLine : ocr.lines()) {
             if (ocrLine == null || ocrLine.bounds().isEmpty()) continue;
-            boolean coveredByView = false;
+            boolean duplicateOfViewText = false;
             for (OcrDocument.Line viewLine : viewText.lines()) {
                 if (viewLine == null || viewLine.source() != OcrDocument.Source.VIEW
                         || viewLine.bounds().isEmpty()) continue;
-                if (sameVisualText(viewLine, ocrLine)) {
-                    coveredByView = true;
+                if (sameViewAndOcrText(viewLine, ocrLine)) {
+                    duplicateOfViewText = true;
                     break;
                 }
             }
-            if (!coveredByView) lines.add(ocrLine);
+            if (!duplicateOfViewText) lines.add(ocrLine);
         }
 
         return documentFromLines(lines,
@@ -336,28 +337,37 @@ final class CircleRecognitionSession {
                 ocr.imageWidth(), ocr.imageHeight());
     }
 
-    private static boolean sameVisualText(OcrDocument.Line viewLine, OcrDocument.Line ocrLine) {
+    private static boolean sameViewAndOcrText(OcrDocument.Line viewLine, OcrDocument.Line ocrLine) {
         Rect vb = viewLine.bounds();
         Rect ob = ocrLine.bounds();
         Rect overlap = new Rect();
         if (!overlap.setIntersect(vb, ob)) return false;
 
         long overlapArea = Math.max(0L, (long) overlap.width() * overlap.height());
-        long viewArea = Math.max(1L, (long) vb.width() * vb.height());
         long ocrArea = Math.max(1L, (long) ob.width() * ob.height());
         float ocrCoverage = overlapArea / (float) ocrArea;
-        float viewCoverage = overlapArea / (float) viewArea;
+        if (ocrCoverage < 0.18f && !vb.contains(ob.centerX(), ob.centerY())) return false;
 
-        String vt = compact(viewLine.text());
-        String ot = compact(ocrLine.text());
-        boolean textRelated = !vt.isEmpty() && !ot.isEmpty()
-                && (vt.equals(ot) || vt.contains(ot) || ot.contains(vt));
+        String viewCompact = compact(viewLine.text());
+        String ocrCompact = compact(ocrLine.text());
+        String viewSemantic = semanticCompact(viewLine.text());
+        String ocrSemantic = semanticCompact(ocrLine.text());
 
-        if (textRelated && ocrCoverage >= 0.22f) return true;
-        // Accessibility bounds can be broader than glyphs. If the OCR line sits mostly inside an
-        // existing View text rectangle, keep the View text even when OCR punctuation differs.
-        if (ocrCoverage >= 0.72f && vb.contains(ob.centerX(), ob.centerY())) return true;
-        return viewCoverage >= 0.58f && textRelated;
+        boolean exactOrContained = !viewCompact.isEmpty() && !ocrCompact.isEmpty()
+                && (viewCompact.equals(ocrCompact)
+                || viewCompact.contains(ocrCompact)
+                || ocrCompact.contains(viewCompact));
+        if (exactOrContained) return true;
+
+        // OCR often differs only by punctuation/whitespace. Ignore those for duplicate detection,
+        // but require at least two semantic code points so unrelated one-character image text is
+        // not accidentally suppressed inside a broad mixed View.
+        int semanticMin = Math.min(codePointCount(viewSemantic), codePointCount(ocrSemantic));
+        return semanticMin >= 2
+                && !viewSemantic.isEmpty() && !ocrSemantic.isEmpty()
+                && (viewSemantic.equals(ocrSemantic)
+                || viewSemantic.contains(ocrSemantic)
+                || ocrSemantic.contains(viewSemantic));
     }
 
     private static OcrDocument replaceRegionPreservingView(OcrDocument base,
@@ -380,14 +390,14 @@ final class CircleRecognitionSession {
 
         for (OcrDocument.Line patchLine : patch.lines()) {
             if (patchLine == null || patchLine.bounds().isEmpty()) continue;
-            boolean coveredByView = false;
+            boolean duplicateOfViewText = false;
             for (OcrDocument.Line viewLine : viewLines) {
-                if (sameVisualText(viewLine, patchLine)) {
-                    coveredByView = true;
+                if (sameViewAndOcrText(viewLine, patchLine)) {
+                    duplicateOfViewText = true;
                     break;
                 }
             }
-            if (!coveredByView) lines.add(patchLine);
+            if (!duplicateOfViewText) lines.add(patchLine);
         }
 
         return documentFromLines(lines, patch.engine() + "+view-preserved-index",
@@ -444,6 +454,10 @@ final class CircleRecognitionSession {
         return count;
     }
 
+    private static int codePointCount(String value) {
+        return value == null ? 0 : value.codePointCount(0, value.length());
+    }
+
     private static String compact(String value) {
         if (value == null || value.isEmpty()) return "";
         StringBuilder out = new StringBuilder();
@@ -454,6 +468,23 @@ final class CircleRecognitionSession {
             out.appendCodePoint(Character.toLowerCase(cp));
         }
         return out.toString().toLowerCase(Locale.ROOT);
+    }
+
+    private static String semanticCompact(String value) {
+        if (value == null || value.isEmpty()) return "";
+        StringBuilder out = new StringBuilder();
+        for (int offset = 0; offset < value.length();) {
+            int cp = value.codePointAt(offset);
+            offset += Character.charCount(cp);
+            if (!Character.isLetterOrDigit(cp) && !isCjk(cp)) continue;
+            out.appendCodePoint(Character.toLowerCase(cp));
+        }
+        return out.toString().toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean isCjk(int cp) {
+        return (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF)
+                || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x2FA1F);
     }
 
     private static OcrDocument emptyDocument(String engine) {
