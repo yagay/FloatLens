@@ -18,14 +18,22 @@ import androidx.appcompat.app.AppCompatActivity;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** AI provider settings for OpenRouter Free and generic OpenAI-compatible endpoints. */
+/** AI provider settings for OpenRouter, Gemini, Groq and generic OpenAI-compatible endpoints. */
 public final class AiSettingsActivity extends AppCompatActivity {
+    private static final String[] PROVIDERS = {
+            AiConfigStore.PROVIDER_OPENROUTER,
+            AiConfigStore.PROVIDER_GEMINI,
+            AiConfigStore.PROVIDER_GROQ,
+            AiConfigStore.PROVIDER_CUSTOM
+    };
+
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private Spinner providerSpinner;
     private EditText baseUrlEdit;
     private EditText modelEdit;
     private EditText apiKeyEdit;
     private EditText systemPromptEdit;
+    private TextView providerNoteView;
     private TextView keyStateView;
     private TextView statusView;
     private ProgressBar progress;
@@ -59,25 +67,29 @@ public final class AiSettingsActivity extends AppCompatActivity {
         root.addView(title);
 
         TextView note = new TextView(this);
-        note.setText("支持 OpenRouter 免费模型路由和任意 OpenAI Compatible 接口。选中文字、OCR 结果或圈选文字后可以直接发送给 AI。API Key 使用 Android Keystore 加密保存在本机。");
+        note.setText("支持 OpenRouter Free、Gemini Free Tier、Groq Free Tier 和任意 OpenAI Compatible 接口。选中文字、OCR 结果或圈选文字后可以直接发送给 AI。每个提供商的 API Key 都会单独使用 Android Keystore 加密保存。");
         note.setTextSize(14);
         note.setAlpha(0.76f);
         note.setPadding(0, dp(8), 0, dp(18));
         root.addView(note);
 
-        label(root, "提供商");
+        label(root, "AI Provider");
         providerSpinner = new Spinner(this);
         providerSpinner.setAdapter(new ArrayAdapter<>(this,
                 android.R.layout.simple_spinner_dropdown_item,
-                new String[]{"OpenRouter Free", "自定义 OpenAI Compatible"}));
-        providerSpinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view,
-                                                 int position, long id) {
-                updateProviderUi(position == 1);
-            }
-            @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
-        });
+                new String[]{
+                        "OpenRouter · Free Models Router",
+                        "Gemini · Free Tier",
+                        "Groq · Free Tier",
+                        "自定义 OpenAI Compatible"
+                }));
         root.addView(providerSpinner);
+
+        providerNoteView = new TextView(this);
+        providerNoteView.setTextSize(13);
+        providerNoteView.setAlpha(0.7f);
+        providerNoteView.setPadding(0, dp(5), 0, dp(10));
+        root.addView(providerNoteView);
 
         label(root, "Base URL");
         baseUrlEdit = new EditText(this);
@@ -85,17 +97,17 @@ public final class AiSettingsActivity extends AppCompatActivity {
         baseUrlEdit.setHint("https://example.com/v1");
         root.addView(baseUrlEdit, new LinearLayout.LayoutParams(-1, -2));
 
-        label(root, "模型");
+        label(root, "Model");
         modelEdit = new EditText(this);
         modelEdit.setSingleLine(true);
-        modelEdit.setHint("openrouter/free");
+        modelEdit.setHint("模型 ID");
         root.addView(modelEdit, new LinearLayout.LayoutParams(-1, -2));
 
         label(root, "API Key");
         apiKeyEdit = new EditText(this);
         apiKeyEdit.setSingleLine(true);
         apiKeyEdit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        apiKeyEdit.setHint("留空表示保留现有 Key；自定义本地接口可不填");
+        apiKeyEdit.setHint("留空表示保留当前 Provider 已保存的 Key");
         root.addView(apiKeyEdit, new LinearLayout.LayoutParams(-1, -2));
 
         keyStateView = new TextView(this);
@@ -105,12 +117,14 @@ public final class AiSettingsActivity extends AppCompatActivity {
         root.addView(keyStateView);
 
         Button clearKey = new Button(this);
-        clearKey.setText("清除已保存 API Key");
+        clearKey.setText("清除当前 Provider 的 API Key");
         clearKey.setOnClickListener(v -> {
-            AiConfigStore.clearApiKey(this);
+            String provider = selectedProvider();
+            AiConfigStore.clearApiKey(this, provider);
             apiKeyEdit.setText("");
-            refreshKeyState();
-            Toast.makeText(this, "API Key 已清除", Toast.LENGTH_SHORT).show();
+            refreshKeyState(provider);
+            updateStatus(provider);
+            Toast.makeText(this, AiConfigStore.providerLabel(provider) + " 的 API Key 已清除", Toast.LENGTH_SHORT).show();
         });
         root.addView(clearKey, new LinearLayout.LayoutParams(-1, -2));
 
@@ -142,78 +156,102 @@ public final class AiSettingsActivity extends AppCompatActivity {
         root.addView(statusView);
 
         TextView privacy = new TextView(this);
-        privacy.setText("隐私提示：使用在线 AI 时，你发送的文字/OCR 内容会传给所选服务商。自定义接口可以填写你自己的服务器地址。HTTP 地址仅建议用于你信任的局域网服务。");
+        privacy.setText("隐私提示：使用在线 AI 时，你发送的文字/OCR 内容会传给所选服务商。Gemini Free Tier 的内容可能被 Google 用于改进产品。自定义接口可填写你自己的服务器地址；HTTP 地址仅建议用于你信任的局域网服务。");
         privacy.setTextSize(13);
         privacy.setAlpha(0.68f);
         privacy.setPadding(0, dp(22), 0, 0);
         root.addView(privacy);
 
+        providerSpinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view,
+                                                 int position, long id) {
+                String provider = selectedProvider();
+                updateProviderUi(provider);
+            }
+            @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
+        });
+
         return scroll;
     }
 
     private void loadState() {
-        boolean custom = AiConfigStore.PROVIDER_CUSTOM.equals(AiConfigStore.provider(this));
-        providerSpinner.setSelection(custom ? 1 : 0);
-        baseUrlEdit.setText(custom ? AiConfigStore.baseUrl(this) : AiConfigStore.defaultOpenRouterBase());
-        modelEdit.setText(AiConfigStore.model(this));
+        String provider = AiConfigStore.provider(this);
+        providerSpinner.setSelection(providerIndex(provider));
         systemPromptEdit.setText(AiConfigStore.systemPrompt(this));
-        updateProviderUi(custom);
-        refreshKeyState();
-        updateStatus();
+        updateProviderUi(provider);
     }
 
-    private void refreshKeyState() {
+    private void updateProviderUi(String provider) {
+        if (baseUrlEdit == null || modelEdit == null) return;
+        boolean custom = AiConfigStore.PROVIDER_CUSTOM.equals(provider);
+        baseUrlEdit.setEnabled(custom);
+        baseUrlEdit.setText(AiConfigStore.baseUrl(this, provider));
+        modelEdit.setText(AiConfigStore.model(this, provider));
+        apiKeyEdit.setText("");
+        refreshKeyState(provider);
+        providerNoteView.setText(providerNote(provider));
+        updateStatus(provider);
+    }
+
+    private String providerNote(String provider) {
+        return switch (provider) {
+            case AiConfigStore.PROVIDER_GEMINI ->
+                    "Google 官方 OpenAI-compatible 接口。默认模型：gemini-3.8-flash；当前提供 Free Tier，但有速率限制。";
+            case AiConfigStore.PROVIDER_GROQ ->
+                    "Groq 官方 OpenAI-compatible 接口。默认模型：qwen/qwen3.8-27b；Free Plan 有请求/Token 限额。";
+            case AiConfigStore.PROVIDER_CUSTOM ->
+                    "填写自己的 OpenAI-compatible Base URL 和模型。局域网 Ollama、LM Studio、NAS 等接口可不填 API Key。";
+            default ->
+                    "OpenRouter 免费模型路由。默认使用 openrouter/free，由 OpenRouter 自动选择当前可用的免费模型。";
+        };
+    }
+
+    private void refreshKeyState(String provider) {
         if (keyStateView == null) return;
-        keyStateView.setText(AiConfigStore.hasApiKey(this)
-                ? "状态：已保存加密 API Key（输入框留空不会覆盖）"
+        boolean keyOptional = AiConfigStore.PROVIDER_CUSTOM.equals(provider);
+        keyStateView.setText(AiConfigStore.hasApiKey(this, provider)
+                ? "状态：当前 Provider 已保存加密 API Key（输入框留空不会覆盖）"
+                : keyOptional ? "状态：未保存 API Key · 自定义本地接口可留空"
                 : "状态：未保存 API Key");
     }
 
-    private void updateProviderUi(boolean custom) {
-        if (baseUrlEdit == null || modelEdit == null) return;
-        baseUrlEdit.setEnabled(custom);
-        if (!custom) {
-            baseUrlEdit.setText(AiConfigStore.defaultOpenRouterBase());
-            String current = modelEdit.getText() == null ? "" : modelEdit.getText().toString().trim();
-            if (current.isEmpty()) modelEdit.setText(AiConfigStore.defaultOpenRouterModel());
-        } else if (baseUrlEdit.getText() != null
-                && AiConfigStore.defaultOpenRouterBase().equals(baseUrlEdit.getText().toString().trim())) {
-            baseUrlEdit.setText("");
-        }
-    }
-
     private boolean saveState(boolean toast) {
-        boolean custom = providerSpinner.getSelectedItemPosition() == 1;
-        AiConfigStore.setProvider(this,
-                custom ? AiConfigStore.PROVIDER_CUSTOM : AiConfigStore.PROVIDER_OPENROUTER);
-        if (custom) AiConfigStore.setBaseUrl(this, baseUrlEdit.getText().toString());
-        AiConfigStore.setModel(this, modelEdit.getText().toString());
+        String provider = selectedProvider();
+        AiConfigStore.setProvider(this, provider);
+        if (AiConfigStore.PROVIDER_CUSTOM.equals(provider)) {
+            AiConfigStore.setBaseUrl(this, baseUrlEdit.getText().toString());
+        }
+        AiConfigStore.setModel(this, provider, modelEdit.getText().toString());
         AiConfigStore.setSystemPrompt(this, systemPromptEdit.getText().toString());
         String newKey = apiKeyEdit.getText() == null ? "" : apiKeyEdit.getText().toString().trim();
         if (!newKey.isEmpty()) {
             try {
-                AiConfigStore.setApiKey(this, newKey);
+                AiConfigStore.setApiKey(this, provider, newKey);
                 apiKeyEdit.setText("");
             } catch (Throwable t) {
                 Toast.makeText(this, "API Key 加密保存失败：" + t.getClass().getSimpleName(), Toast.LENGTH_LONG).show();
                 return false;
             }
         }
-        refreshKeyState();
-        updateStatus();
+        refreshKeyState(provider);
+        updateStatus(provider);
         if (toast) Toast.makeText(this, "AI 设置已保存", Toast.LENGTH_SHORT).show();
         return true;
     }
 
     private void testConnection() {
         if (!saveState(false)) return;
-        if (!AiConfigStore.isConfigured(this)) {
-            Toast.makeText(this, "请先填写必要的 Base URL、模型和 API Key", Toast.LENGTH_LONG).show();
+        String provider = selectedProvider();
+        if (!AiConfigStore.isConfigured(this, provider)) {
+            String message = AiConfigStore.PROVIDER_CUSTOM.equals(provider)
+                    ? "请先填写 Base URL 和模型"
+                    : "请先填写当前 Provider 的 API Key 和模型";
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
             return;
         }
         testButton.setEnabled(false);
         progress.setVisibility(View.VISIBLE);
-        statusView.setText("正在测试连接…");
+        statusView.setText("正在测试 " + AiConfigStore.providerLabel(provider) + "…");
         executor.execute(() -> {
             try {
                 AiChatClient.Result result = AiChatClient.test(this);
@@ -234,11 +272,25 @@ public final class AiSettingsActivity extends AppCompatActivity {
         });
     }
 
-    private void updateStatus() {
+    private void updateStatus(String provider) {
         if (statusView == null) return;
-        String configured = AiConfigStore.isConfigured(this) ? "已配置" : "未配置完整";
-        statusView.setText(AiConfigStore.providerLabel(this) + " · " + configured
-                + "\n模型：" + (AiConfigStore.model(this).isBlank() ? "未设置" : AiConfigStore.model(this)));
+        String configured = AiConfigStore.isConfigured(this, provider) ? "已配置" : "未配置完整";
+        String model = AiConfigStore.model(this, provider);
+        statusView.setText(AiConfigStore.providerLabel(provider) + " · " + configured
+                + "\n模型：" + (model.isBlank() ? "未设置" : model));
+    }
+
+    private String selectedProvider() {
+        int index = providerSpinner == null ? 0 : providerSpinner.getSelectedItemPosition();
+        if (index < 0 || index >= PROVIDERS.length) index = 0;
+        return PROVIDERS[index];
+    }
+
+    private int providerIndex(String provider) {
+        for (int i = 0; i < PROVIDERS.length; i++) {
+            if (PROVIDERS[i].equals(provider)) return i;
+        }
+        return 0;
     }
 
     private void label(LinearLayout root, String text) {
