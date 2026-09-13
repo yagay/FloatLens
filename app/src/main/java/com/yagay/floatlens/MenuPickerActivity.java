@@ -151,10 +151,11 @@ public final class MenuPickerActivity extends AppCompatActivity {
         apps.removeIf(a -> a == null || !a.enabled || getPackageName().equals(a.packageName));
         apps.sort(Comparator.comparing(this::appLabel, String.CASE_INSENSITIVE_ORDER));
 
+        final List<ApplicationInfo> appList = apps;
         AppUi.Section list = AppUi.section(this, "应用", null);
-        renderCustomApps(list.body, apps, "");
+        renderCustomApps(list.body, appList, "");
         addSearchField(root, "搜索应用名称或包名", query ->
-                renderCustomApps(list.body, apps, query));
+                renderCustomApps(list.body, appList, query));
         AppUi.addSection(root, list);
         show(root);
     }
