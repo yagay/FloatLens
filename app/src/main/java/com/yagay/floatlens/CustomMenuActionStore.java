@@ -18,6 +18,8 @@ import java.util.UUID;
 public final class CustomMenuActionStore {
     private static final String PREFS = "floatlens_custom_menu";
     private static final String KEY_ITEMS = "items";
+    private static final String KEY_DICTIONARY_SEEDED = "builtin_dictionary_seeded_v1";
+    private static final String BUILTIN_DICTIONARY_ID = "builtin_dictionary";
 
     public static final String TYPE_LAUNCH = "launch";
     public static final String TYPE_ACTIVITY = "activity";
@@ -31,6 +33,7 @@ public final class CustomMenuActionStore {
     public static final String TYPE_MAP = "map";
     public static final String TYPE_TRANSLATE = "translate";
     public static final String TYPE_VIEW_TEXT = "view_text";
+    public static final String TYPE_DICTIONARY = "dictionary";
 
     public static final class Item {
         public final String id;
@@ -84,6 +87,34 @@ public final class CustomMenuActionStore {
             DiagnosticLog.i(c, "CUSTOM_MENU", "load failed=" + t);
         }
         return out;
+    }
+
+    /**
+     * Add FloatLens' own dictionary to the text toolbar once for existing and new installations.
+     * It is stored like any other custom action so users can reorder or remove it afterwards.
+     */
+    public static void seedDictionaryOnce(Context c) {
+        if (c == null) return;
+        SharedPreferences p = prefs(c);
+        if (p.getBoolean(KEY_DICTIONARY_SEEDED, false)) return;
+
+        List<Item> items = load(c);
+        String packageName = c.getPackageName();
+        String className = DictionaryActivity.class.getName();
+        boolean exists = false;
+        for (Item item : items) {
+            if (TYPE_DICTIONARY.equals(item.type)
+                    || (packageName.equals(item.packageName) && className.equals(item.className))) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) {
+            items.add(0, new Item(BUILTIN_DICTIONARY_ID, "词典", packageName,
+                    className, TYPE_DICTIONARY));
+            save(c, items);
+        }
+        p.edit().putBoolean(KEY_DICTIONARY_SEEDED, true).apply();
     }
 
     public static boolean add(Context c, Item item) {
@@ -222,6 +253,11 @@ public final class CustomMenuActionStore {
                         .setType("text/plain")
                         .putExtra(Intent.EXTRA_TEXT, text);
             }
+            case TYPE_DICTIONARY -> {
+                return new Intent(c, DictionaryActivity.class)
+                        .putExtra(Intent.EXTRA_PROCESS_TEXT, text)
+                        .putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true);
+            }
             default -> {
                 return null;
             }
@@ -250,6 +286,7 @@ public final class CustomMenuActionStore {
             case TYPE_MAP -> "地图搜索";
             case TYPE_TRANSLATE -> "翻译";
             case TYPE_VIEW_TEXT -> "打开纯文本";
+            case TYPE_DICTIONARY -> "英汉词典";
             default -> type;
         };
     }
