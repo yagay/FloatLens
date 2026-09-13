@@ -124,7 +124,8 @@ final class AppUi {
     }
 
     static View navRow(Context c, String title, String subtitle, Runnable action) {
-        LinearLayout row = baseRow(c);
+        boolean compact = subtitle == null || subtitle.isBlank();
+        LinearLayout row = baseRow(c, compact);
         row.setClickable(true);
         row.setFocusable(true);
         row.setBackground(rowBackground(c));
@@ -143,7 +144,7 @@ final class AppUi {
         TextView arrow = text(c, "›", 24, false);
         arrow.setTextColor(textSecondary(c));
         arrow.setGravity(Gravity.CENTER);
-        row.addView(arrow, new LinearLayout.LayoutParams(dp(c, 30), dp(c, 44)));
+        row.addView(arrow, new LinearLayout.LayoutParams(dp(c, 30), dp(c, compact ? 40 : 44)));
         row.setOnClickListener(v -> { if (action != null) action.run(); });
         return row;
     }
@@ -151,7 +152,8 @@ final class AppUi {
     static SwitchMaterial switchRow(Context c, String title, String subtitle,
                                     boolean checked,
                                     android.widget.CompoundButton.OnCheckedChangeListener listener) {
-        LinearLayout row = baseRow(c);
+        boolean compact = subtitle == null || subtitle.isBlank();
+        LinearLayout row = baseRow(c, compact);
         row.setBackground(rowBackground(c));
 
         LinearLayout copy = new LinearLayout(c);
@@ -178,11 +180,16 @@ final class AppUi {
     }
 
     static LinearLayout baseRow(Context c) {
+        return baseRow(c, false);
+    }
+
+    private static LinearLayout baseRow(Context c, boolean compact) {
         LinearLayout row = new LinearLayout(c);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(c, 14), dp(c, 10), dp(c, 10), dp(c, 10));
-        row.setMinimumHeight(dp(c, 56));
+        int verticalPadding = compact ? 2 : 10;
+        row.setPadding(dp(c, 14), dp(c, verticalPadding), dp(c, 10), dp(c, verticalPadding));
+        row.setMinimumHeight(dp(c, compact ? 48 : 56));
         return row;
     }
 
