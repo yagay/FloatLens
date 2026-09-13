@@ -12,6 +12,11 @@ import android.widget.TextView;
 public final class FloatLensApp extends Application implements Application.ActivityLifecycleCallbacks {
     @Override public void onCreate() {
         super.onCreate();
+        try {
+            CustomMenuActionStore.seedDictionaryOnce(this);
+        } catch (Throwable t) {
+            DiagnosticLog.i(this, "DICTIONARY", "seed action failed=" + t);
+        }
         registerActivityLifecycleCallbacks(this);
     }
 
