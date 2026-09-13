@@ -2,7 +2,8 @@ name: Compact Rows Patch
 
 on:
   push:
-    branches: [ refactor/ui-structure-v2 ]
+    branches:
+      - refactor/ui-structure-v2
 
 permissions:
   contents: write
@@ -24,10 +25,10 @@ jobs:
           s = p.read_text(encoding='utf-8')
 
           old = '        LinearLayout row = baseRow(c);\n'
+          new = ('        boolean compact = subtitle == null || subtitle.isBlank();\n'
+                 '        LinearLayout row = baseRow(c, compact);\n')
           if s.count(old) == 2:
-              s = s.replace(old,
-                  '        boolean compact = subtitle == null || subtitle.isBlank();\n'
-                  '        LinearLayout row = baseRow(c, compact);\n')
+              s = s.replace(old, new)
           elif 'LinearLayout row = baseRow(c, compact);' not in s:
               raise SystemExit('Unexpected baseRow call count')
 
@@ -38,32 +39,36 @@ jobs:
           elif new_arrow not in s:
               raise SystemExit('nav arrow layout marker not found')
 
-          old_base = '''    static LinearLayout baseRow(Context c) {
-        LinearLayout row = new LinearLayout(c);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(c, 14), dp(c, 10), dp(c, 10), dp(c, 10));
-        row.setMinimumHeight(dp(c, 56));
-        return row;
-    }
-'''
-          new_base = '''    static LinearLayout baseRow(Context c) {
-        return baseRow(c, false);
-    }
-
-    private static LinearLayout baseRow(Context c, boolean compact) {
-        LinearLayout row = new LinearLayout(c);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        int verticalPadding = compact ? 2 : 10;
-        row.setPadding(dp(c, 14), dp(c, verticalPadding), dp(c, 10), dp(c, verticalPadding));
-        row.setMinimumHeight(dp(c, compact ? 48 : 56));
-        return row;
-    }
-'''
+          old_base = '\n'.join([
+              '    static LinearLayout baseRow(Context c) {',
+              '        LinearLayout row = new LinearLayout(c);',
+              '        row.setOrientation(LinearLayout.HORIZONTAL);',
+              '        row.setGravity(Gravity.CENTER_VERTICAL);',
+              '        row.setPadding(dp(c, 14), dp(c, 10), dp(c, 10), dp(c, 10));',
+              '        row.setMinimumHeight(dp(c, 56));',
+              '        return row;',
+              '    }',
+              ''
+          ])
+          new_base = '\n'.join([
+              '    static LinearLayout baseRow(Context c) {',
+              '        return baseRow(c, false);',
+              '    }',
+              '',
+              '    private static LinearLayout baseRow(Context c, boolean compact) {',
+              '        LinearLayout row = new LinearLayout(c);',
+              '        row.setOrientation(LinearLayout.HORIZONTAL);',
+              '        row.setGravity(Gravity.CENTER_VERTICAL);',
+              '        int verticalPadding = compact ? 2 : 10;',
+              '        row.setPadding(dp(c, 14), dp(c, verticalPadding), dp(c, 10), dp(c, verticalPadding));',
+              '        row.setMinimumHeight(dp(c, compact ? 48 : 56));',
+              '        return row;',
+              '    }',
+              ''
+          ])
           if old_base in s:
               s = s.replace(old_base, new_base, 1)
-          elif new_base not in s:
+          elif 'private static LinearLayout baseRow(Context c, boolean compact)' not in s:
               raise SystemExit('baseRow block marker not found')
 
           p.write_text(s, encoding='utf-8')
