@@ -88,9 +88,13 @@ public final class CircleSelectOverlay {
         private static final float TAP_GESTURE_SLOP_DP = 18f;
         private static final float LINE_REFINE_MIN_LENGTH_DP = 48f;
         private static final float LINE_REFINE_MAX_SLOPE = 0.42f;
-        private static final float LINE_REFINE_ROI_PAD_X_DP = 20f;
-        private static final float LINE_REFINE_ROI_HALF_HEIGHT_DP = 42f;
-        private static final float LINE_REFINE_SELECTION_HALF_HEIGHT_DP = 14f;
+        private static final float CACHE_TAP_SNAP_DISTANCE_DP = 34f;
+        private static final float LINE_CACHE_SELECTION_HALF_HEIGHT_DP = 18f;
+        private static final float LINE_REFINE_MIN_PAD_X_DP = 64f;
+        private static final float LINE_REFINE_MIN_HALF_HEIGHT_DP = 72f;
+        private static final float LINE_REFINE_MAX_HALF_HEIGHT_DP = 128f;
+        private static final float TAP_REFINE_HALF_WIDTH_DP = 160f;
+        private static final float TAP_REFINE_HALF_HEIGHT_DP = 96f;
         private static final int REFINE_NONE = 0;
         private static final int REFINE_TAP = 1;
         private static final int REFINE_LINE = 2;
@@ -309,8 +313,8 @@ public final class CircleSelectOverlay {
 
             String status;
             if (circleResolving) status = "正在生成圈画截图…";
-            else if (refinementMode == REFINE_LINE) status = "正在精识别横划区域… · 圈画仍是截图";
-            else if (refinementMode == REFINE_TAP) status = "正在精识别点击位置… · 圈画仍是截图";
+            else if (refinementMode == REFINE_LINE) status = "全屏索引未命中 · 正在补识别横划区域…";
+            else if (refinementMode == REFINE_TAP) status = "全屏索引未命中 · 正在补识别点击区域…";
             else if (!fastIndexReady && !selection.isEmpty()) status = "View 文字已可选 · 正在补充图片文字 · 圈画截图";
             else if (!fastIndexReady) status = "正在建立快速文字索引… · 圈画截图";
             else if (selection.isEmpty()) status = "未检测到可选文字 · 轻点或横划可精识别 · 圈画截图";
@@ -497,26 +501,40 @@ public final class CircleSelectOverlay {
             float left = Math.min(first.x, last.x);
             float right = Math.max(first.x, last.x);
             float centerY = (first.y + last.y) * 0.5f;
-            RectF roiView = new RectF(
-                    Math.max(0f, left - dp(LINE_REFINE_ROI_PAD_X_DP)),
-                    Math.max(0f, centerY - dp(LINE_REFINE_ROI_HALF_HEIGHT_DP)),
-                    Math.min(getWidth(), right + dp(LINE_REFINE_ROI_PAD_X_DP)),
-                    Math.min(getHeight(), centerY + dp(LINE_REFINE_ROI_HALF_HEIGHT_DP)));
-            Rect region = imageRectFromView(roiView);
+
+            // Google-like first step: hit the persistent full-screen View/OCR cache before doing
+            // any new recognition work. A horizontal stroke should select already-known text
+            // immediately instead of launching a tiny ROI OCR request.
+            RectF selectionBand = new RectF(
+                    Math.max(0f, left),
+                    Math.max(0f, centerY - dp(LINE_CACHE_SELECTION_HALF_HEIGHT_DP)),
+                    Math.min(getWidth(), right),
+                    Math.min(getHeight(), centerY + dp(LINE_CACHE_SELECTION_HALF_HEIGHT_DP)));
+            Rect cachedBand = imageRectFromView(selectionBand);
+            refinementLineSelectionImageRect = cachedBand;
+            if (cachedBand != null && !cachedBand.isEmpty() && selection.selectIntersecting(cachedBand)) {
+                int selectedChars = selection.selectionIndices().size();
+                refinementLineSelectionImageRect = null;
+                DiagnosticLog.i(context, "CIRCLE_SELECT", "line cache hit chars=" + selectedChars
+                        + " band=" + cachedBand.toShortString()
+                        + " from=" + Math.round(first.x) + "," + Math.round(first.y)
+                        + " to=" + Math.round(last.x) + "," + Math.round(last.y));
+                invalidate();
+                post(WorkspaceView.this::showSelectionMenu);
+                return;
+            }
+
+            Rect region = adaptiveLineRefineRegion(first, last);
             if (region == null || region.isEmpty()) {
+                refinementLineSelectionImageRect = null;
                 invalidate();
                 return;
             }
 
-            RectF selectionBand = new RectF(
-                    Math.max(0f, left),
-                    Math.max(0f, centerY - dp(LINE_REFINE_SELECTION_HALF_HEIGHT_DP)),
-                    Math.min(getWidth(), right),
-                    Math.min(getHeight(), centerY + dp(LINE_REFINE_SELECTION_HALF_HEIGHT_DP)));
-            refinementLineSelectionImageRect = imageRectFromView(selectionBand);
             refinementMode = REFINE_LINE;
-            DiagnosticLog.i(context, "CIRCLE_SELECT", "line miss -> roi precise "
-                    + region.toShortString() + " from=" + Math.round(first.x) + "," + Math.round(first.y)
+            DiagnosticLog.i(context, "CIRCLE_SELECT", "line cache miss -> adaptive roi "
+                    + region.toShortString() + " cacheChars=" + selection.size()
+                    + " from=" + Math.round(first.x) + "," + Math.round(first.y)
                     + " to=" + Math.round(last.x) + "," + Math.round(last.y));
             invalidate();
             recognitionSession.refine(region);
@@ -540,7 +558,21 @@ public final class CircleSelectOverlay {
                 invalidate();
                 return;
             }
-            Rect region = imageRectAroundTap(viewX, viewY);
+
+            // ACTION_DOWN already tried the strict hit radius. Before OCR, allow a modest cache
+            // snap so small image text discovered by the full-screen detector can be activated.
+            int cached = selection.findSelectionWord(viewX, viewY, getWidth(), getHeight(),
+                    dp(CACHE_TAP_SNAP_DISTANCE_DP));
+            if (cached >= 0) {
+                selection.selectSingle(cached);
+                DiagnosticLog.i(context, "CIRCLE_SELECT", "tap cache hit index=" + cached
+                        + " cacheChars=" + selection.size());
+                invalidate();
+                post(WorkspaceView.this::showSelectionMenu);
+                return;
+            }
+
+            Rect region = adaptiveTapRefineRegion(viewX, viewY);
             if (region == null || region.isEmpty()) {
                 invalidate();
                 return;
@@ -548,22 +580,56 @@ public final class CircleSelectOverlay {
             refinementTapX = viewX;
             refinementTapY = viewY;
             refinementMode = REFINE_TAP;
-            DiagnosticLog.i(context, "CIRCLE_SELECT", "tap miss -> roi precise "
-                    + region.toShortString());
+            DiagnosticLog.i(context, "CIRCLE_SELECT", "tap cache miss -> adaptive roi "
+                    + region.toShortString() + " cacheChars=" + selection.size());
             invalidate();
             recognitionSession.refine(region);
         }
 
-        private Rect imageRectAroundTap(float viewX, float viewY) {
+        private Rect adaptiveLineRefineRegion(PointF first, PointF last) {
+            if (first == null || last == null || getWidth() <= 0 || getHeight() <= 0) return null;
+            float left = Math.min(first.x, last.x);
+            float right = Math.max(first.x, last.x);
+            float span = Math.max(dp(1f), right - left);
+            float centerY = (first.y + last.y) * 0.5f;
+            float padX = Math.max(dp(LINE_REFINE_MIN_PAD_X_DP), span * 0.30f);
+            float halfHeight = Math.max(dp(LINE_REFINE_MIN_HALF_HEIGHT_DP),
+                    Math.min(dp(LINE_REFINE_MAX_HALF_HEIGHT_DP), span * 0.18f));
+            RectF fitted = fitViewRect(left - padX, centerY - halfHeight,
+                    right + padX, centerY + halfHeight);
+            return imageRectFromView(fitted);
+        }
+
+        private Rect adaptiveTapRefineRegion(float viewX, float viewY) {
             if (getWidth() <= 0 || getHeight() <= 0) return null;
-            float halfW = Math.min(240f, getWidth() * 0.20f);
-            float halfH = Math.min(100f, getHeight() * 0.055f);
-            RectF viewRect = new RectF(
-                    Math.max(0f, viewX - halfW),
-                    Math.max(0f, viewY - halfH),
-                    Math.min(getWidth(), viewX + halfW),
-                    Math.min(getHeight(), viewY + halfH));
-            return imageRectFromView(viewRect);
+            float halfW = Math.max(dp(TAP_REFINE_HALF_WIDTH_DP), getWidth() * 0.28f);
+            float halfH = Math.max(dp(TAP_REFINE_HALF_HEIGHT_DP), getHeight() * 0.08f);
+            RectF fitted = fitViewRect(viewX - halfW, viewY - halfH,
+                    viewX + halfW, viewY + halfH);
+            return imageRectFromView(fitted);
+        }
+
+        /** Preserve the requested context size near screen edges by shifting instead of clipping. */
+        private RectF fitViewRect(float left, float top, float right, float bottom) {
+            float vw = Math.max(1f, getWidth());
+            float vh = Math.max(1f, getHeight());
+            float width = Math.min(vw, Math.max(1f, right - left));
+            float height = Math.min(vh, Math.max(1f, bottom - top));
+            float cx = (left + right) * 0.5f;
+            float cy = (top + bottom) * 0.5f;
+            float l = cx - width * 0.5f;
+            float t = cy - height * 0.5f;
+            float r = l + width;
+            float b = t + height;
+            if (l < 0f) { r -= l; l = 0f; }
+            if (r > vw) { l -= (r - vw); r = vw; }
+            if (t < 0f) { b -= t; t = 0f; }
+            if (b > vh) { t -= (b - vh); b = vh; }
+            l = Math.max(0f, l);
+            t = Math.max(0f, t);
+            r = Math.min(vw, Math.max(l + 1f, r));
+            b = Math.min(vh, Math.max(t + 1f, b));
+            return new RectF(l, t, r, b);
         }
 
         private void updateSelectionEndpoint(int hit) {

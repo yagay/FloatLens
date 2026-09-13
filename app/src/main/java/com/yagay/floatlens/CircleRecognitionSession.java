@@ -32,7 +32,7 @@ import java.util.Set;
  * small on-demand ROI refinement and must not replace existing View text.
  */
 final class CircleRecognitionSession {
-    enum Stage { ACCESSIBILITY, FAST_MLKIT, ROI_PRECISE }
+    enum Stage { ACCESSIBILITY, FAST_MLKIT, FULL_DETECTOR, ROI_PRECISE }
 
     interface Callback {
         void onUpdate(OcrDocument document, Stage stage, boolean fastReady);
@@ -46,6 +46,7 @@ final class CircleRecognitionSession {
     private boolean closed;
     private OcrDocument current;
     private TextRecognizer fastRecognizer;
+    private boolean fullDetectorStarted;
 
     CircleRecognitionSession(Context context, Bitmap screenshot, Callback callback) {
         this.app = context.getApplicationContext();
@@ -161,6 +162,7 @@ final class CircleRecognitionSession {
                                     + " merged=" + (current == null ? 0 : current.chars().size())
                                     + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
                             emit(current, Stage.FAST_MLKIT, true);
+                            startFullScreenDetector(run);
                         } finally {
                             closeFastRecognizer(recognizer);
                         }
@@ -170,6 +172,7 @@ final class CircleRecognitionSession {
                             if (!isCurrent(run)) return;
                             DiagnosticLog.i(app, "CIRCLE_INDEX", "fast failed=" + safe(error));
                             emitFailure(Stage.FAST_MLKIT, error, true);
+                            startFullScreenDetector(run);
                         } finally {
                             closeFastRecognizer(recognizer);
                         }
@@ -177,7 +180,49 @@ final class CircleRecognitionSession {
         } catch (Throwable t) {
             DiagnosticLog.i(app, "CIRCLE_INDEX", "fast init failed=" + safe(t));
             emitFailure(Stage.FAST_MLKIT, t, true);
+            startFullScreenDetector(run);
         }
+    }
+
+    /**
+     * One deep full-screen detector pass supplements the fast ML Kit cache. This runs only when a
+     * local PP-OCR model is already installed; it never replaces View text and never waits for a
+     * user tap/line before looking for image text.
+     */
+    private void startFullScreenDetector(long run) {
+        if (!isCurrent(run) || fullDetectorStarted || screenshot == null || screenshot.isRecycled()) return;
+        int model = OcrModelManager.isReady(app, OcrModelManager.MEDIUM)
+                ? OcrModelManager.MEDIUM
+                : OcrModelManager.isReady(app, OcrModelManager.SMALL)
+                ? OcrModelManager.SMALL : -1;
+        if (model < 0) {
+            DiagnosticLog.i(app, "CIRCLE_INDEX", "full detector skip=no_local_model");
+            return;
+        }
+        fullDetectorStarted = true;
+        long started = android.os.SystemClock.uptimeMillis();
+        DiagnosticLog.i(app, "CIRCLE_INDEX", "full detector start model=" + model
+                + " image=" + screenshot.getWidth() + "x" + screenshot.getHeight());
+        PaddleOcrBridge.recognize(app, screenshot, model, new PaddleOcrBridge.Callback() {
+            @Override public void onSuccess(OcrDocument document, long totalMs, int lineCount) {
+                if (!isCurrent(run)) return;
+                int before = current == null ? 0 : current.chars().size();
+                current = mergeSupplementalOcr(current, document);
+                DiagnosticLog.i(app, "CIRCLE_INDEX", "full detector ready model=" + model
+                        + " detectorChars=" + (document == null ? 0 : document.chars().size())
+                        + " mergedBefore=" + before
+                        + " mergedAfter=" + (current == null ? 0 : current.chars().size())
+                        + " lines=" + lineCount + " totalMs=" + totalMs
+                        + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
+                emit(current, Stage.FULL_DETECTOR, true);
+            }
+
+            @Override public void onFailure(String message) {
+                if (!isCurrent(run)) return;
+                DiagnosticLog.i(app, "CIRCLE_INDEX", "full detector failed model=" + model
+                        + " message=" + message);
+            }
+        });
     }
 
     private void closeFastRecognizer(TextRecognizer recognizer) {
@@ -477,6 +522,81 @@ final class CircleRecognitionSession {
                 "accessibility-view+" + ocr.engine() + "-geometry",
                 Math.max(viewText.confidence(), ocr.confidence()),
                 ocr.imageWidth(), ocr.imageHeight());
+    }
+
+    /** Merge an additional full-screen OCR detector into the persistent cache. */
+    private static OcrDocument mergeSupplementalOcr(OcrDocument base, OcrDocument extra) {
+        if (extra == null || extra.lines().isEmpty()) return base;
+        if (base == null || base.lines().isEmpty()) return extra;
+
+        ArrayList<OcrDocument.Line> lines = new ArrayList<>(base.lines());
+        int added = 0;
+        int hydrated = 0;
+        int duplicate = 0;
+        for (OcrDocument.Line extraLine : extra.lines()) {
+            if (extraLine == null || extraLine.bounds().isEmpty() || extraLine.text().isBlank()) continue;
+
+            int matchingView = -1;
+            for (int i = 0; i < lines.size(); i++) {
+                OcrDocument.Line line = lines.get(i);
+                if (line != null && line.source() == OcrDocument.Source.VIEW
+                        && sameViewAndOcrText(line, extraLine)) {
+                    matchingView = i;
+                    break;
+                }
+            }
+            if (matchingView >= 0) {
+                OcrDocument.Line viewLine = lines.get(matchingView);
+                if (viewLine.chars().isEmpty()) {
+                    OcrDocument.Line mapped = hydrateViewGeometry(viewLine, extraLine);
+                    if (mapped != null) {
+                        lines.set(matchingView, mapped);
+                        hydrated++;
+                    }
+                }
+                duplicate++;
+                continue;
+            }
+
+            boolean alreadyKnown = false;
+            for (OcrDocument.Line known : lines) {
+                if (known != null && known.source() == OcrDocument.Source.OCR
+                        && sameOcrVisualLine(known, extraLine)) {
+                    alreadyKnown = true;
+                    break;
+                }
+            }
+            if (alreadyKnown) {
+                duplicate++;
+            } else {
+                lines.add(extraLine);
+                added++;
+            }
+        }
+
+        return documentFromLines(lines,
+                base.engine() + "+" + extra.engine() + "-full-cache",
+                Math.max(base.confidence(), extra.confidence()),
+                Math.max(base.imageWidth(), extra.imageWidth()),
+                Math.max(base.imageHeight(), extra.imageHeight()));
+    }
+
+    private static boolean sameOcrVisualLine(OcrDocument.Line a, OcrDocument.Line b) {
+        if (a == null || b == null || a.bounds().isEmpty() || b.bounds().isEmpty()) return false;
+        Rect overlap = new Rect();
+        Rect ar = a.bounds();
+        Rect br = b.bounds();
+        if (!overlap.setIntersect(ar, br)) return false;
+        long overlapArea = Math.max(0L, (long) overlap.width() * overlap.height());
+        long minArea = Math.max(1L, Math.min((long) ar.width() * ar.height(),
+                (long) br.width() * br.height()));
+        if (overlapArea / (float) minArea < 0.45f) return false;
+        String ac = compact(a.text());
+        String bc = compact(b.text());
+        if (!ac.isEmpty() && ac.equals(bc)) return true;
+        String as = semanticCompact(a.text());
+        String bs = semanticCompact(b.text());
+        return !as.isEmpty() && as.equals(bs);
     }
 
     /**
