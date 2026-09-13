@@ -111,11 +111,6 @@ final class CircleTextSelectionModel {
         return best;
     }
 
-    /**
-     * Exact hit first; otherwise snap to the nearest character while strongly preferring the same
-     * visual row. The old score discounted vertical distance (0.72x), which made a large handle
-     * snap radius jump into adjacent lines. Vertical distance is now expensive and locally capped.
-     */
     int findSelectionWord(float viewX, float viewY, int viewWidth, int viewHeight,
                           float maxDistancePx) {
         int exact = findWordAt(viewX, viewY, viewWidth, viewHeight);
@@ -129,12 +124,9 @@ final class CircleTextSelectionModel {
             if (r.isEmpty()) continue;
             float dx = viewX < r.left ? r.left - viewX : viewX > r.right ? viewX - r.right : 0f;
             float dy = viewY < r.top ? r.top - viewY : viewY > r.bottom ? viewY - r.bottom : 0f;
-
-            // Even when the caller supplies a large drag radius, never let it freely cross rows.
             float rowGate = Math.max(r.height() * 1.35f,
                     Math.min(maxDistancePx * 0.48f, r.height() * 2.15f));
             if (dy > rowGate) continue;
-
             float score = dx * dx + dy * dy * 3.25f;
             if (score < bestScore) {
                 bestScore = score;
@@ -145,7 +137,6 @@ final class CircleTextSelectionModel {
         return best;
     }
 
-    /** Select only character boxes materially intersecting the rectangle. */
     boolean selectIntersecting(Rect imageRect) {
         if (imageRect == null || imageRect.isEmpty() || chars.isEmpty()) return false;
         ArrayList<Integer> hit = new ArrayList<>();
@@ -166,15 +157,18 @@ final class CircleTextSelectionModel {
         return true;
     }
 
-    /** Replace stale characters in a refined region, then restore deterministic reading order. */
     void mergeRefinement(OcrDocument translatedPatch, Rect imageRect) {
         if (translatedPatch == null || imageRect == null || imageRect.isEmpty()) return;
         ArrayList<OcrDocument.CharUnit> merged = new ArrayList<>();
         for (OcrDocument.CharUnit c : chars) {
             Rect r = c.bounds();
-            if (!Rect.intersects(r, imageRect)) merged.add(c);
+            if (c.source() == OcrDocument.Source.VIEW || !Rect.intersects(r, imageRect)) {
+                merged.add(c);
+            }
         }
-        merged.addAll(translatedPatch.chars());
+        for (OcrDocument.CharUnit c : translatedPatch.chars()) {
+            if (c != null && c.source() != OcrDocument.Source.VIEW) merged.add(c);
+        }
         chars = normalize(merged);
         clear();
     }
@@ -195,9 +189,14 @@ final class CircleTextSelectionModel {
             if (out.length() > 0) {
                 if (c.line() != previousLine) {
                     out.append('\n');
-                } else if (c.group() != previousGroup
-                        && shouldInsertVisualSpace(previousUnit, c, previous, value)) {
-                    out.append(' ');
+                } else if (c.group() != previousGroup) {
+                    if (isViewPair(previousUnit, c)) {
+                        // Accessibility groups are created directly from real whitespace in the
+                        // View's text. Never re-guess View spacing from screenshot geometry.
+                        out.append(' ');
+                    } else if (shouldInsertVisualSpace(previousUnit, c, previous, value)) {
+                        out.append(' ');
+                    }
                 }
             }
             out.append(value);
@@ -236,7 +235,11 @@ final class CircleTextSelectionModel {
 
     private boolean validIndex(int index) { return index >= 0 && index < chars.size(); }
 
-    /** Normalize mixed engine/refinement output into stable line/group/order metadata. */
+    /**
+     * Restore deterministic visual order while preserving each recognizer's own word boundaries.
+     * In particular, VIEW groups encode actual whitespace from Accessibility text and must not be
+     * recreated from screenshot glyph spacing.
+     */
     private List<OcrDocument.CharUnit> normalize(List<OcrDocument.CharUnit> input) {
         if (input == null || input.isEmpty()) return List.of();
         ArrayList<OcrDocument.CharUnit> sorted = new ArrayList<>();
@@ -252,55 +255,56 @@ final class CircleTextSelectionModel {
         });
 
         ArrayList<OcrDocument.CharUnit> out = new ArrayList<>();
-        int line = -1, group = 0, order = 0;
-        Rect previous = null;
+        int line = -1, normalizedGroup = 0, order = 0;
+        Rect previousRect = null;
+        OcrDocument.CharUnit previousSource = null;
         int lineCenter = Integer.MIN_VALUE;
         for (OcrDocument.CharUnit c : sorted) {
             Rect r = c.bounds();
-            int tolerance = previous == null ? 0
-                    : Math.max(3, Math.min(Math.max(1, previous.height()), Math.max(1, r.height())) / 2);
-            boolean newLine = previous == null || Math.abs(r.centerY() - lineCenter) > tolerance;
+            int tolerance = previousRect == null ? 0
+                    : Math.max(3, Math.min(Math.max(1, previousRect.height()), Math.max(1, r.height())) / 2);
+            boolean newLine = previousRect == null || Math.abs(r.centerY() - lineCenter) > tolerance;
             if (newLine) {
                 line++;
-                group++;
+                normalizedGroup++;
                 lineCenter = r.centerY();
             } else {
-                int gap = r.left - previous.right;
-                float threshold = Math.max(2f, Math.min(previous.height(), r.height()) * 0.32f);
-                if (gap > threshold) group++;
+                boolean sourceChanged = previousSource != null && c.source() != previousSource.source();
+                boolean originalGroupChanged = previousSource != null && c.group() != previousSource.group();
+                if (sourceChanged || originalGroupChanged) normalizedGroup++;
                 lineCenter = (lineCenter + r.centerY()) / 2;
             }
-            out.add(new OcrDocument.CharUnit(c.text(), r, c.confidence(), line, group, order++));
-            previous = r;
+            out.add(new OcrDocument.CharUnit(c.text(), r, c.confidence(), line,
+                    normalizedGroup, order++, c.source()));
+            previousRect = r;
+            previousSource = c;
         }
         return List.copyOf(out);
     }
 
-    /**
-     * Group boundaries are OCR hints, not proof of a real blank. Before inserting a copied-text
-     * space, verify the glyph boxes are visually separated. This fixes adjacent characters/tokens
-     * that OCR happened to split into different groups.
-     */
+    private static boolean isViewPair(OcrDocument.CharUnit a, OcrDocument.CharUnit b) {
+        return a != null && b != null
+                && a.source() == OcrDocument.Source.VIEW
+                && b.source() == OcrDocument.Source.VIEW;
+    }
+
     private static boolean shouldInsertVisualSpace(OcrDocument.CharUnit a,
                                                    OcrDocument.CharUnit b,
                                                    String leftText,
                                                    String rightText) {
         if (a == null || b == null) return true;
         if (noSpaceBetween(leftText, rightText)) return false;
-
         Rect ar = a.bounds();
         Rect br = b.bounds();
         if (ar == null || br == null || ar.isEmpty() || br.isEmpty()) return true;
 
         int gap = br.left - ar.right;
         if (gap <= 0) return false;
-
         float minHeight = Math.max(1f, Math.min(ar.height(), br.height()));
-        float minWidth = Math.max(1f, Math.min(ar.width(), br.width()));
-        // Keep this more forgiving than normalize()'s grouping threshold. OCR boxes often leave a
-        // small artificial gap between visually touching tokens, especially after ROI refinement.
-        float visuallyJoined = Math.max(3f, Math.min(minHeight * 0.48f, minWidth * 0.85f));
-        return gap > visuallyJoined;
+        // OCR-only rule: require a clear word-sized blank before inserting a space. Narrow glyphs
+        // such as i/l/1 no longer reduce the threshold and split continuous English words.
+        float obviousWordGap = Math.max(4f, minHeight * 0.46f);
+        return gap > obviousWordGap;
     }
 
     private static boolean noSpaceBetween(String a, String b) {
@@ -309,18 +313,16 @@ final class CircleTextSelectionModel {
         int bc = b.codePointAt(0);
         if (isCjk(ac) && isCjk(bc)) return true;
         if (isClosingPunctuation(bc) || isOpeningPunctuation(ac)) return true;
-        // Chinese text should not gain artificial blanks around punctuation or adjacent Latin
-        // fragments merely because OCR split the tokens into separate groups.
         if ((isCjk(ac) && isPunctuationLike(bc)) || (isPunctuationLike(ac) && isCjk(bc))) return true;
         return false;
     }
 
     private static boolean isOpeningPunctuation(int cp) {
-        return "([{（【《〈「『〔〖〘〚“‘".indexOf(cp) >= 0;
+        return "([{（【《〈「『〔〖〘〚“‘\"".indexOf(cp) >= 0;
     }
 
     private static boolean isClosingPunctuation(int cp) {
-        return ")]}）】》〉」』〕〗〙〛，。！？；：、,.!?;:%‰…’”".indexOf(cp) >= 0;
+        return ")]}）】》〉」』〕〗〙〛，。！？；：、,.!?;:%‰…’”\"".indexOf(cp) >= 0;
     }
 
     private static boolean isPunctuationLike(int cp) {
