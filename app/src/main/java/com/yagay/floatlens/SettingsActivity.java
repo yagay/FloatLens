@@ -345,7 +345,6 @@ public class SettingsActivity extends AppCompatActivity {
         slider.setValueTo(max);
         slider.setStepSize(1f);
         slider.setValue(Math.max(min, Math.min(max, current)));
-        slider.setLabelBehavior(Slider.LABEL_GONE);
         slider.addOnChangeListener((s, next, fromUser) -> {
             if (!fromUser) return;
             int intValue = Math.round(next);
