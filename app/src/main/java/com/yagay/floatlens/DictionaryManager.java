@@ -314,7 +314,6 @@ public final class DictionaryManager {
             applyPragma(db, "PRAGMA synchronous=OFF");
             applyPragma(db, "PRAGMA temp_store=MEMORY");
             db.execSQL("CREATE TABLE entries (word TEXT NOT NULL COLLATE NOCASE PRIMARY KEY, phonetic TEXT, definition TEXT, translation TEXT, pos TEXT, collins INTEGER NOT NULL DEFAULT 0, oxford INTEGER NOT NULL DEFAULT 0, tag TEXT, bnc INTEGER NOT NULL DEFAULT 0, frq INTEGER NOT NULL DEFAULT 0, exchange TEXT, sw TEXT NOT NULL) WITHOUT ROWID");
-            db.execSQL("CREATE INDEX idx_entries_sw ON entries(sw)");
             db.execSQL("CREATE TABLE reverse_terms (term TEXT NOT NULL, word TEXT NOT NULL COLLATE NOCASE, PRIMARY KEY(term, word)) WITHOUT ROWID");
             db.execSQL("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)");
             CountingInputStream counter = new CountingInputStream(new FileInputStream(csv));
@@ -351,11 +350,13 @@ public final class DictionaryManager {
                         bind(insertEntry, 11, field(row, columns, "exchange"));
                         bind(insertEntry, 12, stripWord(word));
                         insertEntry.executeInsert();
-                        for (String term : extractChineseTerms(translation)) {
+                        List<String> terms = extractChineseTerms(translation);
+                        reverseRows += terms.size();
+                        for (String term : terms) {
                             insertReverse.clearBindings();
                             insertReverse.bindString(1, term);
                             insertReverse.bindString(2, word);
-                            if (insertReverse.executeInsert() != -1L) reverseRows++;
+                            insertReverse.executeInsert();
                         }
                         rows++;
                         if ((rows % 2000) == 0) {
@@ -371,6 +372,7 @@ public final class DictionaryManager {
                 if (reverseRows < MIN_REVERSE_TERMS) throw new IOException("ECCEDICT 中文反向索引数量异常: " + reverseRows);
             }
             progress(callback, "优化索引", 97);
+            db.execSQL("CREATE INDEX idx_entries_sw ON entries(sw)");
             db.execSQL("INSERT OR REPLACE INTO meta(key,value) VALUES('source','H1DDENADM1N/ECCEDICT ecdict.csv')");
             db.execSQL("INSERT OR REPLACE INTO meta(key,value) VALUES('schema','" + SCHEMA_ID + "')");
             db.execSQL("INSERT OR REPLACE INTO meta(key,value) VALUES('ready','1')");
