@@ -21,7 +21,6 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowManager;
-import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -134,7 +133,7 @@ public final class FloatActionMenu {
         int menuHeight = Math.max(dp(app, 46), root.getMeasuredHeight());
 
         int[] pos = hasLockedRow()
-                ? lockedRowPosition(app, usable, menuWidth)
+                ? lockedRowPosition(app, usable, menuWidth, menuHeight)
                 : menuPosition(app, usable, FloatMenuAnchor.current(), menuWidth, menuHeight);
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
@@ -160,6 +159,8 @@ public final class FloatActionMenu {
                     + " anchor=" + (anchor == null ? "none" : anchor.toShortString())
                     + " lockedRow=" + (hasLockedRow() ? lockedTopY : -1)
                     + " width=" + menuWidth
+                    + " height=" + menuHeight
+                    + (mode == MODE_MAIN ? " pinnedCustom=" + TextMenuSettings.pinnedCustomCount(app) : "")
                     + " pos=" + lp.x + "," + lp.y
                     + " accessibilityHost=" + host.isAccessibilityHosted()
                     + " type=" + lp.type);
@@ -212,14 +213,14 @@ public final class FloatActionMenu {
         return best;
     }
 
-    private static int[] lockedRowPosition(Context app, Rect usable, int menuWidth) {
+    private static int[] lockedRowPosition(Context app, Rect usable, int menuWidth, int menuHeight) {
         int margin = dp(app, 8);
         int minX = usable.left + margin;
         int maxX = Math.max(minX, usable.right - margin - menuWidth);
         int minY = usable.top + margin;
-        int maxRowTop = Math.max(minY, usable.bottom - margin - dp(app, 46));
+        int maxY = Math.max(minY, usable.bottom - margin - menuHeight);
         int x = clamp(lockedCenterX - menuWidth / 2, minX, maxX);
-        int y = clamp(lockedTopY, minY, maxRowTop);
+        int y = clamp(lockedTopY, minY, maxY);
         return new int[]{x, y};
     }
 
@@ -258,48 +259,42 @@ public final class FloatActionMenu {
 
     private static void buildMainToolbar(Context app, LinearLayout root, String text,
                                          Runnable selectAll, Palette palette) {
-        HorizontalScrollView horizontal = new HorizontalScrollView(app);
-        horizontal.setFillViewport(false);
-        horizontal.setHorizontalScrollBarEnabled(false);
-        horizontal.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
+        int customLimit = mainCustomCount(app, customs.size());
 
-        LinearLayout row = new LinearLayout(app);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(app, 2), dp(app, 2), dp(app, 2), dp(app, 2));
+        ArrayList<View> items = new ArrayList<>();
+        ArrayList<Integer> widths = new ArrayList<>();
 
         TextView copy = action(app, "复制", palette, 58);
-        row.addView(copy, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
+        items.add(copy);
+        widths.add(dp(app, 58));
 
+        TextView all = null;
         if (selectAll != null) {
-            TextView all = action(app, "全选", palette, 58);
-            row.addView(all, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
-            all.setOnClickListener(v -> {
-                try { selectAll.run(); } catch (Throwable ignored) {}
-                dismiss();
-            });
+            all = action(app, "全选", palette, 58);
+            items.add(all);
+            widths.add(dp(app, 58));
         }
 
         TextView share = action(app, "分享", palette, 58);
-        row.addView(share, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
+        items.add(share);
+        widths.add(dp(app, 58));
 
-        List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
-        int customLimit = mainCustomCount(app, customs.size());
         for (int i = 0; i < customLimit; i++) {
             CustomMenuActionStore.Item item = customs.get(i);
             TextView custom = action(app, item.label, palette, 72);
             custom.setMaxWidth(dp(app, 88));
             custom.setEllipsize(TextUtils.TruncateAt.END);
             custom.setSingleLine(true);
-            row.addView(custom, new LinearLayout.LayoutParams(dp(app, 78), dp(app, 46)));
             custom.setOnClickListener(v -> launchCustom(app, item, text));
+            items.add(custom);
+            widths.add(dp(app, 78));
         }
 
         TextView more = action(app, "⋮", palette, 46);
         more.setTextSize(24);
-        row.addView(more, new LinearLayout.LayoutParams(dp(app, 46), dp(app, 46)));
-        horizontal.addView(row, new HorizontalScrollView.LayoutParams(-2, -2));
-        root.addView(horizontal, new LinearLayout.LayoutParams(-2, -2));
+        items.add(more);
+        widths.add(dp(app, 46));
 
         copy.setOnClickListener(v -> {
             ClipboardManager cm = (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
@@ -307,8 +302,47 @@ public final class FloatActionMenu {
             Toast.makeText(app, "已复制", Toast.LENGTH_SHORT).show();
             dismiss();
         });
+        if (all != null) {
+            all.setOnClickListener(v -> {
+                try { selectAll.run(); } catch (Throwable ignored) {}
+                dismiss();
+            });
+        }
         share.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_SHARE));
         more.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_MORE));
+
+        int maxRowWidth = Math.max(dp(app, 180),
+                app.getResources().getDisplayMetrics().widthPixels - dp(app, 16));
+        WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
+        if (wm != null) {
+            Rect usable = usableBounds(app, wm);
+            if (!usable.isEmpty()) maxRowWidth = Math.max(dp(app, 180), usable.width() - dp(app, 16));
+        }
+
+        LinearLayout row = toolbarRow(app);
+        int used = dp(app, 4);
+        for (int i = 0; i < items.size(); i++) {
+            View item = items.get(i);
+            int itemWidth = widths.get(i);
+            if (row.getChildCount() > 0 && used + itemWidth > maxRowWidth) {
+                root.addView(row, new LinearLayout.LayoutParams(-2, -2));
+                row = toolbarRow(app);
+                used = dp(app, 4);
+            }
+            row.addView(item, new LinearLayout.LayoutParams(itemWidth, dp(app, 46)));
+            used += itemWidth;
+        }
+        if (row.getChildCount() > 0) {
+            root.addView(row, new LinearLayout.LayoutParams(-2, -2));
+        }
+    }
+
+    private static LinearLayout toolbarRow(Context app) {
+        LinearLayout row = new LinearLayout(app);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(app, 2), dp(app, 2), dp(app, 2), dp(app, 2));
+        return row;
     }
 
     private static int mainCustomCount(Context app, int size) {
