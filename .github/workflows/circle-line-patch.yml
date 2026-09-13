@@ -20,7 +20,7 @@ jobs:
           ref: refactor/ui-structure-v2
           fetch-depth: 0
 
-      - name: Apply patch
+      - name: Apply horizontal-line text refinement patch
         run: python .github/patch_circle_line_refine.py
 
       - name: Commit source changes
