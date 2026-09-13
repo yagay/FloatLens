@@ -8,12 +8,10 @@ import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.WindowManager;
 
-/** Converts the original floating-icon touch stream into FV FooViewService.v3()-style coordinates. */
+/** Converts the original floating-icon touch stream into FV-style probe coordinates. */
 public final class SelectionPointTransformer {
-    private static final float FL_EDGE_LEAD_DP = 10f;
-    private static final float FL_X_PROBE_OFFSET_DP = 25f;
-    private static final float FL_EDGE_SPAN_DP = 50f;
-    private static final float FL_Y_HELPER_INSET_DP = 20f;
+    private static final float FL_X_PROBE_GAP_DP = 25f;
+    private static final float FL_Y_PROBE_OFFSET_DP = 60f;
     private static final long LOG_INTERVAL_MS = 80L;
 
     private final Context context;
@@ -87,47 +85,39 @@ public final class SelectionPointTransformer {
     }
 
     /**
-     * Clean-room reconstruction of FooViewService.v3(). The output is the Point later sent both to
-     * q2/e4(circle_focus) and to the selection/View hit-test layer.
+     * FV keeps the probe on the inward side of the floating icon. The old reconstruction applied a
+     * right-edge compensation that could produce x=1478 on a 1272px display, and on the left edge it
+     * could produce negative coordinates. Both make Accessibility hit-testing impossible.
      */
     public PointF transformRaw(float rawX, float rawY) {
         ensureInitializedFallback();
 
         Rect screen = gestureScreen;
-        float lead = dp(FL_EDGE_LEAD_DP);
-        float edgeSpan = dp(FL_EDGE_SPAN_DP);
-        float helperInset = dp(FL_Y_HELPER_INSET_DP);
         float iconLeft = startIconLeft + (rawX - downRawX);
+        float gap = dp(FL_X_PROBE_GAP_DP);
 
-        // Normal FV X path: K(false) + rawX - downRawX - 25dp.
-        float x = iconLeft - dp(FL_X_PROBE_OFFSET_DP);
-        boolean rightCompensation = false;
-        float rightThreshold = Float.NaN;
+        // Keep the probe between the edge-mounted icon and the page content.
+        float x = gestureLeftSide
+                ? iconLeft + iconWidth + gap
+                : iconLeft - gap;
+        float y = rawY - dp(FL_Y_PROBE_OFFSET_DP);
+
+        boolean clampedX = false;
+        boolean clampedY = false;
         if (!screen.isEmpty()) {
-            float edgeX = rawX + lead;
-            rightThreshold = screen.right - iconWidth - edgeSpan - lead;
-            if (edgeX > rightThreshold) {
-                x += edgeX - rightThreshold;
-                rightCompensation = true;
-            }
+            float minX = screen.left;
+            float maxX = Math.max(minX, screen.right - 1f);
+            float minY = screen.top;
+            float maxY = Math.max(minY, screen.bottom - 1f);
+            float safeX = Math.max(minX, Math.min(maxX, x));
+            float safeY = Math.max(minY, Math.min(maxY, y));
+            clampedX = safeX != x;
+            clampedY = safeY != y;
+            x = safeX;
+            y = safeY;
         }
 
-        // Normal FV Y path: rawY + 10dp - 20dp - 50dp == rawY - 60dp.
-        float edgeY = rawY + lead;
-        float y = edgeY - helperInset - edgeSpan;
-        boolean bottomCompensation = false;
-        float bottomThreshold = Float.NaN;
-        if (!screen.isEmpty()) {
-            bottomThreshold = screen.bottom - helperInset - edgeSpan;
-            if (edgeY > bottomThreshold) {
-                y = 2f * edgeY - screen.bottom;
-                bottomCompensation = true;
-            }
-            if (y > screen.bottom) y = screen.bottom;
-        }
-
-        maybeLog(rawX, rawY, iconLeft, x, y, rightCompensation, bottomCompensation,
-                rightThreshold, bottomThreshold, screen);
+        maybeLog(rawX, rawY, iconLeft, x, y, clampedX, clampedY, screen);
         return new PointF(x, y);
     }
 
@@ -147,18 +137,15 @@ public final class SelectionPointTransformer {
     }
 
     private void maybeLog(float rawX, float rawY, float iconLeft, float x, float y,
-                          boolean rightCompensation, boolean bottomCompensation,
-                          float rightThreshold, float bottomThreshold, Rect screen) {
+                          boolean clampedX, boolean clampedY, Rect screen) {
         long now = SystemClock.uptimeMillis();
-        if (now - lastLogAt < LOG_INTERVAL_MS && !rightCompensation && !bottomCompensation) return;
+        if (now - lastLogAt < LOG_INTERVAL_MS && !clampedX && !clampedY) return;
         lastLogAt = now;
         DiagnosticLog.i(context, "FL_PROBE", "raw=" + Math.round(rawX) + "," + Math.round(rawY)
                 + " iconLeft=" + Math.round(iconLeft)
                 + " side=" + (gestureLeftSide ? "L" : "R")
                 + " probe=" + Math.round(x) + "," + Math.round(y)
-                + " edgeR=" + rightCompensation + " edgeB=" + bottomCompensation
-                + " thresholdR=" + (Float.isNaN(rightThreshold) ? "n/a" : Math.round(rightThreshold))
-                + " thresholdB=" + (Float.isNaN(bottomThreshold) ? "n/a" : Math.round(bottomThreshold))
+                + " clampX=" + clampedX + " clampY=" + clampedY
                 + " screen=" + screen);
     }
 
