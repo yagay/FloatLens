@@ -17,6 +17,9 @@ jobs:
       - name: Add application search
         run: python3 .github/patch_app_search.py
 
+      - name: Fix lambda capture
+        run: python3 .github/fix_app_search_capture.py
+
       - name: Commit source changes
         shell: bash
         run: |
