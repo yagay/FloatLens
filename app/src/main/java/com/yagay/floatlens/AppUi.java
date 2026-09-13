@@ -1,15 +1,16 @@
 package com.yagay.floatlens;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.view.Gravity;
 import android.view.View;
-import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -33,18 +34,38 @@ final class AppUi {
     static LinearLayout pageRoot(Context c, String title, String subtitle) {
         LinearLayout root = new LinearLayout(c);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(c, 18), dp(c, 22), dp(c, 18), dp(c, 34));
+        root.setPadding(dp(c, 16), dp(c, 12), dp(c, 16), dp(c, 28));
         root.setBackgroundColor(background(c));
 
-        TextView titleView = text(c, title, 28, true);
-        root.addView(titleView, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout header = new LinearLayout(c);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
+        if (c instanceof Activity activity && !(activity instanceof MainActivity)) {
+            MaterialButton back = new MaterialButton(c, null,
+                    com.google.android.material.R.attr.materialButtonTextButtonStyle);
+            back.setText("‹");
+            back.setTextSize(28);
+            back.setAllCaps(false);
+            back.setMinWidth(0);
+            back.setMinimumWidth(0);
+            back.setPadding(0, 0, 0, 0);
+            back.setContentDescription("返回");
+            back.setOnClickListener(v -> activity.finish());
+            header.addView(back, new LinearLayout.LayoutParams(dp(c, 42), dp(c, 44)));
+        }
+
+        TextView titleView = text(c, title, 24, true);
+        titleView.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1f));
+        root.addView(header, new LinearLayout.LayoutParams(-1, -2));
 
         if (subtitle != null && !subtitle.isBlank()) {
-            TextView subtitleView = caption(c, subtitle, 14);
-            subtitleView.setPadding(0, dp(c, 4), 0, dp(c, 18));
+            TextView subtitleView = caption(c, subtitle, 13);
+            subtitleView.setPadding(0, dp(c, 2), 0, dp(c, 14));
             root.addView(subtitleView, new LinearLayout.LayoutParams(-1, -2));
         } else {
-            titleView.setPadding(0, 0, 0, dp(c, 18));
+            header.setPadding(0, 0, 0, dp(c, 12));
         }
         return root;
     }
@@ -61,25 +82,32 @@ final class AppUi {
     static Section section(Context c, String title, String subtitle) {
         MaterialCardView card = new MaterialCardView(c);
         card.setCardBackgroundColor(surface(c));
-        card.setRadius(dp(c, 20));
+        card.setRadius(dp(c, 18));
         card.setStrokeWidth(dp(c, 1));
         card.setStrokeColor(outline(c));
         card.setCardElevation(0);
         card.setUseCompatPadding(false);
-        card.setContentPadding(dp(c, 15), dp(c, 14), dp(c, 15), dp(c, 14));
 
         LinearLayout holder = new LinearLayout(c);
         holder.setOrientation(LinearLayout.VERTICAL);
         card.addView(holder, new MaterialCardView.LayoutParams(-1, -2));
 
-        TextView heading = text(c, title, 18, true);
-        holder.addView(heading, new LinearLayout.LayoutParams(-1, -2));
-        if (subtitle != null && !subtitle.isBlank()) {
-            TextView sub = caption(c, subtitle, 13);
-            sub.setPadding(0, dp(c, 3), 0, dp(c, 10));
-            holder.addView(sub, new LinearLayout.LayoutParams(-1, -2));
-        } else {
-            heading.setPadding(0, 0, 0, dp(c, 8));
+        if ((title != null && !title.isBlank()) || (subtitle != null && !subtitle.isBlank())) {
+            LinearLayout header = new LinearLayout(c);
+            header.setOrientation(LinearLayout.VERTICAL);
+            header.setPadding(dp(c, 14), dp(c, 12), dp(c, 14), dp(c, 10));
+            if (title != null && !title.isBlank()) {
+                TextView heading = text(c, title, 14, true);
+                heading.setTextColor(accent(c));
+                header.addView(heading, new LinearLayout.LayoutParams(-1, -2));
+            }
+            if (subtitle != null && !subtitle.isBlank()) {
+                TextView sub = caption(c, subtitle, 12);
+                sub.setPadding(0, dp(c, 2), 0, 0);
+                header.addView(sub, new LinearLayout.LayoutParams(-1, -2));
+            }
+            holder.addView(header, new LinearLayout.LayoutParams(-1, -2));
+            holder.addView(divider(c), new LinearLayout.LayoutParams(-1, dp(c, 1)));
         }
 
         LinearLayout body = new LinearLayout(c);
@@ -90,14 +118,16 @@ final class AppUi {
 
     static void addSection(LinearLayout root, Section section) {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-        lp.bottomMargin = dp(root.getContext(), 14);
+        lp.bottomMargin = dp(root.getContext(), 12);
         root.addView(section.card, lp);
     }
 
     static void addRow(LinearLayout parent, View row) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-        lp.bottomMargin = dp(parent.getContext(), 7);
-        parent.addView(row, lp);
+        if (parent.getChildCount() > 0) {
+            parent.addView(divider(parent.getContext()),
+                    new LinearLayout.LayoutParams(-1, dp(parent.getContext(), 1)));
+        }
+        parent.addView(row, new LinearLayout.LayoutParams(-1, -2));
     }
 
     static View navRow(Context c, String title, String subtitle, Runnable action) {
@@ -109,18 +139,18 @@ final class AppUi {
         LinearLayout copy = new LinearLayout(c);
         copy.setOrientation(LinearLayout.VERTICAL);
         copy.setGravity(Gravity.CENTER_VERTICAL);
-        copy.addView(text(c, title, 16, false), new LinearLayout.LayoutParams(-1, -2));
+        copy.addView(text(c, title, 15, false), new LinearLayout.LayoutParams(-1, -2));
         if (subtitle != null && !subtitle.isBlank()) {
             TextView sub = caption(c, subtitle, 12);
-            sub.setPadding(0, dp(c, 2), 0, 0);
+            sub.setPadding(0, dp(c, 2), dp(c, 8), 0);
             copy.addView(sub, new LinearLayout.LayoutParams(-1, -2));
         }
         row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        TextView arrow = text(c, "›", 28, false);
+        TextView arrow = text(c, "›", 24, false);
         arrow.setTextColor(textSecondary(c));
         arrow.setGravity(Gravity.CENTER);
-        row.addView(arrow, new LinearLayout.LayoutParams(dp(c, 34), dp(c, 46)));
+        row.addView(arrow, new LinearLayout.LayoutParams(dp(c, 30), dp(c, 44)));
         row.setOnClickListener(v -> { if (action != null) action.run(); });
         return row;
     }
@@ -158,16 +188,15 @@ final class AppUi {
         LinearLayout row = new LinearLayout(c);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(c, 12), dp(c, 10), dp(c, 10), dp(c, 10));
-        row.setMinimumHeight(dp(c, 58));
+        row.setPadding(dp(c, 14), dp(c, 10), dp(c, 10), dp(c, 10));
+        row.setMinimumHeight(dp(c, 56));
         return row;
     }
 
     static LinearLayout settingBlock(Context c) {
         LinearLayout block = new LinearLayout(c);
         block.setOrientation(LinearLayout.VERTICAL);
-        block.setPadding(dp(c, 12), dp(c, 10), dp(c, 12), dp(c, 9));
-        block.setBackground(rounded(c, surfaceAlt(c), 14));
+        block.setPadding(dp(c, 14), dp(c, 10), dp(c, 14), dp(c, 10));
         return block;
     }
 
@@ -175,6 +204,7 @@ final class AppUi {
         LinearLayout row = new LinearLayout(c);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(c, 14), dp(c, 8), dp(c, 14), dp(c, 8));
         return row;
     }
 
@@ -191,6 +221,15 @@ final class AppUi {
         TextView tv = text(c, value, sp, false);
         tv.setTextColor(textSecondary(c));
         tv.setLineSpacing(0f, 1.08f);
+        return tv;
+    }
+
+    static TextView statusPill(Context c, String value, boolean positive) {
+        TextView tv = text(c, value, 12, true);
+        tv.setTextColor(positive ? success(c) : warning(c));
+        tv.setGravity(Gravity.CENTER);
+        tv.setPadding(dp(c, 10), dp(c, 5), dp(c, 10), dp(c, 5));
+        tv.setBackground(rounded(c, positive ? successSurface(c) : warningSurface(c), 999));
         return tv;
     }
 
@@ -231,15 +270,20 @@ final class AppUi {
         input.setHintTextColor(textSecondary(c));
         input.setTextSize(14);
         input.setPadding(dp(c, 12), dp(c, 10), dp(c, 12), dp(c, 10));
-        input.setBackground(rounded(c, surfaceAlt(c), 14));
+        input.setBackground(rounded(c, surfaceAlt(c), 12));
     }
 
     static android.graphics.drawable.Drawable rowBackground(Context c) {
-        RippleDrawable ripple = new RippleDrawable(
+        return new RippleDrawable(
                 ColorStateList.valueOf(ripple(c)),
-                rounded(c, surfaceAlt(c), 14),
+                new ColorDrawable(Color.TRANSPARENT),
                 null);
-        return ripple;
+    }
+
+    static View divider(Context c) {
+        View divider = new View(c);
+        divider.setBackgroundColor(outline(c));
+        return divider;
     }
 
     static android.graphics.drawable.Drawable rounded(Context c, int color, int radiusDp) {
@@ -250,14 +294,16 @@ final class AppUi {
         return d;
     }
 
-    static int background(Context c) { return dark(c) ? 0xFF101216 : 0xFFF5F6F8; }
-    static int surface(Context c) { return dark(c) ? 0xFF181B20 : Color.WHITE; }
-    static int surfaceAlt(Context c) { return dark(c) ? 0xFF22262D : 0xFFF0F2F5; }
-    static int textPrimary(Context c) { return dark(c) ? 0xFFF3F4F6 : 0xFF17191D; }
-    static int textSecondary(Context c) { return dark(c) ? 0xFFADB3BD : 0xFF666D78; }
-    static int outline(Context c) { return dark(c) ? 0xFF30353D : 0xFFE0E3E8; }
+    static int background(Context c) { return dark(c) ? 0xFF0E1013 : 0xFFF4F5F7; }
+    static int surface(Context c) { return dark(c) ? 0xFF181B20 : 0xFFFFFFFF; }
+    static int surfaceAlt(Context c) { return dark(c) ? 0xFF23272E : 0xFFF0F2F5; }
+    static int textPrimary(Context c) { return dark(c) ? 0xFFF4F5F7 : 0xFF17191D; }
+    static int textSecondary(Context c) { return dark(c) ? 0xFFAEB4BE : 0xFF69707B; }
+    static int outline(Context c) { return dark(c) ? 0xFF292E35 : 0xFFE6E8EC; }
     static int success(Context c) { return dark(c) ? 0xFF7ED7A2 : 0xFF197A45; }
     static int warning(Context c) { return dark(c) ? 0xFFFFC266 : 0xFFA05A00; }
+    static int successSurface(Context c) { return dark(c) ? 0xFF173527 : 0xFFE9F6EE; }
+    static int warningSurface(Context c) { return dark(c) ? 0xFF3A2A13 : 0xFFFFF1DF; }
     static int accent(Context c) { return dark(c) ? 0xFF9CC2FF : 0xFF285FBE; }
     static int ripple(Context c) { return dark(c) ? 0x22FFFFFF : 0x12000000; }
 
