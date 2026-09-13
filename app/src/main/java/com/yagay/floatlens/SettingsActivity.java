@@ -11,6 +11,7 @@ public class SettingsActivity extends AppCompatActivity {
     private FloatSettings fs;
     private EditText hidePackagesEdit;
     private TextView dictionaryStatusView;
+    private TextView aiStatusView;
     private final String[] ids = ActionId.availableIds();
 
     @Override protected void onCreate(Bundle b) {
@@ -73,8 +74,11 @@ public class SettingsActivity extends AppCompatActivity {
         }
         ocrLanguageMultiSelect(root);
 
-        title(root, "本地词典");
+        title(root, "词典");
         dictionarySettingsEntry(root);
+
+        title(root, "AI 助手");
+        aiSettingsEntry(root);
 
         title(root, "环境与显示");
         check(root, "键盘出现时避让悬浮图标", FloatSettings.K_IME_AVOID, fs.imeAvoid());
@@ -107,6 +111,7 @@ public class SettingsActivity extends AppCompatActivity {
     @Override protected void onResume() {
         super.onResume();
         refreshDictionarySummary();
+        refreshAiSummary();
     }
 
     @Override protected void onPause() { saveHidePackages(); super.onPause(); }
@@ -117,7 +122,7 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void dictionarySettingsEntry(LinearLayout root) {
         TextView note = new TextView(this);
-        note.setText("ECCEDICT 数据单独下载，不打包进 APK；下载后支持 English → 中文和中文 → English 离线查询。");
+        note.setText("使用在线词库中心按需下载 ECDICT、WikDict、FreeDict、CC-CEDICT 等本地词典，也可以继续使用在线 Wiktionary。");
         note.setPadding(0, 0, 0, dp(6));
         root.addView(note);
 
@@ -126,7 +131,7 @@ public class SettingsActivity extends AppCompatActivity {
         root.addView(dictionaryStatusView);
 
         Button manage = new Button(this);
-        manage.setText("ECCEDICT 下载 / 更新 / 删除");
+        manage.setText("词典设置 / 在线词库中心");
         manage.setOnClickListener(v -> startActivity(new android.content.Intent(this, DictionarySettingsActivity.class)));
         root.addView(manage, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         refreshDictionarySummary();
@@ -134,14 +139,44 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void refreshDictionarySummary() {
         if (dictionaryStatusView == null) return;
-        if (DictionaryManager.isDownloading()) {
-            dictionaryStatusView.setText("状态：正在下载或建立中英双向索引…");
-        } else if (DictionaryManager.isReady(this)) {
-            double mb = DictionaryManager.installedBytes(this) / 1024d / 1024d;
-            dictionaryStatusView.setText(String.format(java.util.Locale.ROOT, "状态：已安装 · %.1f MB · 中英/英中可用", mb));
-        } else {
-            dictionaryStatusView.setText("状态：未下载");
-        }
+        int installed = DictionaryLibraryManager.installedCount(this);
+        boolean online = OnlineDictionaryClient.isEnabled(this);
+        boolean legacy = DictionaryManager.isReady(this);
+        StringBuilder text = new StringBuilder("本地词库：").append(installed).append(" 个");
+        if (legacy) text.append(" · 旧 ECCEDICT 可用");
+        text.append(" · 在线 Wiktionary：").append(online ? "已启用" : "已关闭");
+        dictionaryStatusView.setText(text.toString());
+    }
+
+    private void aiSettingsEntry(LinearLayout root) {
+        TextView note = new TextView(this);
+        note.setText("支持 OpenRouter Free 和自定义 OpenAI Compatible 接口。选中文字后可直接解释、翻译、总结、语法分析或继续聊天。");
+        note.setPadding(0, 0, 0, dp(6));
+        root.addView(note);
+
+        aiStatusView = new TextView(this);
+        aiStatusView.setPadding(0, 0, 0, dp(6));
+        root.addView(aiStatusView);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        Button settings = new Button(this);
+        settings.setText("AI 设置");
+        settings.setOnClickListener(v -> startActivity(new android.content.Intent(this, AiSettingsActivity.class)));
+        Button chat = new Button(this);
+        chat.setText("打开 AI 助手");
+        chat.setOnClickListener(v -> startActivity(new android.content.Intent(this, AiAssistantActivity.class)));
+        row.addView(settings, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(chat, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        root.addView(row);
+        refreshAiSummary();
+    }
+
+    private void refreshAiSummary() {
+        if (aiStatusView == null) return;
+        aiStatusView.setText(AiConfigStore.providerLabel(this) + " · "
+                + (AiConfigStore.isConfigured(this) ? "已配置" : "未配置")
+                + " · 模型：" + (AiConfigStore.model(this).isBlank() ? "未设置" : AiConfigStore.model(this)));
     }
 
     private void title(LinearLayout r, String s) { TextView t = new TextView(this); t.setText(s); t.setTextSize(20); t.setPadding(0, dp(24), 0, dp(10)); r.addView(t); }
