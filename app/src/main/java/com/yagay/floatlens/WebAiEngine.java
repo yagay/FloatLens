@@ -25,10 +25,9 @@ import java.util.Set;
 /**
  * Hidden webpage engine used by the native FloatLens AI window.
  *
- * All webpage providers share the same state machine and the same response extraction algorithm:
- * snapshot before send -> send -> verify send -> snapshot diff -> wait for stable text -> return.
- * Provider-specific logic is intentionally limited to home URL, composer/send selectors and the
- * amount of time a stable answer must remain unchanged.
+ * The transport/session state machine is shared by all providers. Response extraction uses a
+ * provider turn adapter for ChatGPT/Gemini/DeepSeek and a generic DOM-diff fallback for the
+ * remaining providers. This prevents already-rendered history from being mistaken for a new turn.
  */
 public final class WebAiEngine {
     public interface Listener {
@@ -39,6 +38,7 @@ public final class WebAiEngine {
     }
 
     private enum Stage { IDLE, LOADING, PREPARING, SENDING, WAITING }
+    private enum TurnMode { CHATGPT, GEMINI, DEEPSEEK, GENERIC }
 
     private static final long TIMEOUT_MS = 90_000L;
     private static final int POLL_MS = 650;
@@ -74,14 +74,19 @@ public final class WebAiEngine {
         final String homeUrl;
         final String[] composers;
         final String[] senders;
+        final TurnMode turnMode;
         final long stableMs;
+        final long hydrationAfterLoadMs;
 
-        ProviderProfile(String id, String homeUrl, String[] composers, String[] senders, long stableMs) {
+        ProviderProfile(String id, String homeUrl, String[] composers, String[] senders,
+                        TurnMode turnMode, long stableMs, long hydrationAfterLoadMs) {
             this.id = id;
             this.homeUrl = homeUrl;
             this.composers = composers;
             this.senders = senders;
+            this.turnMode = turnMode;
             this.stableMs = stableMs;
+            this.hydrationAfterLoadMs = hydrationAfterLoadMs;
         }
     }
 
@@ -105,7 +110,9 @@ public final class WebAiEngine {
                     "button[aria-label=\"发送\"]",
                     "button[aria-label=\"发送消息\"]"
             },
-            3_200L
+            TurnMode.CHATGPT,
+            3_200L,
+            2_800L
     );
 
     private static final ProviderProfile GEMINI = new ProviderProfile(
@@ -127,7 +134,9 @@ public final class WebAiEngine {
                     "button[aria-label*=\"Send\"]:not([disabled])",
                     "button[aria-label*=\"发送\"]:not([disabled])"
             },
-            2_600L
+            TurnMode.GEMINI,
+            3_200L,
+            1_500L
     );
 
     private static final ProviderProfile DEEPSEEK = new ProviderProfile(
@@ -156,7 +165,9 @@ public final class WebAiEngine {
                     "button[aria-label*=\"发送\"]",
                     "button[type=\"submit\"]"
             },
-            2_900L
+            TurnMode.DEEPSEEK,
+            4_500L,
+            1_200L
     );
 
     private static final ProviderProfile CLAUDE = new ProviderProfile(
@@ -172,7 +183,9 @@ public final class WebAiEngine {
                     "button[data-testid*=\"send\"]",
                     "button[type=\"submit\"]"
             },
-            2_500L
+            TurnMode.GENERIC,
+            2_800L,
+            800L
     );
 
     private static final ProviderProfile GROK = new ProviderProfile(
@@ -188,7 +201,9 @@ public final class WebAiEngine {
                     "button[data-testid*=\"send\"]",
                     "button[type=\"submit\"]"
             },
-            2_500L
+            TurnMode.GENERIC,
+            2_800L,
+            800L
     );
 
     private final Context context;
@@ -205,10 +220,15 @@ public final class WebAiEngine {
     private long candidateStableSince;
     private long startedAt;
     private long lastDebugLogAt;
+    private long baselineSamplingStartedAt;
     private int composerAttempts;
     private int sendAttempts;
     private int emptyPolls;
     private int baselineCount;
+    private int baselineTurnCount;
+    private int baselineLastTurnCount = -1;
+    private int baselineStableSamples;
+    private boolean baselineAfterLoad;
     private boolean pageReady;
     private boolean sending;
     private boolean destroyed;
@@ -221,6 +241,8 @@ public final class WebAiEngine {
         boolean sendReady;
         boolean composerReady;
         int count;
+        int turnCount;
+        String lastTurn = "";
         String debug = "";
     }
 
@@ -279,9 +301,12 @@ public final class WebAiEngine {
                 rememberConversationUrl(target, url);
                 diag("PAGE_FINISH", "url=" + safePath(url));
                 if (!sending || pendingPrompt.isEmpty()) return;
+
                 if (stage == Stage.LOADING) {
                     stage = Stage.PREPARING;
-                    main.postDelayed(WebAiEngine.this::captureBaseline, 500L);
+                    baselineAfterLoad = true;
+                    resetBaselineSampler();
+                    main.postDelayed(WebAiEngine.this::captureBaseline, 350L);
                 } else if (stage == Stage.WAITING) {
                     main.postDelayed(WebAiEngine.this::pollAnswer, 450L);
                 }
@@ -291,8 +316,6 @@ public final class WebAiEngine {
                                                   android.webkit.WebResourceError error) {
                 String url = request == null || request.getUrl() == null ? "" : request.getUrl().toString();
                 String message = error == null ? "unknown" : String.valueOf(error.getDescription());
-                // DeepSeek currently probes hif-* helper hosts. These may be filtered by DNS and are
-                // not proof that the chat send itself failed, so keep them diagnostic-only.
                 String event = isDeepSeekAuxHost(url) ? "AUX_WEB_ERROR" : "WEB_ERROR";
                 diag(event, "url=" + safePath(url) + " error=" + compactDebug(message));
                 super.onReceivedError(view, request, error);
@@ -327,6 +350,7 @@ public final class WebAiEngine {
         target = nextTarget;
         pageReady = false;
         clearBaseline();
+        resetBaselineSampler();
         lastCandidate = "";
         lastDomDebug = "";
         try { webView.stopLoading(); } catch (Throwable ignored) {}
@@ -369,6 +393,7 @@ public final class WebAiEngine {
         sendAttempts = 0;
         emptyPolls = 0;
         clearBaseline();
+        resetBaselineSampler();
         lastCandidate = "";
         lastDomDebug = "";
         lastLoggedDebug = "";
@@ -379,6 +404,7 @@ public final class WebAiEngine {
         diag("SEND_BEGIN", "promptLen=" + prompt.length() + " current=" + safePath(current));
         if (!pageReady || !sameTarget(current, target)) {
             stage = Stage.LOADING;
+            baselineAfterLoad = true;
             String resume = savedConversationUrl(target);
             String url = resume.isEmpty() ? profile().homeUrl : resume;
             status(resume.isEmpty()
@@ -388,21 +414,65 @@ public final class WebAiEngine {
             webView.loadUrl(url);
         } else {
             stage = Stage.PREPARING;
+            baselineAfterLoad = false;
+            resetBaselineSampler();
             status("正在继续 " + label() + " 的当前网页对话…");
-            captureBaseline();
+            main.postDelayed(this::captureBaseline, 120L);
         }
     }
 
+    /**
+     * Baseline must be captured after historical turns finish hydrating. This is especially
+     * important for ChatGPT: on a restored /c/... URL the composer can appear before old assistant
+     * turns, which previously made baseline=0 and caused an old answer to be returned as "new".
+     */
     private void captureBaseline() {
         if (!active(Stage.PREPARING)) return;
+        if (timedOut()) {
+            fail("等待网页历史对话加载超时" + diagnosticSuffix());
+            return;
+        }
+
         evaluate(snapshotScript(profile()), raw -> {
             if (!active(Stage.PREPARING)) return;
             DomSnapshot snapshot = parseSnapshot(raw);
+            long now = SystemClock.uptimeMillis();
+            if (baselineSamplingStartedAt == 0L) baselineSamplingStartedAt = now;
+            long elapsed = now - baselineSamplingStartedAt;
+
+            if (snapshot.composerReady && snapshot.turnCount == baselineLastTurnCount) {
+                baselineStableSamples++;
+            } else {
+                baselineStableSamples = 0;
+            }
+            baselineLastTurnCount = snapshot.turnCount;
+            lastDomDebug = snapshot.debug;
+
+            ProviderProfile p = profile();
+            long minHydration = baselineAfterLoad ? p.hydrationAfterLoadMs : 180L;
+            boolean canonical = p.turnMode != TurnMode.GENERIC;
+            boolean waitForComposer = !snapshot.composerReady && elapsed < 5_000L;
+            boolean waitForHydration = canonical
+                    && (elapsed < minHydration || baselineStableSamples < 1);
+
+            if (waitForComposer || waitForHydration) {
+                if (now - lastDebugLogAt >= DEBUG_LOG_INTERVAL_MS) {
+                    lastDebugLogAt = now;
+                    diag("BASELINE_WAIT", snapshot.debug + ",elapsed=" + elapsed
+                            + ",stable=" + baselineStableSamples);
+                }
+                status(waitForComposer
+                        ? "等待 " + label() + " 输入框/登录状态…"
+                        : "正在等待 " + label() + " 历史对话加载完成…");
+                main.postDelayed(this::captureBaseline, 420L);
+                return;
+            }
+
             baselineTexts.clear();
             baselineTexts.addAll(snapshot.texts);
             baselineCount = snapshot.texts.size();
-            lastDomDebug = snapshot.debug;
-            diag("BASELINE", snapshot.debug);
+            baselineTurnCount = snapshot.turnCount;
+            diag("BASELINE", snapshot.debug + ",baselineTurns=" + baselineTurnCount);
             tryComposer();
         });
     }
@@ -413,6 +483,7 @@ public final class WebAiEngine {
             fail("等待网页输入框超时" + diagnosticSuffix());
             return;
         }
+
         composerAttempts++;
         evaluate(fillScript(profile(), pendingPrompt), raw -> {
             if (!active(Stage.PREPARING)) return;
@@ -426,7 +497,8 @@ public final class WebAiEngine {
             } else if (value.startsWith("error")) {
                 fail("网页输入失败: " + value);
             } else if (composerAttempts >= MAX_COMPOSER_ATTEMPTS) {
-                needsLogin("没有找到聊天输入框。可能尚未登录、需要验证码，或该网站暂时不允许 WebView 自动操作。" + diagnosticSuffix());
+                needsLogin("没有找到聊天输入框。可能尚未登录、需要验证码，或该网站暂时不允许 WebView 自动操作。"
+                        + diagnosticSuffix());
             } else {
                 status("等待 " + label() + " 登录/输入框…");
                 main.postDelayed(this::tryComposer, 700L);
@@ -440,6 +512,7 @@ public final class WebAiEngine {
             fail("等待网页发送超时" + diagnosticSuffix());
             return;
         }
+
         sendAttempts++;
         evaluate(sendScript(profile()), raw -> {
             if (!active(Stage.SENDING)) return;
@@ -456,7 +529,8 @@ public final class WebAiEngine {
                 main.postDelayed(this::trySend, 450L);
             } else {
                 lastDomDebug = value;
-                needsLogin("文字已经填入，但没有可靠找到发送按钮。请打开一次网页登录页面确认登录状态。" + diagnosticSuffix());
+                needsLogin("文字已经填入，但没有可靠找到发送按钮。请打开一次网页登录页面确认登录状态。"
+                        + diagnosticSuffix());
             }
         });
     }
@@ -476,13 +550,15 @@ public final class WebAiEngine {
                 main.postDelayed(this::pollAnswer, 550L);
                 return;
             }
+
             if (sendAttempts < MAX_SEND_ATTEMPTS) {
                 lastDomDebug = value;
                 status(label() + " 发送未确认，正在重试…");
                 main.postDelayed(this::trySend, 450L);
             } else {
                 lastDomDebug = value;
-                needsLogin("网页没有确认消息已发送。请打开一次网页登录确认页面状态。" + diagnosticSuffix());
+                needsLogin("网页没有确认消息已发送。请打开一次网页登录确认页面状态。"
+                        + diagnosticSuffix());
             }
         });
     }
@@ -493,12 +569,13 @@ public final class WebAiEngine {
             fail("等待网页回答超时" + diagnosticSuffix());
             return;
         }
+
         evaluate(snapshotScript(profile()), raw -> {
             if (!active(Stage.WAITING)) return;
             DomSnapshot snapshot = parseSnapshot(raw);
             lastDomDebug = snapshot.debug;
             maybeLogSnapshot(snapshot);
-            String candidate = chooseNewAnswer(snapshot.texts);
+            String candidate = chooseNewAnswer(snapshot);
             long now = SystemClock.uptimeMillis();
             rememberConversationUrl(target, webView.getUrl());
 
@@ -506,10 +583,14 @@ public final class WebAiEngine {
                 emptyPolls++;
                 if (snapshot.generating) {
                     status(label() + " 正在生成回答…");
-                } else if (snapshot.count > baselineCount) {
+                } else if (profile().turnMode != TurnMode.GENERIC
+                        && snapshot.turnCount > baselineTurnCount) {
+                    status(label() + " 已建立新回答轮次，正在读取内容…");
+                } else if (profile().turnMode == TurnMode.GENERIC
+                        && snapshot.count > baselineCount) {
                     status(label() + " 已有新的内容节点，正在读取回答…");
                 } else if (emptyPolls >= 5) {
-                    status(label() + " 已发送，但还没有检测到新的回答内容…");
+                    status(label() + " 已发送，但还没有检测到新的回答轮次…");
                 } else {
                     status("等待 " + label() + " 回答…");
                 }
@@ -539,7 +620,10 @@ public final class WebAiEngine {
                 sending = false;
                 pendingPrompt = "";
                 stage = Stage.IDLE;
-                diag("RESULT", "answerLen=" + answer.length() + " url=" + safePath(webView.getUrl()));
+                diag("RESULT", "answerLen=" + answer.length()
+                        + " turnCount=" + snapshot.turnCount
+                        + " baselineTurns=" + baselineTurnCount
+                        + " url=" + safePath(webView.getUrl()));
                 status(EmbeddedWebAiActivity.targetLabel(doneTarget) + " 网页回答已返回到窗口");
                 if (listener != null) listener.onResult(doneTarget, answer);
             } else {
@@ -548,13 +632,30 @@ public final class WebAiEngine {
         });
     }
 
-    private String chooseNewAnswer(List<String> values) {
+    private String chooseNewAnswer(DomSnapshot snapshot) {
+        if (snapshot == null) return "";
+        ProviderProfile p = profile();
+
+        if (p.turnMode != TurnMode.GENERIC) {
+            // Only a structurally new provider turn can satisfy this request. Old nodes are never
+            // reconsidered, even if controls or metadata inside them mutate after sending.
+            if (snapshot.turnCount <= baselineTurnCount) return "";
+            return sanitizeCandidate(snapshot.lastTurn);
+        }
+
+        return chooseGenericAnswer(snapshot.texts);
+    }
+
+    private String chooseGenericAnswer(List<String> values) {
         if (values == null || values.isEmpty()) return "";
+        if (values.size() <= baselineCount) return "";
+
         String best = "";
         int bestScore = Integer.MIN_VALUE;
-        for (int i = 0; i < values.size(); i++) {
+        int start = Math.min(baselineCount, values.size());
+        for (int i = start; i < values.size(); i++) {
             String raw = compact(values.get(i));
-            if (raw.isEmpty() || baselineTexts.contains(raw)) continue;
+            if (raw.isEmpty()) continue;
             String candidate = sanitizeCandidate(raw);
             if (candidate.isEmpty()) continue;
             int score = candidateScore(candidate, i, values.size());
@@ -569,7 +670,6 @@ public final class WebAiEngine {
     private int candidateScore(String text, int index, int total) {
         int len = text == null ? 0 : text.length();
         int score = Math.min(180, len);
-        // Later DOM nodes are normally newer turns; length prevents short chips/buttons winning.
         score += Math.max(0, 40 - (total - 1 - index) * 4);
         if (len >= 60) score += 35;
         else if (len < 18) score -= 80;
@@ -668,7 +768,7 @@ public final class WebAiEngine {
                     for(var b=0;b<list.length;b++){if(usable(list[b])&&buttons.indexOf(list[b])<0)buttons.push(list[b]);}
                   }
                   if(!buttons.length){
-                    var all=root.querySelectorAll('button,[role="button"],gem-icon-button');
+                    var all=root.querySelectorAll('button,[role=\"button\"],gem-icon-button');
                     for(var c=0;c<all.length;c++){
                       var x=all[c],meta=((x.getAttribute('aria-label')||'')+' '+(x.getAttribute('title')||'')+' '+(x.getAttribute('data-testid')||'')+' '+(x.className||'')+' '+(x.innerText||x.textContent||'')).toLowerCase();
                       if(usable(x)&&(/(^|\\s)(send|submit)(\\s|$)/i.test(meta)||meta.indexOf('发送')>=0||meta.indexOf('send-button')>=0))buttons.push(x);
@@ -721,50 +821,88 @@ public final class WebAiEngine {
     }
 
     /**
-     * Unified snapshot. It uses common semantic response containers, removes nested wrapper
-     * duplicates and keeps the leaf-most readable blocks. This avoids a provider-specific answer
-     * class becoming a single point of failure while preventing short Gemini UI chips from winning.
+     * Snapshot contains two channels:
+     * 1) provider canonical turnCount/lastTurn for ChatGPT, Gemini and DeepSeek;
+     * 2) generic semantic text blocks for Claude/Grok fallback.
      */
     private String snapshotScript(ProviderProfile p) {
         String template = """
                 (function(){try{
+                  var provider=__PROVIDER_JSON__;
                   var composerSels=__COMPOSERS__;
                   var sendSels=__SENDERS__;
                   function visible(x){if(!x)return false;var s=getComputedStyle(x),r=x.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;}
                   function clean(t){return ((t||'')+'').replace(/\\u00a0/g,' ').replace(/[ \\t]+\\n/g,'\\n').replace(/\\n{3,}/g,'\\n\\n').trim();}
                   function meta(x){return (((x.getAttribute&&x.getAttribute('data-message-author-role'))||'')+' '+((x.getAttribute&&x.getAttribute('data-author'))||'')+' '+((x.getAttribute&&x.getAttribute('data-testid'))||'')+' '+((x.getAttribute&&x.getAttribute('aria-label'))||'')+' '+(x.className||'')).toLowerCase();}
+
                   var composers=[];
                   for(var ci=0;ci<composerSels.length;ci++){
                     var cl=document.querySelectorAll(composerSels[ci]);
                     for(var cj=0;cj<cl.length;cj++)if(composers.indexOf(cl[cj])<0)composers.push(cl[cj]);
                   }
                   function touchesComposer(x){for(var i=0;i<composers.length;i++){var c=composers[i];if(c===x||c.contains(x)||x.contains(c))return true;}return false;}
+
+                  var turnNodes=[];
+                  if(provider==='chatgpt'){
+                    var cq=document.querySelectorAll('[data-message-author-role=\"assistant\"]');
+                    for(var cqi=0;cqi<cq.length;cqi++)turnNodes.push(cq[cqi]);
+                    if(!turnNodes.length){
+                      var ca=document.querySelectorAll('article[data-testid*=\"conversation-turn\"]');
+                      for(var cai=0;cai<ca.length;cai++){
+                        if(ca[cai].querySelector('[data-message-author-role=\"assistant\"]'))turnNodes.push(ca[cai]);
+                      }
+                    }
+                  }else if(provider==='gemini'){
+                    var gq=document.querySelectorAll('model-response');
+                    for(var gqi=0;gqi<gq.length;gqi++)turnNodes.push(gq[gqi]);
+                  }else if(provider==='deepseek'){
+                    var dq=document.querySelectorAll('.ds-markdown:not(.ds-markdown--think)');
+                    for(var dqi=0;dqi<dq.length;dqi++){
+                      var dn=dq[dqi];
+                      if(!dn.closest('[class*=\"reasoning\"],[class*=\"think-content\"]'))turnNodes.push(dn);
+                    }
+                  }
+
+                  function canonicalText(n){
+                    if(!n)return '';
+                    var content=n;
+                    if(provider==='chatgpt'){
+                      content=n.querySelector('.markdown,.prose,[class*=\"markdown\"]')||n;
+                    }else if(provider==='gemini'){
+                      content=n.querySelector('message-content,.model-response-text,[class*=\"model-response-text\"],.response-content,.markdown')||n;
+                    }
+                    return clean(content.innerText||content.textContent||'');
+                  }
+                  var lastTurn=turnNodes.length?canonicalText(turnNodes[turnNodes.length-1]):'';
+
                   function ignored(x){
                     if(!x||!visible(x)||touchesComposer(x))return true;
                     var tag=(x.tagName||'').toLowerCase();
                     if(tag==='button'||tag==='input'||tag==='textarea')return true;
-                    try{if(x.closest('nav,header,footer,aside,[role="navigation"],[class*="reasoning"],[class*="think-content"],.ds-markdown--think'))return true;}catch(ignore){}
+                    try{if(x.closest('nav,header,footer,aside,[role=\"navigation\"],[class*=\"reasoning\"],[class*=\"think-content\"],.ds-markdown--think'))return true;}catch(ignore){}
                     var m=meta(x);
                     if(m.indexOf('user')>=0&&m.indexOf('assistant')<0&&m.indexOf('model')<0)return true;
-                    try{if(x.closest('[data-message-author-role="user"],[data-author="user"]'))return true;}catch(ignore2){}
+                    try{if(x.closest('[data-message-author-role=\"user\"],[data-author=\"user\"]'))return true;}catch(ignore2){}
                     return false;
                   }
+
                   var root=document.querySelector('main')||document.body;
                   var sels=[
-                    '[data-message-author-role="assistant"]','[data-testid*="assistant"]',
+                    '[data-message-author-role=\"assistant\"]','[data-testid*=\"assistant\"]',
                     'model-response','message-content','.model-response-text','.response-content',
-                    '.ds-markdown:not(.ds-markdown--think)','article','[class*="message"]',
-                    '[class*="response"]','.markdown','.prose'
+                    '.ds-markdown:not(.ds-markdown--think)','article','[class*=\"message\"]',
+                    '[class*=\"response\"]','.markdown','.prose'
                   ];
                   var raw=[];
                   for(var si=0;si<sels.length;si++){
                     var list=root.querySelectorAll(sels[si]);
                     for(var sj=0;sj<list.length;sj++){var x=list[sj];if(raw.indexOf(x)<0&&!ignored(x))raw.push(x);}
                   }
-                  raw.sort(function(a,b){if(a===b)return 0;var p=a.compareDocumentPosition(b);return (p&Node.DOCUMENT_POSITION_FOLLOWING)?-1:1;});
+                  raw.sort(function(a,b){if(a===b)return 0;var pos=a.compareDocumentPosition(b);return (pos&Node.DOCUMENT_POSITION_FOLLOWING)?-1:1;});
                   var nodes=[];
                   for(var ri=0;ri<raw.length;ri++){
-                    var n=raw[ri],nt=clean(n.innerText||n.textContent||'');if(nt.length<2||nt.length>30000)continue;
+                    var n=raw[ri],nt=clean(n.innerText||n.textContent||'');
+                    if(nt.length<2||nt.length>30000)continue;
                     var hasUsefulChild=false;
                     for(var rj=0;rj<raw.length;rj++){
                       var d=raw[rj];if(d===n||!n.contains(d))continue;
@@ -775,34 +913,53 @@ public final class WebAiEngine {
                   }
                   var out=[],seen={};
                   for(var ni=0;ni<nodes.length;ni++){
-                    var n=nodes[ni],t=clean(n.innerText||n.textContent||'');
+                    var on=nodes[ni],t=clean(on.innerText||on.textContent||'');
                     if(t.length<2||t.length>30000||seen[t])continue;
-                    var m=meta(n);
-                    if(t.length<24&&(/^(copy|复制|share|分享|edit|编辑|retry|重试|good|bad|like|dislike)$/i.test(t)||m.indexOf('button')>=0))continue;
+                    var om=meta(on);
+                    if(t.length<24&&(/^(copy|复制|share|分享|edit|编辑|retry|重试|good|bad|like|dislike)$/i.test(t)||om.indexOf('button')>=0))continue;
                     seen[t]=1;out.push(t);
                   }
+
                   var generating=false;
-                  var controls=document.querySelectorAll('button,[role="button"],gem-icon-button');
+                  var controls=document.querySelectorAll('button,[role=\"button\"],gem-icon-button');
                   for(var gi=0;gi<controls.length;gi++){
                     var g=controls[gi];if(!visible(g)||g.disabled||g.getAttribute('aria-disabled')==='true')continue;
                     var gm=((g.getAttribute('data-testid')||'')+' '+(g.getAttribute('aria-label')||'')+' '+(g.getAttribute('title')||'')+' '+(g.innerText||g.textContent||'')+' '+(g.className||'')).toLowerCase();
                     if(gm.indexOf('stop generating')>=0||gm.indexOf('stop response')>=0||gm.indexOf('abort')>=0||gm.indexOf('停止生成')>=0||gm==='stop'||gm.indexOf(' stop ')>=0){generating=true;break;}
                   }
+
                   var sendReady=false;
                   for(var xi=0;xi<sendSels.length&&!sendReady;xi++){
                     var sl=document.querySelectorAll(sendSels[xi]);
-                    for(var xj=0;xj<sl.length;xj++){var sb=sl[xj];if(visible(sb)&&!sb.disabled&&sb.getAttribute('aria-disabled')!=='true'){sendReady=true;break;}}
+                    for(var xj=0;xj<sl.length;xj++){
+                      var sb=sl[xj];
+                      if(visible(sb)&&!sb.disabled&&sb.getAttribute('aria-disabled')!=='true'){sendReady=true;break;}
+                    }
                   }
                   var composerReady=false;
-                  for(var qi=0;qi<composers.length;qi++){if(visible(composers[qi])&&!composers[qi].disabled){composerReady=true;break;}}
+                  for(var qi=0;qi<composers.length;qi++){
+                    if(visible(composers[qi])&&!composers[qi].disabled){composerReady=true;break;}
+                  }
+
                   var lastLen=out.length?out[out.length-1].length:0;
-                  return JSON.stringify({texts:out.slice(-80),generating:generating,sendReady:sendReady,composerReady:composerReady,count:out.length,debug:'provider=__PROVIDER__ candidates='+out.length+',lastLen='+lastLen+',generating='+generating+',sendReady='+sendReady+',composerReady='+composerReady+',url='+location.pathname});
-                }catch(e){return JSON.stringify({texts:[],generating:false,sendReady:false,composerReady:false,count:0,debug:'snapshot error:'+String(e)});}})();
+                  return JSON.stringify({
+                    texts:out.slice(-80),
+                    generating:generating,
+                    sendReady:sendReady,
+                    composerReady:composerReady,
+                    count:out.length,
+                    turnCount:turnNodes.length,
+                    lastTurn:lastTurn,
+                    debug:'provider='+provider+',candidates='+out.length+',lastLen='+lastLen+',turns='+turnNodes.length+',lastTurnLen='+lastTurn.length+',generating='+generating+',sendReady='+sendReady+',composerReady='+composerReady+',url='+location.pathname
+                  });
+                }catch(e){
+                  return JSON.stringify({texts:[],generating:false,sendReady:false,composerReady:false,count:0,turnCount:0,lastTurn:'',debug:'snapshot error:'+String(e)});
+                }})();
                 """;
         return template
+                .replace("__PROVIDER_JSON__", JSONObject.quote(p.id))
                 .replace("__COMPOSERS__", jsArray(merge(p.composers, COMMON_COMPOSERS)))
-                .replace("__SENDERS__", jsArray(merge(p.senders, COMMON_SENDERS)))
-                .replace("__PROVIDER__", p.id);
+                .replace("__SENDERS__", jsArray(merge(p.senders, COMMON_SENDERS)));
     }
 
     private DomSnapshot parseSnapshot(String raw) {
@@ -826,6 +983,8 @@ public final class WebAiEngine {
             snapshot.sendReady = o.optBoolean("sendReady", false);
             snapshot.composerReady = o.optBoolean("composerReady", false);
             snapshot.count = o.optInt("count", snapshot.texts.size());
+            snapshot.turnCount = o.optInt("turnCount", 0);
+            snapshot.lastTurn = compact(o.optString("lastTurn", ""));
             snapshot.debug = o.optString("debug", "");
         } catch (Throwable t) {
             snapshot.debug = "parse error: " + messageOf(t);
@@ -915,6 +1074,13 @@ public final class WebAiEngine {
     private void clearBaseline() {
         baselineTexts.clear();
         baselineCount = 0;
+        baselineTurnCount = 0;
+    }
+
+    private void resetBaselineSampler() {
+        baselineSamplingStartedAt = 0L;
+        baselineLastTurnCount = -1;
+        baselineStableSamples = 0;
     }
 
     private SharedPreferences sessionPrefs() {
@@ -929,8 +1095,6 @@ public final class WebAiEngine {
         String saved = clean(sessionPrefs().getString(sessionKey(rawTarget), ""));
         if (saved.isEmpty()) return "";
         if (isReusableConversationUrl(rawTarget, saved)) return saved;
-        // Remove legacy BrowserAiBridge pseudo-URLs (for example /c/WEB:...) and any stale
-        // home/login URL so the bad value cannot force a new conversation on every restore.
         forgetConversationUrl(rawTarget);
         diag("SESSION_DROP", "target=" + EmbeddedWebAiActivity.normalizeTarget(rawTarget)
                 + " url=" + safePath(saved));
@@ -952,6 +1116,7 @@ public final class WebAiEngine {
         android.net.Uri uri;
         try { uri = android.net.Uri.parse(url); }
         catch (Throwable t) { return false; }
+
         String path = uri.getPath() == null ? "/" : uri.getPath();
         String lower = path.toLowerCase(Locale.ROOT);
         if (lower.contains("login") || lower.contains("signin") || lower.contains("sign-in")
@@ -976,8 +1141,8 @@ public final class WebAiEngine {
             case BrowserAiBridge.TARGET_GROK:
                 return !lower.equals("/") && lower.length() > 1;
             case BrowserAiBridge.TARGET_DEEPSEEK:
-                // DeepSeek persistent conversations use /a/chat/s/<UUID>.
-                return lower.startsWith("/a/chat/s/") && lower.length() > "/a/chat/s/".length() + 8;
+                return lower.startsWith("/a/chat/s/")
+                        && lower.length() > "/a/chat/s/".length() + 8;
             default:
                 return false;
         }
@@ -989,6 +1154,7 @@ public final class WebAiEngine {
         try { hostName = android.net.Uri.parse(url).getHost(); }
         catch (Throwable t) { hostName = null; }
         if (hostName == null) return false;
+
         hostName = hostName.toLowerCase(Locale.ROOT);
         switch (EmbeddedWebAiActivity.normalizeTarget(rawTarget)) {
             case BrowserAiBridge.TARGET_GEMINI:
