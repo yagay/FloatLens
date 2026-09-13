@@ -32,6 +32,7 @@ public final class WebAiEngine {
 
     private static final long TIMEOUT_MS = 90_000L;
     private static final long STABLE_MS = 1_700L;
+    private static final long DEEPSEEK_STABLE_MS = 2_600L;
     private static final int MAX_COMPOSER_ATTEMPTS = 14;
     private static final int POLL_MS = 650;
 
@@ -207,6 +208,10 @@ public final class WebAiEngine {
             js = fillScript(quoted,
                     "['#prompt-textarea','div#prompt-textarea[contenteditable=\\\"true\\\"]','textarea[data-testid=\\\"prompt-textarea\\\"]','textarea']",
                     true);
+        } else if (isDeepSeek()) {
+            js = fillScript(quoted,
+                    "['textarea#chat-input','textarea.chat-input','textarea.message-input-textarea','.ds-textarea textarea','textarea[placeholder]','textarea','div[contenteditable=\\\"true\\\"]']",
+                    true);
         } else {
             js = fillScript(quoted,
                     "['#prompt-textarea','textarea[placeholder]','textarea','[contenteditable=\\\"true\\\"][data-lexical-editor=\\\"true\\\"]','div.ProseMirror[contenteditable=\\\"true\\\"]','rich-textarea [contenteditable=\\\"true\\\"]','[contenteditable=\\\"true\\\"]']",
@@ -263,6 +268,16 @@ public final class WebAiEngine {
                     "var b=document.querySelector('button[data-testid=\\\"send-button\\\"]:not([disabled]),button[aria-label=\\\"Send prompt\\\"]:not([disabled]),button[aria-label*=\\\"Send\\\"]:not([disabled])');" +
                     "if(b){b.click();return 'sent-chatgpt';}" +
                     "var e=document.querySelector('#prompt-textarea,textarea[data-testid=\\\"prompt-textarea\\\"],textarea');var f=e&&e.closest?e.closest('form'):null;if(f&&f.requestSubmit){f.requestSubmit();return 'sent-form';}" +
+                    "if(e){key(e);return 'sent-key';}" +
+                    "return 'nosend';" +
+                    "function key(x){x.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));x.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));}" +
+                    "}catch(e){return 'error:'+String(e);}})();";
+        } else if (isDeepSeek()) {
+            js = "(function(){try{" +
+                    "var sels=['.ds-textarea-send-button','div[class*=\\\"send-button\\\"]','button[class*=\\\"send-button\\\"]','[class*=\\\"sendBtn\\\"]','button[aria-label*=\\\"Send\\\"]','button[aria-label*=\\\"发送\\\"]','button[type=\\\"submit\\\"]'];" +
+                    "var b=null;for(var i=0;i<sels.length&&!b;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j],r=x.getBoundingClientRect();if(r.width>8&&r.height>8&&!x.disabled&&x.getAttribute('aria-disabled')!=='true'){b=x;break;}}}" +
+                    "if(b){b.click();return 'sent-deepseek';}" +
+                    "var e=document.querySelector('textarea#chat-input,textarea.chat-input,textarea.message-input-textarea,.ds-textarea textarea,textarea,div[contenteditable=\\\"true\\\"]');var f=e&&e.closest?e.closest('form'):null;if(f&&f.requestSubmit){f.requestSubmit();return 'sent-form';}" +
                     "if(e){e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));return 'sent-key';}" +
                     "return 'nosend';}catch(e){return 'error:'+String(e);}})();";
         } else {
@@ -302,14 +317,15 @@ public final class WebAiEngine {
             lastDomDebug = snapshot.debug;
             String candidate = chooseNewAnswer(snapshot.texts);
             long now = SystemClock.uptimeMillis();
+            boolean dedicated = isGemini() || isChatGpt() || isDeepSeek();
 
             if (candidate.isEmpty()) {
                 emptyPolls++;
-                if ((isGemini() || isChatGpt()) && snapshot.modelCount > 0) {
+                if (dedicated && snapshot.modelCount > 0) {
                     status(snapshot.generating
                             ? label() + " 正在生成回答…"
                             : label() + " 已有回答节点，正在读取内容…");
-                } else if ((isGemini() || isChatGpt()) && emptyPolls >= 5) {
+                } else if (dedicated && emptyPolls >= 5) {
                     status(label() + " 已发送，但还没有检测到新的回答节点…");
                 } else {
                     status("等待 " + label() + " 回答…");
@@ -333,7 +349,8 @@ public final class WebAiEngine {
                 return;
             }
 
-            if (now - candidateStableSince >= STABLE_MS || ((isGemini() || isChatGpt()) && snapshot.sendReady)) {
+            long stableMs = isDeepSeek() ? DEEPSEEK_STABLE_MS : STABLE_MS;
+            if (now - candidateStableSince >= stableMs || (dedicated && snapshot.sendReady)) {
                 String answer = candidate;
                 String doneTarget = target;
                 sending = false;
@@ -388,6 +405,16 @@ public final class WebAiEngine {
                     "var generating=!!stop;var sendReady=!!document.querySelector('button[data-testid=\\\"send-button\\\"]:not([disabled]),button[aria-label=\\\"Send prompt\\\"]:not([disabled])');" +
                     "return JSON.stringify({texts:out.slice(-30),generating:generating,sendReady:sendReady,modelCount:msgs.length,debug:'chatgpt messages='+msgs.length+',texts='+out.length+',generating='+generating+',sendReady='+sendReady});" +
                     "}catch(e){return JSON.stringify({texts:[],generating:false,sendReady:false,modelCount:0,debug:'chatgpt script error:'+String(e)});}})();";
+        }
+
+        if (isDeepSeek()) {
+            return "(function(){try{" +
+                    "var nodes=Array.from(document.querySelectorAll('.ds-markdown'));var out=[],seen={};" +
+                    "nodes.forEach(function(n){var cls=(n.className||'').toString();if(cls.indexOf('ds-markdown--think')>=0)return;var thought=n.closest('.ds-markdown--think,[class*=\\\"reasoning\\\"],[class*=\\\"think-content\\\"]');if(thought)return;var t=(n.innerText||n.textContent||'').trim();if(t.length>1&&t.length<30000&&!seen[t]){seen[t]=1;out.push(t);}});" +
+                    "var generating=false;var controls=document.querySelectorAll('button,[role=\\\"button\\\"],[class*=\\\"ds-icon-button\\\"],[class*=\\\"send-button\\\"]');for(var i=0;i<controls.length;i++){var x=controls[i],a=((x.getAttribute('aria-label')||'')+' '+(x.getAttribute('title')||'')+' '+(x.textContent||'')+' '+(x.className||'')).toLowerCase();if(a.indexOf('stop')>=0||a.indexOf('停止')>=0||a.indexOf('abort')>=0){var r=x.getBoundingClientRect();if(r.width>0&&r.height>0&&x.getAttribute('aria-disabled')!=='true'&&!x.disabled){generating=true;break;}}}" +
+                    "var sends=document.querySelectorAll('.ds-textarea-send-button,div[class*=\\\"send-button\\\"],button[class*=\\\"send-button\\\"],[class*=\\\"sendBtn\\\"]');var sendReady=false;for(var j=0;j<sends.length;j++){var s=sends[j],r=s.getBoundingClientRect();if(r.width>8&&r.height>8&&!s.disabled&&s.getAttribute('aria-disabled')!=='true'){sendReady=true;break;}}" +
+                    "return JSON.stringify({texts:out.slice(-30),generating:generating,sendReady:sendReady,modelCount:nodes.length,debug:'deepseek markdown='+nodes.length+',answers='+out.length+',generating='+generating+',sendReady='+sendReady});" +
+                    "}catch(e){return JSON.stringify({texts:[],generating:false,sendReady:false,modelCount:0,debug:'deepseek script error:'+String(e)});}})();";
         }
 
         return "(function(){try{" +
@@ -446,6 +473,10 @@ public final class WebAiEngine {
 
     private boolean isChatGpt() {
         return BrowserAiBridge.TARGET_CHATGPT.equals(EmbeddedWebAiActivity.normalizeTarget(target));
+    }
+
+    private boolean isDeepSeek() {
+        return BrowserAiBridge.TARGET_DEEPSEEK.equals(EmbeddedWebAiActivity.normalizeTarget(target));
     }
 
     private String label() {
