@@ -2,7 +2,9 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.Insets;
 import android.graphics.Rect;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 
 import java.util.function.Consumer;
@@ -31,9 +33,27 @@ final class CircleSelectFrame {
         }, fail);
     }
 
-    /** Circle Select now owns the complete display, including status and navigation bar areas. */
+    /** Full display coordinate space used by screenshot/OCR/touch mapping. */
     static Rect contentBounds(Context c) {
         return displayBounds(c);
+    }
+
+    /**
+     * Interactive Circle Select window. Leave the bottom navigation-bar strip outside this window
+     * so 3-button/gesture navigation keeps receiving input directly from SystemUI.
+     */
+    static Rect interactiveBounds(Context c) {
+        WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
+        Rect display = new Rect(wm.getCurrentWindowMetrics().getBounds());
+        try {
+            Insets safe = wm.getCurrentWindowMetrics().getWindowInsets().getInsetsIgnoringVisibility(
+                    WindowInsets.Type.navigationBars() | WindowInsets.Type.displayCutout());
+            int bottomInset = Math.max(0, safe.bottom);
+            if (bottomInset > 0 && bottomInset < display.height()) {
+                display.bottom -= bottomInset;
+            }
+        } catch (Throwable ignored) {}
+        return display;
     }
 
     static Rect displayBounds(Context c) {

@@ -17,10 +17,6 @@ import android.view.View;
 import android.view.WindowManager;
 import android.widget.Magnifier;
 
-import androidx.core.graphics.Insets;
-import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
-
 import java.util.ArrayList;
 import java.util.List;
 
@@ -33,12 +29,14 @@ public final class CircleSelectOverlay {
         dismissActive("replace");
         Context app = c.getApplicationContext();
         FlOverlayWindowHost host = new FlOverlayWindowHost(app);
-        Rect contentBounds = CircleSelectFrame.contentBounds(app);
+        Rect contentBounds = CircleSelectFrame.interactiveBounds(app);
         Rect displayBounds = CircleSelectFrame.displayBounds(app);
         boolean shadeExpanded = FlSystemPanelController.notificationShadeExpanded();
 
         int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH;
         if (shadeExpanded) flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
@@ -48,7 +46,8 @@ public final class CircleSelectOverlay {
         lp.x = contentBounds.left - displayBounds.left;
         lp.y = contentBounds.top - displayBounds.top;
 
-        WorkspaceView view = new WorkspaceView(app, host, lp, screenshot, onClosed, !shadeExpanded);
+        WorkspaceView view = new WorkspaceView(app, host, lp, screenshot, onClosed, !shadeExpanded,
+                displayBounds.width(), displayBounds.height());
         if (!host.add(view, lp, "circle_select")) {
             DiagnosticLog.i(app, "CIRCLE_SELECT", "overlay add failed");
             return false;
@@ -60,6 +59,7 @@ public final class CircleSelectOverlay {
         DiagnosticLog.i(app, "CIRCLE_SELECT", "overlay shown "
                 + screenshot.getWidth() + "x" + screenshot.getHeight()
                 + " bounds=" + contentBounds.toShortString()
+                + " display=" + displayBounds.toShortString()
                 + " accessibilityHost=" + host.isAccessibilityHosted());
         return true;
     }
@@ -109,6 +109,8 @@ public final class CircleSelectOverlay {
         private final WindowManager.LayoutParams windowLayout;
         private final Bitmap screenshot;
         private final Runnable onClosed;
+        private final int coordinateWidth;
+        private final int coordinateHeight;
         private final CircleTextSelectionModel selection;
         private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private final Paint shadePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -142,7 +144,8 @@ public final class CircleSelectOverlay {
         private Magnifier magnifier;
 
         WorkspaceView(Context c, FlOverlayWindowHost host, WindowManager.LayoutParams windowLayout,
-                      Bitmap screenshot, Runnable onClosed, boolean keyFocusEnabled) {
+                      Bitmap screenshot, Runnable onClosed, boolean keyFocusEnabled,
+                      int coordinateWidth, int coordinateHeight) {
             super(c);
             context = c;
             this.host = host;
@@ -150,6 +153,8 @@ public final class CircleSelectOverlay {
             this.screenshot = screenshot;
             this.onClosed = onClosed;
             this.keyFocusEnabled = keyFocusEnabled;
+            this.coordinateWidth = Math.max(1, coordinateWidth);
+            this.coordinateHeight = Math.max(1, coordinateHeight);
             selection = new CircleTextSelectionModel(screenshot.getWidth(), screenshot.getHeight());
             setClickable(true);
             setFocusable(true);
@@ -207,10 +212,10 @@ public final class CircleSelectOverlay {
                                     float snap = dp(ROI_RESULT_SNAP_DISTANCE_DP);
                                     startHit = selection.findSelectionWord(
                                             refinementLineStartX, refinementLineStartY,
-                                            getWidth(), getHeight(), snap);
+                                            coordinateWidth, coordinateHeight, snap);
                                     endHit = selection.findSelectionWord(
                                             refinementLineEndX, refinementLineEndY,
-                                            getWidth(), getHeight(), snap);
+                                            coordinateWidth, coordinateHeight, snap);
                                     if (startHit >= 0 && endHit >= 0) {
                                         selection.selectSingle(startHit);
                                         selection.updateEnd(endHit);
@@ -223,7 +228,7 @@ public final class CircleSelectOverlay {
                                     }
                                 } else {
                                     int hit = selection.findSelectionWord(refinementTapX, refinementTapY,
-                                            getWidth(), getHeight(), dp(ROI_RESULT_SNAP_DISTANCE_DP));
+                                            coordinateWidth, coordinateHeight, dp(ROI_RESULT_SNAP_DISTANCE_DP));
                                     startHit = hit;
                                     if (hit >= 0) {
                                         selection.selectSingle(hit);
@@ -292,12 +297,13 @@ public final class CircleSelectOverlay {
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            canvas.drawBitmap(screenshot, null, new Rect(0, 0, getWidth(), getHeight()), bitmapPaint);
+            // Draw in full-display coordinates; the shorter window clips the navigation strip without scaling.
+            canvas.drawBitmap(screenshot, null, new Rect(0, 0, coordinateWidth, coordinateHeight), bitmapPaint);
             canvas.drawRect(0, 0, getWidth(), getHeight(), shadePaint);
 
             if (selection.hasSelection()) {
                 for (int index : selection.selectionIndices()) {
-                    canvas.drawRoundRect(selection.wordViewRect(index, getWidth(), getHeight()),
+                    canvas.drawRoundRect(selection.wordViewRect(index, coordinateWidth, coordinateHeight),
                             dp(2), dp(2), selectedPaint);
                 }
                 drawHandles(canvas, selection.low(), selection.high());
@@ -332,8 +338,7 @@ public final class CircleSelectOverlay {
 
         private void drawClose(Canvas c) {
             float size = dp(38);
-            float bottomInset = bottomSystemInset();
-            float bottom = getHeight() - bottomInset - dp(12);
+            float bottom = getHeight() - dp(12);
             float top = bottom - size;
             closeRect.set(getWidth() - size - dp(12), top, getWidth() - dp(12), bottom);
             c.drawRoundRect(closeRect, size / 2f, size / 2f, toolbarPaint);
@@ -342,19 +347,10 @@ public final class CircleSelectOverlay {
             c.drawText("×", closeRect.centerX(), closeRect.centerY() + dp(7), p);
         }
 
-        private int bottomSystemInset() {
-            WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(this);
-            if (insets == null) return 0;
-            Insets safe = insets.getInsetsIgnoringVisibility(
-                    WindowInsetsCompat.Type.navigationBars()
-                            | WindowInsetsCompat.Type.displayCutout());
-            return Math.max(0, safe.bottom);
-        }
-
         private void drawHandles(Canvas c, int lo, int hi) {
             if (lo < 0 || hi < 0 || lo >= selection.size() || hi >= selection.size()) return;
-            RectF first = selection.wordViewRect(lo, getWidth(), getHeight());
-            RectF last = selection.wordViewRect(hi, getWidth(), getHeight());
+            RectF first = selection.wordViewRect(lo, coordinateWidth, coordinateHeight);
+            RectF last = selection.wordViewRect(hi, coordinateWidth, coordinateHeight);
             float stem = dp(7), radius = dp(7);
             c.drawLine(first.left, first.bottom, first.left, first.bottom + stem, handlePaint);
             c.drawCircle(first.left, first.bottom + stem, radius, handlePaint);
@@ -371,6 +367,10 @@ public final class CircleSelectOverlay {
         }
 
         @Override public boolean onTouchEvent(MotionEvent e) {
+            if (e != null && e.getActionMasked() == MotionEvent.ACTION_OUTSIDE) {
+                if (!closed) close("system_navigation_touch");
+                return true;
+            }
             if (closed || circleResolving) return true;
             float x = e.getX(), y = e.getY();
             switch (e.getActionMasked()) {
@@ -580,7 +580,7 @@ public final class CircleSelectOverlay {
 
             // ACTION_DOWN already tried the strict hit radius. Before OCR, allow a modest cache
             // snap so small image text discovered by the full-screen detector can be activated.
-            int cached = selection.findSelectionWord(viewX, viewY, getWidth(), getHeight(),
+            int cached = selection.findSelectionWord(viewX, viewY, coordinateWidth, coordinateHeight,
                     dp(CACHE_TAP_SNAP_DISTANCE_DP));
             if (cached >= 0) {
                 selection.selectSingle(cached);
@@ -659,8 +659,8 @@ public final class CircleSelectOverlay {
         private int hitSelectionHandle(float x, float y) {
             int lo = selection.low(), hi = selection.high();
             if (lo < 0 || hi < 0) return MODE_NONE;
-            RectF first = selection.wordViewRect(lo, getWidth(), getHeight());
-            RectF last = selection.wordViewRect(hi, getWidth(), getHeight());
+            RectF first = selection.wordViewRect(lo, coordinateWidth, coordinateHeight);
+            RectF last = selection.wordViewRect(hi, coordinateWidth, coordinateHeight);
             float stem = dp(7), r = dp(28);
             if (distance(x, y, first.left, first.bottom + stem) <= r) {
                 return selection.startIndex() <= selection.endIndex() ? MODE_START_HANDLE : MODE_END_HANDLE;
@@ -672,11 +672,11 @@ public final class CircleSelectOverlay {
         }
 
         private int findSelectionWord(float x, float y) {
-            return selection.findSelectionWord(x, y, getWidth(), getHeight(), dp(HANDLE_SNAP_DISTANCE_DP));
+            return selection.findSelectionWord(x, y, coordinateWidth, coordinateHeight, dp(HANDLE_SNAP_DISTANCE_DP));
         }
 
         private Rect selectionScreenRect() {
-            RectF union = selection.selectionViewBounds(getWidth(), getHeight());
+            RectF union = selection.selectionViewBounds(coordinateWidth, coordinateHeight);
             if (union == null || union.isEmpty()) return null;
             int[] loc = new int[2];
             try { getLocationOnScreen(loc); } catch (Throwable ignored) { return null; }
@@ -686,8 +686,8 @@ public final class CircleSelectOverlay {
 
         private Rect imageRectFromView(RectF viewRect) {
             if (viewRect == null || viewRect.isEmpty() || getWidth() <= 0 || getHeight() <= 0) return null;
-            float sx = screenshot.getWidth() / (float) getWidth();
-            float sy = screenshot.getHeight() / (float) getHeight();
+            float sx = screenshot.getWidth() / (float) coordinateWidth;
+            float sy = screenshot.getHeight() / (float) coordinateHeight;
             int left = Math.max(0, Math.min(screenshot.getWidth() - 1, (int) Math.floor(viewRect.left * sx)));
             int top = Math.max(0, Math.min(screenshot.getHeight() - 1, (int) Math.floor(viewRect.top * sy)));
             int right = Math.max(left + 1, Math.min(screenshot.getWidth(), (int) Math.ceil(viewRect.right * sx)));
@@ -707,7 +707,7 @@ public final class CircleSelectOverlay {
 
         private void finishSnappedCircle(RectF viewRect) {
             if (closed) return;
-            Bitmap crop = CircleCropGeometry.crop(screenshot, viewRect, getWidth(), getHeight());
+            Bitmap crop = CircleCropGeometry.crop(screenshot, viewRect, coordinateWidth, coordinateHeight);
             if (crop == null) {
                 circleResolving = false;
                 snappedCircleRect.setEmpty();
@@ -745,7 +745,7 @@ public final class CircleSelectOverlay {
             int index = mode == MODE_START_HANDLE ? selection.startIndex()
                     : mode == MODE_END_HANDLE ? selection.endIndex() : -1;
             if (index < 0 || index >= selection.size()) return;
-            RectF symbol = selection.wordViewRect(index, getWidth(), getHeight());
+            RectF symbol = selection.wordViewRect(index, coordinateWidth, coordinateHeight);
             if (symbol.isEmpty()) return;
             boolean rightEdge = mode == MODE_START_HANDLE
                     ? selection.startIndex() > selection.endIndex()
