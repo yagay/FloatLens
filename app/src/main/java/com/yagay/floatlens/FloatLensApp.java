@@ -2,7 +2,6 @@ package com.yagay.floatlens;
 
 import android.app.Activity;
 import android.app.Application;
-import android.content.SharedPreferences;
 import android.graphics.Rect;
 import android.os.Bundle;
 import android.view.View;
@@ -11,31 +10,14 @@ import android.widget.TextView;
 
 /** Installs FloatLens' app-wide text menu. Result popup geometry belongs only to the dialog host. */
 public final class FloatLensApp extends Application implements Application.ActivityLifecycleCallbacks {
-    private static final String BUILTIN_PREFS = "floatlens_builtin_actions";
-    private static final String KEY_AI_SEEDED = "ai_assistant_seeded_v1";
-
     @Override public void onCreate() {
         super.onCreate();
         try {
-            CustomMenuActionStore.seedDictionaryOnce(this);
+            RemovedFeatureMigration.run(this);
         } catch (Throwable t) {
-            DiagnosticLog.i(this, "DICTIONARY", "seed action failed=" + t);
-        }
-        try {
-            seedAiAssistantOnce();
-        } catch (Throwable t) {
-            DiagnosticLog.i(this, "AI_CHAT", "seed action failed=" + t);
+            DiagnosticLog.i(this, "APP_MIGRATION", "AI/dictionary cleanup failed=" + t);
         }
         registerActivityLifecycleCallbacks(this);
-    }
-
-    private void seedAiAssistantOnce() {
-        SharedPreferences p = getSharedPreferences(BUILTIN_PREFS, MODE_PRIVATE);
-        if (p.getBoolean(KEY_AI_SEEDED, false)) return;
-        CustomMenuActionStore.add(this, new CustomMenuActionStore.Item(
-                "builtin_ai_assistant", "AI助手", getPackageName(),
-                AiAssistantActivity.class.getName(), CustomMenuActionStore.TYPE_PROCESS_TEXT));
-        p.edit().putBoolean(KEY_AI_SEEDED, true).apply();
     }
 
     @Override public void onActivityResumed(Activity activity) {

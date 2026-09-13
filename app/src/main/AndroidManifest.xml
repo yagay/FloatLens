@@ -40,47 +40,6 @@
             android:launchMode="singleTop"
             android:taskAffinity="" />
         <activity
-            android:name=".DictionaryActivity"
-            android:theme="@style/Theme.FloatLens.DictionaryDialog"
-            android:label="中英词典"
-            android:exported="true"
-            android:excludeFromRecents="true"
-            android:launchMode="singleTop"
-            android:taskAffinity="">
-            <intent-filter>
-                <action android:name="android.intent.action.PROCESS_TEXT" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/plain" />
-            </intent-filter>
-        </activity>
-        <activity
-            android:name=".DictionarySettingsActivity"
-            android:label="词典设置"
-            android:exported="false" />
-        <activity
-            android:name=".DictionaryCatalogActivity"
-            android:label="在线词库中心"
-            android:exported="false" />
-        <activity
-            android:name=".AiAssistantActivity"
-            android:theme="@style/Theme.FloatLens.DictionaryDialog"
-            android:label="AI 助手"
-            android:exported="false"
-            android:excludeFromRecents="true"
-            android:launchMode="singleTop"
-            android:taskAffinity="" />
-        <activity
-            android:name=".EmbeddedWebAiActivity"
-            android:label="内置网页 AI"
-            android:exported="false"
-            android:excludeFromRecents="true"
-            android:launchMode="singleTop"
-            android:taskAffinity="" />
-        <activity
-            android:name=".AiSettingsActivity"
-            android:label="AI 助手设置"
-            android:exported="false" />
-        <activity
             android:name=".ShadeDismissActivity"
             android:theme="@style/Theme.FloatLens.ShadeDismiss"
             android:exported="false"
