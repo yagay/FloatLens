@@ -93,6 +93,10 @@ public class MainActivity extends AppCompatActivity {
                 "键盘避让、智能入口和按应用隐藏",
                 () -> startActivity(SettingsActivity.intent(this, SettingsActivity.SECTION_ENVIRONMENT))));
         AppUi.addRow(settings.body, AppUi.navRow(this,
+                "界面与菜单",
+                "跟随系统 / 浅色 / 深色，以及文字菜单主栏数量",
+                () -> startActivity(new Intent(this, AppearanceSettingsActivity.class))));
+        AppUi.addRow(settings.body, AppUi.navRow(this,
                 "手势动作映射",
                 "指定单击、长按和各方向滑动动作",
                 () -> startActivity(SettingsActivity.intent(this, SettingsActivity.SECTION_ACTIONS))));
