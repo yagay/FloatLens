@@ -41,7 +41,8 @@
             android:taskAffinity="" />
         <activity
             android:name=".DictionaryActivity"
-            android:label="英汉词典"
+            android:theme="@style/Theme.FloatLens.DictionaryDialog"
+            android:label="中英词典"
             android:exported="true"
             android:excludeFromRecents="true"
             android:launchMode="singleTop"
@@ -52,6 +53,10 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".DictionarySettingsActivity"
+            android:label="本地词典"
+            android:exported="false" />
         <activity
             android:name=".ShadeDismissActivity"
             android:theme="@style/Theme.FloatLens.ShadeDismiss"
