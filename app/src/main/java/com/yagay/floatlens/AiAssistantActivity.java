@@ -3,6 +3,7 @@ package com.yagay.floatlens;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.text.InputType;
@@ -18,18 +19,23 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
 import java.util.ArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Compact contextual chatbot for selected text, OCR output and free-form questions. */
+/** Compact contextual chatbot for selected text, OCR output, embedded web AI and API providers. */
 public final class AiAssistantActivity extends AppCompatActivity {
-    /** Kept only so the legacy browser bridge source can compile; the API-only assistant never consumes them. */
+    /** Kept so the legacy external-browser bridge source remains binary/source compatible. */
     public static final String EXTRA_BROWSER_TARGET = "floatlens_browser_ai_target";
     public static final String EXTRA_BROWSER_RESULT = "floatlens_browser_ai_result";
     public static final String EXTRA_BROWSER_ERROR = "floatlens_browser_ai_error";
+
+    private static final String PREFS = "floatlens_ai_assistant";
+    private static final String KEY_WEB_MODE = "web_mode";
+    private static final String KEY_WEB_TARGET = "web_target";
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final ArrayList<AiChatClient.Message> messages = new ArrayList<>();
@@ -42,8 +48,11 @@ public final class AiAssistantActivity extends AppCompatActivity {
     private ProgressBar progress;
     private Button sendButton;
     private Button copyButton;
+    private Button modeButton;
     private String selectedText = "";
     private String lastAnswer = "";
+    private String webTarget = BrowserAiBridge.TARGET_CHATGPT;
+    private boolean webMode = true;
     private volatile boolean destroyed;
     private volatile boolean sending;
 
@@ -51,6 +60,10 @@ public final class AiAssistantActivity extends AppCompatActivity {
         super.onCreate(state);
         setFinishOnTouchOutside(false);
         selectedText = textFromIntent(getIntent()).trim();
+        SharedPreferences p = prefs();
+        webMode = p.getBoolean(KEY_WEB_MODE, true);
+        webTarget = EmbeddedWebAiActivity.normalizeTarget(
+                p.getString(KEY_WEB_TARGET, BrowserAiBridge.TARGET_CHATGPT));
         setContentView(buildUi());
         resetConversation();
     }
@@ -102,8 +115,12 @@ public final class AiAssistantActivity extends AppCompatActivity {
         title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
 
+        modeButton = new Button(this);
+        modeButton.setOnClickListener(v -> showModePicker());
+        header.addView(modeButton, new LinearLayout.LayoutParams(-2, -2));
+
         Button settings = new Button(this);
-        settings.setText("AI设置");
+        settings.setText("API设置");
         settings.setOnClickListener(v -> startActivity(new Intent(this, AiSettingsActivity.class)));
         header.addView(settings, new LinearLayout.LayoutParams(-2, -2));
         root.addView(header, new LinearLayout.LayoutParams(-1, -2));
@@ -194,6 +211,30 @@ public final class AiAssistantActivity extends AppCompatActivity {
         row.addView(button, new LinearLayout.LayoutParams(0, -2, 1f));
     }
 
+    private void showModePicker() {
+        String[] options = new String[BrowserAiBridge.TARGET_LABELS.length + 1];
+        for (int i = 0; i < BrowserAiBridge.TARGET_LABELS.length; i++) {
+            options[i] = "网页 · " + BrowserAiBridge.TARGET_LABELS[i] + "（无需 API）";
+        }
+        options[options.length - 1] = "API Provider";
+        new AlertDialog.Builder(this)
+                .setTitle("AI 模式")
+                .setItems(options, (dialog, which) -> {
+                    if (which >= 0 && which < BrowserAiBridge.TARGET_IDS.length) {
+                        webMode = true;
+                        webTarget = EmbeddedWebAiActivity.normalizeTarget(BrowserAiBridge.TARGET_IDS[which]);
+                        prefs().edit().putBoolean(KEY_WEB_MODE, true)
+                                .putString(KEY_WEB_TARGET, webTarget).apply();
+                    } else {
+                        webMode = false;
+                        prefs().edit().putBoolean(KEY_WEB_MODE, false).apply();
+                    }
+                    resetConversation();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
     private void resetConversation() {
         messages.clear();
         String system = AiConfigStore.systemPrompt(this);
@@ -204,9 +245,14 @@ public final class AiAssistantActivity extends AppCompatActivity {
         messages.add(new AiChatClient.Message("system", system));
         lastAnswer = "";
         if (transcriptView != null) {
-            transcriptView.setText(AiConfigStore.isConfigured(this)
-                    ? "可以选择上方动作，或者直接输入问题。AI 请求会直接在 FloatLens 内完成，不会打开浏览器。"
-                    : "AI Provider 尚未配置。请点右上角“AI设置”选择 OpenRouter、Gemini、Groq 或自定义 OpenAI Compatible 接口。" );
+            if (webMode) {
+                transcriptView.setText("网页 AI（内置）使用 " + EmbeddedWebAiActivity.targetLabel(webTarget)
+                        + " 的免费网页版，不需要 API Key。首次使用请在 FloatLens 内置网页里登录一次；以后会复用 WebView Cookie，不会跳到 Chrome。回答直接显示在内置网页里。" );
+            } else {
+                transcriptView.setText(AiConfigStore.isConfigured(this)
+                        ? "API Provider 模式：可以选择上方动作，或者直接输入问题。"
+                        : "API Provider 尚未配置。可以切换到网页 AI（无需 API），或点右上角“API设置”。" );
+            }
         }
         if (contextView != null) {
             if (selectedText.isBlank()) contextView.setText("自由聊天模式");
@@ -228,8 +274,19 @@ public final class AiAssistantActivity extends AppCompatActivity {
             Toast.makeText(this, "AI 正在回答", Toast.LENGTH_SHORT).show();
             return;
         }
+
+        if (webMode) {
+            appendTranscript("\n\n你 · " + label + "\n" + visibleUserText(prompt, label)
+                    + "\n\n→ 已交给内置网页 " + EmbeddedWebAiActivity.targetLabel(webTarget));
+            Intent web = new Intent(this, EmbeddedWebAiActivity.class)
+                    .putExtra(EmbeddedWebAiActivity.EXTRA_TARGET, webTarget)
+                    .putExtra(EmbeddedWebAiActivity.EXTRA_PROMPT, prompt);
+            startActivity(web);
+            return;
+        }
+
         if (!AiConfigStore.isConfigured(this)) {
-            Toast.makeText(this, "请先配置 AI Provider", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "请先配置 API Provider，或切换到网页 AI", Toast.LENGTH_LONG).show();
             startActivity(new Intent(this, AiSettingsActivity.class));
             return;
         }
@@ -283,8 +340,15 @@ public final class AiAssistantActivity extends AppCompatActivity {
 
     private void updateProviderStatus() {
         if (statusView == null) return;
-        statusView.setText(AiConfigStore.providerLabel(this) + " · "
-                + (AiConfigStore.isConfigured(this) ? AiConfigStore.model(this) : "未配置"));
+        if (webMode) {
+            String label = EmbeddedWebAiActivity.targetLabel(webTarget);
+            statusView.setText("网页 AI · " + label + " · 内置 WebView · 无需 API");
+            if (modeButton != null) modeButton.setText("网页AI·" + label);
+        } else {
+            statusView.setText(AiConfigStore.providerLabel(this) + " · "
+                    + (AiConfigStore.isConfigured(this) ? AiConfigStore.model(this) : "未配置"));
+            if (modeButton != null) modeButton.setText("API Provider");
+        }
     }
 
     private void copyLastAnswer() {
@@ -292,6 +356,10 @@ public final class AiAssistantActivity extends AppCompatActivity {
         ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
         if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("FloatLens AI", lastAnswer));
         Toast.makeText(this, "回答已复制", Toast.LENGTH_SHORT).show();
+    }
+
+    private SharedPreferences prefs() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE);
     }
 
     private static String textFromIntent(Intent intent) {
