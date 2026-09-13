@@ -3,14 +3,15 @@ package com.yagay.floatlens;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
-import android.text.InputType;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.inputmethod.EditorInfo;
+import android.view.Window;
+import android.view.WindowManager;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -19,36 +20,41 @@ import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 
-import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Local ECDICT lookup surface used by FloatLens' text selection menu and ACTION_PROCESS_TEXT. */
+/** Lookup-only popup. Dictionary download/update lives in the Settings dictionary page. */
 public final class DictionaryActivity extends AppCompatActivity {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    private EditText queryEdit;
-    private TextView dictionaryStatus;
+    private TextView queryView;
+    private TextView directionView;
     private TextView resultView;
     private ProgressBar progress;
-    private Button downloadButton;
-    private Button deleteButton;
-    private Button lookupButton;
-    private String pendingQuery = "";
+    private Button copyButton;
+    private String query = "";
     private volatile boolean destroyed;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
-        setTitle("英汉词典");
+        setFinishOnTouchOutside(true);
         setContentView(buildUi());
-        applyIntent(getIntent(), true);
-        refreshDictionaryState();
+        applyIntent(getIntent());
+    }
+
+    @Override protected void onStart() {
+        super.onStart();
+        Window window = getWindow();
+        if (window == null) return;
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int width = Math.min(screenWidth - dp(28), dp(560));
+        window.setLayout(Math.max(dp(280), width), WindowManager.LayoutParams.WRAP_CONTENT);
+        window.setGravity(Gravity.CENTER);
     }
 
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        applyIntent(intent, true);
-        refreshDictionaryState();
+        applyIntent(intent);
     }
 
     @Override protected void onDestroy() {
@@ -59,180 +65,152 @@ public final class DictionaryActivity extends AppCompatActivity {
 
     private View buildUi() {
         ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(18);
-        root.setPadding(pad, pad, pad, dp(32));
+        root.setPadding(dp(20), dp(18), dp(20), dp(14));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(resolveBackgroundColor());
+        bg.setCornerRadius(dp(20));
+        root.setBackground(bg);
         scroll.addView(root, new ScrollView.LayoutParams(-1, -2));
 
         TextView title = new TextView(this);
-        title.setText("FloatLens 英汉词典");
-        title.setTextSize(24);
+        title.setText("中英 · 英中词典");
+        title.setTextSize(20);
         title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
         root.addView(title);
 
-        TextView subtitle = new TextView(this);
-        subtitle.setText("本地 ECDICT · 词典数据独立下载，不打包进 APK");
-        subtitle.setTextSize(14);
-        subtitle.setAlpha(0.72f);
-        subtitle.setPadding(0, dp(4), 0, dp(16));
-        root.addView(subtitle);
+        queryView = new TextView(this);
+        queryView.setTextSize(18);
+        queryView.setTypeface(queryView.getTypeface(), android.graphics.Typeface.BOLD);
+        queryView.setPadding(0, dp(12), 0, dp(2));
+        root.addView(queryView);
 
-        LinearLayout searchRow = new LinearLayout(this);
-        searchRow.setOrientation(LinearLayout.HORIZONTAL);
-        searchRow.setGravity(Gravity.CENTER_VERTICAL);
-        queryEdit = new EditText(this);
-        queryEdit.setSingleLine(true);
-        queryEdit.setHint("输入英文单词或短语");
-        queryEdit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        queryEdit.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
-        lookupButton = new Button(this);
-        lookupButton.setText("查询");
-        searchRow.addView(queryEdit, new LinearLayout.LayoutParams(0, -2, 1f));
-        searchRow.addView(lookupButton, new LinearLayout.LayoutParams(dp(88), -2));
-        root.addView(searchRow, new LinearLayout.LayoutParams(-1, -2));
-        lookupButton.setOnClickListener(v -> lookupCurrent());
-        queryEdit.setOnEditorActionListener((v, actionId, event) -> {
-            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
-                lookupCurrent();
-                return true;
-            }
-            return false;
-        });
+        directionView = new TextView(this);
+        directionView.setTextSize(13);
+        directionView.setAlpha(0.68f);
+        directionView.setPadding(0, 0, 0, dp(8));
+        root.addView(directionView);
 
-        dictionaryStatus = new TextView(this);
-        dictionaryStatus.setPadding(0, dp(12), 0, dp(8));
-        root.addView(dictionaryStatus);
-
-        progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        progress.setMax(100);
-        progress.setVisibility(View.GONE);
-        root.addView(progress, new LinearLayout.LayoutParams(-1, dp(8)));
-
-        LinearLayout management = new LinearLayout(this);
-        management.setOrientation(LinearLayout.HORIZONTAL);
-        downloadButton = new Button(this);
-        deleteButton = new Button(this);
-        downloadButton.setText("下载词典");
-        deleteButton.setText("删除本地词典");
-        management.addView(downloadButton, new LinearLayout.LayoutParams(0, -2, 1f));
-        management.addView(deleteButton, new LinearLayout.LayoutParams(0, -2, 1f));
-        root.addView(management);
-        downloadButton.setOnClickListener(v -> startDownload());
-        deleteButton.setOnClickListener(v -> {
-            if (DictionaryManager.isDownloading()) {
-                Toast.makeText(this, "词典正在下载或构建，暂时不能删除", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            DictionaryManager.delete(this);
-            resultView.setText("");
-            refreshDictionaryState();
-            Toast.makeText(this, "本地词典已删除", Toast.LENGTH_SHORT).show();
-        });
-
-        TextView divider = new TextView(this);
-        divider.setText("查询结果");
-        divider.setTextSize(18);
-        divider.setTypeface(divider.getTypeface(), android.graphics.Typeface.BOLD);
-        divider.setPadding(0, dp(22), 0, dp(8));
-        root.addView(divider);
+        progress = new ProgressBar(this);
+        progress.setIndeterminate(true);
+        root.addView(progress, new LinearLayout.LayoutParams(-1, dp(36)));
 
         resultView = new TextView(this);
         resultView.setTextSize(16);
         resultView.setTextIsSelectable(true);
         resultView.setLineSpacing(0f, 1.16f);
-        resultView.setPadding(dp(2), dp(4), dp(2), dp(12));
+        resultView.setPadding(0, dp(4), 0, dp(10));
         root.addView(resultView, new LinearLayout.LayoutParams(-1, -2));
 
-        Button copy = new Button(this);
-        copy.setText("复制查询结果");
-        copy.setOnClickListener(v -> {
-            String text = resultView.getText() == null ? "" : resultView.getText().toString().trim();
-            if (text.isEmpty()) return;
-            ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-            if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("FloatLens Dictionary", text));
-            Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show();
-        });
-        root.addView(copy, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        copyButton = new Button(this);
+        copyButton.setText("复制");
+        Button settings = new Button(this);
+        settings.setText("词典设置");
+        Button close = new Button(this);
+        close.setText("关闭");
+        buttons.addView(copyButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        buttons.addView(settings, new LinearLayout.LayoutParams(0, -2, 1f));
+        buttons.addView(close, new LinearLayout.LayoutParams(0, -2, 1f));
+        root.addView(buttons);
 
         TextView source = new TextView(this);
-        source.setText("数据源：ECDICT（本地离线查询）\n下载源：skywind3000/ECDICT 的 ecdict.csv");
-        source.setTextSize(12);
-        source.setAlpha(0.6f);
-        source.setPadding(0, dp(18), 0, 0);
+        source.setText("ECCEDICT · 本地离线查询");
+        source.setTextSize(11);
+        source.setAlpha(0.52f);
+        source.setGravity(Gravity.CENTER_HORIZONTAL);
+        source.setPadding(0, dp(8), 0, 0);
         root.addView(source);
 
+        copyButton.setOnClickListener(v -> copyResult());
+        settings.setOnClickListener(v -> {
+            startActivity(new Intent(this, DictionarySettingsActivity.class));
+            finish();
+        });
+        close.setOnClickListener(v -> finish());
         return scroll;
     }
 
-    private void applyIntent(Intent intent, boolean autoLookup) {
-        String incoming = textFromIntent(intent);
-        if (!incoming.isBlank()) {
-            pendingQuery = DictionaryManager.normalizeQuery(incoming);
-            queryEdit.setText(pendingQuery);
-            queryEdit.setSelection(queryEdit.length());
-            if (autoLookup && DictionaryManager.isReady(this)) lookup(pendingQuery);
-        }
-    }
+    private void applyIntent(Intent intent) {
+        query = DictionaryManager.normalizeQuery(textFromIntent(intent));
+        queryView.setText(query.isBlank() ? "没有可查询的文字" : query);
+        resultView.setText("");
+        copyButton.setEnabled(false);
 
-    private static String textFromIntent(Intent intent) {
-        if (intent == null) return "";
-        CharSequence process = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT);
-        if (process != null && !process.toString().isBlank()) return process.toString();
-        CharSequence text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
-        return text == null ? "" : text.toString();
-    }
-
-    private void lookupCurrent() {
-        String query = DictionaryManager.normalizeQuery(queryEdit.getText().toString());
         if (query.isBlank()) {
-            Toast.makeText(this, "请输入英文单词或短语", Toast.LENGTH_SHORT).show();
+            progress.setVisibility(View.GONE);
+            directionView.setText("请选择中文或英文后再打开词典");
+            resultView.setText("未收到可查询的文字。");
             return;
         }
-        pendingQuery = query;
+
         if (!DictionaryManager.isReady(this)) {
-            resultView.setText("本地英汉词典尚未下载。\n\n点击上方“下载词典”后即可离线查词。");
+            progress.setVisibility(View.GONE);
+            directionView.setText("ECCEDICT 尚未下载");
+            resultView.setText("本地中英词典尚未安装。\n\n请到 FloatLens 设置 → 本地词典 → ECCEDICT 下载词典数据。下载完成后即可离线直接查询。");
             return;
         }
         lookup(query);
     }
 
-    private void lookup(String query) {
-        if (query == null || query.isBlank()) return;
-        lookupButton.setEnabled(false);
-        resultView.setText("查询中…");
+    private void lookup(String value) {
+        progress.setVisibility(View.VISIBLE);
+        directionView.setText("正在查询…");
+        resultView.setText("");
         executor.execute(() -> {
             try {
-                DictionaryManager.Entry entry = DictionaryManager.lookup(this, query);
-                String formatted = entry == null
-                        ? "未找到 “" + query + "”\n\n可以尝试选择更完整的英文单词或短语。"
-                        : formatEntry(entry);
+                DictionaryManager.LookupResult result = DictionaryManager.lookup(this, value);
+                String formatted = formatResult(result);
                 runOnUiThread(() -> {
                     if (destroyed) return;
+                    progress.setVisibility(View.GONE);
+                    directionView.setText(result.chineseQuery ? "中文 → English" : "English → 中文");
                     resultView.setText(formatted);
-                    lookupButton.setEnabled(true);
+                    copyButton.setEnabled(!formatted.isBlank());
                 });
             } catch (Throwable t) {
                 String message = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
                 runOnUiThread(() -> {
                     if (destroyed) return;
-                    resultView.setText("查询失败：" + message);
-                    lookupButton.setEnabled(true);
+                    progress.setVisibility(View.GONE);
+                    directionView.setText("查询失败");
+                    resultView.setText(message);
+                    copyButton.setEnabled(false);
                 });
             }
         });
     }
 
-    private String formatEntry(DictionaryManager.Entry e) {
+    private String formatResult(DictionaryManager.LookupResult result) {
+        if (result == null || result.isEmpty()) {
+            return "未找到 “" + query + "”\n\n可以尝试选择更完整的单词或更简短的中文词语。";
+        }
+        if (!result.chineseQuery) return formatEnglishEntry(result.entries.get(0));
+
+        StringBuilder out = new StringBuilder();
+        int count = 0;
+        for (DictionaryManager.Entry e : result.entries) {
+            if (count > 0) out.append("\n\n");
+            count++;
+            out.append(count).append(". ").append(e.word);
+            if (!e.phonetic.isBlank()) out.append("  /").append(e.phonetic).append('/');
+            if (!e.translation.isBlank()) out.append("\n").append(compact(e.translation));
+            if (!e.pos.isBlank()) out.append("\n词性：").append(e.pos);
+            if (e.collins > 0) out.append(" · 柯林斯 ").append(e.collins).append("★");
+        }
+        return out.toString();
+    }
+
+    private String formatEnglishEntry(DictionaryManager.Entry e) {
         StringBuilder out = new StringBuilder();
         out.append(e.word);
         if (!e.phonetic.isBlank()) out.append("\n/").append(e.phonetic).append('/');
-        if (!e.translation.isBlank()) {
-            out.append("\n\n中文释义\n").append(e.translation.trim());
-        }
-        if (!e.definition.isBlank()) {
-            out.append("\n\n英文释义\n").append(e.definition.trim());
-        }
+        if (!e.translation.isBlank()) out.append("\n\n中文释义\n").append(e.translation.trim());
+        if (!e.definition.isBlank()) out.append("\n\n英文释义\n").append(e.definition.trim());
         if (!e.pos.isBlank()) out.append("\n\n词性：").append(e.pos);
         if (!e.tag.isBlank()) out.append("\n标签：").append(e.tag);
         if (e.collins > 0) out.append("\n柯林斯：").append(e.collins).append(" 星");
@@ -243,60 +221,34 @@ public final class DictionaryActivity extends AppCompatActivity {
         return out.toString();
     }
 
-    private void startDownload() {
-        if (DictionaryManager.isDownloading()) {
-            Toast.makeText(this, "词典正在下载或构建", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        downloadButton.setEnabled(false);
-        deleteButton.setEnabled(false);
-        progress.setVisibility(View.VISIBLE);
-        progress.setProgress(0);
-        DictionaryManager.download(this, new DictionaryManager.Callback() {
-            @Override public void onProgress(String stage, int percent) {
-                if (destroyed) return;
-                progress.setVisibility(View.VISIBLE);
-                progress.setProgress(percent);
-                dictionaryStatus.setText("ECDICT：" + stage + " " + percent + "%");
-            }
-
-            @Override public void onSuccess() {
-                if (destroyed) return;
-                Toast.makeText(DictionaryActivity.this, "英汉词典已安装，可离线使用", Toast.LENGTH_SHORT).show();
-                refreshDictionaryState();
-                if (!pendingQuery.isBlank()) lookup(pendingQuery);
-            }
-
-            @Override public void onFailure(String message) {
-                if (destroyed) return;
-                Toast.makeText(DictionaryActivity.this, "词典下载失败：" + message, Toast.LENGTH_LONG).show();
-                refreshDictionaryState();
-            }
-        });
+    private String compact(String value) {
+        String text = value == null ? "" : value.trim().replaceAll("\\s*\\n\\s*", "；");
+        return text.length() > 220 ? text.substring(0, 220).trim() + "…" : text;
     }
 
-    private void refreshDictionaryState() {
-        boolean ready = DictionaryManager.isReady(this);
-        boolean busy = DictionaryManager.isDownloading();
-        long bytes = DictionaryManager.installedBytes(this);
-        if (busy) {
-            dictionaryStatus.setText("ECDICT：正在下载或建立本地索引…");
-            progress.setVisibility(View.VISIBLE);
-        } else if (ready) {
-            dictionaryStatus.setText(String.format(Locale.ROOT,
-                    "ECDICT：已下载 · %.1f MB · 可离线查询", bytes / 1024d / 1024d));
-            progress.setVisibility(View.GONE);
-        } else {
-            dictionaryStatus.setText("ECDICT：未下载 · 源 CSV 约 66 MB，安装后本地数据库占用会更大");
-            progress.setVisibility(View.GONE);
+    private void copyResult() {
+        String text = resultView.getText() == null ? "" : resultView.getText().toString().trim();
+        if (text.isEmpty()) return;
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("FloatLens Dictionary", text));
+        Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show();
+    }
+
+    private static String textFromIntent(Intent intent) {
+        if (intent == null) return "";
+        CharSequence process = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT);
+        if (process != null && !process.toString().isBlank()) return process.toString();
+        CharSequence text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+        return text == null ? "" : text.toString();
+    }
+
+    private int resolveBackgroundColor() {
+        TypedValue value = new TypedValue();
+        if (getTheme().resolveAttribute(android.R.attr.colorBackground, value, true)) {
+            if (value.resourceId != 0) return getColor(value.resourceId);
+            return value.data;
         }
-        downloadButton.setText(ready ? "下载 / 更新词典" : "下载词典");
-        downloadButton.setEnabled(!busy);
-        deleteButton.setEnabled(ready && !busy);
-        lookupButton.setEnabled(!busy);
-        if (!ready && !pendingQuery.isBlank() && resultView.getText().toString().isBlank()) {
-            resultView.setText("已选中：" + pendingQuery + "\n\n首次使用请先下载本地 ECDICT 词典。下载完成后会自动查询。");
-        }
+        return 0xFFFFFFFF;
     }
 
     private int dp(int value) {
