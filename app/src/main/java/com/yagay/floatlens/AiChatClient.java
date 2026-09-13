@@ -14,10 +14,9 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
-/** Minimal OpenAI-compatible chat client used by OpenRouter and custom endpoints. */
+/** Minimal OpenAI-compatible chat client shared by OpenRouter, Gemini, Groq and custom endpoints. */
 public final class AiChatClient {
     private static final int MAX_RESPONSE_CHARS = 4_000_000;
 
@@ -55,7 +54,9 @@ public final class AiChatClient {
         JSONArray messageArray = new JSONArray();
         try {
             body.put("model", model);
-            body.put("temperature", 0.3);
+            // Keep the common request surface deliberately small. Provider/model-specific sampling
+            // parameters are not sent because Gemini/Groq/OpenRouter do not support exactly the
+            // same optional fields across all current models.
             for (Message message : messages) {
                 if (message == null || message.content.isBlank()) continue;
                 JSONObject one = new JSONObject();
