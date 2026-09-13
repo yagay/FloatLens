@@ -2,6 +2,7 @@ package com.yagay.floatlens;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.Context;
+import android.content.Intent;
 import android.widget.Toast;
 
 import java.util.LinkedHashMap;
@@ -20,6 +21,7 @@ final class ActionRegistry {
         LABELS.put(ActionId.REGION_SCREENSHOT, "区域截图");
         LABELS.put(ActionId.OCR, "OCR/提取文字");
         LABELS.put(ActionId.AI_SCREEN, "圈画识别");
+        LABELS.put(ActionId.AI_CHAT, "AI 助手");
         LABELS.put(ActionId.NOTIFICATIONS, "通知栏");
         LABELS.put(ActionId.CLICK_UNDER, "点击悬浮图标下方屏幕");
         LABELS.put(ActionId.MOVE_ICON, "移动图标位置");
@@ -70,6 +72,16 @@ final class ActionRegistry {
                 OcrEngine.invalidatePending(c, "action_circle_select");
                 DiagnosticLog.i(c, "AI_SCREEN", "enter Circle Select workspace");
                 CircleSelectController.show(c);
+            }
+            case ActionId.AI_CHAT -> {
+                try {
+                    Intent intent = new Intent(c, AiAssistantActivity.class)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    c.startActivity(intent);
+                } catch (Throwable t) {
+                    DiagnosticLog.i(c, "AI_CHAT", "launch failed=" + t);
+                    Toast.makeText(c, "无法打开 AI 助手", Toast.LENGTH_SHORT).show();
+                }
             }
             case ActionId.MOVE_ICON -> {
                 FloatService f = FloatService.get();
