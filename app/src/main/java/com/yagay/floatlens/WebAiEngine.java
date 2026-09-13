@@ -21,13 +21,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
-/**
- * Hidden in-process webpage engine for consumer AI sites.
- *
- * The WebView stays attached to FloatLens but off-screen, so the user keeps the native AI window.
- * It reuses FloatLens WebView cookies, fills the site's composer, submits the prompt, then polls the
- * page DOM for a new assistant message and returns that text to the native window.
- */
+/** Hidden webpage engine used by the native FloatLens AI window. */
 public final class WebAiEngine {
     public interface Listener {
         void onStatus(String text);
@@ -56,7 +50,6 @@ public final class WebAiEngine {
     private int composerAttempts;
     private int emptyPolls;
     private boolean pageReady;
-    private boolean waitingForPage;
     private boolean sending;
     private boolean destroyed;
     private final Set<String> baselineAnswers = new HashSet<>();
@@ -77,7 +70,6 @@ public final class WebAiEngine {
         configure();
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dp(390), dp(700));
         host.addView(webView, lp);
-        // Keep a real viewport so responsive sites render normal chat DOM, but make it effectively invisible.
         webView.setAlpha(0.01f);
         webView.setClickable(false);
         webView.setFocusable(false);
@@ -113,15 +105,15 @@ public final class WebAiEngine {
 
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                 pageReady = false;
-                waitingForPage = true;
-                status("正在准备 " + EmbeddedWebAiActivity.targetLabel(target) + " 网页会话…");
+                status("正在准备 " + label() + " 网页会话…");
             }
 
             @Override public void onPageFinished(WebView view, String url) {
                 try { CookieManager.getInstance().flush(); } catch (Throwable ignored) {}
                 pageReady = true;
-                waitingForPage = false;
-                if (sending && !pendingPrompt.isEmpty()) main.postDelayed(WebAiEngine.this::captureBaseline, 500L);
+                if (sending && !pendingPrompt.isEmpty()) {
+                    main.postDelayed(WebAiEngine.this::captureBaseline, 500L);
+                }
             }
         });
     }
@@ -177,11 +169,10 @@ public final class WebAiEngine {
 
         String current = webView.getUrl();
         if (!pageReady || !sameTarget(current, target)) {
-            waitingForPage = true;
-            status("正在后台打开 " + EmbeddedWebAiActivity.targetLabel(target) + "…");
+            status("正在后台打开 " + label() + "…");
             webView.loadUrl(targetUrl(target));
         } else {
-            status("正在使用已登录的 " + EmbeddedWebAiActivity.targetLabel(target) + " 网页会话…");
+            status("正在使用已登录的 " + label() + " 网页会话…");
             captureBaseline();
         }
     }
@@ -207,25 +198,21 @@ public final class WebAiEngine {
         composerAttempts++;
         String quoted = JSONObject.quote(pendingPrompt);
         String js;
+
         if (isGemini()) {
-            js = "(function(){try{" +
-                    "var text=" + quoted + ";" +
-                    "var sels=['rich-textarea .ql-editor','rich-textarea [contenteditable=\\\"true\\\"]','.textarea[contenteditable=\\\"true\\\"]','.textarea','textarea','[contenteditable=\\\"true\\\"]'];" +
-                    "var el=null;for(var i=0;i<sels.length&&!el;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j];var r=x.getBoundingClientRect();if(!x.disabled&&r.width>20&&r.height>10){el=x;break;}}}" +
-                    "if(!el)return 'missing';el.focus();" +
-                    "if(el.isContentEditable){el.textContent=text;try{el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){el.dispatchEvent(new Event('input',{bubbles:true}));}}" +
-                    "else{var p=Object.getPrototypeOf(el),d=Object.getOwnPropertyDescriptor(p,'value');if(!d||!d.set){d=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')||Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');}if(d&&d.set)d.set.call(el,text);else el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}" +
-                    "return 'filled';}catch(e){return 'error:'+String(e);}})();";
+            js = fillScript(quoted,
+                    "['rich-textarea .ql-editor','rich-textarea [contenteditable=\\\"true\\\"]','.textarea[contenteditable=\\\"true\\\"]','.textarea','textarea','[contenteditable=\\\"true\\\"]']",
+                    true);
+        } else if (isChatGpt()) {
+            js = fillScript(quoted,
+                    "['#prompt-textarea','div#prompt-textarea[contenteditable=\\\"true\\\"]','textarea[data-testid=\\\"prompt-textarea\\\"]','textarea']",
+                    true);
         } else {
-            js = "(function(){try{" +
-                    "var text=" + quoted + ";" +
-                    "var sels=['#prompt-textarea','textarea[placeholder]','textarea','[contenteditable=\\\"true\\\"][data-lexical-editor=\\\"true\\\"]','div.ProseMirror[contenteditable=\\\"true\\\"]','rich-textarea [contenteditable=\\\"true\\\"]','[contenteditable=\\\"true\\\"]'];" +
-                    "var el=null;for(var i=0;i<sels.length&&!el;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j];if(!x.disabled){el=x;break;}}}" +
-                    "if(!el)return 'missing';el.focus();" +
-                    "if(el.isContentEditable){el.textContent=text;try{el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){el.dispatchEvent(new Event('input',{bubbles:true}));}}" +
-                    "else{var p=Object.getPrototypeOf(el),d=Object.getOwnPropertyDescriptor(p,'value');if(!d||!d.set){d=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')||Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');}if(d&&d.set)d.set.call(el,text);else el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}" +
-                    "return 'filled';}catch(e){return 'error:'+String(e);}})();";
+            js = fillScript(quoted,
+                    "['#prompt-textarea','textarea[placeholder]','textarea','[contenteditable=\\\"true\\\"][data-lexical-editor=\\\"true\\\"]','div.ProseMirror[contenteditable=\\\"true\\\"]','rich-textarea [contenteditable=\\\"true\\\"]','[contenteditable=\\\"true\\\"]']",
+                    false);
         }
+
         evaluate(js, raw -> {
             if (!active()) return;
             String value = decodeJsString(raw);
@@ -242,9 +229,22 @@ public final class WebAiEngine {
                 needsLogin("没有找到聊天输入框。可能尚未登录、需要验证码，或该网站暂时不允许 WebView 自动操作。" + diagnosticSuffix());
                 return;
             }
-            status("等待 " + EmbeddedWebAiActivity.targetLabel(target) + " 登录/输入框…");
+            status("等待 " + label() + " 登录/输入框…");
             main.postDelayed(this::tryComposer, 700L);
         });
+    }
+
+    private String fillScript(String quoted, String selectors, boolean requireVisible) {
+        String visible = requireVisible
+                ? "var r=x.getBoundingClientRect();if(!x.disabled&&r.width>20&&r.height>10){el=x;break;}"
+                : "if(!x.disabled){el=x;break;}";
+        return "(function(){try{" +
+                "var text=" + quoted + ";var sels=" + selectors + ";" +
+                "var el=null;for(var i=0;i<sels.length&&!el;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j];" + visible + "}}" +
+                "if(!el)return 'missing';el.focus();" +
+                "if(el.isContentEditable){el.textContent=text;try{el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){el.dispatchEvent(new Event('input',{bubbles:true}));}}" +
+                "else{var p=Object.getPrototypeOf(el),d=Object.getOwnPropertyDescriptor(p,'value');if(!d||!d.set){d=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')||Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');}if(d&&d.set)d.set.call(el,text);else el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}" +
+                "return 'filled';}catch(e){return 'error:'+String(e);}})();";
     }
 
     private void trySend() {
@@ -253,10 +253,17 @@ public final class WebAiEngine {
         if (isGemini()) {
             js = "(function(){try{" +
                     "var sels=['gem-icon-button.submit[aria-disabled=\\\"false\\\"]','button.send-button:not([disabled])','button.submit:not([disabled])','button[aria-label=\\\"Send message\\\"]:not([disabled])','button[aria-label*=\\\"Send\\\"]:not([disabled])','button[aria-label*=\\\"发送\\\"]:not([disabled])'];" +
-                    "var b=null;for(var i=0;i<sels.length&&!b;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j];var r=x.getBoundingClientRect();if(r.width>8&&r.height>8){b=x;break;}}}" +
-                    "if(b){b.click();return 'sent-gemini';}" +
-                    "var e=document.querySelector('rich-textarea .ql-editor,rich-textarea [contenteditable=\\\"true\\\"],.textarea[contenteditable=\\\"true\\\"],textarea,[contenteditable=\\\"true\\\"]');" +
-                    "if(e){try{e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));return 'sent-key';}catch(ignore){}}" +
+                    "var b=pick(sels);if(b){b.click();return 'sent-gemini';}" +
+                    "var e=document.querySelector('rich-textarea .ql-editor,rich-textarea [contenteditable=\\\"true\\\"],.textarea[contenteditable=\\\"true\\\"],textarea,[contenteditable=\\\"true\\\"]');if(e){key(e);return 'sent-key';}return 'nosend';" +
+                    "function pick(s){for(var i=0;i<s.length;i++){var l=document.querySelectorAll(s[i]);for(var j=l.length-1;j>=0;j--){var x=l[j],r=x.getBoundingClientRect();if(!x.disabled&&r.width>8&&r.height>8)return x;}}return null;}" +
+                    "function key(e){e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));}" +
+                    "}catch(e){return 'error:'+String(e);}})();";
+        } else if (isChatGpt()) {
+            js = "(function(){try{" +
+                    "var b=document.querySelector('button[data-testid=\\\"send-button\\\"]:not([disabled]),button[aria-label=\\\"Send prompt\\\"]:not([disabled]),button[aria-label*=\\\"Send\\\"]:not([disabled])');" +
+                    "if(b){b.click();return 'sent-chatgpt';}" +
+                    "var e=document.querySelector('#prompt-textarea,textarea[data-testid=\\\"prompt-textarea\\\"],textarea');var f=e&&e.closest?e.closest('form'):null;if(f&&f.requestSubmit){f.requestSubmit();return 'sent-form';}" +
+                    "if(e){e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));return 'sent-key';}" +
                     "return 'nosend';}catch(e){return 'error:'+String(e);}})();";
         } else {
             js = "(function(){try{" +
@@ -264,9 +271,10 @@ public final class WebAiEngine {
                     "var b=null;for(var i=0;i<sels.length&&!b;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j];if(!x.disabled){b=x;break;}}}" +
                     "if(b){b.click();return 'sent';}" +
                     "var e=document.querySelector('#prompt-textarea,textarea,[contenteditable=\\\"true\\\"]');var f=e&&e.closest?e.closest('form'):null;if(f&&f.requestSubmit){f.requestSubmit();return 'sent-form';}" +
-                    "if(e){try{e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));return 'sent-key';}catch(ignore){}}" +
+                    "if(e){e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));return 'sent-key';}" +
                     "return 'nosend';}catch(e){return 'error:'+String(e);}})();";
         }
+
         evaluate(js, raw -> {
             if (!active()) return;
             String value = decodeJsString(raw);
@@ -297,14 +305,14 @@ public final class WebAiEngine {
 
             if (candidate.isEmpty()) {
                 emptyPolls++;
-                if (isGemini() && snapshot.modelCount > 0) {
+                if ((isGemini() || isChatGpt()) && snapshot.modelCount > 0) {
                     status(snapshot.generating
-                            ? "Gemini 正在生成回答…"
-                            : "Gemini 已有回答节点，正在读取内容…");
-                } else if (isGemini() && emptyPolls >= 5) {
-                    status("Gemini 已发送，但还没有检测到新的 model-response…");
+                            ? label() + " 正在生成回答…"
+                            : label() + " 已有回答节点，正在读取内容…");
+                } else if ((isGemini() || isChatGpt()) && emptyPolls >= 5) {
+                    status(label() + " 已发送，但还没有检测到新的回答节点…");
                 } else {
-                    status("等待 " + EmbeddedWebAiActivity.targetLabel(target) + " 回答…");
+                    status("等待 " + label() + " 回答…");
                 }
                 main.postDelayed(this::pollAnswer, POLL_MS);
                 return;
@@ -314,18 +322,18 @@ public final class WebAiEngine {
             if (!candidate.equals(lastCandidate)) {
                 lastCandidate = candidate;
                 candidateStableSince = now;
-                status(snapshot.generating ? "Gemini 正在生成回答…" : "正在读取网页回答…");
+                status(snapshot.generating ? label() + " 正在生成回答…" : "正在读取网页回答…");
                 main.postDelayed(this::pollAnswer, POLL_MS);
                 return;
             }
 
             if (snapshot.generating) {
-                status("Gemini 正在生成回答…");
+                status(label() + " 正在生成回答…");
                 main.postDelayed(this::pollAnswer, POLL_MS);
                 return;
             }
 
-            if (now - candidateStableSince >= STABLE_MS || (isGemini() && snapshot.sendReady)) {
+            if (now - candidateStableSince >= STABLE_MS || ((isGemini() || isChatGpt()) && snapshot.sendReady)) {
                 String answer = candidate;
                 String doneTarget = target;
                 sending = false;
@@ -371,6 +379,17 @@ public final class WebAiEngine {
                     "return JSON.stringify({texts:out.slice(-20),generating:generating,sendReady:sendReady,modelCount:models.length,debug:'gemini models='+models.length+',texts='+out.length+',generating='+generating+',sendReady='+sendReady});" +
                     "}catch(e){return JSON.stringify({texts:[],generating:false,sendReady:false,modelCount:0,debug:'gemini script error:'+String(e)});}})();";
         }
+
+        if (isChatGpt()) {
+            return "(function(){try{" +
+                    "var msgs=Array.from(document.querySelectorAll('[data-message-author-role=\\\"assistant\\\"]'));" +
+                    "var out=[],seen={};msgs.forEach(function(m){var c=m.querySelector('.markdown,.prose,[data-message-content],div[class*=\\\"markdown\\\"]')||m;var t=(c.innerText||c.textContent||'').trim();if(t.length>1&&t.length<30000&&!seen[t]){seen[t]=1;out.push(t);}});" +
+                    "var stop=document.querySelector('button[data-testid=\\\"stop-button\\\"],button[aria-label*=\\\"Stop generating\\\"],button[aria-label*=\\\"Stop streaming\\\"]');" +
+                    "var generating=!!stop;var sendReady=!!document.querySelector('button[data-testid=\\\"send-button\\\"]:not([disabled]),button[aria-label=\\\"Send prompt\\\"]:not([disabled])');" +
+                    "return JSON.stringify({texts:out.slice(-30),generating:generating,sendReady:sendReady,modelCount:msgs.length,debug:'chatgpt messages='+msgs.length+',texts='+out.length+',generating='+generating+',sendReady='+sendReady});" +
+                    "}catch(e){return JSON.stringify({texts:[],generating:false,sendReady:false,modelCount:0,debug:'chatgpt script error:'+String(e)});}})();";
+        }
+
         return "(function(){try{" +
                 "var sels=['[data-message-author-role=\\\"assistant\\\"]','[data-testid=\\\"assistant-message\\\"]','[data-testid*=\\\"assistant\\\"]','.model-response-text','message-content','model-response','.ds-markdown','.markdown','.prose','article'];" +
                 "var out=[],seen={};for(var i=0;i<sels.length;i++){var list=document.querySelectorAll(sels[i]);for(var j=0;j<list.length;j++){var x=list[j],t=(x.innerText||x.textContent||'').trim();if(t.length>1&&t.length<30000&&!seen[t]){seen[t]=1;out.push(t);}}}" +
@@ -425,6 +444,14 @@ public final class WebAiEngine {
         return BrowserAiBridge.TARGET_GEMINI.equals(EmbeddedWebAiActivity.normalizeTarget(target));
     }
 
+    private boolean isChatGpt() {
+        return BrowserAiBridge.TARGET_CHATGPT.equals(EmbeddedWebAiActivity.normalizeTarget(target));
+    }
+
+    private String label() {
+        return EmbeddedWebAiActivity.targetLabel(target);
+    }
+
     private String diagnosticSuffix() {
         return lastDomDebug == null || lastDomDebug.isBlank() ? "" : "（" + lastDomDebug + "）";
     }
@@ -454,17 +481,17 @@ public final class WebAiEngine {
 
     private boolean sameTarget(String url, String target) {
         if (url == null || url.isEmpty()) return false;
-        String host;
-        try { host = android.net.Uri.parse(url).getHost(); }
-        catch (Throwable t) { host = null; }
-        if (host == null) return false;
-        host = host.toLowerCase(Locale.ROOT);
+        String hostName;
+        try { hostName = android.net.Uri.parse(url).getHost(); }
+        catch (Throwable t) { hostName = null; }
+        if (hostName == null) return false;
+        hostName = hostName.toLowerCase(Locale.ROOT);
         switch (EmbeddedWebAiActivity.normalizeTarget(target)) {
-            case BrowserAiBridge.TARGET_GEMINI: return host.contains("gemini.google.com");
-            case BrowserAiBridge.TARGET_CLAUDE: return host.contains("claude.ai");
-            case BrowserAiBridge.TARGET_GROK: return host.contains("grok.com") || host.contains("x.com");
-            case BrowserAiBridge.TARGET_DEEPSEEK: return host.contains("chat.deepseek.com") || host.contains("deepseek.com");
-            default: return host.contains("chatgpt.com") || host.contains("chat.openai.com");
+            case BrowserAiBridge.TARGET_GEMINI: return hostName.contains("gemini.google.com");
+            case BrowserAiBridge.TARGET_CLAUDE: return hostName.contains("claude.ai");
+            case BrowserAiBridge.TARGET_GROK: return hostName.contains("grok.com") || hostName.contains("x.com");
+            case BrowserAiBridge.TARGET_DEEPSEEK: return hostName.contains("chat.deepseek.com") || hostName.contains("deepseek.com");
+            default: return hostName.contains("chatgpt.com") || hostName.contains("chat.openai.com");
         }
     }
 
