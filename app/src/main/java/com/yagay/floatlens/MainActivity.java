@@ -7,156 +7,113 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
-import android.widget.*;
+import android.view.Gravity;
+import android.view.View;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.widget.Toast;
+
 import androidx.appcompat.app.AppCompatActivity;
 
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.switchmaterial.SwitchMaterial;
+
+/** FloatLens control center. Advanced diagnostics live in DiagnosticsActivity. */
 public class MainActivity extends AppCompatActivity {
-    private static final int REQ_EXPORT_LOG = 701;
-    private static final int REQ_EXPORT_INSPECTOR = 702;
-    private TextView inspectorStatus;
-    private Switch overlaySwitch;
+    private SwitchMaterial overlaySwitch;
+    private TextView serviceStatus;
     private boolean syncingOverlaySwitch;
-    private boolean statusLoadedOnce;
 
-    @Override protected void onCreate(Bundle b) {
-        super.onCreate(b);
-        ScrollView sv = new ScrollView(this);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(24), dp(28), dp(24), dp(32));
-        sv.addView(root);
+    private PermissionRow overlayPermission;
+    private PermissionRow accessibilityPermission;
+    private PermissionRow notificationPermission;
 
-        TextView title = new TextView(this);
-        title.setText("FloatLens\n悬浮取词 / 截图 / OCR");
-        title.setTextSize(24); root.addView(title);
+    @Override protected void onCreate(Bundle state) {
+        super.onCreate(state);
 
-        TextView desc = new TextView(this);
-        desc.setText("只保留 fooView 风格悬浮图标、手势、截图、区域截图、OCR 和系统动作。没有文件管理器、浏览器等其他功能。");
-        desc.setTextSize(16); desc.setPadding(0, dp(16), 0, dp(24)); root.addView(desc);
+        LinearLayout root = AppUi.pageRoot(this, "FloatLens",
+                "悬浮取词 · 截图 · OCR · 自定义文字操作" );
 
-        Button overlay = button("1. 授予悬浮窗权限");
-        overlay.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()))));
-        root.addView(overlay);
+        AppUi.Section running = AppUi.section(this, "运行状态",
+                "悬浮图标状态会保存，退出应用或重启后仍按当前设置恢复。" );
+        overlaySwitch = AppUi.switchRow(this,
+                "悬浮图标",
+                "保持后台运行并响应点击、拖动和手势",
+                FloatServiceState.isEnabled(this),
+                (button, checked) -> onOverlayToggle(checked));
+        AppUi.addRow(running.body, AppUi.switchContainer(overlaySwitch));
 
-        Button access = button("2. 开启无障碍（截图/系统动作）");
-        access.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
-        root.addView(access);
+        serviceStatus = AppUi.caption(this, "正在读取服务状态…", 13);
+        serviceStatus.setPadding(AppUi.dp(this, 12), AppUi.dp(this, 8),
+                AppUi.dp(this, 12), AppUi.dp(this, 8));
+        serviceStatus.setBackground(AppUi.rounded(this, AppUi.surfaceAlt(this), 14));
+        AppUi.addRow(running.body, serviceStatus);
+        AppUi.addSection(root, running);
+
+        AppUi.Section permissions = AppUi.section(this, "权限",
+                "只保留 FloatLens 实际需要的三项权限。" );
+        overlayPermission = permissionRow(
+                "悬浮窗",
+                "用于在其他应用上方显示 FloatLens 图标",
+                () -> startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getPackageName()))));
+        AppUi.addRow(permissions.body, overlayPermission.view);
+
+        accessibilityPermission = permissionRow(
+                "无障碍服务",
+                "用于 View 识别、系统动作和无障碍截图",
+                () -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        AppUi.addRow(permissions.body, accessibilityPermission.view);
 
         if (Build.VERSION.SDK_INT >= 33) {
-            Button notify = button("3. 授予通知权限（推荐）");
-            notify.setOnClickListener(v -> {
-                if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
-                    requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 20);
-                else Toast.makeText(this, "通知权限已授予", Toast.LENGTH_SHORT).show();
-            });
-            root.addView(notify);
+            notificationPermission = permissionRow(
+                    "通知",
+                    "用于前台服务常驻通知",
+                    this::handleNotificationPermission);
+            AppUi.addRow(permissions.body, notificationPermission.view);
         }
+        AppUi.addSection(root, permissions);
 
-        overlaySwitch = new Switch(this);
-        overlaySwitch.setText("悬浮图标（保持开启状态）");
-        overlaySwitch.setTextSize(17);
-        overlaySwitch.setPadding(dp(10), dp(16), dp(10), dp(16));
-        syncingOverlaySwitch = true;
-        overlaySwitch.setChecked(FloatServiceState.isEnabled(this));
-        syncingOverlaySwitch = false;
-        overlaySwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            if (syncingOverlaySwitch) return;
-            if (isChecked) {
-                if (!Settings.canDrawOverlays(this) && !LensAccessibilityService.ready()) {
-                    Toast.makeText(this, "请先授予悬浮窗权限或开启 FloatLens 无障碍服务", Toast.LENGTH_LONG).show();
-                    FloatServiceState.setEnabled(this, false);
-                    syncOverlaySwitch(false);
-                    return;
-                }
-                if (FloatServiceState.start(this)) {
-                    Toast.makeText(this, "悬浮图标已开启，并会保持当前状态", Toast.LENGTH_SHORT).show();
-                } else {
-                    Toast.makeText(this, "启动悬浮服务失败，已保留开启状态供稍后自动重试", Toast.LENGTH_LONG).show();
-                }
-            } else {
-                FloatServiceState.stop(this);
-                Toast.makeText(this, "悬浮图标已关闭", Toast.LENGTH_SHORT).show();
-            }
-        });
-        root.addView(overlaySwitch);
+        AppUi.Section settings = AppUi.section(this, "设置",
+                "常用配置集中在这里，不再把调试项混在主页。" );
+        AppUi.addRow(settings.body, AppUi.navRow(this,
+                "悬浮图标与手势",
+                "图标外观、手势阈值、截图和 OCR",
+                () -> startActivity(new Intent(this, SettingsActivity.class))));
+        AppUi.addRow(settings.body, AppUi.navRow(this,
+                "文字操作菜单",
+                "给选中文字添加外部应用或 Intent 操作",
+                () -> startActivity(MenuPickerActivity.customIntent(this))));
+        AppUi.addRow(settings.body, AppUi.navRow(this,
+                "分享菜单",
+                "管理“分享”子菜单的应用和顺序",
+                () -> startActivity(MenuPickerActivity.targetIntent(this, TargetMenuStore.MODE_SHARE))));
+        AppUi.addRow(settings.body, AppUi.navRow(this,
+                "打开 / 处理菜单",
+                "管理 PROCESS_TEXT 目标和显示顺序",
+                () -> startActivity(MenuPickerActivity.targetIntent(this, TargetMenuStore.MODE_PROCESS))));
+        AppUi.addSection(root, settings);
 
-        TextView overlayHint = new TextView(this);
-        overlayHint.setText("开启后退出 FloatLens 仍保持运行；重启设备或更新应用后会按保存状态自动恢复。");
-        overlayHint.setPadding(dp(10), 0, dp(10), dp(10));
-        root.addView(overlayHint);
+        AppUi.Section advanced = AppUi.section(this, "高级",
+                "排查问题时再进入，不占用日常主页空间。" );
+        AppUi.addRow(advanced.body, AppUi.navRow(this,
+                "诊断与调试",
+                "FL 日志、Runtime Inspector、Method Probe",
+                () -> startActivity(new Intent(this, DiagnosticsActivity.class))));
+        AppUi.addSection(root, advanced);
 
-        Button settings = button("悬浮图标与手势参数");
-        settings.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
-        root.addView(settings);
+        TextView footer = AppUi.caption(this,
+                "FloatLens " + BuildConfig.VERSION_NAME + "  ·  本地 OCR 优先，截图失败时自动使用可用后备方案。",
+                12);
+        footer.setGravity(Gravity.CENTER_HORIZONTAL);
+        footer.setPadding(AppUi.dp(this, 4), AppUi.dp(this, 4),
+                AppUi.dp(this, 4), AppUi.dp(this, 8));
+        root.addView(footer);
 
-        Button customMenu = button("自定义文字操作菜单");
-        customMenu.setOnClickListener(v -> startActivity(MenuPickerActivity.customIntent(this)));
-        root.addView(customMenu);
-
-        Button shareMenu = button("自定义分享菜单");
-        shareMenu.setOnClickListener(v -> startActivity(
-                MenuPickerActivity.targetIntent(this, TargetMenuStore.MODE_SHARE)));
-        root.addView(shareMenu);
-
-        Button processMenu = button("自定义打开 / 处理菜单");
-        processMenu.setOnClickListener(v -> startActivity(
-                MenuPickerActivity.targetIntent(this, TargetMenuStore.MODE_PROCESS)));
-        root.addView(processMenu);
-
-        Button exportLog = button("导出 FL 诊断日志");
-        exportLog.setOnClickListener(v -> {
-            String text=DiagnosticLog.read(this);
-            if(text.isBlank()){Toast.makeText(this,"暂无诊断日志，请先在参数页开启 FL 诊断日志并操作悬浮图标",Toast.LENGTH_LONG).show();return;}
-            Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("text/plain").putExtra(Intent.EXTRA_TITLE,"FloatLens-FL-diagnostic.txt");
-            startActivityForResult(i,REQ_EXPORT_LOG);
-        });
-        root.addView(exportLog);
-
-        Button clearLog = button("清空 FL 诊断日志");
-        clearLog.setOnClickListener(v -> { DiagnosticLog.clear(this); Toast.makeText(this,"诊断日志已清空",Toast.LENGTH_SHORT).show(); });
-        root.addView(clearLog);
-
-        inspectorStatus = new TextView(this);
-        inspectorStatus.setPadding(0, dp(18), 0, dp(12));
-        inspectorStatus.setText("FL Hook 自检：点击刷新");
-        root.addView(inspectorStatus);
-
-        Button selfTest = button("刷新 FL Hook 自检");
-        selfTest.setOnClickListener(v -> { sendInspectorCommand("selftest"); inspectorStatus.postDelayed(this::refreshInspectorStatus, 700); });
-        root.addView(selfTest);
-
-        Button inspectorOn = button("FL Runtime Inspector：全部记录开启");
-        inspectorOn.setOnClickListener(v -> sendInspectorCommand("all_on"));
-        root.addView(inspectorOn);
-
-        Button probeOn = button("Method Probe：开启（高级/高日志量）");
-        probeOn.setOnClickListener(v -> sendInspectorCommand("probe_on"));
-        root.addView(probeOn);
-
-        Button probeOff = button("Method Probe：关闭");
-        probeOff.setOnClickListener(v -> sendInspectorCommand("probe_off"));
-        root.addView(probeOff);
-
-        Button exportInspector = button("导出 FL Runtime Inspector ZIP");
-        exportInspector.setOnClickListener(v -> {
-            if(!InspectorLog.hasAny(this)){Toast.makeText(this,"暂无 Hook 日志。请先在 LSPosed 启用 FloatLens，并把作用域设为 fooView，然后强制停止并重新打开 fooView。",Toast.LENGTH_LONG).show();return;}
-            Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/zip").putExtra(Intent.EXTRA_TITLE,"FloatLens-FL-runtime-inspector.zip");
-            startActivityForResult(i,REQ_EXPORT_INSPECTOR);
-        });
-        root.addView(exportInspector);
-
-        Button clearInspector = button("清空 FL Runtime Inspector 日志");
-        clearInspector.setOnClickListener(v -> { InspectorLog.clear(this); refreshInspectorStatus(); Toast.makeText(this,"Runtime Inspector 日志已清空",Toast.LENGTH_SHORT).show(); });
-        root.addView(clearInspector);
-
-        TextView status = new TextView(this);
-        status.setPadding(0, dp(20), 0, 0);
-        status.setText("提示：OCR 使用本地 ML Kit 中文识别。Root 截图可选，失败时会自动回退到无障碍截图。");
-        root.addView(status);
-        setContentView(sv);
+        setContentView(AppUi.scrollPage(this, root));
     }
 
-    @Override protected void onResume(){
+    @Override protected void onResume() {
         super.onResume();
         boolean enabled = FloatServiceState.isEnabled(this);
         syncOverlaySwitch(enabled);
@@ -164,7 +121,101 @@ public class MainActivity extends AppCompatActivity {
                 && (Settings.canDrawOverlays(this) || LensAccessibilityService.ready())) {
             FloatServiceState.start(this);
         }
-        if(!statusLoadedOnce){statusLoadedOnce=true;inspectorStatus.post(this::refreshInspectorStatus);}
+        refreshStatus();
+    }
+
+    private void onOverlayToggle(boolean checked) {
+        if (syncingOverlaySwitch) return;
+        if (checked) {
+            if (!Settings.canDrawOverlays(this) && !LensAccessibilityService.ready()) {
+                Toast.makeText(this,
+                        "请先授予悬浮窗权限或开启 FloatLens 无障碍服务",
+                        Toast.LENGTH_LONG).show();
+                FloatServiceState.setEnabled(this, false);
+                syncOverlaySwitch(false);
+                refreshStatus();
+                return;
+            }
+            if (FloatServiceState.start(this)) {
+                Toast.makeText(this, "悬浮图标已开启", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, "启动失败，已保留开启状态供稍后自动重试", Toast.LENGTH_LONG).show();
+            }
+        } else {
+            FloatServiceState.stop(this);
+            Toast.makeText(this, "悬浮图标已关闭", Toast.LENGTH_SHORT).show();
+        }
+        refreshStatus();
+    }
+
+    private void refreshStatus() {
+        boolean overlayGranted = Settings.canDrawOverlays(this);
+        boolean accessibilityGranted = LensAccessibilityService.ready();
+        boolean notificationsGranted = Build.VERSION.SDK_INT < 33
+                || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                == PackageManager.PERMISSION_GRANTED;
+
+        updatePermission(overlayPermission, overlayGranted);
+        updatePermission(accessibilityPermission, accessibilityGranted);
+        if (notificationPermission != null) updatePermission(notificationPermission, notificationsGranted);
+
+        boolean enabled = FloatServiceState.isEnabled(this);
+        boolean running = FloatService.get() != null;
+        if (!enabled) {
+            serviceStatus.setText("已停止");
+            serviceStatus.setTextColor(AppUi.textSecondary(this));
+        } else if (running) {
+            serviceStatus.setText("正在运行 · 悬浮图标已启用");
+            serviceStatus.setTextColor(AppUi.success(this));
+        } else {
+            serviceStatus.setText("已开启 · 等待服务恢复");
+            serviceStatus.setTextColor(AppUi.warning(this));
+        }
+    }
+
+    private PermissionRow permissionRow(String title, String subtitle, Runnable action) {
+        LinearLayout row = AppUi.baseRow(this);
+        row.setBackground(AppUi.rounded(this, AppUi.surfaceAlt(this), 14));
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        TextView titleView = AppUi.text(this, title, 15, false);
+        copy.addView(titleView);
+        TextView sub = AppUi.caption(this, subtitle, 12);
+        sub.setPadding(0, AppUi.dp(this, 2), AppUi.dp(this, 8), 0);
+        copy.addView(sub);
+        TextView status = AppUi.caption(this, "未授权", 12);
+        status.setPadding(0, AppUi.dp(this, 3), 0, 0);
+        copy.addView(status);
+        row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        MaterialButton button = AppUi.compactButton(this, "授权");
+        button.setOnClickListener(v -> { if (action != null) action.run(); });
+        row.addView(button, new LinearLayout.LayoutParams(-2, -2));
+        return new PermissionRow(row, status, button);
+    }
+
+    private void updatePermission(PermissionRow row, boolean granted) {
+        if (row == null) return;
+        row.status.setText(granted ? "已授权" : "未授权");
+        row.status.setTextColor(granted ? AppUi.success(this) : AppUi.warning(this));
+        row.button.setText(granted ? "设置" : "授权");
+    }
+
+    private void handleNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) return;
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 20);
+            return;
+        }
+        try {
+            Intent i = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+            startActivity(i);
+        } catch (Throwable t) {
+            Toast.makeText(this, "通知权限已授予", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void syncOverlaySwitch(boolean checked) {
@@ -174,26 +225,14 @@ public class MainActivity extends AppCompatActivity {
         syncingOverlaySwitch = false;
     }
 
-    private void refreshInspectorStatus(){if(inspectorStatus!=null)inspectorStatus.setText(InspectorLog.selfTestStatus(this));}
-
-    @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){
-        super.onActivityResult(requestCode,resultCode,data);
-        if(requestCode==REQ_EXPORT_LOG && resultCode==RESULT_OK && data!=null && data.getData()!=null){
-            try(java.io.OutputStream out=getContentResolver().openOutputStream(data.getData())){
-                if(out!=null){out.write(DiagnosticLog.read(this).getBytes(java.nio.charset.StandardCharsets.UTF_8));out.flush();Toast.makeText(this,"诊断日志已导出",Toast.LENGTH_SHORT).show();}
-            }catch(Throwable t){Toast.makeText(this,"导出失败: "+t.getMessage(),Toast.LENGTH_LONG).show();}
-        } else if(requestCode==REQ_EXPORT_INSPECTOR && resultCode==RESULT_OK && data!=null && data.getData()!=null){
-            try(java.io.OutputStream out=getContentResolver().openOutputStream(data.getData())){
-                if(out!=null){InspectorLog.exportZip(this,out);out.flush();Toast.makeText(this,"Runtime Inspector ZIP 已导出",Toast.LENGTH_SHORT).show();}
-            }catch(Throwable t){Toast.makeText(this,"导出失败: "+t.getMessage(),Toast.LENGTH_LONG).show();}
+    private static final class PermissionRow {
+        final LinearLayout view;
+        final TextView status;
+        final MaterialButton button;
+        PermissionRow(LinearLayout view, TextView status, MaterialButton button) {
+            this.view = view;
+            this.status = status;
+            this.button = button;
         }
     }
-
-    private void sendInspectorCommand(String cmd){
-        try{Intent i=new Intent("com.yagay.floatlens.FL_HOOK_COMMAND").setPackage("com.fooview.android.fooview");i.putExtra("cmd",cmd);sendBroadcast(i);Toast.makeText(this,"已发送: "+cmd,Toast.LENGTH_SHORT).show();}
-        catch(Throwable t){Toast.makeText(this,"发送失败: "+t.getMessage(),Toast.LENGTH_LONG).show();}
-    }
-
-    private Button button(String s) {Button b = new Button(this); b.setText(s); b.setAllCaps(false); b.setPadding(dp(10), dp(12), dp(10), dp(12)); return b;}
-    private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 }
