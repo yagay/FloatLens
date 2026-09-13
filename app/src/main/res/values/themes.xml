@@ -26,6 +26,18 @@
         <item name="android:fontFamily">sans</item>
     </style>
 
+    <!-- Lookup-only dictionary popup launched directly from the FloatLens text toolbar. -->
+    <style name="Theme.FloatLens.DictionaryDialog" parent="Theme.MaterialComponents.DayNight.Dialog">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.28</item>
+        <item name="android:windowCloseOnTouchOutside">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:fontFamily">sans</item>
+    </style>
+
     <style name="Theme.FloatLens.ShadeDismiss" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowIsTranslucent">true</item>
