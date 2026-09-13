@@ -50,14 +50,24 @@ public final class WebAiEngine {
     private String target = BrowserAiBridge.TARGET_CHATGPT;
     private String pendingPrompt = "";
     private String lastCandidate = "";
+    private String lastDomDebug = "";
     private long candidateStableSince;
     private long startedAt;
     private int composerAttempts;
+    private int emptyPolls;
     private boolean pageReady;
     private boolean waitingForPage;
     private boolean sending;
     private boolean destroyed;
     private final Set<String> baselineAnswers = new HashSet<>();
+
+    private static final class DomSnapshot {
+        final ArrayList<String> texts = new ArrayList<>();
+        boolean generating;
+        boolean sendReady;
+        int modelCount;
+        String debug = "";
+    }
 
     public WebAiEngine(Context context, FrameLayout host, Listener listener) {
         this.context = context;
@@ -159,8 +169,10 @@ public final class WebAiEngine {
         pendingPrompt = prompt;
         startedAt = SystemClock.uptimeMillis();
         composerAttempts = 0;
+        emptyPolls = 0;
         baselineAnswers.clear();
         lastCandidate = "";
+        lastDomDebug = "";
         candidateStableSince = 0L;
 
         String current = webView.getUrl();
@@ -178,8 +190,10 @@ public final class WebAiEngine {
         if (!active()) return;
         evaluate(candidateScript(), raw -> {
             if (!active()) return;
+            DomSnapshot snapshot = parseSnapshot(raw);
             baselineAnswers.clear();
-            baselineAnswers.addAll(parseCandidateTexts(raw));
+            baselineAnswers.addAll(snapshot.texts);
+            lastDomDebug = snapshot.debug;
             tryComposer();
         });
     }
@@ -187,25 +201,37 @@ public final class WebAiEngine {
     private void tryComposer() {
         if (!active()) return;
         if (timedOut()) {
-            fail("等待网页输入框超时");
+            fail("等待网页输入框超时" + diagnosticSuffix());
             return;
         }
         composerAttempts++;
         String quoted = JSONObject.quote(pendingPrompt);
-        String js = "(function(){try{" +
-                "var text=" + quoted + ";" +
-                "var sels=['#prompt-textarea','textarea[placeholder]','textarea','[contenteditable=\\\"true\\\"][data-lexical-editor=\\\"true\\\"]','div.ProseMirror[contenteditable=\\\"true\\\"]','rich-textarea [contenteditable=\\\"true\\\"]','[contenteditable=\\\"true\\\"]'];" +
-                "var el=null;for(var i=0;i<sels.length&&!el;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j];if(!x.disabled){el=x;break;}}}" +
-                "if(!el)return 'missing';el.focus();" +
-                "if(el.isContentEditable){el.textContent=text;try{el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){el.dispatchEvent(new Event('input',{bubbles:true}));}}" +
-                "else{var p=Object.getPrototypeOf(el),d=Object.getOwnPropertyDescriptor(p,'value');if(!d||!d.set){d=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')||Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');}if(d&&d.set)d.set.call(el,text);else el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}" +
-                "return 'filled';}catch(e){return 'error:'+String(e);}})();";
+        String js;
+        if (isGemini()) {
+            js = "(function(){try{" +
+                    "var text=" + quoted + ";" +
+                    "var sels=['rich-textarea .ql-editor','rich-textarea [contenteditable=\\\"true\\\"]','.textarea[contenteditable=\\\"true\\\"]','.textarea','textarea','[contenteditable=\\\"true\\\"]'];" +
+                    "var el=null;for(var i=0;i<sels.length&&!el;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j];var r=x.getBoundingClientRect();if(!x.disabled&&r.width>20&&r.height>10){el=x;break;}}}" +
+                    "if(!el)return 'missing';el.focus();" +
+                    "if(el.isContentEditable){el.textContent=text;try{el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){el.dispatchEvent(new Event('input',{bubbles:true}));}}" +
+                    "else{var p=Object.getPrototypeOf(el),d=Object.getOwnPropertyDescriptor(p,'value');if(!d||!d.set){d=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')||Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');}if(d&&d.set)d.set.call(el,text);else el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}" +
+                    "return 'filled';}catch(e){return 'error:'+String(e);}})();";
+        } else {
+            js = "(function(){try{" +
+                    "var text=" + quoted + ";" +
+                    "var sels=['#prompt-textarea','textarea[placeholder]','textarea','[contenteditable=\\\"true\\\"][data-lexical-editor=\\\"true\\\"]','div.ProseMirror[contenteditable=\\\"true\\\"]','rich-textarea [contenteditable=\\\"true\\\"]','[contenteditable=\\\"true\\\"]'];" +
+                    "var el=null;for(var i=0;i<sels.length&&!el;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j];if(!x.disabled){el=x;break;}}}" +
+                    "if(!el)return 'missing';el.focus();" +
+                    "if(el.isContentEditable){el.textContent=text;try{el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){el.dispatchEvent(new Event('input',{bubbles:true}));}}" +
+                    "else{var p=Object.getPrototypeOf(el),d=Object.getOwnPropertyDescriptor(p,'value');if(!d||!d.set){d=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')||Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');}if(d&&d.set)d.set.call(el,text);else el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}" +
+                    "return 'filled';}catch(e){return 'error:'+String(e);}})();";
+        }
         evaluate(js, raw -> {
             if (!active()) return;
             String value = decodeJsString(raw);
             if (value.startsWith("filled")) {
                 status("已在后台网页填入问题，正在发送…");
-                main.postDelayed(this::trySend, 280L);
+                main.postDelayed(this::trySend, 320L);
                 return;
             }
             if (value.startsWith("error")) {
@@ -213,7 +239,7 @@ public final class WebAiEngine {
                 return;
             }
             if (composerAttempts >= MAX_COMPOSER_ATTEMPTS) {
-                needsLogin("没有找到聊天输入框。可能尚未登录、需要验证码，或该网站暂时不允许 WebView 自动操作。");
+                needsLogin("没有找到聊天输入框。可能尚未登录、需要验证码，或该网站暂时不允许 WebView 自动操作。" + diagnosticSuffix());
                 return;
             }
             status("等待 " + EmbeddedWebAiActivity.targetLabel(target) + " 登录/输入框…");
@@ -223,23 +249,35 @@ public final class WebAiEngine {
 
     private void trySend() {
         if (!active()) return;
-        String js = "(function(){try{" +
-                "var sels=['button[data-testid=\\\"send-button\\\"]','button[data-testid*=\\\"send\\\"]','button[aria-label*=\\\"Send\\\"]','button[aria-label*=\\\"send\\\"]','button[aria-label*=\\\"发送\\\"]','button[type=\\\"submit\\\"]'];" +
-                "var b=null;for(var i=0;i<sels.length&&!b;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j];if(!x.disabled){b=x;break;}}}" +
-                "if(b){b.click();return 'sent';}" +
-                "var e=document.querySelector('#prompt-textarea,textarea,[contenteditable=\\\"true\\\"]');var f=e&&e.closest?e.closest('form'):null;if(f&&f.requestSubmit){f.requestSubmit();return 'sent-form';}" +
-                "if(e){try{e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));return 'sent-key';}catch(ignore){}}" +
-                "return 'nosend';}catch(e){return 'error:'+String(e);}})();";
+        String js;
+        if (isGemini()) {
+            js = "(function(){try{" +
+                    "var sels=['gem-icon-button.submit[aria-disabled=\\\"false\\\"]','button.send-button:not([disabled])','button.submit:not([disabled])','button[aria-label=\\\"Send message\\\"]:not([disabled])','button[aria-label*=\\\"Send\\\"]:not([disabled])','button[aria-label*=\\\"发送\\\"]:not([disabled])'];" +
+                    "var b=null;for(var i=0;i<sels.length&&!b;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j];var r=x.getBoundingClientRect();if(r.width>8&&r.height>8){b=x;break;}}}" +
+                    "if(b){b.click();return 'sent-gemini';}" +
+                    "var e=document.querySelector('rich-textarea .ql-editor,rich-textarea [contenteditable=\\\"true\\\"],.textarea[contenteditable=\\\"true\\\"],textarea,[contenteditable=\\\"true\\\"]');" +
+                    "if(e){try{e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));return 'sent-key';}catch(ignore){}}" +
+                    "return 'nosend';}catch(e){return 'error:'+String(e);}})();";
+        } else {
+            js = "(function(){try{" +
+                    "var sels=['button[data-testid=\\\"send-button\\\"]','button[data-testid*=\\\"send\\\"]','button[aria-label*=\\\"Send\\\"]','button[aria-label*=\\\"send\\\"]','button[aria-label*=\\\"发送\\\"]','button[type=\\\"submit\\\"]'];" +
+                    "var b=null;for(var i=0;i<sels.length&&!b;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j];if(!x.disabled){b=x;break;}}}" +
+                    "if(b){b.click();return 'sent';}" +
+                    "var e=document.querySelector('#prompt-textarea,textarea,[contenteditable=\\\"true\\\"]');var f=e&&e.closest?e.closest('form'):null;if(f&&f.requestSubmit){f.requestSubmit();return 'sent-form';}" +
+                    "if(e){try{e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));return 'sent-key';}catch(ignore){}}" +
+                    "return 'nosend';}catch(e){return 'error:'+String(e);}})();";
+        }
         evaluate(js, raw -> {
             if (!active()) return;
             String value = decodeJsString(raw);
             if (value.startsWith("sent")) {
                 status("已发送，正在后台读取网页回答…");
+                emptyPolls = 0;
                 main.postDelayed(this::pollAnswer, 900L);
             } else if (value.startsWith("error")) {
                 fail("网页发送失败: " + value);
             } else {
-                needsLogin("文字已经填入，但没有可靠找到发送按钮。请打开一次网页登录页面确认登录状态。" );
+                needsLogin("文字已经填入，但没有可靠找到发送按钮。请打开一次网页登录页面确认登录状态。" + diagnosticSuffix());
             }
         });
     }
@@ -247,27 +285,47 @@ public final class WebAiEngine {
     private void pollAnswer() {
         if (!active()) return;
         if (timedOut()) {
-            fail("等待网页回答超时");
+            fail("等待网页回答超时" + diagnosticSuffix());
             return;
         }
         evaluate(candidateScript(), raw -> {
             if (!active()) return;
-            List<String> candidates = parseCandidateTexts(raw);
-            String candidate = chooseNewAnswer(candidates);
+            DomSnapshot snapshot = parseSnapshot(raw);
+            lastDomDebug = snapshot.debug;
+            String candidate = chooseNewAnswer(snapshot.texts);
             long now = SystemClock.uptimeMillis();
+
             if (candidate.isEmpty()) {
-                status("等待 " + EmbeddedWebAiActivity.targetLabel(target) + " 回答…");
+                emptyPolls++;
+                if (isGemini() && snapshot.modelCount > 0) {
+                    status(snapshot.generating
+                            ? "Gemini 正在生成回答…"
+                            : "Gemini 已有回答节点，正在读取内容…");
+                } else if (isGemini() && emptyPolls >= 5) {
+                    status("Gemini 已发送，但还没有检测到新的 model-response…");
+                } else {
+                    status("等待 " + EmbeddedWebAiActivity.targetLabel(target) + " 回答…");
+                }
                 main.postDelayed(this::pollAnswer, POLL_MS);
                 return;
             }
+
+            emptyPolls = 0;
             if (!candidate.equals(lastCandidate)) {
                 lastCandidate = candidate;
                 candidateStableSince = now;
-                status("正在读取网页回答…");
+                status(snapshot.generating ? "Gemini 正在生成回答…" : "正在读取网页回答…");
                 main.postDelayed(this::pollAnswer, POLL_MS);
                 return;
             }
-            if (now - candidateStableSince >= STABLE_MS) {
+
+            if (snapshot.generating) {
+                status("Gemini 正在生成回答…");
+                main.postDelayed(this::pollAnswer, POLL_MS);
+                return;
+            }
+
+            if (now - candidateStableSince >= STABLE_MS || (isGemini() && snapshot.sendReady)) {
                 String answer = candidate;
                 String doneTarget = target;
                 sending = false;
@@ -303,23 +361,50 @@ public final class WebAiEngine {
     }
 
     private String candidateScript() {
+        if (isGemini()) {
+            return "(function(){try{" +
+                    "var models=Array.from(document.querySelectorAll('model-response'));" +
+                    "var out=[],seen={};models.forEach(function(m){var c=m.querySelector('message-content.model-response-text,.model-response-text,.message-content,.response-content,.markdown.markdown-main-panel,.markdown')||m;var t=(c.innerText||c.textContent||'').trim();if(t.length>1&&t.length<30000&&!seen[t]){seen[t]=1;out.push(t);}});" +
+                    "if(!out.length){var fall=document.querySelectorAll('message-content.model-response-text,.model-response-text,.response-content');for(var i=0;i<fall.length;i++){var t=(fall[i].innerText||fall[i].textContent||'').trim();if(t.length>1&&t.length<30000&&!seen[t]){seen[t]=1;out.push(t);}}}" +
+                    "var generating=false;var controls=document.querySelectorAll('button,[role=\\\"button\\\"],gem-icon-button');for(var k=0;k<controls.length;k++){var x=controls[k],a=((x.getAttribute('aria-label')||'')+' '+(x.textContent||'')+' '+(x.className||'')).toLowerCase();if(a.indexOf('stop')>=0||a.indexOf('停止')>=0){var r=x.getBoundingClientRect();if(r.width>0&&r.height>0&&x.getAttribute('aria-disabled')!=='true'&&!x.disabled){generating=true;break;}}}" +
+                    "var sendReady=!!document.querySelector('gem-icon-button.submit[aria-disabled=\\\"false\\\"],button.send-button:not([disabled]),button.submit:not([disabled]),button[aria-label=\\\"Send message\\\"]:not([disabled])');" +
+                    "return JSON.stringify({texts:out.slice(-20),generating:generating,sendReady:sendReady,modelCount:models.length,debug:'gemini models='+models.length+',texts='+out.length+',generating='+generating+',sendReady='+sendReady});" +
+                    "}catch(e){return JSON.stringify({texts:[],generating:false,sendReady:false,modelCount:0,debug:'gemini script error:'+String(e)});}})();";
+        }
         return "(function(){try{" +
                 "var sels=['[data-message-author-role=\\\"assistant\\\"]','[data-testid=\\\"assistant-message\\\"]','[data-testid*=\\\"assistant\\\"]','.model-response-text','message-content','model-response','.ds-markdown','.markdown','.prose','article'];" +
                 "var out=[],seen={};for(var i=0;i<sels.length;i++){var list=document.querySelectorAll(sels[i]);for(var j=0;j<list.length;j++){var x=list[j],t=(x.innerText||x.textContent||'').trim();if(t.length>1&&t.length<30000&&!seen[t]){seen[t]=1;out.push(t);}}}" +
-                "return JSON.stringify(out.slice(-40));}catch(e){return '[]';}})();";
+                "return JSON.stringify({texts:out.slice(-40),generating:false,sendReady:false,modelCount:0,debug:'generic texts='+out.length});}catch(e){return JSON.stringify({texts:[],generating:false,sendReady:false,modelCount:0,debug:'generic script error:'+String(e)});}})();";
     }
 
-    private List<String> parseCandidateTexts(String raw) {
-        ArrayList<String> out = new ArrayList<>();
+    private DomSnapshot parseSnapshot(String raw) {
+        DomSnapshot snapshot = new DomSnapshot();
         try {
             String json = decodeJsString(raw);
-            JSONArray a = new JSONArray(json);
-            for (int i = 0; i < a.length(); i++) {
-                String value = compact(a.optString(i, ""));
-                if (!value.isEmpty()) out.add(value);
+            Object parsed = new JSONTokener(json).nextValue();
+            JSONArray texts;
+            if (parsed instanceof JSONObject) {
+                JSONObject o = (JSONObject) parsed;
+                texts = o.optJSONArray("texts");
+                snapshot.generating = o.optBoolean("generating", false);
+                snapshot.sendReady = o.optBoolean("sendReady", false);
+                snapshot.modelCount = o.optInt("modelCount", 0);
+                snapshot.debug = o.optString("debug", "");
+            } else if (parsed instanceof JSONArray) {
+                texts = (JSONArray) parsed;
+            } else {
+                texts = null;
             }
-        } catch (Throwable ignored) {}
-        return out;
+            if (texts != null) {
+                for (int i = 0; i < texts.length(); i++) {
+                    String value = compact(texts.optString(i, ""));
+                    if (!value.isEmpty()) snapshot.texts.add(value);
+                }
+            }
+        } catch (Throwable t) {
+            snapshot.debug = "parse error: " + messageOf(t);
+        }
+        return snapshot;
     }
 
     private void evaluate(String js, android.webkit.ValueCallback<String> callback) {
@@ -334,6 +419,14 @@ public final class WebAiEngine {
 
     private boolean timedOut() {
         return SystemClock.uptimeMillis() - startedAt > TIMEOUT_MS;
+    }
+
+    private boolean isGemini() {
+        return BrowserAiBridge.TARGET_GEMINI.equals(EmbeddedWebAiActivity.normalizeTarget(target));
+    }
+
+    private String diagnosticSuffix() {
+        return lastDomDebug == null || lastDomDebug.isBlank() ? "" : "（" + lastDomDebug + "）";
     }
 
     private void needsLogin(String message) {
