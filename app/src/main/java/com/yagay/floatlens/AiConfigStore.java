@@ -16,6 +16,7 @@ import javax.crypto.spec.GCMParameterSpec;
 
 /** Stores AI settings. API keys are encrypted with Android Keystore and never hard-coded. */
 public final class AiConfigStore {
+    public static final String PROVIDER_TOKEN_FREE = "token_free_gateway";
     public static final String PROVIDER_OPENROUTER = "openrouter";
     public static final String PROVIDER_GEMINI = "gemini";
     public static final String PROVIDER_GROQ = "groq";
@@ -23,7 +24,8 @@ public final class AiConfigStore {
 
     private static final String PREFS = "floatlens_ai";
     private static final String KEY_PROVIDER = "provider";
-    private static final String KEY_BASE_URL = "base_url";
+    private static final String KEY_BASE_URL_LEGACY = "base_url";
+    private static final String KEY_BASE_URL_PREFIX = "base_url_";
     private static final String KEY_MODEL_LEGACY = "model";
     private static final String KEY_MODEL_PREFIX = "model_";
     private static final String KEY_SYSTEM_PROMPT = "system_prompt";
@@ -36,6 +38,7 @@ public final class AiConfigStore {
     private static final String KEYSTORE_ALIAS_LEGACY = "floatlens_ai_api_key_v1";
     private static final String KEYSTORE_ALIAS_PREFIX = "floatlens_ai_api_key_v2_";
 
+    private static final String TOKEN_FREE_BASE = "http://127.0.0.1:3456/v1";
     private static final String OPENROUTER_BASE = "https://openrouter.ai/api/v1";
     private static final String OPENROUTER_MODEL = "openrouter/free";
     private static final String GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai";
@@ -58,6 +61,7 @@ public final class AiConfigStore {
 
     public static String providerLabel(String provider) {
         return switch (normalizeProvider(provider)) {
+            case PROVIDER_TOKEN_FREE -> "Token-Free Gateway · Web AI";
             case PROVIDER_GEMINI -> "Gemini · Free Tier";
             case PROVIDER_GROQ -> "Groq · Free Tier";
             case PROVIDER_CUSTOM -> "自定义 OpenAI Compatible";
@@ -74,12 +78,30 @@ public final class AiConfigStore {
         if (PROVIDER_OPENROUTER.equals(p)) return OPENROUTER_BASE;
         if (PROVIDER_GEMINI.equals(p)) return GEMINI_BASE;
         if (PROVIDER_GROQ.equals(p)) return GROQ_BASE;
-        String value = prefs(c).getString(KEY_BASE_URL, "");
-        return value == null ? "" : value.trim();
+
+        SharedPreferences preferences = prefs(c);
+        String value = preferences.getString(KEY_BASE_URL_PREFIX + p, "");
+        value = value == null ? "" : value.trim();
+        if (!value.isEmpty()) return normalizeBaseForProvider(p, value);
+
+        // Preserve the custom Base URL saved before per-provider URLs were introduced.
+        if (PROVIDER_CUSTOM.equals(p)) {
+            String legacy = preferences.getString(KEY_BASE_URL_LEGACY, "");
+            legacy = legacy == null ? "" : legacy.trim();
+            if (!legacy.isEmpty()) return legacy;
+        }
+        return defaultBase(p);
     }
 
     public static void setBaseUrl(Context c, String value) {
-        prefs(c).edit().putString(KEY_BASE_URL, value == null ? "" : value.trim()).apply();
+        setBaseUrl(c, provider(c), value);
+    }
+
+    public static void setBaseUrl(Context c, String provider, String value) {
+        String p = normalizeProvider(provider);
+        String clean = value == null ? "" : value.trim();
+        clean = normalizeBaseForProvider(p, clean);
+        prefs(c).edit().putString(KEY_BASE_URL_PREFIX + p, clean).apply();
     }
 
     public static String model(Context c) {
@@ -134,7 +156,7 @@ public final class AiConfigStore {
                 KEYSTORE_ALIAS_PREFIX + p);
         if (!value.isBlank()) return value;
 
-        // Migrate the old single key only as OpenRouter's key. Never reuse it for Gemini/Groq.
+        // Migrate the old single key only as OpenRouter's key. Never reuse it for other providers.
         if (PROVIDER_OPENROUTER.equals(p)) {
             return decryptStored(c,
                     KEY_API_KEY_CIPHER_LEGACY,
@@ -197,21 +219,42 @@ public final class AiConfigStore {
 
     public static boolean isConfigured(Context c, String provider) {
         String p = normalizeProvider(provider);
-        if (PROVIDER_CUSTOM.equals(p)) {
+        if (PROVIDER_CUSTOM.equals(p) || PROVIDER_TOKEN_FREE.equals(p)) {
             return !baseUrl(c, p).isBlank() && !model(c, p).isBlank();
         }
         return hasApiKey(c, p) && !model(c, p).isBlank();
     }
 
     public static String endpoint(Context c) {
-        String base = baseUrl(c).trim();
+        return endpoint(c, provider(c));
+    }
+
+    public static String endpoint(Context c, String provider) {
+        String base = apiBase(c, provider);
         if (base.endsWith("/chat/completions")) return base;
-        while (base.endsWith("/")) base = base.substring(0, base.length() - 1);
         return base + "/chat/completions";
+    }
+
+    public static String modelsEndpoint(Context c, String provider) {
+        return apiBase(c, provider) + "/models";
+    }
+
+    private static String apiBase(Context c, String provider) {
+        String p = normalizeProvider(provider);
+        String base = normalizeBaseForProvider(p, baseUrl(c, p));
+        while (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+        if (base.endsWith("/chat/completions")) {
+            base = base.substring(0, base.length() - "/chat/completions".length());
+        }
+        if (base.endsWith("/models")) {
+            base = base.substring(0, base.length() - "/models".length());
+        }
+        return base;
     }
 
     public static String defaultBase(String provider) {
         return switch (normalizeProvider(provider)) {
+            case PROVIDER_TOKEN_FREE -> TOKEN_FREE_BASE;
             case PROVIDER_GEMINI -> GEMINI_BASE;
             case PROVIDER_GROQ -> GROQ_BASE;
             case PROVIDER_CUSTOM -> "";
@@ -221,15 +264,27 @@ public final class AiConfigStore {
 
     public static String defaultModel(String provider) {
         return switch (normalizeProvider(provider)) {
+            case PROVIDER_TOKEN_FREE, PROVIDER_CUSTOM -> "";
             case PROVIDER_GEMINI -> GEMINI_MODEL;
             case PROVIDER_GROQ -> GROQ_MODEL;
-            case PROVIDER_CUSTOM -> "";
             default -> OPENROUTER_MODEL;
         };
     }
 
     public static String defaultOpenRouterBase() { return OPENROUTER_BASE; }
     public static String defaultOpenRouterModel() { return OPENROUTER_MODEL; }
+
+    private static String normalizeBaseForProvider(String provider, String value) {
+        String base = value == null ? "" : value.trim();
+        while (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+        if (PROVIDER_TOKEN_FREE.equals(provider) && !base.isEmpty()
+                && !base.endsWith("/v1")
+                && !base.endsWith("/v1/chat/completions")
+                && !base.endsWith("/v1/models")) {
+            base += "/v1";
+        }
+        return base;
+    }
 
     private static String decryptStored(Context c, String cipherPref, String ivPref, String alias) {
         SharedPreferences p = prefs(c);
@@ -268,6 +323,7 @@ public final class AiConfigStore {
     }
 
     private static String normalizeProvider(String value) {
+        if (PROVIDER_TOKEN_FREE.equals(value)) return PROVIDER_TOKEN_FREE;
         if (PROVIDER_GEMINI.equals(value)) return PROVIDER_GEMINI;
         if (PROVIDER_GROQ.equals(value)) return PROVIDER_GROQ;
         if (PROVIDER_CUSTOM.equals(value)) return PROVIDER_CUSTOM;
