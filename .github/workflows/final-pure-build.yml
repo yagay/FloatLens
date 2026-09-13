@@ -1,0 +1,39 @@
+name: Final Pure Build
+
+on:
+  push:
+    branches: [ tmp-final-pure-build ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: tmp-final-pure-build
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 9.4.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.4.1'
+
+      - name: Build debug APK
+        run: gradle --stacktrace assembleDebug
+
+      - name: Upload debug APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: FloatLens-debug-final-pure
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: ignore
