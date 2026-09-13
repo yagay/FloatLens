@@ -106,8 +106,7 @@ public final class AppearanceSettingsActivity extends AppCompatActivity {
         block.addView(slider, lp);
 
         TextView hint = AppUi.caption(this,
-                "可设置 4～8 个实际操作；复制、全选、分享会计入，“ +
-                        "“⋮”不计入并始终额外显示。",
+                "可设置 4～8 个实际操作；复制、全选、分享会计入，‘⋮’不计入并始终额外显示。",
                 12);
         hint.setPadding(0, AppUi.dp(this, 2), 0, 0);
         block.addView(hint);
