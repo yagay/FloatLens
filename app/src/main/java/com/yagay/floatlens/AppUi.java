@@ -42,13 +42,11 @@ final class AppUi {
         header.setGravity(Gravity.CENTER_VERTICAL);
 
         if (c instanceof Activity activity && !(activity instanceof MainActivity)) {
-            MaterialButton back = new MaterialButton(c);
-            back.setText("‹");
-            back.setTextSize(28);
-            back.setAllCaps(false);
-            back.setMinWidth(0);
-            back.setMinimumWidth(0);
-            back.setPadding(0, 0, 0, 0);
+            TextView back = text(c, "‹", 30, false);
+            back.setGravity(Gravity.CENTER);
+            back.setClickable(true);
+            back.setFocusable(true);
+            back.setBackground(rowBackground(c));
             back.setContentDescription("返回");
             back.setOnClickListener(v -> activity.finish());
             header.addView(back, new LinearLayout.LayoutParams(dp(c, 42), dp(c, 44)));
@@ -122,10 +120,6 @@ final class AppUi {
     }
 
     static void addRow(LinearLayout parent, View row) {
-        if (parent.getChildCount() > 0) {
-            parent.addView(divider(parent.getContext()),
-                    new LinearLayout.LayoutParams(-1, dp(parent.getContext(), 1)));
-        }
         parent.addView(row, new LinearLayout.LayoutParams(-1, -2));
     }
 
