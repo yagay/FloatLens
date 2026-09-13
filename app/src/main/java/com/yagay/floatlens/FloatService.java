@@ -30,6 +30,8 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private CircleStateMachine circleState;
     private FloatIconView primary, secondary;
     private WindowManager.LayoutParams primaryLp, secondaryLp;
+    private FloatIconTouchHandle primaryHandle, secondaryHandle;
+    private WindowManager.LayoutParams primaryHandleLp, secondaryHandleLp;
     private GestureTrailOverlay trail;
     private BroadcastReceiver screenReceiver;
     private EdgeWakeView wakeLeft, wakeRight;
@@ -89,6 +91,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
         addIconWindow(primary, primaryLp);
         layout.edgeHide(primaryLp);
         safeUpdate(primary, primaryLp);
+        addTouchHandle(primary, primaryLp, false);
     }
 
     private void syncSecondary() {
@@ -100,8 +103,10 @@ public class FloatService extends Service implements android.content.SharedPrefe
                 addIconWindow(secondary, secondaryLp);
                 layout.edgeHide(secondaryLp);
                 safeUpdate(secondary, secondaryLp);
+                addTouchHandle(secondary, secondaryLp, true);
             }
         } else if (secondary != null) {
+            removeTouchHandle(true);
             removeIconWindow(secondary);
             secondary = null;
             secondaryLp = null;
@@ -164,6 +169,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
                     positionMoveArmed = false;
                     originReady[0] = false;
                     mirrorOriginReady[0] = false;
+                    syncTouchHandles();
                     DiagnosticLog.i(FloatService.this, "POSITION",
                             "committed explicit move x=" + lp.x + " y=" + lp.y);
                     android.widget.Toast.makeText(FloatService.this,
@@ -191,6 +197,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
                         syncMirrorPosition();
                     }
                 }
+                syncTouchHandles();
                 DiagnosticLog.i(FloatService.this, "POSITION",
                         "restored temporary follow x=" + lp.x + " y=" + lp.y + " moved=" + moved);
                 originReady[0] = false;
@@ -228,10 +235,12 @@ public class FloatService extends Service implements android.content.SharedPrefe
                 if (icon == null) return;
                 directExpanded[0] = true;
                 View other = mirrored ? primary : secondary;
+                View otherHandle = mirrored ? primaryHandle : secondaryHandle;
                 if (other != null) {
                     otherVisibility[0] = other.getVisibility();
                     other.setVisibility(View.INVISIBLE);
                 }
+                if (otherHandle != null) otherHandle.setVisibility(View.INVISIBLE);
                 DiagnosticLog.i(FloatService.this, "FL_DIRECT", "keep compact touch owner window="
                         + lp.x + "," + lp.y + " " + lp.width + "x" + lp.height);
             }
@@ -239,7 +248,9 @@ public class FloatService extends Service implements android.content.SharedPrefe
             @Override public void onDirectSelectionEnd() {
                 if (!directExpanded[0]) return;
                 View other = mirrored ? primary : secondary;
+                View otherHandle = mirrored ? primaryHandle : secondaryHandle;
                 if (other != null) other.setVisibility(otherVisibility[0]);
+                if (otherHandle != null) otherHandle.setVisibility(otherVisibility[0]);
                 directExpanded[0] = false;
                 DiagnosticLog.i(FloatService.this, "FL_DIRECT", "compact touch owner end window="
                         + lp.x + "," + lp.y + " " + lp.width + "x" + lp.height);
@@ -298,6 +309,80 @@ public class FloatService extends Service implements android.content.SharedPrefe
         if (view != null && iconHost != null) iconHost.remove(view, "float_icon");
     }
 
+    private void addTouchHandle(FloatIconView icon, WindowManager.LayoutParams iconLp, boolean mirrored) {
+        if (icon == null || iconLp == null || iconHost == null) return;
+        removeTouchHandle(mirrored);
+        FloatIconTouchHandle handle = new FloatIconTouchHandle(this, icon);
+        WindowManager.LayoutParams handleLp = createTouchHandleLayout(iconLp);
+        if (mirrored) {
+            secondaryHandle = handle;
+            secondaryHandleLp = handleLp;
+        } else {
+            primaryHandle = handle;
+            primaryHandleLp = handleLp;
+        }
+        iconHost.add(handle, handleLp, "float_icon_handle");
+        DiagnosticLog.i(this, "FV_HANDLE", "ADD side=" + (layout.isLeft(iconLp) ? "L" : "R")
+                + " icon=" + iconLp.width + "x" + iconLp.height
+                + " handle=" + handleLp.width + "x" + handleLp.height
+                + " pos=" + handleLp.x + "," + handleLp.y);
+    }
+
+    private WindowManager.LayoutParams createTouchHandleLayout(WindowManager.LayoutParams iconLp) {
+        int handleWidth = Math.max(1, Math.round(iconLp.width * 0.50f));
+        int handleHeight = Math.max(iconLp.height, Math.round(iconLp.height * 1.16f));
+        int type = LensAccessibilityService.ready()
+                ? WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+                : WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                handleWidth, handleHeight, type,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        lp.gravity = Gravity.TOP | Gravity.START;
+        positionTouchHandle(lp, iconLp);
+        return lp;
+    }
+
+    private void positionTouchHandle(WindowManager.LayoutParams handleLp, WindowManager.LayoutParams iconLp) {
+        if (handleLp == null || iconLp == null || wm == null) return;
+        android.graphics.Rect bounds = wm.getCurrentWindowMetrics().getBounds();
+        int screenWidth = bounds.width();
+        int screenHeight = bounds.height();
+        handleLp.x = layout.isLeft(iconLp) ? 0 : Math.max(0, screenWidth - handleLp.width);
+        int centeredY = iconLp.y - Math.max(0, handleLp.height - iconLp.height) / 2;
+        handleLp.y = Math.max(0, Math.min(centeredY, Math.max(0, screenHeight - handleLp.height)));
+    }
+
+    private void syncTouchHandles() {
+        syncTouchHandle(false);
+        syncTouchHandle(true);
+    }
+
+    private void syncTouchHandle(boolean mirrored) {
+        FloatIconTouchHandle handle = mirrored ? secondaryHandle : primaryHandle;
+        WindowManager.LayoutParams handleLp = mirrored ? secondaryHandleLp : primaryHandleLp;
+        WindowManager.LayoutParams iconLp = mirrored ? secondaryLp : primaryLp;
+        if (handle == null || handleLp == null || iconLp == null || iconHost == null) return;
+        handleLp.width = Math.max(1, Math.round(iconLp.width * 0.50f));
+        handleLp.height = Math.max(iconLp.height, Math.round(iconLp.height * 1.16f));
+        positionTouchHandle(handleLp, iconLp);
+        iconHost.update(handle, handleLp, "float_icon_handle_update");
+    }
+
+    private void removeTouchHandle(boolean mirrored) {
+        FloatIconTouchHandle handle = mirrored ? secondaryHandle : primaryHandle;
+        if (handle != null && iconHost != null) iconHost.remove(handle, "float_icon_handle");
+        if (mirrored) {
+            secondaryHandle = null;
+            secondaryHandleLp = null;
+        } else {
+            primaryHandle = null;
+            primaryHandleLp = null;
+        }
+    }
+
     public void onAccessibilityOverlayHostChanged(boolean available) {
         getMainExecutor().execute(() -> rehostIconWindows(available));
     }
@@ -311,7 +396,9 @@ public class FloatService extends Service implements android.content.SharedPrefe
         DiagnosticLog.i(this, "FL_WINDOW", "rehost icons target=" + target
                 + " notif=" + visibility.notificationExpanded());
         rehostOne(primary, primaryLp, useAccessibility);
+        if (primaryHandle != null && primaryHandleLp != null) rehostOne(primaryHandle, primaryHandleLp, useAccessibility);
         if (secondary != null && secondaryLp != null) rehostOne(secondary, secondaryLp, useAccessibility);
+        if (secondaryHandle != null && secondaryHandleLp != null) rehostOne(secondaryHandle, secondaryHandleLp, useAccessibility);
     }
 
     private void rehostOne(View view, WindowManager.LayoutParams lp, boolean useAccessibility) {
@@ -373,6 +460,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
                     secondaryLp.y = target;
                     safeUpdate(secondary, secondaryLp);
                 }
+                syncTouchHandles();
             }
         } else {
             restoreImeY();
@@ -390,6 +478,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
             safeUpdate(secondary, secondaryLp);
         }
         imeRestoreY = null;
+        syncTouchHandles();
     }
 
     private void updateLockVisibility() {
@@ -404,6 +493,8 @@ public class FloatService extends Service implements android.content.SharedPrefe
         int state = visible ? View.VISIBLE : View.INVISIBLE;
         if (primary != null) primary.setVisibility(state);
         if (secondary != null) secondary.setVisibility(state);
+        if (primaryHandle != null) primaryHandle.setVisibility(state);
+        if (secondaryHandle != null) secondaryHandle.setVisibility(state);
         if (!visible) trail.end();
         syncWakeViews();
         updateNotification();
@@ -489,6 +580,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
             safeUpdate(secondary, secondaryLp);
         }
         syncSecondary();
+        syncTouchHandles();
         updateLockVisibility();
         updateImeAvoidance();
         recomputeVisibility();
@@ -527,6 +619,8 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private void removeIcons() {
         trail.end();
         removeWakeViews();
+        removeTouchHandle(false);
+        removeTouchHandle(true);
         if (primary != null) removeIconWindow(primary);
         if (secondary != null) removeIconWindow(secondary);
         primary = secondary = null;
