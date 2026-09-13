@@ -8,7 +8,6 @@ import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
@@ -23,16 +22,29 @@ import androidx.appcompat.app.AppCompatActivity;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Lookup-only popup. Dictionary download/update lives in the Settings dictionary page. */
+/** Compact dictionary popup combining optional local ECCEDICT and online Wiktionary. */
 public final class DictionaryActivity extends AppCompatActivity {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private TextView queryView;
     private TextView directionView;
     private TextView resultView;
+    private TextView sourceView;
     private ProgressBar progress;
     private Button copyButton;
     private String query = "";
     private volatile boolean destroyed;
+
+    private static final class RenderedLookup {
+        final String text;
+        final String source;
+        final boolean hasContent;
+
+        RenderedLookup(String text, String source, boolean hasContent) {
+            this.text = text == null ? "" : text;
+            this.source = source == null ? "" : source;
+            this.hasContent = hasContent;
+        }
+    }
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -83,7 +95,7 @@ public final class DictionaryActivity extends AppCompatActivity {
         root.addView(title);
 
         queryView = new TextView(this);
-        queryView.setTextSize(18);
+        queryView.setTextSize(20);
         queryView.setTypeface(queryView.getTypeface(), android.graphics.Typeface.BOLD);
         queryView.setPadding(0, dp(12), 0, dp(2));
         root.addView(queryView);
@@ -118,13 +130,13 @@ public final class DictionaryActivity extends AppCompatActivity {
         buttons.addView(close, new LinearLayout.LayoutParams(0, -2, 1f));
         root.addView(buttons);
 
-        TextView source = new TextView(this);
-        source.setText("ECCEDICT · 本地离线查询");
-        source.setTextSize(11);
-        source.setAlpha(0.52f);
-        source.setGravity(Gravity.CENTER_HORIZONTAL);
-        source.setPadding(0, dp(8), 0, 0);
-        root.addView(source);
+        sourceView = new TextView(this);
+        sourceView.setText("ECCEDICT / Wiktionary");
+        sourceView.setTextSize(11);
+        sourceView.setAlpha(0.52f);
+        sourceView.setGravity(Gravity.CENTER_HORIZONTAL);
+        sourceView.setPadding(0, dp(8), 0, 0);
+        root.addView(sourceView);
 
         copyButton.setOnClickListener(v -> copyResult());
         settings.setOnClickListener(v -> {
@@ -145,13 +157,20 @@ public final class DictionaryActivity extends AppCompatActivity {
             progress.setVisibility(View.GONE);
             directionView.setText("请选择中文或英文后再打开词典");
             resultView.setText("未收到可查询的文字。");
+            sourceView.setText("");
             return;
         }
 
-        if (!DictionaryManager.isReady(this)) {
+        boolean localReady = DictionaryManager.isReady(this);
+        boolean onlineEnabled = OnlineDictionaryClient.isEnabled(this);
+        int mode = OnlineDictionaryClient.mode(this);
+        boolean canLocal = localReady && mode != OnlineDictionaryClient.MODE_ONLINE_ONLY;
+        boolean canOnline = onlineEnabled;
+        if (!canLocal && !canOnline) {
             progress.setVisibility(View.GONE);
-            directionView.setText("ECCEDICT 尚未下载");
-            resultView.setText("本地中英词典尚未安装。\n\n请到 FloatLens 设置 → 本地词典 → ECCEDICT 下载词典数据。下载完成后即可离线直接查询。");
+            directionView.setText(directionLabel(query));
+            resultView.setText("没有可用的词典来源。\n\n可以到“词典设置”启用在线 Wiktionary，或者下载 ECCEDICT 本地词典。");
+            sourceView.setText("未启用词典来源");
             return;
         }
         lookup(query);
@@ -159,36 +178,94 @@ public final class DictionaryActivity extends AppCompatActivity {
 
     private void lookup(String value) {
         progress.setVisibility(View.VISIBLE);
-        directionView.setText("正在查询…");
+        directionView.setText(directionLabel(value) + " · 正在查询…");
         resultView.setText("");
+        sourceView.setText("查询中…");
         executor.execute(() -> {
-            try {
-                DictionaryManager.LookupResult result = DictionaryManager.lookup(this, value);
-                String formatted = formatResult(result);
-                runOnUiThread(() -> {
-                    if (destroyed) return;
-                    progress.setVisibility(View.GONE);
-                    directionView.setText(result.chineseQuery ? "中文 → English" : "English → 中文");
-                    resultView.setText(formatted);
-                    copyButton.setEnabled(!formatted.isBlank());
-                });
-            } catch (Throwable t) {
-                String message = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
-                runOnUiThread(() -> {
-                    if (destroyed) return;
-                    progress.setVisibility(View.GONE);
-                    directionView.setText("查询失败");
-                    resultView.setText(message);
-                    copyButton.setEnabled(false);
-                });
-            }
+            RenderedLookup rendered = performLookup(value);
+            runOnUiThread(() -> {
+                if (destroyed) return;
+                progress.setVisibility(View.GONE);
+                directionView.setText(directionLabel(value));
+                resultView.setText(rendered.text);
+                sourceView.setText(rendered.source);
+                copyButton.setEnabled(rendered.hasContent);
+            });
         });
     }
 
-    private String formatResult(DictionaryManager.LookupResult result) {
-        if (result == null || result.isEmpty()) {
-            return "未找到 “" + query + "”\n\n可以尝试选择更完整的单词或更简短的中文词语。";
+    private RenderedLookup performLookup(String value) {
+        int mode = OnlineDictionaryClient.mode(this);
+        boolean localReady = DictionaryManager.isReady(this);
+        boolean onlineEnabled = OnlineDictionaryClient.isEnabled(this);
+        DictionaryManager.LookupResult local = null;
+        OnlineDictionaryClient.Result online = null;
+        String localError = "";
+        String onlineError = "";
+
+        if (mode != OnlineDictionaryClient.MODE_ONLINE_ONLY && localReady) {
+            try {
+                local = DictionaryManager.lookup(this, value);
+            } catch (Throwable t) {
+                localError = messageOf(t);
+                DiagnosticLog.i(this, "DICTIONARY", "local lookup failed=" + t);
+            }
         }
+
+        boolean localHasResult = local != null && !local.isEmpty();
+        boolean needOnline = onlineEnabled && (mode == OnlineDictionaryClient.MODE_BOTH
+                || mode == OnlineDictionaryClient.MODE_ONLINE_ONLY
+                || (mode == OnlineDictionaryClient.MODE_LOCAL_FIRST && !localHasResult));
+        if (needOnline) {
+            try {
+                online = OnlineDictionaryClient.lookup(value);
+            } catch (Throwable t) {
+                onlineError = messageOf(t);
+                DiagnosticLog.i(this, "DICTIONARY_ONLINE", "lookup failed=" + t);
+            }
+        }
+
+        boolean onlineHasResult = online != null && !online.isEmpty();
+        StringBuilder out = new StringBuilder();
+
+        if (localHasResult) {
+            if (onlineHasResult) out.append("本地 · ECCEDICT\n\n");
+            out.append(formatLocal(local));
+        }
+
+        if (onlineHasResult) {
+            if (out.length() > 0) out.append("\n\n━━━━━━━━━━━━━━━━\n\n");
+            if (localHasResult) out.append("在线 · Wiktionary\n\n");
+            out.append(formatOnline(online));
+        }
+
+        if (out.length() == 0) {
+            out.append("未找到 “").append(value).append("”");
+            if (!onlineError.isBlank()) {
+                out.append("\n\n在线查询失败：").append(onlineError);
+            } else if (!localError.isBlank()) {
+                out.append("\n\n本地查询失败：").append(localError);
+            } else if (!localReady && !needOnline) {
+                out.append("\n\nECCEDICT 尚未下载。");
+            } else {
+                out.append("\n\n可以尝试选择更完整的单词或更简短的中文词语。");
+            }
+        } else if (!onlineError.isBlank() && mode == OnlineDictionaryClient.MODE_BOTH) {
+            out.append("\n\n在线 Wiktionary 暂时不可用：").append(onlineError);
+        }
+
+        String source;
+        if (localHasResult && onlineHasResult) source = "ECCEDICT · 本地  +  Wiktionary · 在线";
+        else if (localHasResult) source = "ECCEDICT · 本地离线";
+        else if (onlineHasResult) source = "Wiktionary · Wikimedia 在线";
+        else if (needOnline && !onlineError.isBlank()) source = "Wiktionary · 在线查询失败";
+        else source = localReady ? "ECCEDICT / Wiktionary" : "Wiktionary / ECCEDICT 未安装";
+
+        return new RenderedLookup(out.toString(), source, localHasResult || onlineHasResult);
+    }
+
+    private String formatLocal(DictionaryManager.LookupResult result) {
+        if (result == null || result.isEmpty()) return "";
         if (!result.chineseQuery) return formatEnglishEntry(result.entries.get(0));
 
         StringBuilder out = new StringBuilder();
@@ -203,6 +280,25 @@ public final class DictionaryActivity extends AppCompatActivity {
             if (e.collins > 0) out.append(" · 柯林斯 ").append(e.collins).append("★");
         }
         return out.toString();
+    }
+
+    private String formatOnline(OnlineDictionaryClient.Result result) {
+        if (result == null || result.isEmpty()) return "";
+        StringBuilder out = new StringBuilder();
+        int definitionNumber = 0;
+        for (OnlineDictionaryClient.Section section : result.sections) {
+            if (out.length() > 0) out.append("\n\n");
+            String heading = section.partOfSpeech;
+            if (heading.isBlank()) heading = section.language;
+            if (!heading.isBlank()) out.append("【").append(heading).append("】\n");
+            for (OnlineDictionaryClient.Definition def : section.definitions) {
+                definitionNumber++;
+                out.append(definitionNumber).append(". ").append(def.text);
+                if (!def.example.isBlank()) out.append("\n   例：").append(def.example);
+                if (def != section.definitions.get(section.definitions.size() - 1)) out.append('\n');
+            }
+        }
+        return out.toString().trim();
     }
 
     private String formatEnglishEntry(DictionaryManager.Entry e) {
@@ -221,9 +317,19 @@ public final class DictionaryActivity extends AppCompatActivity {
         return out.toString();
     }
 
+    private String directionLabel(String value) {
+        return OnlineDictionaryClient.isChineseQuery(value) ? "中文 → English" : "English → 中文";
+    }
+
     private String compact(String value) {
         String text = value == null ? "" : value.trim().replaceAll("\\s*\\n\\s*", "；");
         return text.length() > 220 ? text.substring(0, 220).trim() + "…" : text;
+    }
+
+    private static String messageOf(Throwable t) {
+        if (t == null) return "未知错误";
+        String message = t.getMessage();
+        return message == null || message.isBlank() ? t.getClass().getSimpleName() : message;
     }
 
     private void copyResult() {
