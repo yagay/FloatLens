@@ -24,7 +24,7 @@ public final class AppearanceSettingsActivity extends AppCompatActivity {
         AppUi.addSection(root, theme);
 
         AppUi.Section textMenu = AppUi.section(this, "文字菜单主栏",
-                "排序靠前的自定义操作会固定在主栏；超出屏幕宽度时可左右滑动。" );
+                "排序靠前的自定义操作会固定在主栏；数量较多时自动换到下一行。" );
         addPinnedCountSlider(textMenu.body);
         AppUi.addSection(root, textMenu);
 
@@ -89,10 +89,17 @@ public final class AppearanceSettingsActivity extends AppCompatActivity {
         slider.setStepSize(1f);
         slider.setValue(current);
         slider.addOnChangeListener((s, next, fromUser) -> {
-            if (!fromUser) return;
             int count = Math.round(next);
             TextMenuSettings.setPinnedCustomCount(this, count);
-            value.setText(count + " 个");
+            value.setText(TextMenuSettings.pinnedCustomCount(this) + " 个");
+        });
+        slider.addOnSliderTouchListener(new Slider.OnSliderTouchListener() {
+            @Override public void onStartTrackingTouch(Slider slider) { }
+            @Override public void onStopTrackingTouch(Slider slider) {
+                int count = Math.round(slider.getValue());
+                TextMenuSettings.setPinnedCustomCount(AppearanceSettingsActivity.this, count);
+                value.setText(TextMenuSettings.pinnedCustomCount(AppearanceSettingsActivity.this) + " 个");
+            }
         });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
         lp.topMargin = AppUi.dp(this, 4);
