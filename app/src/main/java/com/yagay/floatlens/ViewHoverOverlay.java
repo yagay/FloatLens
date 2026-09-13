@@ -6,6 +6,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
@@ -14,11 +15,11 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Cached Accessibility candidate + highlight layer used by ViewSelectionEngine.
+ * FV-style selected-View highlight layer.
  *
- * Mirrors FV o1/n1: this class is only the selected-View visual. The gesture/service state machine
- * decides when d(false)/d(true) happens; this layer merely renders TRACKING red or READY yellow.
- * Region dragging is a separate visual and never participates in this state.
+ * The important behavior is point based: selection starts with an immediate Accessibility lookup at
+ * the probe position, and MOVE refreshes only the candidate chain that contains the current point.
+ * We do not block the gesture on a whole-screen Accessibility traversal.
  */
 public final class ViewHoverOverlay {
     public interface CandidateListener {
@@ -26,21 +27,29 @@ public final class ViewHoverOverlay {
     }
 
     private static final int LARGE_TARGET_PERCENT = 72;
+    private static final long POINT_REFRESH_MIN_MS = 45L;
+    private static final float POINT_REFRESH_DISTANCE_DP = 4f;
 
     private final Context context;
     private final FlOverlayWindowHost windowHost;
     private final LensAccessibilityService accessibility;
     private final ScreenSelectionModel model = new ScreenSelectionModel();
+    private final float pointRefreshDistancePx;
     private HoverView view;
     private ViewCandidateFrameOverlay largeCandidateFrame;
     private ScreenCandidate current;
     private SelectionVisualState visualState = SelectionVisualState.TRACKING;
     private CandidateListener candidateListener;
+    private long lastPointRefreshAt;
+    private float lastPointX = Float.NaN;
+    private float lastPointY = Float.NaN;
 
     public ViewHoverOverlay(Context c) {
         context = c.getApplicationContext();
         windowHost = new FlOverlayWindowHost(context);
         accessibility = LensAccessibilityService.get();
+        pointRefreshDistancePx = POINT_REFRESH_DISTANCE_DP
+                * context.getResources().getDisplayMetrics().density;
     }
 
     public boolean available() { return accessibility != null; }
@@ -60,14 +69,15 @@ public final class ViewHoverOverlay {
                 + " candidate=" + (current == null ? "none" : current.type()));
     }
 
-    /** Snapshot the Accessibility target tree once; MOVE later uses only cached geometry. */
+    /** Legacy full-tree snapshot retained for diagnostics; direct selection uses beginAt(). */
     public void begin() {
         refreshAccessibilityTree();
     }
 
-    private void ensureTreeCache() {
-        if (!model.isEmpty()) return;
-        refreshAccessibilityTree();
+    /** Immediate FV-style point lookup used when direct selection becomes active. */
+    public void beginAt(float selectionX, float selectionY) {
+        refreshAccessibilityAtPoint(selectionX, selectionY, true);
+        applySelection(selectionX, selectionY);
     }
 
     private void refreshAccessibilityTree() {
@@ -91,11 +101,62 @@ public final class ViewHoverOverlay {
         }
     }
 
-    /** Cached contains(x,y) lookup only; Accessibility is never traversed on MOVE. */
+    /**
+     * Refresh only the Accessibility chain under the probe. This is fast enough to use while moving
+     * and avoids the old failure where ACTION_UP happened before a whole-window scan completed.
+     */
+    private void refreshAccessibilityAtPoint(float x, float y, boolean force) {
+        if (accessibility == null) return;
+        long now = SystemClock.elapsedRealtime();
+        ScreenCandidate cachedAtPoint = model.selectAt(x, y);
+        float dx = Float.isNaN(lastPointX) ? Float.MAX_VALUE : x - lastPointX;
+        float dy = Float.isNaN(lastPointY) ? Float.MAX_VALUE : y - lastPointY;
+        boolean movedEnough = dx * dx + dy * dy >= pointRefreshDistancePx * pointRefreshDistancePx;
+        boolean oldCandidateMisses = cachedAtPoint == null;
+        if (!force && !model.isEmpty() && !oldCandidateMisses
+                && (now - lastPointRefreshAt < POINT_REFRESH_MIN_MS || !movedEnough)) {
+            return;
+        }
+
+        long started = SystemClock.elapsedRealtime();
+        try {
+            List<ScreenCandidate> candidates = accessibility.collectCandidatesAt(x, y);
+            if (candidates == null || candidates.isEmpty()) {
+                candidates = AccessibilityCandidateCollector.collectAtPoint(accessibility, x, y);
+            }
+            model.setAccessibility(candidates == null ? Collections.emptyList() : candidates);
+            lastPointRefreshAt = now;
+            lastPointX = x;
+            lastPointY = y;
+
+            int viewCount = 0;
+            int textCount = 0;
+            for (ScreenCandidate candidate : model.accessibilityCandidates()) {
+                if (candidate.type() == ScreenCandidate.Type.VIEW) viewCount++;
+                if (candidate.type() == ScreenCandidate.Type.TEXT || candidate.hasText()) textCount++;
+            }
+            DiagnosticLog.i(context, "FL_POINT_CACHE", "REFRESH x=" + Math.round(x)
+                    + " y=" + Math.round(y) + " total=" + model.size()
+                    + " view=" + viewCount + " text=" + textCount
+                    + " elapsedMs=" + (SystemClock.elapsedRealtime() - started)
+                    + " force=" + force);
+        } catch (Throwable t) {
+            DiagnosticLog.i(context, "FL_POINT_CACHE", "refresh failed=" + t);
+            model.setAccessibility(Collections.emptyList());
+            lastPointRefreshAt = now;
+            lastPointX = x;
+            lastPointY = y;
+        }
+    }
+
+    /** MOVE-time behavior: point refresh followed by prepared contains(x,y) selection. */
     public void update(float selectionX, float selectionY) {
         if (accessibility == null) return;
-        ensureTreeCache();
+        refreshAccessibilityAtPoint(selectionX, selectionY, false);
+        applySelection(selectionX, selectionY);
+    }
 
+    private void applySelection(float selectionX, float selectionY) {
         ScreenCandidate next = model.selectAt(selectionX, selectionY);
         if (sameCandidate(current, next)) return;
 
@@ -148,6 +209,8 @@ public final class ViewHoverOverlay {
         candidateListener = null;
         model.setAccessibility(Collections.emptyList());
         model.setVisual(Collections.emptyList());
+        lastPointRefreshAt = 0L;
+        lastPointX = lastPointY = Float.NaN;
     }
 
     private void ensureView() {
