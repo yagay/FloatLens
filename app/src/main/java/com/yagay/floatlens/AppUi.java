@@ -16,6 +16,10 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
+
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.card.MaterialCardView;
 import com.google.android.material.switchmaterial.SwitchMaterial;
@@ -71,8 +75,27 @@ final class AppUi {
         ScrollView scroll = new ScrollView(c);
         scroll.setFillViewport(true);
         scroll.setBackgroundColor(background(c));
-        scroll.setClipToPadding(false);
+        // Android 15+ enforces edge-to-edge for modern targets. Keep ordinary configuration
+        // pages inside the status/navigation bar safe area while full-screen overlays remain
+        // independent from this AppUi path.
+        scroll.setClipToPadding(true);
+        final int baseLeft = scroll.getPaddingLeft();
+        final int baseTop = scroll.getPaddingTop();
+        final int baseRight = scroll.getPaddingRight();
+        final int baseBottom = scroll.getPaddingBottom();
+        ViewCompat.setOnApplyWindowInsetsListener(scroll, (v, windowInsets) -> {
+            Insets bars = windowInsets.getInsets(
+                    WindowInsetsCompat.Type.systemBars()
+                            | WindowInsetsCompat.Type.displayCutout());
+            v.setPadding(
+                    baseLeft + bars.left,
+                    baseTop + bars.top,
+                    baseRight + bars.right,
+                    baseBottom + bars.bottom);
+            return windowInsets;
+        });
         scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
+        ViewCompat.requestApplyInsets(scroll);
         return scroll;
     }
 
