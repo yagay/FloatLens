@@ -33,8 +33,10 @@ public final class WebAiEngine {
 
     private static final long TIMEOUT_MS = 90_000L;
     private static final long STABLE_MS = 1_700L;
+    private static final long CHATGPT_STABLE_MS = 3_500L;
     private static final long DEEPSEEK_STABLE_MS = 2_600L;
     private static final int MAX_COMPOSER_ATTEMPTS = 14;
+    private static final int MAX_SEND_ATTEMPTS = 14;
     private static final int POLL_MS = 650;
     private static final String SESSION_PREFS = "floatlens_web_ai_sessions";
     private static final String SESSION_PREFIX = "conversation_url_";
@@ -52,7 +54,9 @@ public final class WebAiEngine {
     private long candidateStableSince;
     private long startedAt;
     private int composerAttempts;
+    private int sendAttempts;
     private int emptyPolls;
+    private int baselineAnswerCount;
     private boolean pageReady;
     private boolean sending;
     private boolean destroyed;
@@ -138,10 +142,7 @@ public final class WebAiEngine {
         main.removeCallbacksAndMessages(null);
     }
 
-    /**
-     * Forget only this provider's FloatLens conversation and open its clean/new-chat entry page.
-     * Other providers keep their own saved FloatLens conversation URLs.
-     */
+    /** Forget only this provider's FloatLens conversation and open its clean/new-chat entry page. */
     public void startNewConversation(String rawTarget) {
         if (destroyed) return;
         String nextTarget = EmbeddedWebAiActivity.normalizeTarget(rawTarget);
@@ -150,6 +151,7 @@ public final class WebAiEngine {
         target = nextTarget;
         pageReady = false;
         baselineAnswers.clear();
+        baselineAnswerCount = 0;
         lastCandidate = "";
         lastDomDebug = "";
         try { webView.stopLoading(); } catch (Throwable ignored) {}
@@ -187,8 +189,10 @@ public final class WebAiEngine {
         pendingPrompt = prompt;
         startedAt = SystemClock.uptimeMillis();
         composerAttempts = 0;
+        sendAttempts = 0;
         emptyPolls = 0;
         baselineAnswers.clear();
+        baselineAnswerCount = 0;
         lastCandidate = "";
         lastDomDebug = "";
         candidateStableSince = 0L;
@@ -216,6 +220,7 @@ public final class WebAiEngine {
             DomSnapshot snapshot = parseSnapshot(raw);
             baselineAnswers.clear();
             baselineAnswers.addAll(snapshot.texts);
+            baselineAnswerCount = snapshot.texts.size();
             lastDomDebug = snapshot.debug;
             tryComposer();
         });
@@ -236,9 +241,7 @@ public final class WebAiEngine {
                     "['rich-textarea .ql-editor','rich-textarea [contenteditable=\\\"true\\\"]','.textarea[contenteditable=\\\"true\\\"]','.textarea','textarea','[contenteditable=\\\"true\\\"]']",
                     true);
         } else if (isChatGpt()) {
-            js = fillScript(quoted,
-                    "['#prompt-textarea','div#prompt-textarea[contenteditable=\\\"true\\\"]','textarea[data-testid=\\\"prompt-textarea\\\"]','textarea']",
-                    true);
+            js = chatGptFillScript(quoted);
         } else if (isDeepSeek()) {
             js = fillScript(quoted,
                     "['textarea#chat-input','textarea.chat-input','textarea.message-input-textarea','.ds-textarea textarea','textarea[placeholder]','textarea','div[contenteditable=\\\"true\\\"]']",
@@ -254,7 +257,8 @@ public final class WebAiEngine {
             String value = decodeJsString(raw);
             if (value.startsWith("filled")) {
                 status("已在后台网页填入问题，正在发送…");
-                main.postDelayed(this::trySend, 320L);
+                sendAttempts = 0;
+                main.postDelayed(this::trySend, isChatGpt() ? 500L : 320L);
                 return;
             }
             if (value.startsWith("error")) {
@@ -268,6 +272,27 @@ public final class WebAiEngine {
             status("等待 " + label() + " 登录/输入框…");
             main.postDelayed(this::tryComposer, 700L);
         });
+    }
+
+    private String chatGptFillScript(String quoted) {
+        return "(function(){try{" +
+                "var text=" + quoted + ";" +
+                "var sels=['[contenteditable=\\\"true\\\"][role=\\\"textbox\\\"]','#prompt-textarea[contenteditable=\\\"true\\\"]','[data-testid=\\\"prompt-textarea\\\"][contenteditable=\\\"true\\\"]','[aria-label=\\\"Chat with ChatGPT\\\"]','[aria-label=\\\"与 ChatGPT 聊天\\\"]','[placeholder=\\\"Ask anything\\\"]','[placeholder=\\\"有问题，尽管问\\\"]','#prompt-textarea','[data-testid=\\\"prompt-textarea\\\"]'];" +
+                "function visible(x){if(!x)return false;var s=getComputedStyle(x),r=x.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>20&&r.height>10;}" +
+                "var el=null;for(var i=0;i<sels.length&&!el;i++){var list=document.querySelectorAll(sels[i]);for(var j=0;j<list.length;j++){if(visible(list[j])){el=list[j];break;}}}" +
+                "if(!el)return 'missing';el.focus();" +
+                "if(el.isContentEditable){" +
+                    "el.textContent='';el.innerHTML='<p><br></p>';" +
+                    "var range=document.createRange();range.selectNodeContents(el);range.collapse(false);var sel=window.getSelection();if(sel){sel.removeAllRanges();sel.addRange(range);}" +
+                    "var inserted=false;try{inserted=!!document.execCommand('insertText',false,text);}catch(ignore){}" +
+                    "if(!inserted){el.textContent=text;}" +
+                    "try{el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(ignore2){el.dispatchEvent(new Event('input',{bubbles:true}));}" +
+                    "el.dispatchEvent(new Event('change',{bubbles:true}));" +
+                "}else{" +
+                    "var p=Object.getPrototypeOf(el),d=Object.getOwnPropertyDescriptor(p,'value');if(!d||!d.set)d=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')||Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');if(d&&d.set)d.set.call(el,text);else el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));" +
+                "}" +
+                "var current=(el.innerText||el.textContent||el.value||'').trim();return current?'filled-chatgpt:'+current.length:'empty-after-fill';" +
+                "}catch(e){return 'error:'+String(e);}})();";
     }
 
     private String fillScript(String quoted, String selectors, boolean requireVisible) {
@@ -285,6 +310,11 @@ public final class WebAiEngine {
 
     private void trySend() {
         if (!active()) return;
+        if (timedOut()) {
+            fail("等待网页发送超时" + diagnosticSuffix());
+            return;
+        }
+        sendAttempts++;
         String js;
         if (isGemini()) {
             js = "(function(){try{" +
@@ -296,12 +326,14 @@ public final class WebAiEngine {
                     "}catch(e){return 'error:'+String(e);}})();";
         } else if (isChatGpt()) {
             js = "(function(){try{" +
-                    "var b=document.querySelector('button[data-testid=\\\"send-button\\\"]:not([disabled]),button[aria-label=\\\"Send prompt\\\"]:not([disabled]),button[aria-label*=\\\"Send\\\"]:not([disabled])');" +
+                    "function visible(x){if(!x)return false;var s=getComputedStyle(x),r=x.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>8&&r.height>8;}" +
+                    "function usable(x){return visible(x)&&!x.disabled&&x.getAttribute('aria-disabled')!=='true';}" +
+                    "var form=Array.from(document.querySelectorAll('form')).find(visible);var root=form||document.body;" +
+                    "var sels=['button[data-testid=\\\"send-button\\\"]','#composer-submit-button','button[aria-label=\\\"Send prompt\\\"]','button[aria-label=\\\"Send message\\\"]','button[aria-label=\\\"发送\\\"]','button[aria-label=\\\"发送消息\\\"]'];" +
+                    "var b=null;for(var i=0;i<sels.length&&!b;i++){var list=root.querySelectorAll(sels[i]);for(var j=0;j<list.length;j++){if(usable(list[j])){b=list[j];break;}}}" +
+                    "if(!b){var btns=root.querySelectorAll('button');for(var k=0;k<btns.length;k++){var x=btns[k],label=((x.getAttribute('aria-label')||'')+' '+(x.innerText||x.textContent||'')).trim();if(usable(x)&&/(send|发送)/i.test(label)){b=x;break;}}}" +
                     "if(b){b.click();return 'sent-chatgpt';}" +
-                    "var e=document.querySelector('#prompt-textarea,textarea[data-testid=\\\"prompt-textarea\\\"],textarea');var f=e&&e.closest?e.closest('form'):null;if(f&&f.requestSubmit){f.requestSubmit();return 'sent-form';}" +
-                    "if(e){key(e);return 'sent-key';}" +
-                    "return 'nosend';" +
-                    "function key(x){x.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));x.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));}" +
+                    "var e=root.querySelector('[contenteditable=\\\"true\\\"][role=\\\"textbox\\\"],#prompt-textarea,[data-testid=\\\"prompt-textarea\\\"]');var text=e?((e.innerText||e.textContent||e.value||'').trim()):'';return 'nosend-chatgpt:composer='+(e?'1':'0')+',text='+text.length;" +
                     "}catch(e){return 'error:'+String(e);}})();";
         } else if (isDeepSeek()) {
             js = "(function(){try{" +
@@ -327,10 +359,15 @@ public final class WebAiEngine {
             if (value.startsWith("sent")) {
                 status("已发送，正在后台读取网页回答…");
                 emptyPolls = 0;
-                main.postDelayed(this::pollAnswer, 900L);
+                main.postDelayed(this::pollAnswer, isChatGpt() ? 1200L : 900L);
             } else if (value.startsWith("error")) {
                 fail("网页发送失败: " + value);
+            } else if (isChatGpt() && sendAttempts < MAX_SEND_ATTEMPTS) {
+                lastDomDebug = value;
+                status("ChatGPT 输入已就绪，等待发送按钮…");
+                main.postDelayed(this::trySend, 450L);
             } else {
+                lastDomDebug = value;
                 needsLogin("文字已经填入，但没有可靠找到发送按钮。请打开一次网页登录页面确认登录状态。" + diagnosticSuffix());
             }
         });
@@ -354,10 +391,10 @@ public final class WebAiEngine {
 
             if (candidate.isEmpty()) {
                 emptyPolls++;
-                if (dedicated && snapshot.modelCount > 0) {
+                if (dedicated && snapshot.modelCount > baselineAnswerCount) {
                     status(snapshot.generating
                             ? label() + " 正在生成回答…"
-                            : label() + " 已有回答节点，正在读取内容…");
+                            : label() + " 已有新的回答节点，正在读取内容…");
                 } else if (dedicated && emptyPolls >= 5) {
                     status(label() + " 已发送，但还没有检测到新的回答节点…");
                 } else {
@@ -382,8 +419,8 @@ public final class WebAiEngine {
                 return;
             }
 
-            long stableMs = isDeepSeek() ? DEEPSEEK_STABLE_MS : STABLE_MS;
-            if (now - candidateStableSince >= stableMs || (dedicated && snapshot.sendReady)) {
+            long stableMs = isChatGpt() ? CHATGPT_STABLE_MS : (isDeepSeek() ? DEEPSEEK_STABLE_MS : STABLE_MS);
+            if (now - candidateStableSince >= stableMs) {
                 String answer = candidate;
                 String doneTarget = target;
                 rememberConversationUrl(doneTarget, webView.getUrl());
@@ -400,6 +437,15 @@ public final class WebAiEngine {
     private String chooseNewAnswer(List<String> candidates) {
         if (candidates == null || candidates.isEmpty()) return "";
         String prompt = compact(pendingPrompt);
+
+        if (candidates.size() > baselineAnswerCount) {
+            for (int i = candidates.size() - 1; i >= baselineAnswerCount; i--) {
+                String text = compact(candidates.get(i));
+                if (text.length() < 2 || text.equals(prompt) || looksLikeUiChrome(text)) continue;
+                return text;
+            }
+        }
+
         for (int i = candidates.size() - 1; i >= 0; i--) {
             String text = compact(candidates.get(i));
             if (text.length() < 2) continue;
@@ -433,11 +479,13 @@ public final class WebAiEngine {
 
         if (isChatGpt()) {
             return "(function(){try{" +
-                    "var msgs=Array.from(document.querySelectorAll('[data-message-author-role=\\\"assistant\\\"]'));" +
-                    "var out=[],seen={};msgs.forEach(function(m){var c=m.querySelector('.markdown,.prose,[data-message-content],div[class*=\\\"markdown\\\"]')||m;var t=(c.innerText||c.textContent||'').trim();if(t.length>1&&t.length<30000&&!seen[t]){seen[t]=1;out.push(t);}});" +
-                    "var stop=document.querySelector('button[data-testid=\\\"stop-button\\\"],button[aria-label*=\\\"Stop generating\\\"],button[aria-label*=\\\"Stop streaming\\\"]');" +
-                    "var generating=!!stop;var sendReady=!!document.querySelector('button[data-testid=\\\"send-button\\\"]:not([disabled]),button[aria-label=\\\"Send prompt\\\"]:not([disabled])');" +
-                    "return JSON.stringify({texts:out.slice(-30),generating:generating,sendReady:sendReady,modelCount:msgs.length,debug:'chatgpt messages='+msgs.length+',texts='+out.length+',generating='+generating+',sendReady='+sendReady});" +
+                    "function visible(x){if(!x)return false;var s=getComputedStyle(x),r=x.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;}" +
+                    "function roleOf(n){var a=(n.getAttribute('data-message-author-role')||n.getAttribute('data-author')||'').toLowerCase();if(a.indexOf('assistant')>=0)return 'assistant';if(a.indexOf('user')>=0)return 'user';var t=(n.getAttribute('data-testid')||'').toLowerCase();if(t.indexOf('assistant')>=0)return 'assistant';if(t.indexOf('user')>=0)return 'user';var l=(n.getAttribute('aria-label')||'').toLowerCase();if(l.indexOf('assistant')>=0||l.indexOf('chatgpt')>=0)return 'assistant';if(l.indexOf('user')>=0||l==='you')return 'user';return '';}" +
+                    "var nodes=Array.from(document.querySelectorAll('[data-message-author-role],article[data-testid*=\\\"conversation-turn\\\"]')).filter(visible);" +
+                    "var out=[];var assistants=0;for(var i=0;i<nodes.length;i++){var n=nodes[i],role=roleOf(n),rn=n.querySelector('[data-message-author-role],[data-author]');if(!role&&rn)role=roleOf(rn);if(role!=='assistant')continue;assistants++;var c=n.querySelector('[data-message-author-role] .markdown')||n.querySelector('.markdown')||n.querySelector('[data-message-content]')||n.querySelector('[data-message-author-role]')||n;var t=(c.innerText||c.textContent||'').replace(/\\u00a0/g,' ').replace(/[ \\t]+\\n/g,'\\n').replace(/\\n{3,}/g,'\\n\\n').trim();if(t.length>1&&t.length<30000)out.push(t);}" +
+                    "var generating=false;var controls=document.querySelectorAll('button,[role=\\\"button\\\"]');for(var k=0;k<controls.length;k++){var x=controls[k],meta=((x.getAttribute('data-testid')||'')+' '+(x.getAttribute('aria-label')||'')+' '+(x.getAttribute('title')||'')+' '+(x.innerText||x.textContent||'')).toLowerCase();if(meta.indexOf('stop')>=0||meta.indexOf('停止')>=0){if(visible(x)&&!x.disabled&&x.getAttribute('aria-disabled')!=='true'){generating=true;break;}}}" +
+                    "var sendReady=false;var sends=document.querySelectorAll('button[data-testid=\\\"send-button\\\"],#composer-submit-button,button[aria-label=\\\"Send prompt\\\"],button[aria-label=\\\"Send message\\\"],button[aria-label=\\\"发送\\\"],button[aria-label=\\\"发送消息\\\"]');for(var j=0;j<sends.length;j++){var b=sends[j];if(visible(b)&&!b.disabled&&b.getAttribute('aria-disabled')!=='true'){sendReady=true;break;}}" +
+                    "return JSON.stringify({texts:out.slice(-40),generating:generating,sendReady:sendReady,modelCount:assistants,debug:'chatgpt turns='+nodes.length+',assistants='+assistants+',texts='+out.length+',generating='+generating+',sendReady='+sendReady+',url='+location.pathname});" +
                     "}catch(e){return JSON.stringify({texts:[],generating:false,sendReady:false,modelCount:0,debug:'chatgpt script error:'+String(e)});}})();";
         }
 
