@@ -25,12 +25,13 @@ final class TextMenuSettings {
     }
 
     /**
-     * Convert the requested TOTAL toolbar item count into available custom-action slots.
-     * Built-ins are copy + share + more, plus select-all when that action is available.
+     * Convert the requested visible ACTION count into available custom-action slots.
+     * The overflow "more" button is always appended separately and never consumes the configured count.
+     * Counted built-ins are copy + share, plus select-all when that action is available.
      */
     static int customSlots(Context c, boolean hasSelectAll, int customSize) {
-        int builtIns = hasSelectAll ? 4 : 3;
-        int available = Math.max(0, mainItemCount(c) - builtIns);
+        int countedBuiltIns = hasSelectAll ? 3 : 2;
+        int available = Math.max(0, mainItemCount(c) - countedBuiltIns);
         return Math.min(available, Math.max(0, customSize));
     }
 
