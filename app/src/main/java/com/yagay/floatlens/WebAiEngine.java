@@ -1,6 +1,7 @@
 package com.yagay.floatlens;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -35,6 +36,8 @@ public final class WebAiEngine {
     private static final long DEEPSEEK_STABLE_MS = 2_600L;
     private static final int MAX_COMPOSER_ATTEMPTS = 14;
     private static final int POLL_MS = 650;
+    private static final String SESSION_PREFS = "floatlens_web_ai_sessions";
+    private static final String SESSION_PREFIX = "conversation_url_";
 
     private final Context context;
     private final FrameLayout host;
@@ -112,6 +115,7 @@ public final class WebAiEngine {
             @Override public void onPageFinished(WebView view, String url) {
                 try { CookieManager.getInstance().flush(); } catch (Throwable ignored) {}
                 pageReady = true;
+                rememberConversationUrl(target, url);
                 if (sending && !pendingPrompt.isEmpty()) {
                     main.postDelayed(WebAiEngine.this::captureBaseline, 500L);
                 }
@@ -134,8 +138,28 @@ public final class WebAiEngine {
         main.removeCallbacksAndMessages(null);
     }
 
+    /**
+     * Forget only this provider's FloatLens conversation and open its clean/new-chat entry page.
+     * Other providers keep their own saved FloatLens conversation URLs.
+     */
+    public void startNewConversation(String rawTarget) {
+        if (destroyed) return;
+        String nextTarget = EmbeddedWebAiActivity.normalizeTarget(rawTarget);
+        forgetConversationUrl(nextTarget);
+        cancel();
+        target = nextTarget;
+        pageReady = false;
+        baselineAnswers.clear();
+        lastCandidate = "";
+        lastDomDebug = "";
+        try { webView.stopLoading(); } catch (Throwable ignored) {}
+        status("正在为 " + label() + " 新建 FloatLens 专用对话…");
+        webView.loadUrl(targetUrl(nextTarget));
+    }
+
     public void destroy() {
         destroyed = true;
+        rememberConversationUrl(target, webView.getUrl());
         cancel();
         try { CookieManager.getInstance().flush(); } catch (Throwable ignored) {}
         try {
@@ -156,6 +180,7 @@ public final class WebAiEngine {
             return;
         }
 
+        rememberConversationUrl(target, webView.getUrl());
         cancel();
         sending = true;
         target = nextTarget;
@@ -170,10 +195,16 @@ public final class WebAiEngine {
 
         String current = webView.getUrl();
         if (!pageReady || !sameTarget(current, target)) {
-            status("正在后台打开 " + label() + "…");
-            webView.loadUrl(targetUrl(target));
+            String resume = savedConversationUrl(target);
+            if (!resume.isEmpty()) {
+                status("正在恢复 " + label() + " 的 FloatLens 专用对话…");
+                webView.loadUrl(resume);
+            } else {
+                status("正在后台打开 " + label() + "…");
+                webView.loadUrl(targetUrl(target));
+            }
         } else {
-            status("正在使用已登录的 " + label() + " 网页会话…");
+            status("正在继续 " + label() + " 的当前网页对话…");
             captureBaseline();
         }
     }
@@ -319,6 +350,8 @@ public final class WebAiEngine {
             long now = SystemClock.uptimeMillis();
             boolean dedicated = isGemini() || isChatGpt() || isDeepSeek();
 
+            rememberConversationUrl(target, webView.getUrl());
+
             if (candidate.isEmpty()) {
                 emptyPolls++;
                 if (dedicated && snapshot.modelCount > 0) {
@@ -353,6 +386,7 @@ public final class WebAiEngine {
             if (now - candidateStableSince >= stableMs || (dedicated && snapshot.sendReady)) {
                 String answer = candidate;
                 String doneTarget = target;
+                rememberConversationUrl(doneTarget, webView.getUrl());
                 sending = false;
                 pendingPrompt = "";
                 status(EmbeddedWebAiActivity.targetLabel(doneTarget) + " 网页回答已返回到窗口");
@@ -508,6 +542,56 @@ public final class WebAiEngine {
 
     private void status(String text) {
         if (listener != null) listener.onStatus(text);
+    }
+
+    private SharedPreferences sessionPrefs() {
+        return context.getSharedPreferences(SESSION_PREFS, Context.MODE_PRIVATE);
+    }
+
+    private String sessionKey(String rawTarget) {
+        return SESSION_PREFIX + EmbeddedWebAiActivity.normalizeTarget(rawTarget);
+    }
+
+    private String savedConversationUrl(String rawTarget) {
+        String saved = clean(sessionPrefs().getString(sessionKey(rawTarget), ""));
+        return isReusableConversationUrl(rawTarget, saved) ? saved : "";
+    }
+
+    private void forgetConversationUrl(String rawTarget) {
+        sessionPrefs().edit().remove(sessionKey(rawTarget)).apply();
+    }
+
+    private void rememberConversationUrl(String rawTarget, String rawUrl) {
+        String url = clean(rawUrl);
+        if (!isReusableConversationUrl(rawTarget, url)) return;
+        sessionPrefs().edit().putString(sessionKey(rawTarget), url).apply();
+    }
+
+    private boolean isReusableConversationUrl(String rawTarget, String url) {
+        if (url == null || url.isBlank() || !sameTarget(url, rawTarget)) return false;
+        android.net.Uri uri;
+        try { uri = android.net.Uri.parse(url); }
+        catch (Throwable t) { return false; }
+        String path = uri.getPath() == null ? "/" : uri.getPath();
+        String lower = path.toLowerCase(Locale.ROOT);
+        if (lower.contains("login") || lower.contains("signin") || lower.contains("sign-in")
+                || lower.contains("signup") || lower.contains("sign-up") || lower.contains("oauth")
+                || lower.contains("auth")) return false;
+
+        switch (EmbeddedWebAiActivity.normalizeTarget(rawTarget)) {
+            case BrowserAiBridge.TARGET_CHATGPT:
+                return lower.contains("/c/");
+            case BrowserAiBridge.TARGET_GEMINI:
+                return lower.startsWith("/app/") && lower.length() > 5;
+            case BrowserAiBridge.TARGET_CLAUDE:
+                return !lower.equals("/") && !lower.equals("/new") && !lower.equals("/new/");
+            case BrowserAiBridge.TARGET_GROK:
+                return !lower.equals("/") && lower.length() > 1;
+            case BrowserAiBridge.TARGET_DEEPSEEK:
+                return !lower.equals("/") && lower.length() > 1;
+            default:
+                return false;
+        }
     }
 
     private boolean sameTarget(String url, String target) {
