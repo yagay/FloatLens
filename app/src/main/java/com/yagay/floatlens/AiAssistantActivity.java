@@ -13,6 +13,7 @@ import android.view.View;
 import android.view.Window;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -26,7 +27,7 @@ import java.util.ArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Compact contextual chatbot for selected text, OCR output, embedded web AI and API providers. */
+/** Compact contextual chatbot for selected text, hidden webpage AI and API providers. */
 public final class AiAssistantActivity extends AppCompatActivity {
     /** Kept so the legacy external-browser bridge source remains binary/source compatible. */
     public static final String EXTRA_BROWSER_TARGET = "floatlens_browser_ai_target";
@@ -49,10 +50,16 @@ public final class AiAssistantActivity extends AppCompatActivity {
     private Button sendButton;
     private Button copyButton;
     private Button modeButton;
+    private Button webLoginButton;
+    private FrameLayout hiddenWebHost;
+    private WebAiEngine webAiEngine;
+
     private String selectedText = "";
     private String lastAnswer = "";
     private String webTarget = BrowserAiBridge.TARGET_CHATGPT;
+    private String pendingWebPrompt = "";
     private boolean webMode = true;
+    private boolean waitingForWebLogin;
     private volatile boolean destroyed;
     private volatile boolean sending;
 
@@ -65,6 +72,49 @@ public final class AiAssistantActivity extends AppCompatActivity {
         webTarget = EmbeddedWebAiActivity.normalizeTarget(
                 p.getString(KEY_WEB_TARGET, BrowserAiBridge.TARGET_CHATGPT));
         setContentView(buildUi());
+        webAiEngine = new WebAiEngine(this, hiddenWebHost, new WebAiEngine.Listener() {
+            @Override public void onStatus(String text) {
+                runOnUiThread(() -> {
+                    if (!destroyed && statusView != null) statusView.setText(text);
+                });
+            }
+
+            @Override public void onResult(String target, String answer) {
+                runOnUiThread(() -> {
+                    if (destroyed) return;
+                    sending = false;
+                    waitingForWebLogin = false;
+                    pendingWebPrompt = "";
+                    lastAnswer = answer == null ? "" : answer.trim();
+                    appendTranscript("\n\nAI · " + EmbeddedWebAiActivity.targetLabel(target) + "\n" + lastAnswer);
+                    copyButton.setEnabled(!lastAnswer.isBlank());
+                    setBusy(false);
+                    updateProviderStatus();
+                });
+            }
+
+            @Override public void onNeedsLogin(String target, String message) {
+                runOnUiThread(() -> {
+                    if (destroyed) return;
+                    sending = false;
+                    waitingForWebLogin = !pendingWebPrompt.isBlank();
+                    appendTranscript("\n\n需要网页登录\n" + message
+                            + "\n点击下方“网页登录”，完成后返回这里会自动重试。" );
+                    setBusy(false);
+                    if (statusView != null) statusView.setText("需要登录 " + EmbeddedWebAiActivity.targetLabel(target));
+                });
+            }
+
+            @Override public void onError(String target, String message) {
+                runOnUiThread(() -> {
+                    if (destroyed) return;
+                    sending = false;
+                    appendTranscript("\n\n网页 AI 请求失败\n" + message);
+                    setBusy(false);
+                    updateProviderStatus();
+                });
+            }
+        });
         resetConversation();
     }
 
@@ -90,15 +140,38 @@ public final class AiAssistantActivity extends AppCompatActivity {
     @Override protected void onResume() {
         super.onResume();
         updateProviderStatus();
+        if (waitingForWebLogin && webMode && webAiEngine != null
+                && !pendingWebPrompt.isBlank() && !sending) {
+            waitingForWebLogin = false;
+            sending = true;
+            setBusy(true);
+            statusView.setText("已返回 AI 窗口，正在重新尝试网页请求…");
+            webAiEngine.send(webTarget, pendingWebPrompt);
+        }
     }
 
     @Override protected void onDestroy() {
         destroyed = true;
+        if (webAiEngine != null) {
+            webAiEngine.destroy();
+            webAiEngine = null;
+        }
         executor.shutdownNow();
         super.onDestroy();
     }
 
     private View buildUi() {
+        FrameLayout frame = new FrameLayout(this);
+
+        hiddenWebHost = new FrameLayout(this);
+        hiddenWebHost.setAlpha(0.01f);
+        hiddenWebHost.setClickable(false);
+        hiddenWebHost.setFocusable(false);
+        FrameLayout.LayoutParams hiddenLp = new FrameLayout.LayoutParams(dp(390), dp(700));
+        hiddenLp.leftMargin = -dp(5000);
+        hiddenLp.topMargin = 0;
+        frame.addView(hiddenWebHost, hiddenLp);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(16), dp(14), dp(16), dp(12));
@@ -106,6 +179,7 @@ public final class AiAssistantActivity extends AppCompatActivity {
         bg.setColor(resolveBackgroundColor());
         bg.setCornerRadius(dp(18));
         root.setBackground(bg);
+        frame.addView(root, new FrameLayout.LayoutParams(-1, -1));
 
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
@@ -189,13 +263,17 @@ public final class AiAssistantActivity extends AppCompatActivity {
         copyButton.setText("复制回答");
         copyButton.setEnabled(false);
         copyButton.setOnClickListener(v -> copyLastAnswer());
+        webLoginButton = new Button(this);
+        webLoginButton.setText("网页登录");
+        webLoginButton.setOnClickListener(v -> openWebLogin());
         Button close = new Button(this);
         close.setText("关闭");
         close.setOnClickListener(v -> finish());
         bottom.addView(copyButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        bottom.addView(webLoginButton, new LinearLayout.LayoutParams(0, -2, 1f));
         bottom.addView(close, new LinearLayout.LayoutParams(0, -2, 1f));
         root.addView(bottom, new LinearLayout.LayoutParams(-1, -2));
-        return root;
+        return frame;
     }
 
     private void addQuick(LinearLayout row, String label, String instruction) {
@@ -220,6 +298,10 @@ public final class AiAssistantActivity extends AppCompatActivity {
         new AlertDialog.Builder(this)
                 .setTitle("AI 模式")
                 .setItems(options, (dialog, which) -> {
+                    if (webAiEngine != null) webAiEngine.cancel();
+                    sending = false;
+                    pendingWebPrompt = "";
+                    waitingForWebLogin = false;
                     if (which >= 0 && which < BrowserAiBridge.TARGET_IDS.length) {
                         webMode = true;
                         webTarget = EmbeddedWebAiActivity.normalizeTarget(BrowserAiBridge.TARGET_IDS[which]);
@@ -236,6 +318,10 @@ public final class AiAssistantActivity extends AppCompatActivity {
     }
 
     private void resetConversation() {
+        if (webAiEngine != null) webAiEngine.cancel();
+        sending = false;
+        pendingWebPrompt = "";
+        waitingForWebLogin = false;
         messages.clear();
         String system = AiConfigStore.systemPrompt(this);
         if (!selectedText.isBlank()) {
@@ -246,8 +332,9 @@ public final class AiAssistantActivity extends AppCompatActivity {
         lastAnswer = "";
         if (transcriptView != null) {
             if (webMode) {
-                transcriptView.setText("网页 AI（内置）使用 " + EmbeddedWebAiActivity.targetLabel(webTarget)
-                        + " 的免费网页版，不需要 API Key。首次使用请在 FloatLens 内置网页里登录一次；以后会复用 WebView Cookie，不会跳到 Chrome。回答直接显示在内置网页里。" );
+                transcriptView.setText("网页 AI 使用 " + EmbeddedWebAiActivity.targetLabel(webTarget)
+                        + " 的网页版，不需要 API Key。正常提问时网页会隐藏在后台，回答直接显示在这个 FloatLens 窗口。"
+                        + "只有首次登录、验证码或网页登录失效时，才需要点下方“网页登录”进入内置网页处理一次。" );
             } else {
                 transcriptView.setText(AiConfigStore.isConfigured(this)
                         ? "API Provider 模式：可以选择上方动作，或者直接输入问题。"
@@ -259,6 +346,7 @@ public final class AiAssistantActivity extends AppCompatActivity {
             else contextView.setText("选中文字：" + compact(selectedText, 280));
         }
         if (copyButton != null) copyButton.setEnabled(false);
+        setBusy(false);
         updateProviderStatus();
     }
 
@@ -276,12 +364,17 @@ public final class AiAssistantActivity extends AppCompatActivity {
         }
 
         if (webMode) {
-            appendTranscript("\n\n你 · " + label + "\n" + visibleUserText(prompt, label)
-                    + "\n\n→ 已交给内置网页 " + EmbeddedWebAiActivity.targetLabel(webTarget));
-            Intent web = new Intent(this, EmbeddedWebAiActivity.class)
-                    .putExtra(EmbeddedWebAiActivity.EXTRA_TARGET, webTarget)
-                    .putExtra(EmbeddedWebAiActivity.EXTRA_PROMPT, prompt);
-            startActivity(web);
+            if (webAiEngine == null) {
+                appendTranscript("\n\n网页 AI 初始化失败");
+                return;
+            }
+            sending = true;
+            pendingWebPrompt = prompt;
+            waitingForWebLogin = false;
+            appendTranscript("\n\n你 · " + label + "\n" + visibleUserText(prompt, label));
+            setBusy(true);
+            statusView.setText("正在后台调用 " + EmbeddedWebAiActivity.targetLabel(webTarget) + " 网页…");
+            webAiEngine.send(webTarget, prompt);
             return;
         }
 
@@ -307,6 +400,7 @@ public final class AiAssistantActivity extends AppCompatActivity {
                     statusView.setText(AiConfigStore.providerLabel(this) + " · " + result.model);
                     copyButton.setEnabled(true);
                     setBusy(false);
+                    sending = false;
                 });
             } catch (Throwable t) {
                 String error = messageOf(t);
@@ -315,11 +409,21 @@ public final class AiAssistantActivity extends AppCompatActivity {
                     appendTranscript("\n\n请求失败\n" + error);
                     updateProviderStatus();
                     setBusy(false);
+                    sending = false;
                 });
-            } finally {
-                sending = false;
             }
         });
+    }
+
+    private void openWebLogin() {
+        if (!webMode) {
+            Toast.makeText(this, "当前是 API Provider 模式", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!pendingWebPrompt.isBlank()) waitingForWebLogin = true;
+        Intent web = new Intent(this, EmbeddedWebAiActivity.class)
+                .putExtra(EmbeddedWebAiActivity.EXTRA_TARGET, webTarget);
+        startActivity(web);
     }
 
     private String visibleUserText(String prompt, String label) {
@@ -336,18 +440,21 @@ public final class AiAssistantActivity extends AppCompatActivity {
     private void setBusy(boolean busy) {
         if (progress != null) progress.setVisibility(busy ? View.VISIBLE : View.GONE);
         if (sendButton != null) sendButton.setEnabled(!busy);
+        if (webLoginButton != null) webLoginButton.setEnabled(!busy || waitingForWebLogin);
     }
 
     private void updateProviderStatus() {
         if (statusView == null) return;
         if (webMode) {
             String label = EmbeddedWebAiActivity.targetLabel(webTarget);
-            statusView.setText("网页 AI · " + label + " · 内置 WebView · 无需 API");
+            if (!sending) statusView.setText("网页 AI · " + label + " · 后台 WebView · 无需 API");
             if (modeButton != null) modeButton.setText("网页AI·" + label);
+            if (webLoginButton != null) webLoginButton.setVisibility(View.VISIBLE);
         } else {
             statusView.setText(AiConfigStore.providerLabel(this) + " · "
                     + (AiConfigStore.isConfigured(this) ? AiConfigStore.model(this) : "未配置"));
             if (modeButton != null) modeButton.setText("API Provider");
+            if (webLoginButton != null) webLoginButton.setVisibility(View.GONE);
         }
     }
 
