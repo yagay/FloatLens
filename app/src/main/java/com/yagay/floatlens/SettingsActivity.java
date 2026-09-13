@@ -10,6 +10,7 @@ import java.util.Map;
 public class SettingsActivity extends AppCompatActivity {
     private FloatSettings fs;
     private EditText hidePackagesEdit;
+    private TextView dictionaryStatusView;
     private final String[] ids = ActionId.availableIds();
 
     @Override protected void onCreate(Bundle b) {
@@ -72,6 +73,9 @@ public class SettingsActivity extends AppCompatActivity {
         }
         ocrLanguageMultiSelect(root);
 
+        title(root, "本地词典");
+        dictionarySettingsEntry(root);
+
         title(root, "环境与显示");
         check(root, "键盘出现时避让悬浮图标", FloatSettings.K_IME_AVOID, fs.imeAvoid());
         check(root, "Quick Move / 智能屏幕入口启用", FloatSettings.K_QUICK_MOVE, fs.quickMoveEnabled());
@@ -100,10 +104,44 @@ public class SettingsActivity extends AppCompatActivity {
         setContentView(sv);
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        refreshDictionarySummary();
+    }
+
     @Override protected void onPause() { saveHidePackages(); super.onPause(); }
 
     private void saveHidePackages() {
         if (hidePackagesEdit != null && fs != null) fs.prefs().edit().putString(FloatSettings.K_HIDE_PACKAGES, hidePackagesEdit.getText().toString()).apply();
+    }
+
+    private void dictionarySettingsEntry(LinearLayout root) {
+        TextView note = new TextView(this);
+        note.setText("ECCEDICT 数据单独下载，不打包进 APK；下载后支持 English → 中文和中文 → English 离线查询。");
+        note.setPadding(0, 0, 0, dp(6));
+        root.addView(note);
+
+        dictionaryStatusView = new TextView(this);
+        dictionaryStatusView.setPadding(0, 0, 0, dp(6));
+        root.addView(dictionaryStatusView);
+
+        Button manage = new Button(this);
+        manage.setText("ECCEDICT 下载 / 更新 / 删除");
+        manage.setOnClickListener(v -> startActivity(new android.content.Intent(this, DictionarySettingsActivity.class)));
+        root.addView(manage, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        refreshDictionarySummary();
+    }
+
+    private void refreshDictionarySummary() {
+        if (dictionaryStatusView == null) return;
+        if (DictionaryManager.isDownloading()) {
+            dictionaryStatusView.setText("状态：正在下载或建立中英双向索引…");
+        } else if (DictionaryManager.isReady(this)) {
+            double mb = DictionaryManager.installedBytes(this) / 1024d / 1024d;
+            dictionaryStatusView.setText(String.format(java.util.Locale.ROOT, "状态：已安装 · %.1f MB · 中英/英中可用", mb));
+        } else {
+            dictionaryStatusView.setText("状态：未下载");
+        }
     }
 
     private void title(LinearLayout r, String s) { TextView t = new TextView(this); t.setText(s); t.setTextSize(20); t.setPadding(0, dp(24), 0, dp(10)); r.addView(t); }
