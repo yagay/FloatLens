@@ -22,7 +22,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
-/** Hidden webpage engine used by the native FloatLens AI window. */
+/**
+ * Hidden webpage engine used by the native FloatLens AI window.
+ *
+ * ChatGPT, Gemini and DeepSeek intentionally share one state machine and one automation pipeline.
+ * Provider-specific code is reduced to selector profiles. The engine always has generic fallbacks,
+ * so a small website DOM change does not immediately break the entire provider.
+ */
 public final class WebAiEngine {
     public interface Listener {
         void onStatus(String text);
@@ -31,15 +37,219 @@ public final class WebAiEngine {
         void onError(String target, String message);
     }
 
+    private enum Stage {
+        IDLE,
+        LOADING,
+        PREPARING,
+        SENDING,
+        WAITING
+    }
+
     private static final long TIMEOUT_MS = 90_000L;
-    private static final long STABLE_MS = 1_700L;
-    private static final long CHATGPT_STABLE_MS = 3_500L;
-    private static final long DEEPSEEK_STABLE_MS = 2_600L;
-    private static final int MAX_COMPOSER_ATTEMPTS = 14;
-    private static final int MAX_SEND_ATTEMPTS = 14;
+    private static final int MAX_COMPOSER_ATTEMPTS = 16;
+    private static final int MAX_SEND_ATTEMPTS = 16;
     private static final int POLL_MS = 650;
+    private static final long DEBUG_LOG_INTERVAL_MS = 2_500L;
     private static final String SESSION_PREFS = "floatlens_web_ai_sessions";
     private static final String SESSION_PREFIX = "conversation_url_";
+
+    private static final String[] COMMON_COMPOSERS = {
+            "#prompt-textarea",
+            "[data-testid=\"prompt-textarea\"]",
+            "textarea[placeholder]",
+            "textarea",
+            "[contenteditable=\"true\"][role=\"textbox\"]",
+            "[contenteditable=\"true\"][data-lexical-editor=\"true\"]",
+            "div.ProseMirror[contenteditable=\"true\"]",
+            "[contenteditable=\"true\"]"
+    };
+
+    private static final String[] COMMON_SENDERS = {
+            "button[data-testid=\"send-button\"]",
+            "button[data-testid*=\"send\"]",
+            "button[aria-label*=\"Send\"]",
+            "button[aria-label*=\"send\"]",
+            "button[aria-label*=\"发送\"]",
+            "button[type=\"submit\"]"
+    };
+
+    private static final String[] COMMON_ANSWERS = {
+            "[data-message-author-role=\"assistant\"]",
+            "[data-testid=\"assistant-message\"]",
+            "[data-testid*=\"assistant\"]",
+            "model-response",
+            "message-content.model-response-text",
+            ".model-response-text",
+            ".response-content",
+            ".ds-markdown:not(.ds-markdown--think)",
+            ".markdown",
+            ".prose"
+    };
+
+    private static final String[] COMMON_IGNORES = {
+            "nav",
+            "header",
+            "footer",
+            "aside",
+            "[role=\"navigation\"]",
+            "[class*=\"reasoning\"]",
+            "[class*=\"think-content\"]",
+            ".ds-markdown--think"
+    };
+
+    private static final class ProviderProfile {
+        final String id;
+        final String[] composers;
+        final String[] senders;
+        final String[] answers;
+        final String[] ignores;
+        final long stableMs;
+
+        ProviderProfile(String id, String[] composers, String[] senders,
+                        String[] answers, String[] ignores, long stableMs) {
+            this.id = id;
+            this.composers = composers;
+            this.senders = senders;
+            this.answers = answers;
+            this.ignores = ignores;
+            this.stableMs = stableMs;
+        }
+    }
+
+    private static final ProviderProfile CHATGPT = new ProviderProfile(
+            BrowserAiBridge.TARGET_CHATGPT,
+            new String[]{
+                    "#prompt-textarea",
+                    "[data-testid=\"prompt-textarea\"]",
+                    "[contenteditable=\"true\"][role=\"textbox\"]",
+                    "[aria-label=\"Chat with ChatGPT\"]",
+                    "[aria-label=\"与 ChatGPT 聊天\"]",
+                    "[placeholder=\"Ask anything\"]",
+                    "[placeholder=\"有问题，尽管问\"]"
+            },
+            new String[]{
+                    "button[data-testid=\"send-button\"]",
+                    "#composer-submit-button",
+                    "button[aria-label=\"Send prompt\"]",
+                    "button[aria-label=\"Send message\"]",
+                    "button[aria-label=\"发送\"]",
+                    "button[aria-label=\"发送消息\"]"
+            },
+            new String[]{
+                    "[data-message-author-role=\"assistant\"]",
+                    "article[data-testid*=\"conversation-turn\"] [data-message-author-role=\"assistant\"]",
+                    "article[data-testid*=\"conversation-turn\"] .markdown",
+                    "[data-testid*=\"assistant\"] .markdown",
+                    "[data-testid*=\"assistant\"]"
+            },
+            new String[]{},
+            3_200L
+    );
+
+    private static final ProviderProfile GEMINI = new ProviderProfile(
+            BrowserAiBridge.TARGET_GEMINI,
+            new String[]{
+                    "rich-textarea .ql-editor",
+                    "rich-textarea [contenteditable=\"true\"]",
+                    ".textarea[contenteditable=\"true\"]",
+                    ".textarea",
+                    "textarea"
+            },
+            new String[]{
+                    "gem-icon-button.submit[aria-disabled=\"false\"]",
+                    "button.send-button:not([disabled])",
+                    "button.submit:not([disabled])",
+                    "button[aria-label=\"Send message\"]:not([disabled])",
+                    "button[aria-label*=\"Send\"]:not([disabled])",
+                    "button[aria-label*=\"发送\"]:not([disabled])"
+            },
+            new String[]{
+                    "model-response message-content.model-response-text",
+                    "model-response .model-response-text",
+                    "model-response message-content",
+                    "model-response .response-content",
+                    "model-response",
+                    ".model-response-text",
+                    ".response-content"
+            },
+            new String[]{},
+            2_400L
+    );
+
+    private static final ProviderProfile DEEPSEEK = new ProviderProfile(
+            BrowserAiBridge.TARGET_DEEPSEEK,
+            new String[]{
+                    "textarea#chat-input",
+                    "textarea.chat-input",
+                    "textarea.message-input-textarea",
+                    ".ds-textarea textarea",
+                    "textarea[placeholder]",
+                    "textarea",
+                    "div[contenteditable=\"true\"]"
+            },
+            new String[]{
+                    ".ds-textarea-send-button",
+                    "div[class*=\"send-button\"]",
+                    "button[class*=\"send-button\"]",
+                    "[class*=\"sendBtn\"]",
+                    "button[aria-label*=\"Send\"]",
+                    "button[aria-label*=\"发送\"]",
+                    "button[type=\"submit\"]"
+            },
+            new String[]{
+                    ".ds-markdown:not(.ds-markdown--think)",
+                    "[class*=\"message\"] .ds-markdown:not(.ds-markdown--think)",
+                    "[class*=\"response\"] .ds-markdown:not(.ds-markdown--think)"
+            },
+            new String[]{
+                    ".ds-markdown--think",
+                    "[class*=\"reasoning\"]",
+                    "[class*=\"think-content\"]"
+            },
+            2_700L
+    );
+
+    private static final ProviderProfile CLAUDE = new ProviderProfile(
+            BrowserAiBridge.TARGET_CLAUDE,
+            new String[]{
+                    "div.ProseMirror[contenteditable=\"true\"]",
+                    "[contenteditable=\"true\"][data-lexical-editor=\"true\"]",
+                    "textarea"
+            },
+            new String[]{
+                    "button[aria-label*=\"Send\"]",
+                    "button[data-testid*=\"send\"]",
+                    "button[type=\"submit\"]"
+            },
+            new String[]{
+                    "[data-testid*=\"assistant\"]",
+                    ".font-claude-message",
+                    ".prose"
+            },
+            new String[]{},
+            2_500L
+    );
+
+    private static final ProviderProfile GROK = new ProviderProfile(
+            BrowserAiBridge.TARGET_GROK,
+            new String[]{
+                    "textarea",
+                    "[contenteditable=\"true\"][role=\"textbox\"]",
+                    "[contenteditable=\"true\"]"
+            },
+            new String[]{
+                    "button[aria-label*=\"Send\"]",
+                    "button[data-testid*=\"send\"]",
+                    "button[type=\"submit\"]"
+            },
+            new String[]{
+                    "[data-testid*=\"assistant\"]",
+                    "[data-message-author-role=\"assistant\"]",
+                    ".prose"
+            },
+            new String[]{},
+            2_500L
+    );
 
     private final Context context;
     private final FrameLayout host;
@@ -51,22 +261,30 @@ public final class WebAiEngine {
     private String pendingPrompt = "";
     private String lastCandidate = "";
     private String lastDomDebug = "";
+    private String lastLoggedDebug = "";
     private long candidateStableSince;
     private long startedAt;
+    private long lastDebugLogAt;
     private int composerAttempts;
     private int sendAttempts;
     private int emptyPolls;
-    private int baselineAnswerCount;
+    private int baselinePrimaryCount;
+    private int baselineFallbackCount;
     private boolean pageReady;
     private boolean sending;
     private boolean destroyed;
-    private final Set<String> baselineAnswers = new HashSet<>();
+    private Stage stage = Stage.IDLE;
+    private final Set<String> baselinePrimary = new HashSet<>();
+    private final Set<String> baselineFallback = new HashSet<>();
 
     private static final class DomSnapshot {
-        final ArrayList<String> texts = new ArrayList<>();
+        final ArrayList<String> primaryTexts = new ArrayList<>();
+        final ArrayList<String> fallbackTexts = new ArrayList<>();
         boolean generating;
         boolean sendReady;
-        int modelCount;
+        boolean composerReady;
+        int primaryCount;
+        int fallbackCount;
         String debug = "";
     }
 
@@ -82,6 +300,7 @@ public final class WebAiEngine {
         webView.setClickable(false);
         webView.setFocusable(false);
         webView.setFocusableInTouchMode(false);
+        diag("INIT", "engine created");
     }
 
     @SuppressWarnings("SetJavaScriptEnabled")
@@ -113,23 +332,46 @@ public final class WebAiEngine {
 
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                 pageReady = false;
-                status("正在准备 " + label() + " 网页会话…");
+                diag("PAGE_START", "stage=" + stage + " url=" + safePath(url));
+                if (sending && stage == Stage.LOADING) {
+                    status("正在准备 " + label() + " 网页会话…");
+                } else if (sending && stage == Stage.WAITING) {
+                    status(label() + " 已发送，正在进入对话页面…");
+                }
             }
 
             @Override public void onPageFinished(WebView view, String url) {
                 try { CookieManager.getInstance().flush(); } catch (Throwable ignored) {}
                 pageReady = true;
                 rememberConversationUrl(target, url);
-                if (sending && !pendingPrompt.isEmpty()) {
+                diag("PAGE_FINISH", "stage=" + stage + " url=" + safePath(url));
+                if (!sending || pendingPrompt.isEmpty()) return;
+
+                // Critical: a send can navigate from the home page to a conversation URL.
+                // Never recapture the baseline or resend after we have entered WAITING.
+                if (stage == Stage.LOADING) {
+                    stage = Stage.PREPARING;
                     main.postDelayed(WebAiEngine.this::captureBaseline, 500L);
+                } else if (stage == Stage.WAITING) {
+                    main.postDelayed(WebAiEngine.this::pollAnswer, 450L);
                 }
+            }
+
+            @Override public void onReceivedError(WebView view, WebResourceRequest request,
+                                                  android.webkit.WebResourceError error) {
+                String url = request == null || request.getUrl() == null ? "" : request.getUrl().toString();
+                String message = error == null ? "unknown" : String.valueOf(error.getDescription());
+                diag("WEB_ERROR", "url=" + safePath(url) + " error=" + message);
+                super.onReceivedError(view, request, error);
             }
         });
     }
 
     private boolean blockExternalScheme(String raw) {
         String url = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
-        return !(url.startsWith("http://") || url.startsWith("https://") || url.startsWith("about:"));
+        boolean blocked = !(url.startsWith("http://") || url.startsWith("https://") || url.startsWith("about:"));
+        if (blocked) diag("BLOCK_URL", "scheme blocked");
+        return blocked;
     }
 
     public boolean isSending() {
@@ -137,8 +379,10 @@ public final class WebAiEngine {
     }
 
     public void cancel() {
+        if (sending) diag("CANCEL", "stage=" + stage);
         sending = false;
         pendingPrompt = "";
+        stage = Stage.IDLE;
         main.removeCallbacksAndMessages(null);
     }
 
@@ -150,12 +394,12 @@ public final class WebAiEngine {
         cancel();
         target = nextTarget;
         pageReady = false;
-        baselineAnswers.clear();
-        baselineAnswerCount = 0;
+        clearBaseline();
         lastCandidate = "";
         lastDomDebug = "";
         try { webView.stopLoading(); } catch (Throwable ignored) {}
         status("正在为 " + label() + " 新建 FloatLens 专用对话…");
+        diag("NEW_CHAT", "url=" + safePath(targetUrl(nextTarget)));
         webView.loadUrl(targetUrl(nextTarget));
     }
 
@@ -171,6 +415,7 @@ public final class WebAiEngine {
             webView.loadUrl("about:blank");
             webView.destroy();
         } catch (Throwable ignored) {}
+        diag("DESTROY", "engine destroyed");
     }
 
     public void send(String rawTarget, String rawPrompt) {
@@ -191,74 +436,68 @@ public final class WebAiEngine {
         composerAttempts = 0;
         sendAttempts = 0;
         emptyPolls = 0;
-        baselineAnswers.clear();
-        baselineAnswerCount = 0;
+        clearBaseline();
         lastCandidate = "";
         lastDomDebug = "";
+        lastLoggedDebug = "";
+        lastDebugLogAt = 0L;
         candidateStableSince = 0L;
 
         String current = webView.getUrl();
+        diag("SEND_BEGIN", "promptLen=" + prompt.length() + " current=" + safePath(current));
         if (!pageReady || !sameTarget(current, target)) {
+            stage = Stage.LOADING;
             String resume = savedConversationUrl(target);
             if (!resume.isEmpty()) {
                 status("正在恢复 " + label() + " 的 FloatLens 专用对话…");
+                diag("LOAD", "resume=" + safePath(resume));
                 webView.loadUrl(resume);
             } else {
                 status("正在后台打开 " + label() + "…");
-                webView.loadUrl(targetUrl(target));
+                String home = targetUrl(target);
+                diag("LOAD", "home=" + safePath(home));
+                webView.loadUrl(home);
             }
         } else {
+            stage = Stage.PREPARING;
             status("正在继续 " + label() + " 的当前网页对话…");
             captureBaseline();
         }
     }
 
     private void captureBaseline() {
-        if (!active()) return;
-        evaluate(candidateScript(), raw -> {
-            if (!active()) return;
+        if (!active(Stage.PREPARING)) return;
+        evaluate(snapshotScript(profile()), raw -> {
+            if (!active(Stage.PREPARING)) return;
             DomSnapshot snapshot = parseSnapshot(raw);
-            baselineAnswers.clear();
-            baselineAnswers.addAll(snapshot.texts);
-            baselineAnswerCount = snapshot.texts.size();
+            baselinePrimary.clear();
+            baselinePrimary.addAll(snapshot.primaryTexts);
+            baselineFallback.clear();
+            baselineFallback.addAll(snapshot.fallbackTexts);
+            baselinePrimaryCount = snapshot.primaryTexts.size();
+            baselineFallbackCount = snapshot.fallbackTexts.size();
             lastDomDebug = snapshot.debug;
+            diag("BASELINE", snapshot.debug);
             tryComposer();
         });
     }
 
     private void tryComposer() {
-        if (!active()) return;
+        if (!active(Stage.PREPARING)) return;
         if (timedOut()) {
             fail("等待网页输入框超时" + diagnosticSuffix());
             return;
         }
         composerAttempts++;
-        String quoted = JSONObject.quote(pendingPrompt);
-        String js;
-
-        if (isGemini()) {
-            js = fillScript(quoted,
-                    "['rich-textarea .ql-editor','rich-textarea [contenteditable=\\\"true\\\"]','.textarea[contenteditable=\\\"true\\\"]','.textarea','textarea','[contenteditable=\\\"true\\\"]']",
-                    true);
-        } else if (isChatGpt()) {
-            js = chatGptFillScript(quoted);
-        } else if (isDeepSeek()) {
-            js = fillScript(quoted,
-                    "['textarea#chat-input','textarea.chat-input','textarea.message-input-textarea','.ds-textarea textarea','textarea[placeholder]','textarea','div[contenteditable=\\\"true\\\"]']",
-                    true);
-        } else {
-            js = fillScript(quoted,
-                    "['#prompt-textarea','textarea[placeholder]','textarea','[contenteditable=\\\"true\\\"][data-lexical-editor=\\\"true\\\"]','div.ProseMirror[contenteditable=\\\"true\\\"]','rich-textarea [contenteditable=\\\"true\\\"]','[contenteditable=\\\"true\\\"]']",
-                    false);
-        }
-
-        evaluate(js, raw -> {
-            if (!active()) return;
+        evaluate(fillScript(profile(), pendingPrompt), raw -> {
+            if (!active(Stage.PREPARING)) return;
             String value = decodeJsString(raw);
+            diag("FILL", "attempt=" + composerAttempts + " result=" + compactDebug(value));
             if (value.startsWith("filled")) {
+                stage = Stage.SENDING;
                 status("已在后台网页填入问题，正在发送…");
                 sendAttempts = 0;
-                main.postDelayed(this::trySend, isChatGpt() ? 500L : 320L);
+                main.postDelayed(this::trySend, 420L);
                 return;
             }
             if (value.startsWith("error")) {
@@ -274,128 +513,61 @@ public final class WebAiEngine {
         });
     }
 
-    private String chatGptFillScript(String quoted) {
-        return "(function(){try{" +
-                "var text=" + quoted + ";" +
-                "var sels=['[contenteditable=\\\"true\\\"][role=\\\"textbox\\\"]','#prompt-textarea[contenteditable=\\\"true\\\"]','[data-testid=\\\"prompt-textarea\\\"][contenteditable=\\\"true\\\"]','[aria-label=\\\"Chat with ChatGPT\\\"]','[aria-label=\\\"与 ChatGPT 聊天\\\"]','[placeholder=\\\"Ask anything\\\"]','[placeholder=\\\"有问题，尽管问\\\"]','#prompt-textarea','[data-testid=\\\"prompt-textarea\\\"]'];" +
-                "function visible(x){if(!x)return false;var s=getComputedStyle(x),r=x.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>20&&r.height>10;}" +
-                "var el=null;for(var i=0;i<sels.length&&!el;i++){var list=document.querySelectorAll(sels[i]);for(var j=0;j<list.length;j++){if(visible(list[j])){el=list[j];break;}}}" +
-                "if(!el)return 'missing';el.focus();" +
-                "if(el.isContentEditable){" +
-                    "el.textContent='';el.innerHTML='<p><br></p>';" +
-                    "var range=document.createRange();range.selectNodeContents(el);range.collapse(false);var sel=window.getSelection();if(sel){sel.removeAllRanges();sel.addRange(range);}" +
-                    "var inserted=false;try{inserted=!!document.execCommand('insertText',false,text);}catch(ignore){}" +
-                    "if(!inserted){el.textContent=text;}" +
-                    "try{el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(ignore2){el.dispatchEvent(new Event('input',{bubbles:true}));}" +
-                    "el.dispatchEvent(new Event('change',{bubbles:true}));" +
-                "}else{" +
-                    "var p=Object.getPrototypeOf(el),d=Object.getOwnPropertyDescriptor(p,'value');if(!d||!d.set)d=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')||Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');if(d&&d.set)d.set.call(el,text);else el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));" +
-                "}" +
-                "var current=(el.innerText||el.textContent||el.value||'').trim();return current?'filled-chatgpt:'+current.length:'empty-after-fill';" +
-                "}catch(e){return 'error:'+String(e);}})();";
-    }
-
-    private String fillScript(String quoted, String selectors, boolean requireVisible) {
-        String visible = requireVisible
-                ? "var r=x.getBoundingClientRect();if(!x.disabled&&r.width>20&&r.height>10){el=x;break;}"
-                : "if(!x.disabled){el=x;break;}";
-        return "(function(){try{" +
-                "var text=" + quoted + ";var sels=" + selectors + ";" +
-                "var el=null;for(var i=0;i<sels.length&&!el;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j];" + visible + "}}" +
-                "if(!el)return 'missing';el.focus();" +
-                "if(el.isContentEditable){el.textContent=text;try{el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){el.dispatchEvent(new Event('input',{bubbles:true}));}}" +
-                "else{var p=Object.getPrototypeOf(el),d=Object.getOwnPropertyDescriptor(p,'value');if(!d||!d.set){d=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')||Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');}if(d&&d.set)d.set.call(el,text);else el.value=text;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}" +
-                "return 'filled';}catch(e){return 'error:'+String(e);}})();";
-    }
-
     private void trySend() {
-        if (!active()) return;
+        if (!active(Stage.SENDING)) return;
         if (timedOut()) {
             fail("等待网页发送超时" + diagnosticSuffix());
             return;
         }
         sendAttempts++;
-        String js;
-        if (isGemini()) {
-            js = "(function(){try{" +
-                    "var sels=['gem-icon-button.submit[aria-disabled=\\\"false\\\"]','button.send-button:not([disabled])','button.submit:not([disabled])','button[aria-label=\\\"Send message\\\"]:not([disabled])','button[aria-label*=\\\"Send\\\"]:not([disabled])','button[aria-label*=\\\"发送\\\"]:not([disabled])'];" +
-                    "var b=pick(sels);if(b){b.click();return 'sent-gemini';}" +
-                    "var e=document.querySelector('rich-textarea .ql-editor,rich-textarea [contenteditable=\\\"true\\\"],.textarea[contenteditable=\\\"true\\\"],textarea,[contenteditable=\\\"true\\\"]');if(e){key(e);return 'sent-key';}return 'nosend';" +
-                    "function pick(s){for(var i=0;i<s.length;i++){var l=document.querySelectorAll(s[i]);for(var j=l.length-1;j>=0;j--){var x=l[j],r=x.getBoundingClientRect();if(!x.disabled&&r.width>8&&r.height>8)return x;}}return null;}" +
-                    "function key(e){e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));}" +
-                    "}catch(e){return 'error:'+String(e);}})();";
-        } else if (isChatGpt()) {
-            js = "(function(){try{" +
-                    "function visible(x){if(!x)return false;var s=getComputedStyle(x),r=x.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>8&&r.height>8;}" +
-                    "function usable(x){return visible(x)&&!x.disabled&&x.getAttribute('aria-disabled')!=='true';}" +
-                    "var form=Array.from(document.querySelectorAll('form')).find(visible);var root=form||document.body;" +
-                    "var sels=['button[data-testid=\\\"send-button\\\"]','#composer-submit-button','button[aria-label=\\\"Send prompt\\\"]','button[aria-label=\\\"Send message\\\"]','button[aria-label=\\\"发送\\\"]','button[aria-label=\\\"发送消息\\\"]'];" +
-                    "var b=null;for(var i=0;i<sels.length&&!b;i++){var list=root.querySelectorAll(sels[i]);for(var j=0;j<list.length;j++){if(usable(list[j])){b=list[j];break;}}}" +
-                    "if(!b){var btns=root.querySelectorAll('button');for(var k=0;k<btns.length;k++){var x=btns[k],label=((x.getAttribute('aria-label')||'')+' '+(x.innerText||x.textContent||'')).trim();if(usable(x)&&/(send|发送)/i.test(label)){b=x;break;}}}" +
-                    "if(b){b.click();return 'sent-chatgpt';}" +
-                    "var e=root.querySelector('[contenteditable=\\\"true\\\"][role=\\\"textbox\\\"],#prompt-textarea,[data-testid=\\\"prompt-textarea\\\"]');var text=e?((e.innerText||e.textContent||e.value||'').trim()):'';return 'nosend-chatgpt:composer='+(e?'1':'0')+',text='+text.length;" +
-                    "}catch(e){return 'error:'+String(e);}})();";
-        } else if (isDeepSeek()) {
-            js = "(function(){try{" +
-                    "var sels=['.ds-textarea-send-button','div[class*=\\\"send-button\\\"]','button[class*=\\\"send-button\\\"]','[class*=\\\"sendBtn\\\"]','button[aria-label*=\\\"Send\\\"]','button[aria-label*=\\\"发送\\\"]','button[type=\\\"submit\\\"]'];" +
-                    "var b=null;for(var i=0;i<sels.length&&!b;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j],r=x.getBoundingClientRect();if(r.width>8&&r.height>8&&!x.disabled&&x.getAttribute('aria-disabled')!=='true'){b=x;break;}}}" +
-                    "if(b){b.click();return 'sent-deepseek';}" +
-                    "var e=document.querySelector('textarea#chat-input,textarea.chat-input,textarea.message-input-textarea,.ds-textarea textarea,textarea,div[contenteditable=\\\"true\\\"]');var f=e&&e.closest?e.closest('form'):null;if(f&&f.requestSubmit){f.requestSubmit();return 'sent-form';}" +
-                    "if(e){e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));return 'sent-key';}" +
-                    "return 'nosend';}catch(e){return 'error:'+String(e);}})();";
-        } else {
-            js = "(function(){try{" +
-                    "var sels=['button[data-testid=\\\"send-button\\\"]','button[data-testid*=\\\"send\\\"]','button[aria-label*=\\\"Send\\\"]','button[aria-label*=\\\"send\\\"]','button[aria-label*=\\\"发送\\\"]','button[type=\\\"submit\\\"]'];" +
-                    "var b=null;for(var i=0;i<sels.length&&!b;i++){var list=document.querySelectorAll(sels[i]);for(var j=list.length-1;j>=0;j--){var x=list[j];if(!x.disabled){b=x;break;}}}" +
-                    "if(b){b.click();return 'sent';}" +
-                    "var e=document.querySelector('#prompt-textarea,textarea,[contenteditable=\\\"true\\\"]');var f=e&&e.closest?e.closest('form'):null;if(f&&f.requestSubmit){f.requestSubmit();return 'sent-form';}" +
-                    "if(e){e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));return 'sent-key';}" +
-                    "return 'nosend';}catch(e){return 'error:'+String(e);}})();";
-        }
-
-        evaluate(js, raw -> {
-            if (!active()) return;
+        evaluate(sendScript(profile()), raw -> {
+            if (!active(Stage.SENDING)) return;
             String value = decodeJsString(raw);
+            diag("SEND", "attempt=" + sendAttempts + " result=" + compactDebug(value));
             if (value.startsWith("sent")) {
+                stage = Stage.WAITING;
                 status("已发送，正在后台读取网页回答…");
                 emptyPolls = 0;
-                main.postDelayed(this::pollAnswer, isChatGpt() ? 1200L : 900L);
-            } else if (value.startsWith("error")) {
+                main.postDelayed(this::pollAnswer, 900L);
+                return;
+            }
+            if (value.startsWith("error")) {
                 fail("网页发送失败: " + value);
-            } else if (isChatGpt() && sendAttempts < MAX_SEND_ATTEMPTS) {
-                lastDomDebug = value;
-                status("ChatGPT 输入已就绪，等待发送按钮…");
+                return;
+            }
+            lastDomDebug = value;
+            if (sendAttempts < MAX_SEND_ATTEMPTS) {
+                status(label() + " 输入已就绪，等待发送按钮…");
                 main.postDelayed(this::trySend, 450L);
             } else {
-                lastDomDebug = value;
                 needsLogin("文字已经填入，但没有可靠找到发送按钮。请打开一次网页登录页面确认登录状态。" + diagnosticSuffix());
             }
         });
     }
 
     private void pollAnswer() {
-        if (!active()) return;
+        if (!active(Stage.WAITING)) return;
         if (timedOut()) {
             fail("等待网页回答超时" + diagnosticSuffix());
             return;
         }
-        evaluate(candidateScript(), raw -> {
-            if (!active()) return;
+        evaluate(snapshotScript(profile()), raw -> {
+            if (!active(Stage.WAITING)) return;
             DomSnapshot snapshot = parseSnapshot(raw);
             lastDomDebug = snapshot.debug;
-            String candidate = chooseNewAnswer(snapshot.texts);
+            maybeLogSnapshot(snapshot);
+            String candidate = chooseNewAnswer(snapshot);
             long now = SystemClock.uptimeMillis();
-            boolean dedicated = isGemini() || isChatGpt() || isDeepSeek();
-
             rememberConversationUrl(target, webView.getUrl());
 
             if (candidate.isEmpty()) {
                 emptyPolls++;
-                if (dedicated && snapshot.modelCount > baselineAnswerCount) {
-                    status(snapshot.generating
-                            ? label() + " 正在生成回答…"
-                            : label() + " 已有新的回答节点，正在读取内容…");
-                } else if (dedicated && emptyPolls >= 5) {
+                if (snapshot.generating) {
+                    status(label() + " 正在生成回答…");
+                } else if (snapshot.primaryCount > baselinePrimaryCount
+                        || snapshot.fallbackCount > baselineFallbackCount) {
+                    status(label() + " 已有新的回答节点，正在读取内容…");
+                } else if (emptyPolls >= 5) {
                     status(label() + " 已发送，但还没有检测到新的回答节点…");
                 } else {
                     status("等待 " + label() + " 回答…");
@@ -419,13 +591,14 @@ public final class WebAiEngine {
                 return;
             }
 
-            long stableMs = isChatGpt() ? CHATGPT_STABLE_MS : (isDeepSeek() ? DEEPSEEK_STABLE_MS : STABLE_MS);
-            if (now - candidateStableSince >= stableMs) {
+            if (now - candidateStableSince >= profile().stableMs) {
                 String answer = candidate;
                 String doneTarget = target;
                 rememberConversationUrl(doneTarget, webView.getUrl());
                 sending = false;
                 pendingPrompt = "";
+                stage = Stage.IDLE;
+                diag("RESULT", "answerLen=" + answer.length() + " url=" + safePath(webView.getUrl()));
                 status(EmbeddedWebAiActivity.targetLabel(doneTarget) + " 网页回答已返回到窗口");
                 if (listener != null) listener.onResult(doneTarget, answer);
             } else {
@@ -434,75 +607,217 @@ public final class WebAiEngine {
         });
     }
 
-    private String chooseNewAnswer(List<String> candidates) {
-        if (candidates == null || candidates.isEmpty()) return "";
-        String prompt = compact(pendingPrompt);
+    private String chooseNewAnswer(DomSnapshot snapshot) {
+        String primary = chooseFromList(snapshot.primaryTexts, baselinePrimaryCount, baselinePrimary, false);
+        if (!primary.isEmpty()) return primary;
+        return chooseFromList(snapshot.fallbackTexts, baselineFallbackCount, baselineFallback, true);
+    }
 
-        if (candidates.size() > baselineAnswerCount) {
-            for (int i = candidates.size() - 1; i >= baselineAnswerCount; i--) {
-                String text = compact(candidates.get(i));
-                if (text.length() < 2 || text.equals(prompt) || looksLikeUiChrome(text)) continue;
-                return text;
+    private String chooseFromList(List<String> values, int baselineCount, Set<String> baseline, boolean fallback) {
+        if (values == null || values.isEmpty()) return "";
+        if (values.size() > baselineCount) {
+            for (int i = values.size() - 1; i >= Math.max(0, baselineCount); i--) {
+                String text = sanitizeCandidate(values.get(i), fallback);
+                if (!text.isEmpty()) return text;
             }
         }
-
-        for (int i = candidates.size() - 1; i >= 0; i--) {
-            String text = compact(candidates.get(i));
-            if (text.length() < 2) continue;
-            if (text.equals(prompt)) continue;
-            if (baselineAnswers.contains(text)) continue;
-            if (looksLikeUiChrome(text)) continue;
-            return text;
+        for (int i = values.size() - 1; i >= 0; i--) {
+            String raw = compact(values.get(i));
+            if (raw.isEmpty() || baseline.contains(raw)) continue;
+            String text = sanitizeCandidate(raw, fallback);
+            if (!text.isEmpty()) return text;
         }
         return "";
     }
 
-    private boolean looksLikeUiChrome(String text) {
-        String s = text.toLowerCase(Locale.ROOT);
-        if (s.length() > 120) return false;
-        return s.equals("send") || s.equals("发送") || s.equals("stop") || s.equals("停止")
-                || s.contains("log in") || s.contains("sign up") || s.contains("登录")
-                || s.contains("new chat") || s.contains("新对话") || s.contains("regenerate");
+    private String sanitizeCandidate(String raw, boolean fallback) {
+        String text = compact(raw);
+        String prompt = compact(pendingPrompt);
+        if (text.length() < 2 || text.equals(prompt) || looksLikeUiChrome(text)) return "";
+        if (fallback && !prompt.isEmpty()) {
+            int index = text.lastIndexOf(prompt);
+            if (index >= 0) {
+                int after = index + prompt.length();
+                if (after < text.length()) {
+                    String tail = compact(text.substring(after));
+                    if (tail.length() >= 2 && !looksLikeUiChrome(tail)) text = tail;
+                }
+            }
+        }
+        return text;
     }
 
-    private String candidateScript() {
-        if (isGemini()) {
-            return "(function(){try{" +
-                    "var models=Array.from(document.querySelectorAll('model-response'));" +
-                    "var out=[],seen={};models.forEach(function(m){var c=m.querySelector('message-content.model-response-text,.model-response-text,.message-content,.response-content,.markdown.markdown-main-panel,.markdown')||m;var t=(c.innerText||c.textContent||'').trim();if(t.length>1&&t.length<30000&&!seen[t]){seen[t]=1;out.push(t);}});" +
-                    "if(!out.length){var fall=document.querySelectorAll('message-content.model-response-text,.model-response-text,.response-content');for(var i=0;i<fall.length;i++){var t=(fall[i].innerText||fall[i].textContent||'').trim();if(t.length>1&&t.length<30000&&!seen[t]){seen[t]=1;out.push(t);}}}" +
-                    "var generating=false;var controls=document.querySelectorAll('button,[role=\\\"button\\\"],gem-icon-button');for(var k=0;k<controls.length;k++){var x=controls[k],a=((x.getAttribute('aria-label')||'')+' '+(x.textContent||'')+' '+(x.className||'')).toLowerCase();if(a.indexOf('stop')>=0||a.indexOf('停止')>=0){var r=x.getBoundingClientRect();if(r.width>0&&r.height>0&&x.getAttribute('aria-disabled')!=='true'&&!x.disabled){generating=true;break;}}}" +
-                    "var sendReady=!!document.querySelector('gem-icon-button.submit[aria-disabled=\\\"false\\\"],button.send-button:not([disabled]),button.submit:not([disabled]),button[aria-label=\\\"Send message\\\"]:not([disabled])');" +
-                    "return JSON.stringify({texts:out.slice(-20),generating:generating,sendReady:sendReady,modelCount:models.length,debug:'gemini models='+models.length+',texts='+out.length+',generating='+generating+',sendReady='+sendReady});" +
-                    "}catch(e){return JSON.stringify({texts:[],generating:false,sendReady:false,modelCount:0,debug:'gemini script error:'+String(e)});}})();";
-        }
+    private boolean looksLikeUiChrome(String text) {
+        String s = text.toLowerCase(Locale.ROOT);
+        if (s.length() > 180) return false;
+        return s.equals("send") || s.equals("发送") || s.equals("stop") || s.equals("停止")
+                || s.equals("cancel") || s.equals("取消")
+                || s.contains("log in") || s.contains("sign up") || s.contains("登录")
+                || s.contains("new chat") || s.contains("新对话") || s.contains("regenerate")
+                || s.contains("upgrade plan") || s.contains("privacy policy");
+    }
 
-        if (isChatGpt()) {
-            return "(function(){try{" +
-                    "function visible(x){if(!x)return false;var s=getComputedStyle(x),r=x.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;}" +
-                    "function roleOf(n){var a=(n.getAttribute('data-message-author-role')||n.getAttribute('data-author')||'').toLowerCase();if(a.indexOf('assistant')>=0)return 'assistant';if(a.indexOf('user')>=0)return 'user';var t=(n.getAttribute('data-testid')||'').toLowerCase();if(t.indexOf('assistant')>=0)return 'assistant';if(t.indexOf('user')>=0)return 'user';var l=(n.getAttribute('aria-label')||'').toLowerCase();if(l.indexOf('assistant')>=0||l.indexOf('chatgpt')>=0)return 'assistant';if(l.indexOf('user')>=0||l==='you')return 'user';return '';}" +
-                    "var nodes=Array.from(document.querySelectorAll('[data-message-author-role],article[data-testid*=\\\"conversation-turn\\\"]')).filter(visible);" +
-                    "var out=[];var assistants=0;for(var i=0;i<nodes.length;i++){var n=nodes[i],role=roleOf(n),rn=n.querySelector('[data-message-author-role],[data-author]');if(!role&&rn)role=roleOf(rn);if(role!=='assistant')continue;assistants++;var c=n.querySelector('[data-message-author-role] .markdown')||n.querySelector('.markdown')||n.querySelector('[data-message-content]')||n.querySelector('[data-message-author-role]')||n;var t=(c.innerText||c.textContent||'').replace(/\\u00a0/g,' ').replace(/[ \\t]+\\n/g,'\\n').replace(/\\n{3,}/g,'\\n\\n').trim();if(t.length>1&&t.length<30000)out.push(t);}" +
-                    "var generating=false;var controls=document.querySelectorAll('button,[role=\\\"button\\\"]');for(var k=0;k<controls.length;k++){var x=controls[k],meta=((x.getAttribute('data-testid')||'')+' '+(x.getAttribute('aria-label')||'')+' '+(x.getAttribute('title')||'')+' '+(x.innerText||x.textContent||'')).toLowerCase();if(meta.indexOf('stop')>=0||meta.indexOf('停止')>=0){if(visible(x)&&!x.disabled&&x.getAttribute('aria-disabled')!=='true'){generating=true;break;}}}" +
-                    "var sendReady=false;var sends=document.querySelectorAll('button[data-testid=\\\"send-button\\\"],#composer-submit-button,button[aria-label=\\\"Send prompt\\\"],button[aria-label=\\\"Send message\\\"],button[aria-label=\\\"发送\\\"],button[aria-label=\\\"发送消息\\\"]');for(var j=0;j<sends.length;j++){var b=sends[j];if(visible(b)&&!b.disabled&&b.getAttribute('aria-disabled')!=='true'){sendReady=true;break;}}" +
-                    "return JSON.stringify({texts:out.slice(-40),generating:generating,sendReady:sendReady,modelCount:assistants,debug:'chatgpt turns='+nodes.length+',assistants='+assistants+',texts='+out.length+',generating='+generating+',sendReady='+sendReady+',url='+location.pathname});" +
-                    "}catch(e){return JSON.stringify({texts:[],generating:false,sendReady:false,modelCount:0,debug:'chatgpt script error:'+String(e)});}})();";
-        }
+    private String fillScript(ProviderProfile p, String prompt) {
+        String template = """
+                (function(){try{
+                  var text=__TEXT__;
+                  var sels=__COMPOSERS__;
+                  function visible(x){if(!x)return false;var s=getComputedStyle(x),r=x.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>20&&r.height>10;}
+                  function valueOf(x){return ((x.value||x.innerText||x.textContent||'')+'').trim();}
+                  var candidates=[];
+                  for(var i=0;i<sels.length;i++){
+                    var list=document.querySelectorAll(sels[i]);
+                    for(var j=0;j<list.length;j++){
+                      var x=list[j];
+                      if(!visible(x)||x.disabled)continue;
+                      var meta=((x.getAttribute('id')||'')+' '+(x.getAttribute('aria-label')||'')+' '+(x.getAttribute('placeholder')||'')).toLowerCase();
+                      if(meta.indexOf('search')>=0||meta.indexOf('url')>=0||meta.indexOf('address')>=0)continue;
+                      if(candidates.indexOf(x)<0)candidates.push(x);
+                    }
+                  }
+                  if(!candidates.length)return 'missing:composer=0';
+                  candidates.sort(function(a,b){var ar=a.getBoundingClientRect(),br=b.getBoundingClientRect();return br.bottom-ar.bottom;});
+                  var el=candidates[0];el.focus();
+                  if(el.isContentEditable){
+                    try{var sel=window.getSelection(),range=document.createRange();range.selectNodeContents(el);sel.removeAllRanges();sel.addRange(range);document.execCommand('delete',false,null);}catch(ignore){}
+                    var inserted=false;try{inserted=!!document.execCommand('insertText',false,text);}catch(ignore2){}
+                    if(!inserted||!valueOf(el)){el.textContent=text;}
+                    try{el.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,inputType:'insertText',data:text}));}catch(ignore3){}
+                    try{el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(ignore4){el.dispatchEvent(new Event('input',{bubbles:true}));}
+                    el.dispatchEvent(new Event('change',{bubbles:true}));
+                  }else{
+                    var proto=Object.getPrototypeOf(el),d=Object.getOwnPropertyDescriptor(proto,'value');
+                    if(!d||!d.set)d=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')||Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');
+                    if(d&&d.set)d.set.call(el,text);else el.value=text;
+                    try{el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(ignore5){el.dispatchEvent(new Event('input',{bubbles:true}));}
+                    el.dispatchEvent(new Event('change',{bubbles:true}));
+                  }
+                  var current=valueOf(el);
+                  return current.length?'filled:'+current.length:'empty-after-fill';
+                }catch(e){return 'error:'+String(e);}})();
+                """;
+        return template
+                .replace("__TEXT__", JSONObject.quote(prompt))
+                .replace("__COMPOSERS__", jsArray(merge(p.composers, COMMON_COMPOSERS)));
+    }
 
-        if (isDeepSeek()) {
-            return "(function(){try{" +
-                    "var nodes=Array.from(document.querySelectorAll('.ds-markdown'));var out=[],seen={};" +
-                    "nodes.forEach(function(n){var cls=(n.className||'').toString();if(cls.indexOf('ds-markdown--think')>=0)return;var thought=n.closest('.ds-markdown--think,[class*=\\\"reasoning\\\"],[class*=\\\"think-content\\\"]');if(thought)return;var t=(n.innerText||n.textContent||'').trim();if(t.length>1&&t.length<30000&&!seen[t]){seen[t]=1;out.push(t);}});" +
-                    "var generating=false;var controls=document.querySelectorAll('button,[role=\\\"button\\\"],[class*=\\\"ds-icon-button\\\"],[class*=\\\"send-button\\\"]');for(var i=0;i<controls.length;i++){var x=controls[i],a=((x.getAttribute('aria-label')||'')+' '+(x.getAttribute('title')||'')+' '+(x.textContent||'')+' '+(x.className||'')).toLowerCase();if(a.indexOf('stop')>=0||a.indexOf('停止')>=0||a.indexOf('abort')>=0){var r=x.getBoundingClientRect();if(r.width>0&&r.height>0&&x.getAttribute('aria-disabled')!=='true'&&!x.disabled){generating=true;break;}}}" +
-                    "var sends=document.querySelectorAll('.ds-textarea-send-button,div[class*=\\\"send-button\\\"],button[class*=\\\"send-button\\\"],[class*=\\\"sendBtn\\\"]');var sendReady=false;for(var j=0;j<sends.length;j++){var s=sends[j],r=s.getBoundingClientRect();if(r.width>8&&r.height>8&&!s.disabled&&s.getAttribute('aria-disabled')!=='true'){sendReady=true;break;}}" +
-                    "return JSON.stringify({texts:out.slice(-30),generating:generating,sendReady:sendReady,modelCount:nodes.length,debug:'deepseek markdown='+nodes.length+',answers='+out.length+',generating='+generating+',sendReady='+sendReady});" +
-                    "}catch(e){return JSON.stringify({texts:[],generating:false,sendReady:false,modelCount:0,debug:'deepseek script error:'+String(e)});}})();";
-        }
+    private String sendScript(ProviderProfile p) {
+        String template = """
+                (function(){try{
+                  var composerSels=__COMPOSERS__;
+                  var sendSels=__SENDERS__;
+                  function visible(x){if(!x)return false;var s=getComputedStyle(x),r=x.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>8&&r.height>8;}
+                  function usable(x){return visible(x)&&!x.disabled&&x.getAttribute('aria-disabled')!=='true';}
+                  var composer=null;
+                  for(var i=0;i<composerSels.length&&!composer;i++){
+                    var cl=document.querySelectorAll(composerSels[i]);
+                    for(var j=cl.length-1;j>=0;j--){if(visible(cl[j])){composer=cl[j];break;}}
+                  }
+                  var root=(composer&&composer.closest)?(composer.closest('form')||document.body):document.body;
+                  var buttons=[];
+                  for(var a=0;a<sendSels.length;a++){
+                    var list=root.querySelectorAll(sendSels[a]);
+                    for(var b=0;b<list.length;b++){if(usable(list[b])&&buttons.indexOf(list[b])<0)buttons.push(list[b]);}
+                  }
+                  if(!buttons.length){
+                    var all=root.querySelectorAll('button,[role="button"]');
+                    for(var c=0;c<all.length;c++){
+                      var x=all[c],meta=((x.getAttribute('aria-label')||'')+' '+(x.getAttribute('title')||'')+' '+(x.getAttribute('data-testid')||'')+' '+(x.innerText||x.textContent||'')).toLowerCase();
+                      if(usable(x)&&(/(^|\\s)(send|submit)(\\s|$)/i.test(meta)||meta.indexOf('发送')>=0)){buttons.push(x);}
+                    }
+                  }
+                  if(buttons.length){
+                    buttons.sort(function(a,b){var ar=a.getBoundingClientRect(),br=b.getBoundingClientRect();return br.bottom-ar.bottom;});
+                    var btn=buttons[0];var desc=((btn.getAttribute('data-testid')||'')+' '+(btn.getAttribute('aria-label')||'')+' '+(btn.id||'')).trim();btn.click();return 'sent-click:'+desc;
+                  }
+                  if(composer){
+                    var form=composer.closest?composer.closest('form'):null;
+                    if(form&&form.requestSubmit){form.requestSubmit();return 'sent-form';}
+                    composer.focus();
+                    composer.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+                    composer.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+                    return 'sent-key';
+                  }
+                  return 'nosend:composer=0,buttons=0';
+                }catch(e){return 'error:'+String(e);}})();
+                """;
+        return template
+                .replace("__COMPOSERS__", jsArray(merge(p.composers, COMMON_COMPOSERS)))
+                .replace("__SENDERS__", jsArray(merge(p.senders, COMMON_SENDERS)));
+    }
 
-        return "(function(){try{" +
-                "var sels=['[data-message-author-role=\\\"assistant\\\"]','[data-testid=\\\"assistant-message\\\"]','[data-testid*=\\\"assistant\\\"]','.model-response-text','message-content','model-response','.ds-markdown','.markdown','.prose','article'];" +
-                "var out=[],seen={};for(var i=0;i<sels.length;i++){var list=document.querySelectorAll(sels[i]);for(var j=0;j<list.length;j++){var x=list[j],t=(x.innerText||x.textContent||'').trim();if(t.length>1&&t.length<30000&&!seen[t]){seen[t]=1;out.push(t);}}}" +
-                "return JSON.stringify({texts:out.slice(-40),generating:false,sendReady:false,modelCount:0,debug:'generic texts='+out.length});}catch(e){return JSON.stringify({texts:[],generating:false,sendReady:false,modelCount:0,debug:'generic script error:'+String(e)});}})();";
+    private String snapshotScript(ProviderProfile p) {
+        String template = """
+                (function(){try{
+                  var primarySels=__ANSWERS__;
+                  var fallbackSels=__FALLBACKS__;
+                  var ignoreSels=__IGNORES__;
+                  var composerSels=__COMPOSERS__;
+                  var sendSels=__SENDERS__;
+                  function visible(x){if(!x)return false;var s=getComputedStyle(x),r=x.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;}
+                  function clean(t){return ((t||'')+'').replace(/\\u00a0/g,' ').replace(/[ \\t]+\\n/g,'\\n').replace(/\\n{3,}/g,'\\n\\n').trim();}
+                  function ignored(x){
+                    for(var i=0;i<ignoreSels.length;i++){
+                      try{if(x.matches&&x.matches(ignoreSels[i]))return true;if(x.closest&&x.closest(ignoreSels[i]))return true;}catch(ignore){}
+                    }
+                    var user=x.closest?x.closest('[data-message-author-role="user"],[data-author="user"],[data-testid*=\"user\"]'):null;
+                    return !!user;
+                  }
+                  var composers=[];
+                  for(var ci=0;ci<composerSels.length;ci++){
+                    var cList=document.querySelectorAll(composerSels[ci]);
+                    for(var cj=0;cj<cList.length;cj++){if(composers.indexOf(cList[cj])<0)composers.push(cList[cj]);}
+                  }
+                  function touchesComposer(x){for(var i=0;i<composers.length;i++){var c=composers[i];if(c===x||c.contains(x)||x.contains(c))return true;}return false;}
+                  function collect(sels, strict){
+                    var nodes=[];
+                    for(var i=0;i<sels.length;i++){
+                      var list=document.querySelectorAll(sels[i]);
+                      for(var j=0;j<list.length;j++){var x=list[j];if(nodes.indexOf(x)<0)nodes.push(x);}
+                    }
+                    nodes.sort(function(a,b){if(a===b)return 0;var p=a.compareDocumentPosition(b);return (p&Node.DOCUMENT_POSITION_FOLLOWING)?-1:1;});
+                    var out=[];
+                    for(var k=0;k<nodes.length;k++){
+                      var n=nodes[k];if(!visible(n)||ignored(n)||touchesComposer(n))continue;
+                      var meta=((n.getAttribute('data-message-author-role')||'')+' '+(n.getAttribute('data-author')||'')+' '+(n.getAttribute('data-testid')||'')+' '+(n.getAttribute('aria-label')||'')+' '+(n.className||'')).toLowerCase();
+                      if(meta.indexOf('user')>=0&&meta.indexOf('assistant')<0)continue;
+                      if(!strict){
+                        var tag=(n.tagName||'').toLowerCase();
+                        if((tag==='article'||meta.indexOf('message')>=0||meta.indexOf('response')>=0||meta.indexOf('markdown')>=0||meta.indexOf('prose')>=0)===false)continue;
+                      }
+                      var t=clean(n.innerText||n.textContent||'');if(t.length<2||t.length>30000)continue;
+                      if(out.length&&out[out.length-1]===t)continue;
+                      out.push(t);
+                    }
+                    return out;
+                  }
+                  var primary=collect(primarySels,true);
+                  var fallback=collect(fallbackSels,false);
+                  var generating=false;
+                  var controls=document.querySelectorAll('button,[role="button"],gem-icon-button');
+                  for(var i=0;i<controls.length;i++){
+                    var x=controls[i];if(!visible(x)||x.disabled||x.getAttribute('aria-disabled')==='true')continue;
+                    var meta=((x.getAttribute('data-testid')||'')+' '+(x.getAttribute('aria-label')||'')+' '+(x.getAttribute('title')||'')+' '+(x.innerText||x.textContent||'')+' '+(x.className||'')).toLowerCase();
+                    if(meta.indexOf('stop generating')>=0||meta.indexOf('stop response')>=0||meta.indexOf('stop')>=0||meta.indexOf('abort')>=0||meta.indexOf('停止')>=0){generating=true;break;}
+                  }
+                  var sendReady=false;
+                  for(var si=0;si<sendSels.length&&!sendReady;si++){
+                    var sl=document.querySelectorAll(sendSels[si]);
+                    for(var sj=0;sj<sl.length;sj++){var sb=sl[sj];if(visible(sb)&&!sb.disabled&&sb.getAttribute('aria-disabled')!=='true'){sendReady=true;break;}}
+                  }
+                  var composerReady=false;
+                  for(var qi=0;qi<composers.length;qi++){if(visible(composers[qi])&&!composers[qi].disabled){composerReady=true;break;}}
+                  return JSON.stringify({primary:primary.slice(-40),fallback:fallback.slice(-60),generating:generating,sendReady:sendReady,composerReady:composerReady,primaryCount:primary.length,fallbackCount:fallback.length,debug:'provider=__PROVIDER__ primary='+primary.length+',fallback='+fallback.length+',generating='+generating+',sendReady='+sendReady+',composerReady='+composerReady+',url='+location.pathname});
+                }catch(e){return JSON.stringify({primary:[],fallback:[],generating:false,sendReady:false,composerReady:false,primaryCount:0,fallbackCount:0,debug:'snapshot error:'+String(e)});}})();
+                """;
+        return template
+                .replace("__ANSWERS__", jsArray(p.answers))
+                .replace("__FALLBACKS__", jsArray(merge(p.answers, COMMON_ANSWERS,
+                        new String[]{"main article", "main [class*=\"message\"]", "main [class*=\"response\"]"})))
+                .replace("__IGNORES__", jsArray(merge(p.ignores, COMMON_IGNORES)))
+                .replace("__COMPOSERS__", jsArray(merge(p.composers, COMMON_COMPOSERS)))
+                .replace("__SENDERS__", jsArray(merge(p.senders, COMMON_SENDERS)))
+                .replace("__PROVIDER__", p.id);
     }
 
     private DomSnapshot parseSnapshot(String raw) {
@@ -510,55 +825,57 @@ public final class WebAiEngine {
         try {
             String json = decodeJsString(raw);
             Object parsed = new JSONTokener(json).nextValue();
-            JSONArray texts;
-            if (parsed instanceof JSONObject) {
-                JSONObject o = (JSONObject) parsed;
-                texts = o.optJSONArray("texts");
-                snapshot.generating = o.optBoolean("generating", false);
-                snapshot.sendReady = o.optBoolean("sendReady", false);
-                snapshot.modelCount = o.optInt("modelCount", 0);
-                snapshot.debug = o.optString("debug", "");
-            } else if (parsed instanceof JSONArray) {
-                texts = (JSONArray) parsed;
-            } else {
-                texts = null;
+            if (!(parsed instanceof JSONObject)) {
+                snapshot.debug = "parse: non-object";
+                return snapshot;
             }
-            if (texts != null) {
-                for (int i = 0; i < texts.length(); i++) {
-                    String value = compact(texts.optString(i, ""));
-                    if (!value.isEmpty()) snapshot.texts.add(value);
-                }
-            }
+            JSONObject o = (JSONObject) parsed;
+            readTexts(o.optJSONArray("primary"), snapshot.primaryTexts);
+            readTexts(o.optJSONArray("fallback"), snapshot.fallbackTexts);
+            snapshot.generating = o.optBoolean("generating", false);
+            snapshot.sendReady = o.optBoolean("sendReady", false);
+            snapshot.composerReady = o.optBoolean("composerReady", false);
+            snapshot.primaryCount = o.optInt("primaryCount", snapshot.primaryTexts.size());
+            snapshot.fallbackCount = o.optInt("fallbackCount", snapshot.fallbackTexts.size());
+            snapshot.debug = o.optString("debug", "");
         } catch (Throwable t) {
             snapshot.debug = "parse error: " + messageOf(t);
         }
         return snapshot;
     }
 
-    private void evaluate(String js, android.webkit.ValueCallback<String> callback) {
-        if (destroyed) return;
-        try { webView.evaluateJavascript(js, callback); }
-        catch (Throwable t) { fail("网页脚本执行失败: " + messageOf(t)); }
+    private static void readTexts(JSONArray array, List<String> out) {
+        if (array == null || out == null) return;
+        for (int i = 0; i < array.length(); i++) {
+            String value = compact(array.optString(i, ""));
+            if (!value.isEmpty()) out.add(value);
+        }
     }
 
-    private boolean active() {
-        return !destroyed && sending && !pendingPrompt.isEmpty();
+    private void evaluate(String js, android.webkit.ValueCallback<String> callback) {
+        if (destroyed) return;
+        try {
+            webView.evaluateJavascript(js, callback);
+        } catch (Throwable t) {
+            fail("网页脚本执行失败: " + messageOf(t));
+        }
+    }
+
+    private boolean active(Stage expected) {
+        return !destroyed && sending && !pendingPrompt.isEmpty() && stage == expected;
     }
 
     private boolean timedOut() {
         return SystemClock.uptimeMillis() - startedAt > TIMEOUT_MS;
     }
 
-    private boolean isGemini() {
-        return BrowserAiBridge.TARGET_GEMINI.equals(EmbeddedWebAiActivity.normalizeTarget(target));
-    }
-
-    private boolean isChatGpt() {
-        return BrowserAiBridge.TARGET_CHATGPT.equals(EmbeddedWebAiActivity.normalizeTarget(target));
-    }
-
-    private boolean isDeepSeek() {
-        return BrowserAiBridge.TARGET_DEEPSEEK.equals(EmbeddedWebAiActivity.normalizeTarget(target));
+    private ProviderProfile profile() {
+        String id = EmbeddedWebAiActivity.normalizeTarget(target);
+        if (BrowserAiBridge.TARGET_GEMINI.equals(id)) return GEMINI;
+        if (BrowserAiBridge.TARGET_DEEPSEEK.equals(id)) return DEEPSEEK;
+        if (BrowserAiBridge.TARGET_CLAUDE.equals(id)) return CLAUDE;
+        if (BrowserAiBridge.TARGET_GROK.equals(id)) return GROK;
+        return CHATGPT;
     }
 
     private String label() {
@@ -571,25 +888,54 @@ public final class WebAiEngine {
 
     private void needsLogin(String message) {
         if (!sending) return;
+        String failedTarget = target;
         sending = false;
+        stage = Stage.IDLE;
+        diag("NEEDS_LOGIN", compactDebug(message));
         status("需要处理网页登录");
-        if (listener != null) listener.onNeedsLogin(target, message);
+        if (listener != null) listener.onNeedsLogin(failedTarget, message);
     }
 
     private void fail(String message) {
         if (!sending) return;
         String failedTarget = target;
         sending = false;
+        stage = Stage.IDLE;
+        diag("FAIL", compactDebug(message));
         status("网页 AI 失败");
         if (listener != null) listener.onError(failedTarget, message);
     }
 
     private void error(String failedTarget, String message) {
+        diag("ERROR", compactDebug(message));
         if (listener != null) listener.onError(failedTarget, message);
     }
 
     private void status(String text) {
         if (listener != null) listener.onStatus(text);
+    }
+
+    private void maybeLogSnapshot(DomSnapshot snapshot) {
+        long now = SystemClock.uptimeMillis();
+        String debug = snapshot == null ? "" : snapshot.debug;
+        if (!debug.equals(lastLoggedDebug) || now - lastDebugLogAt >= DEBUG_LOG_INTERVAL_MS) {
+            lastLoggedDebug = debug;
+            lastDebugLogAt = now;
+            diag("POLL", debug);
+        }
+    }
+
+    private void diag(String event, String message) {
+        DiagnosticLog.i(context, "WEB_AI",
+                event + " target=" + EmbeddedWebAiActivity.normalizeTarget(target)
+                        + " stage=" + stage + " " + (message == null ? "" : message));
+    }
+
+    private void clearBaseline() {
+        baselinePrimary.clear();
+        baselineFallback.clear();
+        baselinePrimaryCount = 0;
+        baselineFallbackCount = 0;
     }
 
     private SharedPreferences sessionPrefs() {
@@ -642,30 +988,65 @@ public final class WebAiEngine {
         }
     }
 
-    private boolean sameTarget(String url, String target) {
+    private boolean sameTarget(String url, String rawTarget) {
         if (url == null || url.isEmpty()) return false;
         String hostName;
         try { hostName = android.net.Uri.parse(url).getHost(); }
         catch (Throwable t) { hostName = null; }
         if (hostName == null) return false;
         hostName = hostName.toLowerCase(Locale.ROOT);
-        switch (EmbeddedWebAiActivity.normalizeTarget(target)) {
-            case BrowserAiBridge.TARGET_GEMINI: return hostName.contains("gemini.google.com");
-            case BrowserAiBridge.TARGET_CLAUDE: return hostName.contains("claude.ai");
-            case BrowserAiBridge.TARGET_GROK: return hostName.contains("grok.com") || hostName.contains("x.com");
-            case BrowserAiBridge.TARGET_DEEPSEEK: return hostName.contains("chat.deepseek.com") || hostName.contains("deepseek.com");
-            default: return hostName.contains("chatgpt.com") || hostName.contains("chat.openai.com");
+        switch (EmbeddedWebAiActivity.normalizeTarget(rawTarget)) {
+            case BrowserAiBridge.TARGET_GEMINI:
+                return hostName.contains("gemini.google.com");
+            case BrowserAiBridge.TARGET_CLAUDE:
+                return hostName.contains("claude.ai");
+            case BrowserAiBridge.TARGET_GROK:
+                return hostName.contains("grok.com") || hostName.contains("x.com");
+            case BrowserAiBridge.TARGET_DEEPSEEK:
+                return hostName.contains("chat.deepseek.com") || hostName.contains("deepseek.com");
+            default:
+                return hostName.contains("chatgpt.com") || hostName.contains("chat.openai.com");
         }
     }
 
-    private String targetUrl(String target) {
-        switch (EmbeddedWebAiActivity.normalizeTarget(target)) {
-            case BrowserAiBridge.TARGET_GEMINI: return "https://gemini.google.com/app";
-            case BrowserAiBridge.TARGET_CLAUDE: return "https://claude.ai/new";
-            case BrowserAiBridge.TARGET_GROK: return "https://grok.com/";
-            case BrowserAiBridge.TARGET_DEEPSEEK: return "https://chat.deepseek.com/";
-            default: return "https://chatgpt.com/";
+    private String targetUrl(String rawTarget) {
+        switch (EmbeddedWebAiActivity.normalizeTarget(rawTarget)) {
+            case BrowserAiBridge.TARGET_GEMINI:
+                return "https://gemini.google.com/app";
+            case BrowserAiBridge.TARGET_CLAUDE:
+                return "https://claude.ai/new";
+            case BrowserAiBridge.TARGET_GROK:
+                return "https://grok.com/";
+            case BrowserAiBridge.TARGET_DEEPSEEK:
+                return "https://chat.deepseek.com/";
+            default:
+                return "https://chatgpt.com/";
         }
+    }
+
+    private static String jsArray(String[] values) {
+        JSONArray array = new JSONArray();
+        if (values != null) {
+            for (String value : values) {
+                if (value != null && !value.isBlank()) array.put(value);
+            }
+        }
+        return array.toString();
+    }
+
+    private static String[] merge(String[]... groups) {
+        ArrayList<String> out = new ArrayList<>();
+        HashSet<String> seen = new HashSet<>();
+        if (groups != null) {
+            for (String[] group : groups) {
+                if (group == null) continue;
+                for (String value : group) {
+                    if (value == null || value.isBlank() || !seen.add(value)) continue;
+                    out.add(value);
+                }
+            }
+        }
+        return out.toArray(new String[0]);
     }
 
     private static String decodeJsString(String raw) {
@@ -685,6 +1066,23 @@ public final class WebAiEngine {
     private static String compact(String text) {
         String value = clean(text).replaceAll("[\\t ]+", " ").replaceAll("\\n{3,}", "\\n\\n");
         return value.length() > 30_000 ? value.substring(0, 30_000) : value;
+    }
+
+    private static String compactDebug(String text) {
+        String value = clean(text).replace('\n', ' ').replace('\r', ' ');
+        return value.length() > 500 ? value.substring(0, 500) : value;
+    }
+
+    private static String safePath(String rawUrl) {
+        if (rawUrl == null || rawUrl.isBlank()) return "";
+        try {
+            android.net.Uri uri = android.net.Uri.parse(rawUrl);
+            String host = uri.getHost() == null ? "" : uri.getHost();
+            String path = uri.getPath() == null ? "/" : uri.getPath();
+            return host + path;
+        } catch (Throwable t) {
+            return "invalid-url";
+        }
     }
 
     private static String messageOf(Throwable t) {
