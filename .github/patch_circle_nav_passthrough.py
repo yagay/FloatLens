@@ -9,9 +9,10 @@ if 'import android.view.WindowInsets;' not in s:
     s = s.replace('import android.view.WindowManager;\n', 'import android.view.WindowInsets;\nimport android.view.WindowManager;\n')
 old = '''    /** Circle Select now owns the complete display, including status and navigation bar areas. */\n    static Rect contentBounds(Context c) {\n        return displayBounds(c);\n    }\n\n    static Rect displayBounds(Context c) {\n        WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);\n        return new Rect(wm.getCurrentWindowMetrics().getBounds());\n    }\n'''
 new = '''    /** Full display coordinate space used by screenshot/OCR/touch mapping. */\n    static Rect contentBounds(Context c) {\n        return displayBounds(c);\n    }\n\n    /**\n     * Interactive Circle Select window. Leave the bottom navigation-bar strip outside this window\n     * so 3-button/gesture navigation keeps receiving input directly from SystemUI.\n     */\n    static Rect interactiveBounds(Context c) {\n        WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);\n        Rect display = new Rect(wm.getCurrentWindowMetrics().getBounds());\n        try {\n            Insets safe = wm.getCurrentWindowMetrics().getWindowInsets().getInsetsIgnoringVisibility(\n                    WindowInsets.Type.navigationBars() | WindowInsets.Type.displayCutout());\n            int bottomInset = Math.max(0, safe.bottom);\n            if (bottomInset > 0 && bottomInset < display.height()) {\n                display.bottom -= bottomInset;\n            }\n        } catch (Throwable ignored) {}\n        return display;\n    }\n\n    static Rect displayBounds(Context c) {\n        WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);\n        return new Rect(wm.getCurrentWindowMetrics().getBounds());\n    }\n'''
-if old not in s:
+if old in s:
+    s = s.replace(old, new, 1)
+elif 'static Rect interactiveBounds(Context c)' not in s:
     raise SystemExit('CircleSelectFrame target block not found')
-s = s.replace(old, new, 1)
 p.write_text(s)
 
 # Patch overlay window and preserve full-display coordinate mapping.
@@ -43,6 +44,7 @@ replacements = {
 '        private int bottomSystemInset() {\n            WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(this);\n            if (insets == null) return 0;\n            Insets safe = insets.getInsetsIgnoringVisibility(\n                    WindowInsetsCompat.Type.navigationBars()\n                            | WindowInsetsCompat.Type.displayCutout());\n            return Math.max(0, safe.bottom);\n        }\n\n':'',
 '            RectF first = selection.wordViewRect(lo, getWidth(), getHeight());':'            RectF first = selection.wordViewRect(lo, coordinateWidth, coordinateHeight);',
 '            RectF last = selection.wordViewRect(hi, getWidth(), getHeight());':'            RectF last = selection.wordViewRect(hi, coordinateWidth, coordinateHeight);',
+'                    int hit = selection.findSelectionWord(x, y, getWidth(), getHeight(),\n                            dp(TEXT_TAP_SNAP_DISTANCE_DP));':'                    int hit = selection.findSelectionWord(x, y, coordinateWidth, coordinateHeight,\n                            dp(TEXT_TAP_SNAP_DISTANCE_DP));',
 '            int cached = selection.findSelectionWord(viewX, viewY, getWidth(), getHeight(),':'            int cached = selection.findSelectionWord(viewX, viewY, coordinateWidth, coordinateHeight,',
 '            return selection.findSelectionWord(x, y, getWidth(), getHeight(), dp(HANDLE_SNAP_DISTANCE_DP));':'            return selection.findSelectionWord(x, y, coordinateWidth, coordinateHeight, dp(HANDLE_SNAP_DISTANCE_DP));',
 '            RectF union = selection.selectionViewBounds(getWidth(), getHeight());':'            RectF union = selection.selectionViewBounds(coordinateWidth, coordinateHeight);',
@@ -55,15 +57,17 @@ for a,b in replacements.items():
 
 old_touch = '        @Override public boolean onTouchEvent(MotionEvent e) {\n            if (closed || circleResolving) return true;\n            float x = e.getX(), y = e.getY();\n'
 new_touch = '        @Override public boolean onTouchEvent(MotionEvent e) {\n            if (e != null && e.getActionMasked() == MotionEvent.ACTION_OUTSIDE) {\n                if (!closed) close("system_navigation_touch");\n                return true;\n            }\n            if (closed || circleResolving) return true;\n            float x = e.getX(), y = e.getY();\n'
-if old_touch not in s:
+if old_touch in s:
+    s = s.replace(old_touch, new_touch, 1)
+elif 'close("system_navigation_touch")' not in s:
     raise SystemExit('onTouchEvent header not found')
-s = s.replace(old_touch, new_touch, 1)
 
 required = [
     'FLAG_NOT_TOUCH_MODAL', 'FLAG_WATCH_OUTSIDE_TOUCH',
     'CircleSelectFrame.interactiveBounds(app)', 'coordinateHeight',
     'close("system_navigation_touch")',
-    'new Rect(0, 0, coordinateWidth, coordinateHeight)'
+    'new Rect(0, 0, coordinateWidth, coordinateHeight)',
+    'selection.findSelectionWord(x, y, coordinateWidth, coordinateHeight,\n                            dp(TEXT_TAP_SNAP_DISTANCE_DP))'
 ]
 for token in required:
     if token not in s:
