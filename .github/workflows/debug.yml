@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Move gesture action mapping under gesture settings
-        if: github.event_name == 'push' && github.event.head_commit.message == 'ci: move gesture action mapping entry'
+        if: ${{ github.event_name == 'push' && github.event.head_commit.message == 'ci move gesture action mapping entry v2' }}
         shell: bash
         run: |
           python3 <<'PY'
@@ -29,21 +29,20 @@ jobs:
                 "指定单击、长按和各方向滑动动作",
                 () -> startActivity(SettingsActivity.intent(this, SettingsActivity.SECTION_ACTIONS))));
 '''
-          if old not in s:
-              raise SystemExit('MainActivity gesture action row not found')
-          s = s.replace(old, '')
+          if old in s:
+              s = s.replace(old, '')
           main.write_text(s, encoding='utf-8')
 
           settings = Path('app/src/main/java/com/yagay/floatlens/SettingsActivity.java')
           s = settings.read_text(encoding='utf-8')
-          old_home = '''        addCategory(categories.body, "手势动作映射", "给每种手势分配动作", SECTION_ACTIONS);\n'''
-          s = s.replace(old_home, '')
+          s = s.replace('        addCategory(categories.body, "手势动作映射", "给每种手势分配动作", SECTION_ACTIONS);\n', '')
 
           marker = '''        AppUi.addRow(feedback.body, colorsBlock);\n        AppUi.addSection(root, feedback);\n        return root;\n    }\n'''
           replacement = '''        AppUi.addRow(feedback.body, colorsBlock);\n        AppUi.addSection(root, feedback);\n\n        AppUi.Section actions = AppUi.section(this, "动作映射",\n                "给单击、双击、长按、圈选和各方向滑动分配动作。" );\n        AppUi.addRow(actions.body, AppUi.navRow(this,\n                "手势动作映射",\n                "设置每种手势执行的具体动作",\n                () -> startActivity(intent(this, SECTION_ACTIONS))));\n        AppUi.addSection(root, actions);\n        return root;\n    }\n'''
-          if marker not in s:
-              raise SystemExit('SettingsActivity gesture page marker not found')
-          s = s.replace(marker, replacement, 1)
+          if 'AppUi.Section actions = AppUi.section(this, "动作映射"' not in s:
+              if marker not in s:
+                  raise SystemExit('SettingsActivity gesture page marker not found')
+              s = s.replace(marker, replacement, 1)
           settings.write_text(s, encoding='utf-8')
           PY
 
