@@ -26,6 +26,7 @@ public final class AiSettingsActivity extends AppCompatActivity {
     private EditText modelEdit;
     private EditText apiKeyEdit;
     private EditText systemPromptEdit;
+    private TextView keyStateView;
     private TextView statusView;
     private ProgressBar progress;
     private Button testButton;
@@ -97,19 +98,18 @@ public final class AiSettingsActivity extends AppCompatActivity {
         apiKeyEdit.setHint("留空表示保留现有 Key；自定义本地接口可不填");
         root.addView(apiKeyEdit, new LinearLayout.LayoutParams(-1, -2));
 
-        TextView keyState = new TextView(this);
-        keyState.setId(android.R.id.summary);
-        keyState.setTextSize(13);
-        keyState.setAlpha(0.65f);
-        keyState.setPadding(0, dp(2), 0, dp(10));
-        root.addView(keyState);
+        keyStateView = new TextView(this);
+        keyStateView.setTextSize(13);
+        keyStateView.setAlpha(0.65f);
+        keyStateView.setPadding(0, dp(2), 0, dp(10));
+        root.addView(keyStateView);
 
         Button clearKey = new Button(this);
         clearKey.setText("清除已保存 API Key");
         clearKey.setOnClickListener(v -> {
             AiConfigStore.clearApiKey(this);
             apiKeyEdit.setText("");
-            refreshKeyState(root);
+            refreshKeyState();
             Toast.makeText(this, "API Key 已清除", Toast.LENGTH_SHORT).show();
         });
         root.addView(clearKey, new LinearLayout.LayoutParams(-1, -2));
@@ -158,22 +158,15 @@ public final class AiSettingsActivity extends AppCompatActivity {
         modelEdit.setText(AiConfigStore.model(this));
         systemPromptEdit.setText(AiConfigStore.systemPrompt(this));
         updateProviderUi(custom);
-        refreshKeyState((LinearLayout) ((ScrollView) findViewById(android.R.id.content).getRootView()).getChildAt(0));
+        refreshKeyState();
         updateStatus();
     }
 
-    private void refreshKeyState(LinearLayout ignored) {
-        View root = ((View) apiKeyEdit.getParent());
-        if (!(root instanceof LinearLayout parent)) return;
-        for (int i = 0; i < parent.getChildCount(); i++) {
-            View v = parent.getChildAt(i);
-            if (v instanceof TextView tv && tv.getId() == android.R.id.summary) {
-                tv.setText(AiConfigStore.hasApiKey(this)
-                        ? "状态：已保存加密 API Key（输入框留空不会覆盖）"
-                        : "状态：未保存 API Key");
-                return;
-            }
-        }
+    private void refreshKeyState() {
+        if (keyStateView == null) return;
+        keyStateView.setText(AiConfigStore.hasApiKey(this)
+                ? "状态：已保存加密 API Key（输入框留空不会覆盖）"
+                : "状态：未保存 API Key");
     }
 
     private void updateProviderUi(boolean custom) {
@@ -206,7 +199,7 @@ public final class AiSettingsActivity extends AppCompatActivity {
                 return false;
             }
         }
-        refreshKeyState(null);
+        refreshKeyState();
         updateStatus();
         if (toast) Toast.makeText(this, "AI 设置已保存", Toast.LENGTH_SHORT).show();
         return true;
