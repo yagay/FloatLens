@@ -9,6 +9,7 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -74,11 +75,19 @@ public final class TargetMenuStore {
      * Apply the user's FloatLens order/hide rules to a fresh system-resolved target list.
      * Existing ordered items stay where the user placed them; newly discovered system targets
      * are appended in the order returned by Android; removed/uninstalled targets disappear.
+     * FloatLens-only display-name aliases are applied after system resolution.
      */
     public static List<Item> mergeWithSystem(Context c, String mode, List<Item> systemItems) {
         ArrayList<Item> system = new ArrayList<>();
         if (systemItems != null) system.addAll(systemItems);
-        if (!isCustomized(c, mode)) return system;
+
+        if (!isCustomized(c, mode)) {
+            ArrayList<Item> out = new ArrayList<>();
+            for (Item item : system) {
+                if (item != null) out.add(withAlias(c, mode, item));
+            }
+            return out;
+        }
 
         Set<String> hidden = loadHidden(c, mode);
         Map<String, Item> current = new HashMap<>();
@@ -91,16 +100,16 @@ public final class TargetMenuStore {
         for (Item saved : load(c, mode)) {
             if (saved == null || hidden.contains(saved.key())) continue;
             Item live = current.get(saved.key());
-            if (live != null && added.add(live.key())) out.add(live);
+            if (live != null && added.add(live.key())) out.add(withAlias(c, mode, live));
         }
         for (Item live : system) {
             if (live == null || hidden.contains(live.key())) continue;
-            if (added.add(live.key())) out.add(live);
+            if (added.add(live.key())) out.add(withAlias(c, mode, live));
         }
         return out;
     }
 
-    /** Save only FloatLens ordering. Hidden targets are kept separately. */
+    /** Save only FloatLens ordering. Hidden targets and display aliases are kept separately. */
     public static void save(Context c, String mode, List<Item> items) {
         JSONArray a = new JSONArray();
         if (items != null) for (Item item : items) a.put(item.toJson());
@@ -110,6 +119,7 @@ public final class TargetMenuStore {
                 .apply();
     }
 
+    /** Restore Android ordering/hide state without discarding custom display names. */
     public static void reset(Context c, String mode) {
         prefs(c).edit()
                 .putBoolean(customizedKey(mode), false)
@@ -147,6 +157,33 @@ public final class TargetMenuStore {
         return true;
     }
 
+    /** Save a FloatLens-only display label without changing the target component. */
+    public static boolean rename(Context c, String mode, String key, String label) {
+        if (c == null || key == null || key.isBlank()) return false;
+        String clean = label == null ? "" : label.trim();
+        if (clean.isEmpty()) return false;
+        Map<String, String> aliases = loadAliases(c, mode);
+        String previous = aliases.put(key, clean);
+        if (clean.equals(previous)) return false;
+        saveAliases(c, mode, aliases);
+        return true;
+    }
+
+    /** Remove a FloatLens display-name override and fall back to Android's current label. */
+    public static boolean clearAlias(Context c, String mode, String key) {
+        if (c == null || key == null || key.isBlank()) return false;
+        Map<String, String> aliases = loadAliases(c, mode);
+        if (aliases.remove(key) == null) return false;
+        saveAliases(c, mode, aliases);
+        return true;
+    }
+
+    public static String displayLabel(Context c, String mode, String key, String fallback) {
+        String alias = key == null ? null : loadAliases(c, mode).get(key);
+        if (alias != null && !alias.isBlank()) return alias;
+        return fallback == null || fallback.isBlank() ? "应用" : fallback;
+    }
+
     public static boolean move(Context c, String mode, String key, int delta) {
         if (delta == 0) return false;
         List<Item> items = load(c, mode);
@@ -177,12 +214,46 @@ public final class TargetMenuStore {
         return key != null && loadHidden(c, mode).contains(key);
     }
 
+    private static Item withAlias(Context c, String mode, Item item) {
+        if (item == null) return null;
+        return new Item(displayLabel(c, mode, item.key(), item.label),
+                item.packageName, item.className);
+    }
+
     private static Set<String> loadHidden(Context c, String mode) {
         return new HashSet<>(prefs(c).getStringSet(hiddenKey(mode), new HashSet<>()));
     }
 
     private static void saveHidden(Context c, String mode, Set<String> hidden) {
         prefs(c).edit().putStringSet(hiddenKey(mode), new HashSet<>(hidden)).apply();
+    }
+
+    private static Map<String, String> loadAliases(Context c, String mode) {
+        HashMap<String, String> out = new HashMap<>();
+        String raw = prefs(c).getString(aliasesKey(mode), "{}");
+        try {
+            JSONObject o = new JSONObject(raw == null ? "{}" : raw);
+            Iterator<String> keys = o.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                String value = o.optString(key, "").trim();
+                if (!key.isBlank() && !value.isBlank()) out.put(key, value);
+            }
+        } catch (Throwable t) {
+            DiagnosticLog.i(c, "TARGET_MENU", "load aliases " + mode + " failed=" + t);
+        }
+        return out;
+    }
+
+    private static void saveAliases(Context c, String mode, Map<String, String> aliases) {
+        JSONObject o = new JSONObject();
+        if (aliases != null) {
+            for (Map.Entry<String, String> entry : aliases.entrySet()) {
+                try { o.put(entry.getKey(), entry.getValue()); }
+                catch (Throwable ignored) {}
+            }
+        }
+        prefs(c).edit().putString(aliasesKey(mode), o.toString()).apply();
     }
 
     private static int indexOf(List<Item> items, String key) {
@@ -197,6 +268,10 @@ public final class TargetMenuStore {
 
     private static String hiddenKey(String mode) {
         return "hidden_" + safeMode(mode);
+    }
+
+    private static String aliasesKey(String mode) {
+        return "aliases_" + safeMode(mode);
     }
 
     private static String customizedKey(String mode) {

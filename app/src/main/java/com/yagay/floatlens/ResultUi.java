@@ -21,20 +21,16 @@ final class ResultUi {
     static final int ACTION_H_DP = 50;
     static final int ROOT_VPAD_DP = 16;
 
-    /**
-     * One visible corner radius for Screenshot / View / OCR result popups.
-     * Keep the radius here so every result mode stays visually identical.
-     */
+    /** One visible corner radius for Screenshot / View / OCR result popups. */
     static final int POPUP_RADIUS_DP = 22;
 
     static LinearLayout box(Context c) {
         LinearLayout box = new LinearLayout(c);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(c, BOX_HPAD_DP), dp(c, 8), dp(c, BOX_HPAD_DP), dp(c, 8));
-        box.setBackground(popupBackground(c, 0xF0202124));
+        box.setBackground(popupBackground(c,
+                ThemeSettings.isDark(c) ? 0xF0202124 : 0xF8FFFFFF));
         box.setElevation(dp(c, 10));
-        // OxygenOS can otherwise keep the View's default rectangular outline even when the
-        // GradientDrawable itself is rounded. Force clipping to the drawable-backed outline.
         box.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
         box.setClipToOutline(true);
         return box;
@@ -51,7 +47,7 @@ final class ResultUi {
     static TextView heading(Context c, String text) {
         TextView title = new TextView(c);
         title.setText(text == null ? "" : text);
-        title.setTextColor(Color.WHITE);
+        title.setTextColor(ThemeSettings.isDark(c) ? Color.WHITE : 0xFF17191D);
         title.setTextSize(17);
         title.setGravity(Gravity.CENTER_VERTICAL);
         return title;

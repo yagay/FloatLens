@@ -2,7 +2,6 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.content.res.ColorStateList;
-import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
@@ -211,8 +210,7 @@ public final class ImageActionMenu {
         }
 
         static Palette from(Context c) {
-            int night = c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
-            boolean dark = night == Configuration.UI_MODE_NIGHT_YES;
+            boolean dark = ThemeSettings.isDark(c);
             return dark
                     ? new Palette(0xFF2B2B2B, 0xFFF5F5F5, 0x33FFFFFF)
                     : new Palette(0xFFF8F8F8, 0xFF202124, 0x22000000);

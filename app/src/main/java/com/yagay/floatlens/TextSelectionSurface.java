@@ -33,7 +33,7 @@ public class TextSelectionSurface extends FrameLayout {
 
         textView = new SelectionEditText(context);
         textView.owner = this;
-        textView.setTextColor(Color.WHITE);
+        textView.setTextColor(ThemeSettings.isDark(context) ? Color.WHITE : 0xFF17191D);
         textView.setTextSize(16);
         textView.setBackgroundColor(Color.TRANSPARENT);
         textView.setSingleLine(false);

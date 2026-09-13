@@ -103,6 +103,21 @@ public final class CustomMenuActionStore {
         save(c, items);
     }
 
+    /** Rename only the FloatLens display label; the underlying target stays unchanged. */
+    public static boolean rename(Context c, String id, String label) {
+        if (c == null || id == null) return false;
+        String clean = label == null ? "" : label.trim();
+        if (clean.isEmpty()) return false;
+        List<Item> items = load(c);
+        int index = indexOf(items, id);
+        if (index < 0) return false;
+        Item old = items.get(index);
+        if (clean.equals(old.label)) return false;
+        items.set(index, new Item(old.id, clean, old.packageName, old.className, old.type));
+        save(c, items);
+        return true;
+    }
+
     /** Move one item by a relative delta. Returns true only when the order changed. */
     public static boolean move(Context c, String id, int delta) {
         if (c == null || id == null || delta == 0) return false;

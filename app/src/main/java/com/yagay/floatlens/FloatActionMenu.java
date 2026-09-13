@@ -7,7 +7,6 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.res.ColorStateList;
-import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
@@ -134,7 +133,7 @@ public final class FloatActionMenu {
         int menuHeight = Math.max(dp(app, 46), root.getMeasuredHeight());
 
         int[] pos = hasLockedRow()
-                ? lockedRowPosition(app, usable, menuWidth)
+                ? lockedRowPosition(app, usable, menuWidth, menuHeight)
                 : menuPosition(app, usable, FloatMenuAnchor.current(), menuWidth, menuHeight);
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
@@ -160,6 +159,8 @@ public final class FloatActionMenu {
                     + " anchor=" + (anchor == null ? "none" : anchor.toShortString())
                     + " lockedRow=" + (hasLockedRow() ? lockedTopY : -1)
                     + " width=" + menuWidth
+                    + " height=" + menuHeight
+                    + (mode == MODE_MAIN ? " mainItems=" + TextMenuSettings.mainItemCount(app) : "")
                     + " pos=" + lp.x + "," + lp.y
                     + " accessibilityHost=" + host.isAccessibilityHosted()
                     + " type=" + lp.type);
@@ -212,15 +213,14 @@ public final class FloatActionMenu {
         return best;
     }
 
-    private static int[] lockedRowPosition(Context app, Rect usable, int menuWidth) {
+    private static int[] lockedRowPosition(Context app, Rect usable, int menuWidth, int menuHeight) {
         int margin = dp(app, 8);
         int minX = usable.left + margin;
         int maxX = Math.max(minX, usable.right - margin - menuWidth);
         int minY = usable.top + margin;
-        // Preserve the original toolbar row. Only clamp enough to keep that row itself visible.
-        int maxRowTop = Math.max(minY, usable.bottom - margin - dp(app, 46));
+        int maxY = Math.max(minY, usable.bottom - margin - menuHeight);
         int x = clamp(lockedCenterX - menuWidth / 2, minX, maxX);
-        int y = clamp(lockedTopY, minY, maxRowTop);
+        int y = clamp(lockedTopY, minY, maxY);
         return new int[]{x, y};
     }
 
@@ -259,42 +259,36 @@ public final class FloatActionMenu {
 
     private static void buildMainToolbar(Context app, LinearLayout root, String text,
                                          Runnable selectAll, Palette palette) {
-        LinearLayout row = new LinearLayout(app);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(app, 2), dp(app, 2), dp(app, 2), dp(app, 2));
+        List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
+        boolean hasSelectAll = selectAll != null;
+        int customLimit = mainCustomCount(app, customs.size(), hasSelectAll);
+
+        ArrayList<View> items = new ArrayList<>();
 
         TextView copy = action(app, "复制", palette, 58);
-        row.addView(copy, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
+        items.add(copy);
 
-        if (selectAll != null) {
-            TextView all = action(app, "全选", palette, 58);
-            row.addView(all, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
-            all.setOnClickListener(v -> {
-                try { selectAll.run(); } catch (Throwable ignored) {}
-                dismiss();
-            });
+        TextView all = null;
+        if (hasSelectAll) {
+            all = action(app, "全选", palette, 58);
+            items.add(all);
         }
 
         TextView share = action(app, "分享", palette, 58);
-        row.addView(share, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
+        items.add(share);
 
-        List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
-        int customLimit = mainCustomCount(selectAll, customs.size());
         for (int i = 0; i < customLimit; i++) {
             CustomMenuActionStore.Item item = customs.get(i);
-            TextView custom = action(app, item.label, palette, 72);
-            custom.setMaxWidth(dp(app, 88));
+            TextView custom = action(app, item.label, palette, 58);
             custom.setEllipsize(TextUtils.TruncateAt.END);
             custom.setSingleLine(true);
-            row.addView(custom, new LinearLayout.LayoutParams(dp(app, 78), dp(app, 46)));
             custom.setOnClickListener(v -> launchCustom(app, item, text));
+            items.add(custom);
         }
 
         TextView more = action(app, "⋮", palette, 46);
-        more.setTextSize(24);
-        row.addView(more, new LinearLayout.LayoutParams(dp(app, 46), dp(app, 46)));
-        root.addView(row);
+        more.setTextSize(22);
+        items.add(more);
 
         copy.setOnClickListener(v -> {
             ClipboardManager cm = (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
@@ -302,13 +296,55 @@ public final class FloatActionMenu {
             Toast.makeText(app, "已复制", Toast.LENGTH_SHORT).show();
             dismiss();
         });
+        if (all != null) {
+            all.setOnClickListener(v -> {
+                try { selectAll.run(); } catch (Throwable ignored) {}
+                dismiss();
+            });
+        }
         share.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_SHARE));
         more.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_MORE));
+
+        int maxRowWidth = Math.max(dp(app, 180),
+                app.getResources().getDisplayMetrics().widthPixels - dp(app, 16));
+        WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
+        if (wm != null) {
+            Rect usable = usableBounds(app, wm);
+            if (!usable.isEmpty()) {
+                maxRowWidth = Math.max(dp(app, 180), usable.width() - dp(app, 16));
+            }
+        }
+
+        // The configured number is the TOTAL toolbar item count. Keep every item on one row and
+        // shrink slots as needed instead of silently wrapping into a second row.
+        int slotWidth = Math.max(dp(app, 32),
+                Math.min(dp(app, 72), maxRowWidth / Math.max(1, items.size())));
+        LinearLayout row = toolbarRow(app);
+        for (View item : items) {
+            if (item instanceof TextView tv) {
+                tv.setMinWidth(0);
+                tv.setPadding(dp(app, 4), 0, dp(app, 4), 0);
+                tv.setSingleLine(true);
+                tv.setEllipsize(TextUtils.TruncateAt.END);
+                if (items.size() >= 7 && !"⋮".contentEquals(tv.getText())) {
+                    tv.setTextSize(13);
+                }
+            }
+            row.addView(item, new LinearLayout.LayoutParams(slotWidth, dp(app, 46)));
+        }
+        root.addView(row, new LinearLayout.LayoutParams(-2, -2));
     }
 
-    private static int mainCustomCount(Runnable selectAll, int size) {
-        int max = selectAll != null ? 1 : 2;
-        return Math.min(max, Math.max(0, size));
+    private static LinearLayout toolbarRow(Context app) {
+        LinearLayout row = new LinearLayout(app);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(app, 2), dp(app, 2), dp(app, 2), dp(app, 2));
+        return row;
+    }
+
+    private static int mainCustomCount(Context app, int size, boolean hasSelectAll) {
+        return TextMenuSettings.customSlots(app, hasSelectAll, size);
     }
 
     private static void buildMoreMenu(Context app, LinearLayout root, String text,
@@ -319,7 +355,7 @@ public final class FloatActionMenu {
         back.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_MAIN));
 
         List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
-        int skip = mainCustomCount(selectAll, customs.size());
+        int skip = mainCustomCount(app, customs.size(), selectAll != null);
         for (int i = skip; i < customs.size(); i++) {
             CustomMenuActionStore.Item item = customs.get(i);
             Drawable icon = null;
@@ -383,14 +419,17 @@ public final class FloatActionMenu {
             list.addView(none, new LinearLayout.LayoutParams(-1, dp(app, 48)));
         } else {
             for (ResolveInfo ri : resolved) {
-                CharSequence label;
-                try { label = ri.loadLabel(pm); }
-                catch (Throwable ignored) { label = ri.activityInfo.name; }
-                Drawable icon = null;
-                try { icon = ri.loadIcon(pm); } catch (Throwable ignored) {}
-                TextView target = menuRow(app,
-                        label == null ? ri.activityInfo.name : label.toString(), icon, palette);
-                target.setOnClickListener(v -> launchExplicit(app, base, ri));
+                CharSequence rawLabel;
+      try { rawLabel = ri.loadLabel(pm); }
+      catch (Throwable ignored) { rawLabel = ri.activityInfo.name; }
+      String fallbackLabel = rawLabel == null
+              ? ri.activityInfo.name : rawLabel.toString();
+      String displayLabel = TargetMenuStore.displayLabel(app, targetMode,
+              ri.activityInfo.packageName + "|" + ri.activityInfo.name, fallbackLabel);
+      Drawable icon = null;
+      try { icon = ri.loadIcon(pm); } catch (Throwable ignored) {}
+      TextView target = menuRow(app, displayLabel, icon, palette);
+                    target.setOnClickListener(v -> launchExplicit(app, base, ri));
                 list.addView(target, new LinearLayout.LayoutParams(-1, dp(app, 50)));
             }
         }
@@ -611,8 +650,7 @@ public final class FloatActionMenu {
         }
 
         static Palette from(Context c) {
-            int night = c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
-            boolean dark = night == Configuration.UI_MODE_NIGHT_YES;
+            boolean dark = ThemeSettings.isDark(c);
             if (dark) return new Palette(0xFF2B2B2B, 0xFFF5F5F5, 0xFFB8B8B8, 0x33FFFFFF);
             return new Palette(0xFFF8F8F8, 0xFF202124, 0xFF5F6368, 0x22000000);
         }

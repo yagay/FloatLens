@@ -7,7 +7,6 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.net.Uri;
-import android.view.HapticFeedbackConstants;
 import android.widget.ImageView;
 import android.widget.Toast;
 
@@ -21,25 +20,28 @@ public final class ImageShareUtils {
     private static final String DIR = "shared_images";
 
     /**
-     * Long-press no longer launches sharing immediately. It opens the reusable FloatLens image
-     * action menu so Activity-backed result windows and TYPE_APPLICATION_OVERLAY fallbacks behave
-     * the same way.
+     * A normal tap on the popup image opens the reusable FloatLens image action menu so
+     * Activity-backed result windows and TYPE_APPLICATION_OVERLAY fallbacks behave the same way.
      */
-    public static void attachLongPressMenu(Context c, ImageView view, Bitmap image) {
+    public static void attachClickMenu(Context c, ImageView view, Bitmap image) {
         if (c == null || view == null || image == null || image.isRecycled()) return;
-        view.setLongClickable(true);
-        view.setOnLongClickListener(v -> {
-            try { v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); }
-            catch (Throwable ignored) {}
+        view.setLongClickable(false);
+        view.setOnLongClickListener(null);
+        view.setClickable(true);
+        view.setOnClickListener(v -> {
             Rect anchor = FloatMenuAnchor.forView(v);
             ImageActionMenu.show(c, image, anchor);
-            return true;
         });
     }
 
-    /** Compatibility alias: all existing callers now get the long-press menu automatically. */
+    /** Compatibility alias for older callers; interaction is now tap-to-open. */
+    public static void attachLongPressMenu(Context c, ImageView view, Bitmap image) {
+        attachClickMenu(c, view, image);
+    }
+
+    /** Compatibility alias for older callers; interaction is now tap-to-open. */
     public static void attachLongPressShare(Context c, ImageView view, Bitmap image) {
-        attachLongPressMenu(c, view, image);
+        attachClickMenu(c, view, image);
     }
 
     /** Put the exact popup bitmap on Android's clipboard as an image content URI. */

@@ -14,14 +14,14 @@ import android.os.Bundle;
 import android.view.DragEvent;
 import android.view.Gravity;
 import android.view.View;
-import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
+
+import com.google.android.material.button.MaterialButton;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -30,13 +30,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/**
- * Unified menu manager for custom text actions plus share/process target ordering.
- *
- * The old CustomActionPickerActivity and TargetMenuPickerActivity independently implemented the
- * same page shell, rows, icons, drag handles and up/down/remove controls. This Activity keeps one
- * reusable UI implementation while each mode supplies only its discovery/store behaviour.
- */
+/** Unified menu manager using the same visual hierarchy as the rest of FloatLens. */
 public final class MenuPickerActivity extends AppCompatActivity {
     public static final String EXTRA_SECTION = "section";
     public static final String EXTRA_MODE = "mode";
@@ -45,6 +39,7 @@ public final class MenuPickerActivity extends AppCompatActivity {
 
     private String section;
     private String targetMode;
+    private Runnable localBackAction;
 
     public static Intent customIntent(Context c) {
         return new Intent(c, MenuPickerActivity.class)
@@ -73,40 +68,33 @@ public final class MenuPickerActivity extends AppCompatActivity {
     // -----------------------------------------------------------------------------------------
 
     private void showCustomHome() {
-        LinearLayout root = page("自定义文字菜单");
-        TextView help = text("不需要填写包名、Activity、Action 或 MIME。可以先按 App 选择，也可以先按 Intent 类型选择。FloatLens 会自动保存实际入口。", 14);
-        help.setPadding(0, 0, 0, dp(14));
-        root.addView(help);
+        LinearLayout root = page("文字操作菜单",
+                "管理选中文字后可调用的应用和 Intent 操作。", null);
 
-        Button byApp = button("按 App 选择");
-        byApp.setOnClickListener(v -> showCustomApps());
-        root.addView(byApp);
-
-        Button byType = button("按 Intent 类型选择");
-        byType.setOnClickListener(v -> showCustomIntentTypes());
-        root.addView(byType);
+        AppUi.Section add = AppUi.section(this, "添加操作",
+                "不需要手动填写包名、Activity、Action 或 MIME。" );
+        AppUi.addRow(add.body, AppUi.navRow(this,
+                "按 App 选择",
+                "先选择应用，再查看它可用的入口",
+                this::showCustomApps));
+        AppUi.addRow(add.body, AppUi.navRow(this,
+                "按 Intent 类型选择",
+                "先选择操作类型，再选择可以处理它的应用",
+                this::showCustomIntentTypes));
+        AppUi.addSection(root, add);
 
         List<CustomMenuActionStore.Item> items = CustomMenuActionStore.load(this);
-        TextView current = text("已加入菜单（" + items.size() + "）", 18);
-        current.setPadding(0, dp(22), 0, dp(4));
-        root.addView(current);
-
-        TextView hint = text("长按 ≡ 拖动排序；也可以用 ↑ / ↓ 精确移动。最上面的项目会优先显示在浮动菜单主栏。", 13);
-        hint.setAlpha(.72f);
-        hint.setPadding(0, 0, 0, dp(8));
-        root.addView(hint);
-
+        AppUi.Section current = AppUi.section(this,
+                "当前菜单 · " + items.size() + " 项",
+                "长按 ≡ 可拖动排序，也可以使用右侧按钮精确移动。" );
         if (items.isEmpty()) {
-            TextView empty = text("还没有自定义菜单项", 14);
-            empty.setAlpha(.7f);
-            root.addView(empty);
+            addEmpty(current.body, "还没有自定义文字操作");
         } else {
-            LinearLayout list = verticalList();
-            list.setOnDragListener((v, event) -> onCustomSortDrag(list, event));
+            current.body.setOnDragListener((v, event) -> onCustomSortDrag(current.body, event));
             for (int i = 0; i < items.size(); i++) {
                 CustomMenuActionStore.Item item = items.get(i);
                 final int index = i;
-                list.addView(sortableRow(
+                AppUi.addRow(current.body, sortableRow(
                         item.id,
                         item.label,
                         CustomMenuActionStore.typeLabel(item.type),
@@ -126,9 +114,9 @@ public final class MenuPickerActivity extends AppCompatActivity {
                             showCustomHome();
                         }));
             }
-            root.addView(list);
         }
-        setPage(root);
+        AppUi.addSection(root, current);
+        show(root);
     }
 
     private boolean onCustomSortDrag(LinearLayout list, DragEvent event) {
@@ -152,33 +140,31 @@ public final class MenuPickerActivity extends AppCompatActivity {
     }
 
     private void showCustomApps() {
-        LinearLayout root = page("按 App 选择");
-        addBack(root, this::showCustomHome);
-        TextView note = text("先点 App，再从它自动识别出的 Intent 入口或可导出 Activity 中选择。", 14);
-        note.setPadding(0, 0, 0, dp(10));
-        root.addView(note);
+        LinearLayout root = page("按 App 选择",
+                "选择应用后，FloatLens 会读取它可处理的标准 Intent 和可直接启动入口。",
+                this::showCustomHome);
+        addLocalBack(root, "返回文字操作菜单");
 
         List<ApplicationInfo> apps;
         try { apps = new ArrayList<>(pm().getInstalledApplications(0)); }
         catch (Throwable t) { apps = new ArrayList<>(); }
         apps.removeIf(a -> a == null || !a.enabled || getPackageName().equals(a.packageName));
         apps.sort(Comparator.comparing(this::appLabel, String.CASE_INSENSITIVE_ORDER));
-        for (ApplicationInfo app : apps) {
-            String label = appLabel(app);
-            Drawable icon = null;
-            try { icon = app.loadIcon(pm()); } catch (Throwable ignored) {}
-            final String pkg = app.packageName;
-            root.addView(actionRow(label, pkg, icon, () -> showCustomAppActions(pkg, label), null));
-        }
-        setPage(root);
+
+        final List<ApplicationInfo> appList = apps;
+        AppUi.Section list = AppUi.section(this, "应用", null);
+        renderCustomApps(list.body, appList, "");
+        addSearchField(root, "搜索应用名称或包名", query ->
+                renderCustomApps(list.body, appList, query));
+        AppUi.addSection(root, list);
+        show(root);
     }
 
     private void showCustomAppActions(String pkg, String appLabel) {
-        LinearLayout root = page(appLabel);
-        addBack(root, this::showCustomApps);
-        TextView note = text("以下入口由 FloatLens 自动读取。标准 Intent 入口优先显示，后面再列出其他可直接启动的 exported Activity。", 14);
-        note.setPadding(0, 0, 0, dp(10));
-        root.addView(note);
+        LinearLayout root = page(appLabel,
+                "标准 Intent 入口优先显示，后面再列出其他可直接启动的 exported Activity。",
+                this::showCustomApps);
+        addLocalBack(root, "返回应用列表");
 
         ArrayList<Discovered> all = new ArrayList<>();
         Set<String> seen = new HashSet<>();
@@ -211,49 +197,167 @@ public final class MenuPickerActivity extends AppCompatActivity {
             }
         } catch (Throwable ignored) {}
 
+        AppUi.Section entries = AppUi.section(this, "可用入口 · " + all.size() + " 个", null);
         if (all.isEmpty()) {
-            TextView empty = text("没有发现可从 FloatLens 调用的入口", 15);
-            empty.setPadding(0, dp(16), 0, 0);
-            root.addView(empty);
+            addEmpty(entries.body, "没有发现可从 FloatLens 调用的入口");
         } else {
-            for (Discovered d : all) root.addView(customDiscoveredRow(d));
+            for (Discovered d : all) AppUi.addRow(entries.body, customDiscoveredRow(d));
         }
-        setPage(root);
+        AppUi.addSection(root, entries);
+        show(root);
     }
 
     private void showCustomIntentTypes() {
-        LinearLayout root = page("按 Intent 类型选择");
-        addBack(root, this::showCustomHome);
+        LinearLayout root = page("按 Intent 类型选择",
+                "先确定操作类型，再从系统确认可以处理它的应用中选择。",
+                this::showCustomHome);
+        addLocalBack(root, "返回文字操作菜单");
+
+        AppUi.Section types = AppUi.section(this, "操作类型", null);
         for (IntentTypeCatalog.Spec spec : IntentTypeCatalog.all()) {
-            root.addView(actionRow(spec.title, spec.description, null,
+            AppUi.addRow(types.body, actionRow(spec.title, spec.description, null,
                     () -> showCustomHandlersForType(spec), null));
         }
-        setPage(root);
+        AppUi.addSection(root, types);
+        show(root);
     }
 
     private void showCustomHandlersForType(IntentTypeCatalog.Spec spec) {
-        LinearLayout root = page(spec.title);
-        addBack(root, this::showCustomIntentTypes);
-        TextView note = text(spec.description + " · 下面只显示系统确认能处理这个 Intent 的应用入口。", 14);
-        note.setPadding(0, 0, 0, dp(10));
-        root.addView(note);
+        LinearLayout root = page(spec.title,
+                spec.description + " · 只显示系统确认能处理这个 Intent 的应用入口。",
+                this::showCustomIntentTypes);
+        addLocalBack(root, "返回 Intent 类型");
 
         List<ResolveInfo> handlers = query(spec.probeIntent());
         handlers.removeIf(ri -> ri.activityInfo == null || getPackageName().equals(ri.activityInfo.packageName));
         handlers.sort(Comparator.comparing(this::resolveAppThenActivityLabel, String.CASE_INSENSITIVE_ORDER));
-        if (handlers.isEmpty()) {
-            root.addView(text("没有找到可处理此 Intent 的应用", 15));
-        } else {
-            for (ResolveInfo ri : handlers) {
-                ActivityInfo ai = ri.activityInfo;
-                Discovered d = new Discovered(
-                        appLabel(ai.applicationInfo) + " · " + spec.title,
-                        resolveLabel(ri), appIcon(ai.packageName),
-                        ai.packageName, ai.name, spec.type);
-                root.addView(customDiscoveredRow(d));
+
+        AppUi.Section entries = AppUi.section(this, "可用应用", null);
+        renderIntentHandlers(entries.body, handlers, spec, "");
+        addSearchField(root, "搜索应用名称、包名或 Activity", query ->
+                renderIntentHandlers(entries.body, handlers, spec, query));
+        AppUi.addSection(root, entries);
+        show(root);
+    }
+
+    private android.widget.EditText addSearchField(LinearLayout root,
+                                                   String hint,
+                                                   java.util.function.Consumer<String> onQuery) {
+        LinearLayout box = AppUi.settingBlock(this);
+        box.setPadding(AppUi.dp(this, 2), AppUi.dp(this, 2),
+                AppUi.dp(this, 2), AppUi.dp(this, 7));
+
+        android.widget.EditText input = new android.widget.EditText(this);
+        AppUi.styleInput(this, input);
+        input.setSingleLine(true);
+        input.setHint(hint);
+        input.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+        box.addView(input, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = AppUi.dp(this, 3);
+        root.addView(box, lp);
+
+        input.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(android.text.Editable editable) {
+                if (onQuery != null) onQuery.accept(editable == null ? "" : editable.toString());
             }
+        });
+        return input;
+    }
+
+    private int renderCustomApps(LinearLayout body,
+                                 List<ApplicationInfo> apps,
+                                 String query) {
+        body.removeAllViews();
+        int shown = 0;
+        for (ApplicationInfo app : apps) {
+            String label = appLabel(app);
+            String pkg = app.packageName;
+            if (!matchesSearch(query, label, pkg)) continue;
+            Drawable icon = null;
+            try { icon = app.loadIcon(pm()); } catch (Throwable ignored) {}
+            AppUi.addRow(body,
+                    actionRow(label, pkg, icon, () -> showCustomAppActions(pkg, label), null));
+            shown++;
         }
-        setPage(root);
+        if (shown == 0) addEmpty(body, "没有匹配的应用");
+        return shown;
+    }
+
+    private int renderIntentHandlers(LinearLayout body,
+                                     List<ResolveInfo> handlers,
+                                     IntentTypeCatalog.Spec spec,
+                                     String query) {
+        body.removeAllViews();
+        int shown = 0;
+        for (ResolveInfo ri : handlers) {
+            if (ri == null || ri.activityInfo == null) continue;
+            ActivityInfo ai = ri.activityInfo;
+            String appName = appLabel(ai.applicationInfo);
+            String activityName = resolveLabel(ri);
+            if (!matchesSearch(query,
+                    appName,
+                    ai.packageName,
+                    activityName,
+                    ai.name,
+                    shortClass(ai.name))) continue;
+            Discovered d = new Discovered(
+                    appName + " · " + spec.title,
+                    activityName, appIcon(ai.packageName),
+                    ai.packageName, ai.name, spec.type);
+            AppUi.addRow(body, customDiscoveredRow(d));
+            shown++;
+        }
+        if (shown == 0) {
+            addEmpty(body, query == null || query.isBlank()
+                    ? "没有找到可处理此 Intent 的应用"
+                    : "没有匹配的应用或 Activity");
+        }
+        return shown;
+    }
+
+    private int renderTargetAdd(LinearLayout body,
+                                List<TargetMenuStore.Item> available,
+                                List<TargetMenuStore.Item> current,
+                                String query) {
+        body.removeAllViews();
+        int shown = 0;
+        for (TargetMenuStore.Item item : available) {
+            if (!matchesSearch(query,
+                    item.label,
+                    item.packageName,
+                    item.className,
+                    shortClass(item.className))) continue;
+            AppUi.addRow(body,
+                    actionRow(item.label, shortClass(item.className), targetIcon(item), () -> {
+                        saveCurrentTargetOrder(current);
+                        if (TargetMenuStore.add(this, targetMode, item)) {
+                            Toast.makeText(this, "已加入", Toast.LENGTH_SHORT).show();
+                            showTargetManager();
+                        }
+                    }, "加入"));
+            shown++;
+        }
+        if (shown == 0) {
+            addEmpty(body, available.isEmpty()
+                    ? "没有可重新加入的系统目标"
+                    : "没有匹配的应用或组件");
+        }
+        return shown;
+    }
+
+    private boolean matchesSearch(String query, String... values) {
+        String q = query == null ? "" : query.trim().toLowerCase(java.util.Locale.ROOT);
+        if (q.isEmpty()) return true;
+        if (values == null) return false;
+        for (String value : values) {
+            if (value != null && value.toLowerCase(java.util.Locale.ROOT).contains(q)) return true;
+        }
+        return false;
     }
 
     private View customDiscoveredRow(Discovered d) {
@@ -273,50 +377,52 @@ public final class MenuPickerActivity extends AppCompatActivity {
     // -----------------------------------------------------------------------------------------
 
     private void showTargetManager() {
+        localBackAction = null;
         boolean customized = TargetMenuStore.isCustomized(this, targetMode);
         List<TargetMenuStore.Item> systemItems = discoverTargetItems();
         List<TargetMenuStore.Item> items = TargetMenuStore.mergeWithSystem(this, targetMode, systemItems);
 
-        LinearLayout root = page(isShareTarget()
-                ? "自定义分享菜单" : "自定义打开 / 处理菜单");
-        TextView note = text(isShareTarget()
-                ? (customized
-                    ? "列表来源始终是 Android 当前可分享目标；FloatLens 只保存你的排序和隐藏规则。系统新增目标会自动补到末尾。"
-                    : "当前直接读取 Android 可分享目标列表。第一次排序或隐藏后，仅由 FloatLens 保存顺序/隐藏规则，不复制另一套来源。")
-                : (customized
-                    ? "列表来源始终是 Android 当前可处理目标；FloatLens 只保存你的排序和隐藏规则。"
-                    : "当前读取 Android 可处理目标列表。第一次排序或隐藏后会保存 FloatLens 顺序。"), 14);
-        note.setPadding(0, 0, 0, dp(10));
-        root.addView(note);
+        LinearLayout root = page(isShareTarget() ? "分享菜单" : "打开 / 处理菜单",
+                isShareTarget()
+                        ? "来源始终是 Android 当前可分享目标，FloatLens 只保存排序和隐藏规则。"
+                        : "来源始终是 Android 当前可处理目标，FloatLens 只保存排序和隐藏规则。",
+                null);
 
-        Button add = button(isShareTarget() ? "添加已隐藏的分享应用" : "添加已隐藏的处理应用");
+        AppUi.Section tools = AppUi.section(this, "管理", null);
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        buttons.setPadding(AppUi.dp(this, 14), AppUi.dp(this, 8),
+                AppUi.dp(this, 14), AppUi.dp(this, 8));
+        MaterialButton add = AppUi.secondaryButton(this,
+                isShareTarget() ? "添加已隐藏项" : "添加已隐藏项");
         add.setOnClickListener(v -> showTargetAdd());
-        root.addView(add);
-
-        Button reset = button("恢复系统读取顺序");
+        MaterialButton reset = AppUi.secondaryButton(this, "恢复系统顺序");
         reset.setEnabled(customized);
         reset.setOnClickListener(v -> {
             TargetMenuStore.reset(this, targetMode);
             Toast.makeText(this, "已恢复当前系统列表顺序", Toast.LENGTH_SHORT).show();
             showTargetManager();
         });
-        root.addView(reset);
+        LinearLayout.LayoutParams aLp = new LinearLayout.LayoutParams(0, -2, 1f);
+        aLp.setMarginEnd(AppUi.dp(this, 6));
+        buttons.addView(add, aLp);
+        LinearLayout.LayoutParams rLp = new LinearLayout.LayoutParams(0, -2, 1f);
+        rLp.setMarginStart(AppUi.dp(this, 6));
+        buttons.addView(reset, rLp);
+        AppUi.addRow(tools.body, buttons);
+        AppUi.addSection(root, tools);
 
-        TextView current = text("当前显示（" + items.size() + "）", 18);
-        current.setPadding(0, dp(18), 0, dp(6));
-        root.addView(current);
-
+        AppUi.Section current = AppUi.section(this,
+                "当前显示 · " + items.size() + " 项",
+                "长按 ≡ 拖动排序；移除只是从 FloatLens 菜单隐藏，不会修改系统应用。" );
         if (items.isEmpty()) {
-            TextView empty = text("系统当前没有返回可用目标。", 14);
-            empty.setAlpha(.72f);
-            root.addView(empty);
+            addEmpty(current.body, "系统当前没有返回可用目标");
         } else {
-            LinearLayout list = verticalList();
-            list.setOnDragListener((v, event) -> onTargetSortDrag(list, event, items));
+            current.body.setOnDragListener((v, event) -> onTargetSortDrag(current.body, event, items));
             for (int i = 0; i < items.size(); i++) {
                 TargetMenuStore.Item item = items.get(i);
                 final int index = i;
-                list.addView(sortableRow(
+                AppUi.addRow(current.body, sortableRow(
                         item.key(),
                         item.label,
                         shortClass(item.className),
@@ -338,9 +444,9 @@ public final class MenuPickerActivity extends AppCompatActivity {
                             showTargetManager();
                         }));
             }
-            root.addView(list);
         }
-        setPage(root);
+        AppUi.addSection(root, current);
+        show(root);
     }
 
     private void showTargetAdd() {
@@ -349,28 +455,22 @@ public final class MenuPickerActivity extends AppCompatActivity {
         Set<String> selected = new HashSet<>();
         for (TargetMenuStore.Item item : current) selected.add(item.key());
 
-        LinearLayout root = page(isShareTarget() ? "添加分享应用" : "添加处理应用");
-        addBack(root, this::showTargetManager);
+        LinearLayout root = page(isShareTarget() ? "添加分享应用" : "添加处理应用",
+                "这里只列出之前从 FloatLens 菜单隐藏、但系统仍然可用的目标。",
+                this::showTargetManager);
+        addLocalBack(root, "返回当前菜单");
 
-        int available = 0;
+        ArrayList<TargetMenuStore.Item> available = new ArrayList<>();
         for (TargetMenuStore.Item item : discovered) {
-            if (selected.contains(item.key())) continue;
-            available++;
-            root.addView(actionRow(item.label, shortClass(item.className), targetIcon(item), () -> {
-                saveCurrentTargetOrder(current);
-                if (TargetMenuStore.add(this, targetMode, item)) {
-                    Toast.makeText(this, "已加入", Toast.LENGTH_SHORT).show();
-                    showTargetManager();
-                }
-            }, "加入"));
+            if (!selected.contains(item.key())) available.add(item);
         }
-        if (available == 0) {
-            TextView none = text("没有可重新加入的系统目标。", 14);
-            none.setPadding(0, dp(14), 0, 0);
-            none.setAlpha(.72f);
-            root.addView(none);
-        }
-        setPage(root);
+
+        AppUi.Section list = AppUi.section(this, "可重新加入", null);
+        renderTargetAdd(list.body, available, current, "");
+        addSearchField(root, "搜索应用名称、包名或组件", query ->
+                renderTargetAdd(list.body, available, current, query));
+        AppUi.addSection(root, list);
+        show(root);
     }
 
     private boolean onTargetSortDrag(LinearLayout list, DragEvent event,
@@ -384,8 +484,7 @@ public final class MenuPickerActivity extends AppCompatActivity {
                 Object state = event.getLocalState();
                 if (!(state instanceof String key)) return false;
                 saveCurrentTargetOrder(snapshot);
-                TargetMenuStore.moveTo(this, targetMode, key,
-                        dropIndexForY(list, event.getY()));
+                TargetMenuStore.moveTo(this, targetMode, key, dropIndexForY(list, event.getY()));
                 showTargetManager();
                 return true;
             }
@@ -443,12 +542,12 @@ public final class MenuPickerActivity extends AppCompatActivity {
                              Runnable moveUp,
                              Runnable moveDown,
                              Runnable remove) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(2), dp(5), dp(2), dp(5));
+        LinearLayout row = AppUi.baseRow(this);
+        row.setPadding(AppUi.dp(this, 6), AppUi.dp(this, 7),
+                AppUi.dp(this, 6), AppUi.dp(this, 7));
 
-        TextView handle = text("≡", 24);
+        TextView handle = AppUi.text(this, "≡", 22, false);
+        handle.setTextColor(AppUi.textSecondary(this));
         handle.setGravity(Gravity.CENTER);
         handle.setContentDescription("长按拖动排序");
         handle.setOnLongClickListener(v -> {
@@ -456,43 +555,38 @@ public final class MenuPickerActivity extends AppCompatActivity {
             ClipData clip = ClipData.newPlainText("FloatLens menu item", dragKey);
             return row.startDragAndDrop(clip, new View.DragShadowBuilder(row), dragKey, 0);
         });
-        row.addView(handle, new LinearLayout.LayoutParams(dp(40), dp(54)));
+        row.addView(handle, new LinearLayout.LayoutParams(dp(36), dp(52)));
 
-        if (icon != null) {
-            ImageView iv = new ImageView(this);
-            iv.setImageDrawable(icon);
-            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(36), dp(36));
-            ip.setMarginEnd(dp(10));
-            row.addView(iv, ip);
-        }
+        addIcon(row, icon, 34, 10);
 
         LinearLayout texts = new LinearLayout(this);
         texts.setOrientation(LinearLayout.VERTICAL);
-        TextView titleView = text(title, 15);
+        texts.setGravity(Gravity.CENTER_VERTICAL);
+        TextView titleView = AppUi.text(this, title, 14, false);
         titleView.setSingleLine(true);
         texts.addView(titleView);
         if (subtitle != null && !subtitle.isBlank()) {
-            TextView sub = text(subtitle, 12);
-            sub.setAlpha(.65f);
+            TextView sub = AppUi.caption(this, subtitle, 11);
             sub.setSingleLine(true);
+            sub.setPadding(0, dp(2), 0, 0);
             texts.addView(sub);
         }
-        row.addView(texts, new LinearLayout.LayoutParams(0, dp(54), 1));
+        row.addView(texts, new LinearLayout.LayoutParams(0, dp(52), 1f));
 
         TextView up = sortButton("↑", index > 0);
         up.setContentDescription("上移");
-        up.setOnClickListener(v -> moveUp.run());
-        row.addView(up, new LinearLayout.LayoutParams(dp(38), dp(44)));
+        up.setOnClickListener(v -> { if (moveUp != null) moveUp.run(); });
+        row.addView(up, new LinearLayout.LayoutParams(dp(34), dp(42)));
 
         TextView down = sortButton("↓", index < total - 1);
         down.setContentDescription("下移");
-        down.setOnClickListener(v -> moveDown.run());
-        row.addView(down, new LinearLayout.LayoutParams(dp(38), dp(44)));
+        down.setOnClickListener(v -> { if (moveDown != null) moveDown.run(); });
+        row.addView(down, new LinearLayout.LayoutParams(dp(34), dp(42)));
 
         TextView delete = sortButton("×", true);
         delete.setContentDescription("移除");
-        delete.setOnClickListener(v -> remove.run());
-        row.addView(delete, new LinearLayout.LayoutParams(dp(40), dp(44)));
+        delete.setOnClickListener(v -> { if (remove != null) remove.run(); });
+        row.addView(delete, new LinearLayout.LayoutParams(dp(36), dp(42)));
         return row;
     }
 
@@ -501,70 +595,77 @@ public final class MenuPickerActivity extends AppCompatActivity {
                            Drawable icon,
                            Runnable action,
                            String sideText) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(4), dp(7), dp(4), dp(7));
+        LinearLayout row = AppUi.baseRow(this);
         row.setClickable(true);
         row.setFocusable(true);
+        row.setBackground(AppUi.rowBackground(this));
 
-        if (icon != null) {
-            ImageView iv = new ImageView(this);
-            iv.setImageDrawable(icon);
-            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(40), dp(40));
-            ip.setMarginEnd(dp(12));
-            row.addView(iv, ip);
-        }
+        addIcon(row, icon, 36, 12);
 
         LinearLayout texts = new LinearLayout(this);
         texts.setOrientation(LinearLayout.VERTICAL);
-        TextView a = text(title, 16);
+        texts.setGravity(Gravity.CENTER_VERTICAL);
+        TextView a = AppUi.text(this, title, 15, false);
         a.setSingleLine(true);
         texts.addView(a);
         if (subtitle != null && !subtitle.isBlank()) {
-            TextView b = text(subtitle, 12);
-            b.setAlpha(.65f);
+            TextView b = AppUi.caption(this, subtitle, 12);
             b.setSingleLine(true);
+            b.setPadding(0, dp(2), dp(8), 0);
             texts.addView(b);
         }
-        row.addView(texts, new LinearLayout.LayoutParams(0, dp(54), 1));
+        row.addView(texts, new LinearLayout.LayoutParams(0, -2, 1f));
 
         if (sideText != null) {
-            TextView side = text(sideText, 13);
-            side.setGravity(Gravity.CENTER);
-            side.setPadding(dp(10), 0, dp(10), 0);
-            side.setOnClickListener(v -> action.run());
-            row.addView(side, new LinearLayout.LayoutParams(dp(58), dp(44)));
+            MaterialButton side = AppUi.compactButton(this, sideText);
+            side.setOnClickListener(v -> { if (action != null) action.run(); });
+            row.addView(side, new LinearLayout.LayoutParams(-2, -2));
+        } else {
+            TextView arrow = AppUi.text(this, "›", 24, false);
+            arrow.setTextColor(AppUi.textSecondary(this));
+            arrow.setGravity(Gravity.CENTER);
+            row.addView(arrow, new LinearLayout.LayoutParams(dp(28), dp(42)));
         }
-        row.setOnClickListener(v -> action.run());
+        row.setOnClickListener(v -> { if (action != null) action.run(); });
         return row;
     }
 
-    private LinearLayout verticalList() {
-        LinearLayout list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
-        return list;
+    private void addIcon(LinearLayout row, Drawable icon, int sizeDp, int endMarginDp) {
+        if (icon == null) return;
+        ImageView iv = new ImageView(this);
+        iv.setImageDrawable(icon);
+        iv.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp));
+        ip.setMarginEnd(dp(endMarginDp));
+        row.addView(iv, ip);
     }
 
-    private LinearLayout page(String title) {
-        LinearLayout root = verticalList();
-        root.setPadding(dp(18), dp(18), dp(18), dp(30));
-        TextView t = text(title, 22);
-        t.setPadding(0, 0, 0, dp(12));
-        root.addView(t);
-        return root;
+    private void addEmpty(LinearLayout parent, String message) {
+        LinearLayout row = AppUi.baseRow(this);
+        TextView empty = AppUi.caption(this, message, 13);
+        empty.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(empty, new LinearLayout.LayoutParams(-1, -2));
+        AppUi.addRow(parent, row);
     }
 
-    private void setPage(LinearLayout content) {
-        ScrollView sv = new ScrollView(this);
-        sv.addView(content);
-        setContentView(sv);
+    private LinearLayout page(String title, String subtitle, Runnable backAction) {
+        localBackAction = backAction;
+        return AppUi.pageRoot(this, title, subtitle);
     }
 
-    private void addBack(LinearLayout root, Runnable action) {
-        Button back = button("‹ 返回");
-        back.setOnClickListener(v -> action.run());
-        root.addView(back);
+    private void show(LinearLayout root) {
+        setContentView(AppUi.scrollPage(this, root));
+    }
+
+    private void addLocalBack(LinearLayout root, String label) {
+        MaterialButton back = AppUi.secondaryButton(this, "‹ " + label);
+        back.setOnClickListener(v -> {
+            Runnable action = localBackAction;
+            if (action != null) action.run();
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = AppUi.dp(this, 12);
+        root.addView(back, lp);
     }
 
     private int dropIndexForY(LinearLayout list, float y) {
@@ -578,12 +679,13 @@ public final class MenuPickerActivity extends AppCompatActivity {
     }
 
     private TextView sortButton(String value, boolean enabled) {
-        TextView tv = text(value, 20);
+        TextView tv = AppUi.text(this, value, 19, false);
         tv.setGravity(Gravity.CENTER);
         tv.setEnabled(enabled);
-        tv.setAlpha(enabled ? 1f : .28f);
+        tv.setAlpha(enabled ? 1f : .25f);
         tv.setClickable(enabled);
         tv.setFocusable(enabled);
+        tv.setBackground(AppUi.rowBackground(this));
         return tv;
     }
 
@@ -655,20 +757,6 @@ public final class MenuPickerActivity extends AppCompatActivity {
         return p >= 0 ? name.substring(p + 1) : name;
     }
 
-    private TextView text(String value, int sp) {
-        TextView tv = new TextView(this);
-        tv.setText(value);
-        tv.setTextSize(sp);
-        return tv;
-    }
-
-    private Button button(String value) {
-        Button b = new Button(this);
-        b.setText(value);
-        b.setAllCaps(false);
-        return b;
-    }
-
     private boolean isTargetSection() {
         return SECTION_TARGET.equals(section);
     }
@@ -678,11 +766,17 @@ public final class MenuPickerActivity extends AppCompatActivity {
     }
 
     private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
+        return AppUi.dp(this, value);
     }
 
     @Override public void onBackPressed() {
-        finish();
+        Runnable action = localBackAction;
+        if (action != null) {
+            localBackAction = null;
+            action.run();
+        } else {
+            super.onBackPressed();
+        }
     }
 
     private static final class Discovered {

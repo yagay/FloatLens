@@ -124,8 +124,12 @@ final class UnifiedResultPanel {
             }
             imageHeight = ResultUi.imageHeight(context, next.image(), width, cap);
             imageView.setLayoutParams(new LinearLayout.LayoutParams(-1, imageHeight));
-            ImageShareUtils.attachLongPressShare(context, imageView, next.image());
+            ImageShareUtils.attachClickMenu(context, imageView, next.image());
         } else {
+            imageView.setOnClickListener(null);
+            imageView.setOnLongClickListener(null);
+            imageView.setClickable(false);
+            imageView.setLongClickable(false);
             imageView.setImageDrawable(null);
             imageView.setVisibility(View.GONE);
             imageView.setLayoutParams(new LinearLayout.LayoutParams(-1, 0));
