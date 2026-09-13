@@ -106,7 +106,7 @@ public final class AppearanceSettingsActivity extends AppCompatActivity {
         block.addView(slider, lp);
 
         TextView hint = AppUi.caption(this,
-                "可设置 4～8 个；内置项目也计算在内，按文字操作菜单排序补充自定义项目。",
+                "可设置 4～8 个；这是主栏总数，内置项目也计算在内。",
                 12);
         hint.setPadding(0, AppUi.dp(this, 2), 0, 0);
         block.addView(hint);
