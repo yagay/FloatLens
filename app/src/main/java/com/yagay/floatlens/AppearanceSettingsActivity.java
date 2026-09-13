@@ -24,12 +24,12 @@ public final class AppearanceSettingsActivity extends AppCompatActivity {
         AppUi.addSection(root, theme);
 
         AppUi.Section textMenu = AppUi.section(this, "文字菜单主栏",
-                "排序靠前的自定义操作会固定在主栏；数量较多时自动换到下一行。" );
-        addPinnedCountSlider(textMenu.body);
+                "数字直接表示主菜单总项目数，复制、全选、分享和“⋮”也计算在内。" );
+        addMainItemCountSlider(textMenu.body);
         AppUi.addSection(root, textMenu);
 
         TextView note = AppUi.caption(this,
-                "剩余自定义操作仍保留在“⋮”菜单中，不会被删除。",
+                "超出主栏数量的自定义操作仍保留在“⋮”菜单中，不会被删除。",
                 12);
         note.setPadding(AppUi.dp(this, 4), 0, AppUi.dp(this, 4), AppUi.dp(this, 4));
         root.addView(note);
@@ -69,14 +69,14 @@ public final class AppearanceSettingsActivity extends AppCompatActivity {
         AppUi.addRow(parent, block);
     }
 
-    private void addPinnedCountSlider(LinearLayout parent) {
-        int current = TextMenuSettings.pinnedCustomCount(this);
+    private void addMainItemCountSlider(LinearLayout parent) {
+        int current = TextMenuSettings.mainItemCount(this);
         LinearLayout block = AppUi.settingBlock(this);
 
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = AppUi.text(this, "固定自定义项数量", 14, false);
+        TextView title = AppUi.text(this, "主菜单项目总数", 14, false);
         TextView value = AppUi.caption(this, current + " 个", 13);
         value.setGravity(Gravity.END);
         top.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -84,21 +84,21 @@ public final class AppearanceSettingsActivity extends AppCompatActivity {
         block.addView(top);
 
         Slider slider = new Slider(this);
-        slider.setValueFrom(TextMenuSettings.MIN_PINNED);
-        slider.setValueTo(TextMenuSettings.MAX_PINNED);
+        slider.setValueFrom(TextMenuSettings.MIN_MAIN_ITEMS);
+        slider.setValueTo(TextMenuSettings.MAX_MAIN_ITEMS);
         slider.setStepSize(1f);
         slider.setValue(current);
         slider.addOnChangeListener((s, next, fromUser) -> {
             int count = Math.round(next);
-            TextMenuSettings.setPinnedCustomCount(this, count);
-            value.setText(TextMenuSettings.pinnedCustomCount(this) + " 个");
+            TextMenuSettings.setMainItemCount(this, count);
+            value.setText(TextMenuSettings.mainItemCount(this) + " 个");
         });
         slider.addOnSliderTouchListener(new Slider.OnSliderTouchListener() {
             @Override public void onStartTrackingTouch(Slider slider) { }
             @Override public void onStopTrackingTouch(Slider slider) {
                 int count = Math.round(slider.getValue());
-                TextMenuSettings.setPinnedCustomCount(AppearanceSettingsActivity.this, count);
-                value.setText(TextMenuSettings.pinnedCustomCount(AppearanceSettingsActivity.this) + " 个");
+                TextMenuSettings.setMainItemCount(AppearanceSettingsActivity.this, count);
+                value.setText(TextMenuSettings.mainItemCount(AppearanceSettingsActivity.this) + " 个");
             }
         });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
@@ -106,7 +106,7 @@ public final class AppearanceSettingsActivity extends AppCompatActivity {
         block.addView(slider, lp);
 
         TextView hint = AppUi.caption(this,
-                "默认 6 个，可设置 1～8 个；按文字操作菜单中的排序从前往后固定。",
+                "可设置 4～8 个；内置项目也计算在内，按文字操作菜单排序补充自定义项目。",
                 12);
         hint.setPadding(0, AppUi.dp(this, 2), 0, 0);
         block.addView(hint);
