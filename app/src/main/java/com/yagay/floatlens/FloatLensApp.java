@@ -12,6 +12,7 @@ import android.widget.TextView;
 public final class FloatLensApp extends Application implements Application.ActivityLifecycleCallbacks {
     @Override public void onCreate() {
         super.onCreate();
+        ThemeSettings.applySavedMode(this);
         try {
             RemovedFeatureMigration.run(this);
         } catch (Throwable t) {
@@ -21,6 +22,7 @@ public final class FloatLensApp extends Application implements Application.Activ
     }
 
     @Override public void onActivityResumed(Activity activity) {
+        ThemeSettings.applySystemBars(activity);
         install(activity);
         View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
         if (decor != null) decor.post(() -> install(activity));
@@ -76,7 +78,9 @@ public final class FloatLensApp extends Application implements Application.Activ
         FloatMenuAnchor.clear();
     }
 
-    @Override public void onActivityCreated(Activity activity, Bundle state) { }
+    @Override public void onActivityCreated(Activity activity, Bundle state) {
+        ThemeSettings.applySystemBars(activity);
+    }
     @Override public void onActivityStarted(Activity activity) { }
     @Override public void onActivityStopped(Activity activity) { }
     @Override public void onActivitySaveInstanceState(Activity activity, Bundle outState) { }
