@@ -25,7 +25,7 @@ final class TextMenuSettings {
     }
 
     /**
-     * Convert the requested total toolbar item count into available custom-action slots.
+     * Convert the requested TOTAL toolbar item count into available custom-action slots.
      * Built-ins are copy + share + more, plus select-all when that action is available.
      */
     static int customSlots(Context c, boolean hasSelectAll, int customSize) {
