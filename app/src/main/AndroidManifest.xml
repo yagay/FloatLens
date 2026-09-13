@@ -40,6 +40,19 @@
             android:launchMode="singleTop"
             android:taskAffinity="" />
         <activity
+            android:name=".DictionaryActivity"
+            android:label="英汉词典"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:taskAffinity="">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+        <activity
             android:name=".ShadeDismissActivity"
             android:theme="@style/Theme.FloatLens.ShadeDismiss"
             android:exported="false"
