@@ -329,7 +329,7 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void seek(LinearLayout parent, String label, String key,
                       int min, int max, int current, String suffix) {
-        LinearLayout block = AppUi.settingBlock(this);
+        LinearLayout block = AppUi.sliderBlock(this);
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
@@ -345,14 +345,18 @@ public class SettingsActivity extends AppCompatActivity {
         slider.setValueTo(max);
         slider.setStepSize(1f);
         slider.setValue(Math.max(min, Math.min(max, current)));
+        slider.setLabelBehavior(Slider.LABEL_GONE);
+        slider.setMinHeight(0);
+        slider.setMinimumHeight(0);
+        slider.setPadding(0, 0, 0, 0);
         slider.addOnChangeListener((s, next, fromUser) -> {
             if (!fromUser) return;
             int intValue = Math.round(next);
             value.setText(intValue + suffix);
             fs.prefs().edit().putInt(key, intValue).apply();
         });
-        LinearLayout.LayoutParams sliderLp = new LinearLayout.LayoutParams(-1, -2);
-        sliderLp.topMargin = AppUi.dp(this, 2);
+        LinearLayout.LayoutParams sliderLp = new LinearLayout.LayoutParams(-1, AppUi.dp(this, 34));
+        sliderLp.topMargin = AppUi.dp(this, -1);
         block.addView(slider, sliderLp);
         AppUi.addRow(parent, block);
     }

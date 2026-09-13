@@ -144,7 +144,7 @@ final class AppUi {
         TextView arrow = text(c, "›", 24, false);
         arrow.setTextColor(textSecondary(c));
         arrow.setGravity(Gravity.CENTER);
-        row.addView(arrow, new LinearLayout.LayoutParams(dp(c, 30), dp(c, compact ? 40 : 44)));
+        row.addView(arrow, new LinearLayout.LayoutParams(dp(c, 30), dp(c, compact ? 36 : 44)));
         row.setOnClickListener(v -> { if (action != null) action.run(); });
         return row;
     }
@@ -170,8 +170,11 @@ final class AppUi {
         SwitchMaterial toggle = new SwitchMaterial(c);
         toggle.setUseMaterialThemeColors(true);
         toggle.setChecked(checked);
+        toggle.setMinHeight(0);
+        toggle.setMinimumHeight(0);
         if (listener != null) toggle.setOnCheckedChangeListener(listener);
-        row.addView(toggle, new LinearLayout.LayoutParams(-2, -2));
+        row.addView(toggle, new LinearLayout.LayoutParams(-2,
+                compact ? dp(c, 40) : LinearLayout.LayoutParams.WRAP_CONTENT));
         return toggle;
     }
 
@@ -187,9 +190,9 @@ final class AppUi {
         LinearLayout row = new LinearLayout(c);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        int verticalPadding = compact ? 2 : 10;
+        int verticalPadding = compact ? 0 : 10;
         row.setPadding(dp(c, 14), dp(c, verticalPadding), dp(c, 10), dp(c, verticalPadding));
-        row.setMinimumHeight(dp(c, compact ? 48 : 56));
+        row.setMinimumHeight(dp(c, compact ? 44 : 56));
         return row;
     }
 
@@ -197,6 +200,13 @@ final class AppUi {
         LinearLayout block = new LinearLayout(c);
         block.setOrientation(LinearLayout.VERTICAL);
         block.setPadding(dp(c, 14), dp(c, 10), dp(c, 14), dp(c, 10));
+        return block;
+    }
+
+    static LinearLayout sliderBlock(Context c) {
+        LinearLayout block = new LinearLayout(c);
+        block.setOrientation(LinearLayout.VERTICAL);
+        block.setPadding(dp(c, 14), dp(c, 5), dp(c, 14), dp(c, 2));
         return block;
     }
 
