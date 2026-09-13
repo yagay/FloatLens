@@ -55,7 +55,11 @@
         </activity>
         <activity
             android:name=".DictionarySettingsActivity"
-            android:label="本地词典"
+            android:label="词典设置"
+            android:exported="false" />
+        <activity
+            android:name=".DictionaryCatalogActivity"
+            android:label="在线词库中心"
             android:exported="false" />
         <activity
             android:name=".ShadeDismissActivity"
