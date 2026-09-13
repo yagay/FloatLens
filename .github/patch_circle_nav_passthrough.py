@@ -25,15 +25,24 @@ s = s.replace('        int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCR
               '        int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN\n                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS\n                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL\n                | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH;\n')
 s = s.replace('        WorkspaceView view = new WorkspaceView(app, host, lp, screenshot, onClosed, !shadeExpanded);\n',
               '        WorkspaceView view = new WorkspaceView(app, host, lp, screenshot, onClosed, !shadeExpanded,\n                displayBounds.width(), displayBounds.height());\n')
-s = s.replace('                + " bounds=" + contentBounds.toShortString()\n',
-              '                + " bounds=" + contentBounds.toShortString()\n                + " display=" + displayBounds.toShortString()\n')
+if '                + " display=" + displayBounds.toShortString()\n' not in s:
+    s = s.replace('                + " bounds=" + contentBounds.toShortString()\n',
+                  '                + " bounds=" + contentBounds.toShortString()\n                + " display=" + displayBounds.toShortString()\n', 1)
 
-s = s.replace('        private final Runnable onClosed;\n        private final CircleTextSelectionModel selection;\n',
-              '        private final Runnable onClosed;\n        private final int coordinateWidth;\n        private final int coordinateHeight;\n        private final CircleTextSelectionModel selection;\n')
-s = s.replace('        WorkspaceView(Context c, FlOverlayWindowHost host, WindowManager.LayoutParams windowLayout,\n                      Bitmap screenshot, Runnable onClosed, boolean keyFocusEnabled) {\n',
-              '        WorkspaceView(Context c, FlOverlayWindowHost host, WindowManager.LayoutParams windowLayout,\n                      Bitmap screenshot, Runnable onClosed, boolean keyFocusEnabled,\n                      int coordinateWidth, int coordinateHeight) {\n')
-s = s.replace('            this.onClosed = onClosed;\n            this.keyFocusEnabled = keyFocusEnabled;\n',
-              '            this.onClosed = onClosed;\n            this.keyFocusEnabled = keyFocusEnabled;\n            this.coordinateWidth = Math.max(1, coordinateWidth);\n            this.coordinateHeight = Math.max(1, coordinateHeight);\n')
+if '        private final int coordinateWidth;\n' not in s:
+    s = s.replace('        private final Runnable onClosed;\n        private final CircleTextSelectionModel selection;\n',
+                  '        private final Runnable onClosed;\n        private final int coordinateWidth;\n        private final int coordinateHeight;\n        private final CircleTextSelectionModel selection;\n', 1)
+if '                      int coordinateWidth, int coordinateHeight) {\n' not in s:
+    s = s.replace('        WorkspaceView(Context c, FlOverlayWindowHost host, WindowManager.LayoutParams windowLayout,\n                      Bitmap screenshot, Runnable onClosed, boolean keyFocusEnabled) {\n',
+                  '        WorkspaceView(Context c, FlOverlayWindowHost host, WindowManager.LayoutParams windowLayout,\n                      Bitmap screenshot, Runnable onClosed, boolean keyFocusEnabled,\n                      int coordinateWidth, int coordinateHeight) {\n', 1)
+
+assign = '            this.coordinateWidth = Math.max(1, coordinateWidth);\n            this.coordinateHeight = Math.max(1, coordinateHeight);\n'
+dup = assign + assign
+while dup in s:
+    s = s.replace(dup, assign, 1)
+if assign not in s:
+    s = s.replace('            this.onClosed = onClosed;\n            this.keyFocusEnabled = keyFocusEnabled;\n',
+                  '            this.onClosed = onClosed;\n            this.keyFocusEnabled = keyFocusEnabled;\n' + assign, 1)
 
 replacements = {
 '                                            getWidth(), getHeight(), snap);':'                                            coordinateWidth, coordinateHeight, snap);',
