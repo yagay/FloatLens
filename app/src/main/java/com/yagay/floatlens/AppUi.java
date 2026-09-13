@@ -42,8 +42,7 @@ final class AppUi {
         header.setGravity(Gravity.CENTER_VERTICAL);
 
         if (c instanceof Activity activity && !(activity instanceof MainActivity)) {
-            MaterialButton back = new MaterialButton(c, null,
-                    com.google.android.material.R.attr.materialButtonTextButtonStyle);
+            MaterialButton back = new MaterialButton(c);
             back.setText("‹");
             back.setTextSize(28);
             back.setAllCaps(false);
