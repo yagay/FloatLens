@@ -7,7 +7,6 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.res.ColorStateList;
-import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
@@ -22,6 +21,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -217,7 +217,6 @@ public final class FloatActionMenu {
         int minX = usable.left + margin;
         int maxX = Math.max(minX, usable.right - margin - menuWidth);
         int minY = usable.top + margin;
-        // Preserve the original toolbar row. Only clamp enough to keep that row itself visible.
         int maxRowTop = Math.max(minY, usable.bottom - margin - dp(app, 46));
         int x = clamp(lockedCenterX - menuWidth / 2, minX, maxX);
         int y = clamp(lockedTopY, minY, maxRowTop);
@@ -259,6 +258,11 @@ public final class FloatActionMenu {
 
     private static void buildMainToolbar(Context app, LinearLayout root, String text,
                                          Runnable selectAll, Palette palette) {
+        HorizontalScrollView horizontal = new HorizontalScrollView(app);
+        horizontal.setFillViewport(false);
+        horizontal.setHorizontalScrollBarEnabled(false);
+        horizontal.setOverScrollMode(View.OVER_SCROLL_NEVER);
+
         LinearLayout row = new LinearLayout(app);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -280,7 +284,7 @@ public final class FloatActionMenu {
         row.addView(share, new LinearLayout.LayoutParams(dp(app, 58), dp(app, 46)));
 
         List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
-        int customLimit = mainCustomCount(selectAll, customs.size());
+        int customLimit = mainCustomCount(app, customs.size());
         for (int i = 0; i < customLimit; i++) {
             CustomMenuActionStore.Item item = customs.get(i);
             TextView custom = action(app, item.label, palette, 72);
@@ -294,7 +298,8 @@ public final class FloatActionMenu {
         TextView more = action(app, "⋮", palette, 46);
         more.setTextSize(24);
         row.addView(more, new LinearLayout.LayoutParams(dp(app, 46), dp(app, 46)));
-        root.addView(row);
+        horizontal.addView(row, new HorizontalScrollView.LayoutParams(-2, -2));
+        root.addView(horizontal, new LinearLayout.LayoutParams(-2, -2));
 
         copy.setOnClickListener(v -> {
             ClipboardManager cm = (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
@@ -306,8 +311,8 @@ public final class FloatActionMenu {
         more.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_MORE));
     }
 
-    private static int mainCustomCount(Runnable selectAll, int size) {
-        int max = selectAll != null ? 1 : 2;
+    private static int mainCustomCount(Context app, int size) {
+        int max = TextMenuSettings.pinnedCustomCount(app);
         return Math.min(max, Math.max(0, size));
     }
 
@@ -319,7 +324,7 @@ public final class FloatActionMenu {
         back.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_MAIN));
 
         List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
-        int skip = mainCustomCount(selectAll, customs.size());
+        int skip = mainCustomCount(app, customs.size());
         for (int i = skip; i < customs.size(); i++) {
             CustomMenuActionStore.Item item = customs.get(i);
             Drawable icon = null;
@@ -611,8 +616,7 @@ public final class FloatActionMenu {
         }
 
         static Palette from(Context c) {
-            int night = c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
-            boolean dark = night == Configuration.UI_MODE_NIGHT_YES;
+            boolean dark = ThemeSettings.isDark(c);
             if (dark) return new Palette(0xFF2B2B2B, 0xFFF5F5F5, 0xFFB8B8B8, 0x33FFFFFF);
             return new Palette(0xFFF8F8F8, 0xFF202124, 0xFF5F6368, 0x22000000);
         }
