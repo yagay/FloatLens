@@ -10,10 +10,10 @@ implementations.
 Owns pointer semantics only:
 
 - immediate temporary-follow movement from `ACTION_DOWN` absolute displacement;
-- FL 400 ms direct-selection dwell;
+- verified FV 400 ms direct-selection dwell;
 - 3 dp per-axis dwell re-arm box;
 - long press, tap/double tap and gesture state;
-- hand-off to `ViewSelectionEngine`;
+- hand-off to `ViewSelectionEngine` after the Direct dwell is complete;
 - explicit icon-position move mode.
 
 Do not add image decoding, window hosting, screenshot capture, visibility policy or result UI here.
@@ -46,9 +46,13 @@ belong in this controller instead of adding another boolean to the service.
 Shared owner of ordinary overlay add/update/remove/migration logic. It supports Accessibility overlay
 (2032) and application overlay windows.
 
-Specialized same-pointer/system helper windows may keep direct `WindowManager` code only when their
-lifetime or flags are intentionally different. `CircleLiveController` is one such case because changing
-its touch-owner window can terminate the active MotionEvent stream.
+The verified FV helper/highlight behavior prefers the accessibility overlay layer when that host is
+available. Passive `NOT_TOUCHABLE` helper layers such as the CircleLive frozen frame may therefore use
+`FlOverlayWindowHost` without changing the floating icon that owns the active MotionEvent stream.
+
+Specialized windows may keep direct `WindowManager` code only when their lifetime, token or touch-owner
+semantics genuinely require it. Never migrate or replace the actual touch-owner window in the middle of
+one pointer stream merely to share hosting code.
 
 Native Android Editor selection is Activity-only on the target OxygenOS/Android build. Do not place
 selectable result text back into an overlay unless device diagnostics prove equivalent framework behavior.
@@ -108,11 +112,18 @@ The only business state for a result:
 - View metadata;
 - derived capabilities such as canOCR/canCopy/canSave.
 
+A successfully delivered `ResultSession` owns its source bitmap. Pending sessions must close when they
+expire or are discarded, and the visible result host must close a session when it is replaced/destroyed.
+Do not retain several abandoned full-resolution result bitmaps until a later GC cycle.
+
 Screenshot -> OCR mutates the same session with `applyOcr()`; it must not create another result window.
 
 ### `ResultController`
 The only launch/update boundary for results. It stores pending sessions, launches the singleTop
 `ResultActivity`, and integrates captured results with `ResultReadyCoordinator`.
+
+If Activity launch fails, ownership is returned to the caller so a screenshot caller can still save the
+same bitmap as its fallback. If a pending token expires/is discarded, `ResultController` closes it.
 
 ### `ResultSurfaceRouter`
 Compatibility/business facade only. It creates the proper `ResultSession` and delegates to
@@ -206,12 +217,35 @@ require another hard-coded settings list.
 
 ## 8. View selection
 
+### Verified FV phase model
+
+The direct-drag flow has **one** dwell gate, owned by `FloatIconView`:
+
+```text
+MOVE / temporary follow
+        ↓
+TRACKING red probe
+        ↓ stable ~400 ms inside ±3 dp
+DIRECT
+        ↓
+READY yellow probe
+        ↓
+cached TEXT / IMAGE / VIEW selection
+        ↓ ACTION_UP
+5 ms delayed operation
+```
+
+Changing from one cached candidate to another while already in DIRECT does **not** start another 400 ms
+candidate-specific timer. Do not reintroduce a second red -> yellow confirmation phase.
+
 ### `ViewSelectionEngine`
-Only owner of FL direct-drag selection state: probe position, 400 ms DIRECT transition, direct-region
-state, async candidate preparation, operation choice and FL 5 ms release delay.
+Owns the state after `FloatIconView` has entered DIRECT: transformed probe position, direct-region state,
+async candidate preparation, cached candidate operation choice and the verified FV 5 ms release delay.
 
 ### `ViewHoverOverlay`
-Candidate cache/hit-test/highlight layer only. It must not own another direct-region gesture state.
+Candidate cache/hit-test/highlight layer only. It preserves the current pointer visual state supplied by
+the engine; candidate changes must not independently reset READY back to TRACKING. It must not own
+another direct-region gesture state or dwell timer.
 
 ### `ViewSelectionOverlay`
 Explicit full-screen picker launched by the OCR action. This intentionally remains separate from
@@ -221,8 +255,9 @@ screenshot and result services.
 ## 9. Circle selection
 
 ### `CircleLiveController`
-Same-pointer-session Circle flow. It intentionally keeps its specialized NOT_TOUCHABLE frozen layer so
-the floating icon retains the active MotionEvent stream. It reuses `ScreenCaptureBackend` and
+Same-pointer-session Circle flow. Its frozen layer remains `NOT_TOUCHABLE` so the floating icon retains
+the active MotionEvent stream. The passive frozen layer may use `FlOverlayWindowHost` to prefer an
+Accessibility overlay host without stealing pointer ownership. It reuses `ScreenCaptureBackend` and
 `SelectionCropper`.
 
 ### `CircleSelectController` / `CircleSelectOverlay`
@@ -270,7 +305,21 @@ overlay host.
 
 The scoped BACK fallback is a FloatLens/OxygenOS adaptation.
 
-## 12. Rules for future changes
+## 12. Privileged providers
+
+Root and LSPosed are optional enhancement providers, never prerequisites for core behavior.
+
+- Root capabilities must pass `PrivilegeManager.canUseRoot(...)` and may fall back to normal providers.
+- LSPosed capabilities must pass `PrivilegeManager.canUseLsposed(...)` **and** report a real provider as
+  available. A user preference alone is not proof that a Hook exists or is controllable.
+- The current libxposed API 102 entry is intentionally hook-free until a cross-process control/status
+  channel exists.
+- Never install a device-wide `system_server` behavior change that an in-app switch cannot actually
+  disable.
+
+See `docs/PRIVILEGED_MODE.md` for the current provider state.
+
+## 13. Rules for future changes
 
 1. Every capability has one owner; add a method/state to that owner instead of cloning an implementation.
 2. Controllers coordinate; pure models/backends/geometry do reusable work.
@@ -282,8 +331,10 @@ The scoped BACK fallback is a FloatLens/OxygenOS adaptation.
 8. Selection crop math belongs in `SelectionCropper`/`ScreenshotGeometry`, not feature Views.
 9. Visibility reasons belong in `FloatVisibilityController`, not new `FloatService` booleans.
 10. Keep different pointer/lifecycle models separate even when their visuals are similar.
-11. Preserve FL touch timing and pointer order unless diagnostics prove a mismatch.
-12. Document modern Android/OxygenOS adaptations explicitly.
-13. Run Debug Build after structural changes and test: icon drag/dwell, View extraction, region screenshot,
+11. Preserve verified FV touch timing and pointer order unless diagnostics prove a mismatch; never add an
+    unverified second dwell merely because two visuals look similar.
+12. Privileged behavior must match the user-visible gate that claims to control it.
+13. Document modern Android/OxygenOS adaptations explicitly.
+14. Run Debug Build after structural changes and test: icon drag/dwell, View extraction, region screenshot,
     notification-shade capture, screenshot->OCR in-place update, native text selection/magnifier,
     CircleLive and CircleSelect.
