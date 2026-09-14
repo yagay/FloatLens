@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -31,6 +32,7 @@ public final class FlSystemPanelController {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final long PRIMARY_RECHECK_MS = 140L;
     private static final long SHADOW_RECHECK_MS = 380L;
+    private static final long ROOT_COLLAPSE_TIMEOUT_SECONDS = 5L;
 
     private static volatile boolean cachedShadeExpanded;
     private static volatile boolean cachedShadeKnown;
@@ -280,16 +282,31 @@ public final class FlSystemPanelController {
     }
 
     private static void collapseWithRoot(Context app, String reason) {
+        FloatSettings settings = new FloatSettings(app);
+        if (!PrivilegeManager.canUseRoot(settings)) {
+            DiagnosticLog.i(app, "FL_SHADE", "skip root collapse reason=" + reason
+                    + " enhanced/root provider disabled");
+            return;
+        }
         ROOT_IO.execute(() -> {
             int code = -1;
             String error = "";
+            Process p = null;
             try {
-                Process p = new ProcessBuilder("su", "-c", "cmd statusbar collapse")
+                p = new ProcessBuilder("su", "-c", "cmd statusbar collapse")
                         .redirectErrorStream(true)
                         .start();
-                code = p.waitFor();
+                if (!p.waitFor(ROOT_COLLAPSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    p.destroy();
+                    if (p.isAlive()) p.destroyForcibly();
+                    throw new IllegalStateException("root shade collapse timeout");
+                }
+                code = p.exitValue();
             } catch (Throwable t) {
                 error = String.valueOf(t);
+                if (p != null && p.isAlive()) {
+                    try { p.destroyForcibly(); } catch (Throwable ignored) { }
+                }
             }
             final int exitCode = code;
             final String failure = error;

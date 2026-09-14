@@ -21,7 +21,15 @@ final class SelectionCropper {
         int right = clamp((int) Math.ceil(viewRect.right * sx), left + 1, source.getWidth());
         int bottom = clamp((int) Math.ceil(viewRect.bottom * sy), top + 1, source.getHeight());
         if (right - left <= 1 || bottom - top <= 1) return null;
-        return Bitmap.createBitmap(source, left, top, right - left, bottom - top);
+        Bitmap crop = Bitmap.createBitmap(source, left, top, right - left, bottom - top);
+        // Bitmap.createBitmap may legally return the source when the requested rectangle is the
+        // complete bitmap. Selection workspaces recycle their frozen source when closing, so every
+        // crop handed to a result/OCR owner must be an independent bitmap.
+        if (crop == source) {
+            Bitmap copy = source.copy(Bitmap.Config.ARGB_8888, false);
+            return copy == null ? null : copy;
+        }
+        return crop;
     }
 
     static Bitmap maskedCrop(Bitmap source, List<PointF> points,
@@ -71,7 +79,7 @@ final class SelectionCropper {
         canvas.clipPath(path);
         canvas.drawBitmap(crop, 0, 0, null);
         canvas.restore();
-        crop.recycle();
+        if (crop != source && !crop.isRecycled()) crop.recycle();
         return masked;
     }
 
