@@ -40,8 +40,12 @@ object PaddleOcrBridge {
                     throw IllegalArgumentException("invalid bitmap")
                 }
                 if (!OcrModelManager.isReady(app, model)) throw IllegalStateException("model_not_downloaded")
-                val ocr = getOrCreate(app, model)
-                val result = runMutex.withLock { ocr.recognize(bitmap) }
+                // Keep lookup/creation and inference under the same run lock. Otherwise releaseModel()
+                // can remove/release the engine after getOrCreate() returns but before inference starts.
+                val result = runMutex.withLock {
+                    val ocr = getOrCreate(app, model)
+                    ocr.recognize(bitmap)
+                }
                 val baseDocument = toDocument(app, result.results, bitmap.width, bitmap.height, model)
                 val geometryStarted = System.currentTimeMillis()
                 val document = OcrGeometryRefiner.refinePpWithUpscaledMlKit(app, bitmap, baseDocument)
@@ -178,14 +182,8 @@ object PaddleOcrBridge {
         val lengthRatio = min(at.codePointCount(0, at.length), bt.codePointCount(0, bt.length)).toFloat() /
             max(1, max(at.codePointCount(0, at.length), bt.codePointCount(0, bt.length))).toFloat()
 
-        // Exact duplicates can differ slightly because DB's unclip creates nested rectangles.
         if (exact && (minCoverage >= 0.52f || iou >= 0.38f)) return true
-
-        // A duplicate recognizer pass can lose or add one punctuation/character. Require much
-        // stronger spatial containment before treating those lines as the same visual line.
         if (related && lengthRatio >= 0.78f && minCoverage >= 0.72f) return true
-
-        // Final guard for two almost-identical boxes with a one-character OCR disagreement.
         if (lengthRatio >= 0.88f && minCoverage >= 0.90f && normalizedEditSimilarity(at, bt) >= 0.82f) return true
         return false
     }
@@ -270,9 +268,13 @@ object PaddleOcrBridge {
     @JvmStatic
     fun releaseModel(model: Int) {
         scope.launch {
-            initMutex.withLock {
-                val old = synchronized(engines) { engines.remove(model) }
-                try { old?.release() } catch (_: Throwable) { }
+            // Same lock order as recognize(): run -> init. This guarantees no native ORT session is
+            // closed while an inference using that engine is running or about to start.
+            runMutex.withLock {
+                initMutex.withLock {
+                    val old = synchronized(engines) { engines.remove(model) }
+                    try { old?.release() } catch (_: Throwable) { }
+                }
             }
         }
     }
