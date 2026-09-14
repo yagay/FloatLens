@@ -21,7 +21,17 @@ final class SelectionCropper {
         int right = clamp((int) Math.ceil(viewRect.right * sx), left + 1, source.getWidth());
         int bottom = clamp((int) Math.ceil(viewRect.bottom * sy), top + 1, source.getHeight());
         if (right - left <= 1 || bottom - top <= 1) return null;
-        return Bitmap.createBitmap(source, left, top, right - left, bottom - top);
+
+        Bitmap crop = Bitmap.createBitmap(source, left, top, right - left, bottom - top);
+        // Bitmap.createBitmap() is allowed to return the input bitmap when the requested rectangle
+        // is the complete source. Result surfaces own their bitmap independently from the frozen
+        // source frame, so never hand an aliased source to a caller that may recycle the source.
+        if (crop == source) {
+            Bitmap detached = source.copy(Bitmap.Config.ARGB_8888, false);
+            if (detached == null) throw new IllegalStateException("unable to detach full-frame crop");
+            return detached;
+        }
+        return crop;
     }
 
     static Bitmap maskedCrop(Bitmap source, List<PointF> points,
@@ -71,7 +81,8 @@ final class SelectionCropper {
         canvas.clipPath(path);
         canvas.drawBitmap(crop, 0, 0, null);
         canvas.restore();
-        crop.recycle();
+        // A whole-frame Bitmap.createBitmap() can alias source; never recycle somebody else's frame.
+        if (crop != source && !crop.isRecycled()) crop.recycle();
         return masked;
     }
 
