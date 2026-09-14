@@ -89,25 +89,27 @@ public final class CircleLiveController {
         }
 
         void cancel(String reason) {
-            if (ended && processed) return;
+            if (cancelled) return;
             ended = true;
             cancelled = true;
+            processed = true;
             closeOverlay();
+            recycleScreenshot();
             FloatService f = FloatService.get();
             if (f != null) f.onCircleFinished(reason);
             DiagnosticLog.i(context, "CIRCLE_LIVE", "CANCEL reason=" + reason);
         }
 
         private void onScreenshot(Bitmap bitmap) {
-            if (cancelled) {
-                if (bitmap != null) bitmap.recycle();
+            if (cancelled || processed) {
+                if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
                 return;
             }
             screenshot = bitmap;
             showOverlay();
             if (ended && overlay != null) {
                 overlay.postDelayed(() -> {
-                    if (cancelled) return;
+                    if (cancelled || processed) return;
                     onCandidateReady();
                     maybeProcess();
                 }, 16L);
@@ -118,21 +120,26 @@ public final class CircleLiveController {
         }
 
         private void onCandidateReady() {
+            if (cancelled) return;
             FlSystemPanelController.onResultReady(context, shadeState, "circle_live_candidate_shown");
         }
 
         private void onCaptureFailure(Throwable error) {
+            // A cancelled/replaced session may still receive its backend callback. Never let that
+            // stale callback finish the newly active Circle session or show an irrelevant Toast.
+            if (cancelled || processed) return;
+            processed = true;
             closeOverlay();
+            recycleScreenshot();
             FloatService f = FloatService.get();
             if (f != null) f.onCircleFinished("capture_failed");
             String message = ScreenCaptureBackend.safeMessage(error);
             Toast.makeText(context, "圈选截图失败: " + message, Toast.LENGTH_LONG).show();
             DiagnosticLog.i(context, "CIRCLE_LIVE", "capture failed=" + message);
-            processed = true;
         }
 
         private void showOverlay() {
-            if (overlay != null || screenshot == null || cancelled) return;
+            if (overlay != null || screenshot == null || screenshot.isRecycled() || cancelled || processed) return;
             overlay = new LiveView(context, screenshot, points);
             WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                     -1, -1,
@@ -152,14 +159,18 @@ public final class CircleLiveController {
         }
 
         private void maybeProcess() {
-            if (processed || !ended || screenshot == null) return;
+            if (processed || !ended || screenshot == null || screenshot.isRecycled()) return;
             processed = true;
             closeOverlay();
-            if (cancelled) return;
+            if (cancelled) {
+                recycleScreenshot();
+                return;
+            }
 
             Rect display = wm.getCurrentWindowMetrics().getBounds();
             Bitmap masked = SelectionCropper.maskedCrop(screenshot, points,
                     Math.max(1, display.width()), Math.max(1, display.height()), dp(8));
+            recycleScreenshot();
             if (masked == null) {
                 FloatService f = FloatService.get();
                 if (f != null) f.onCircleFinished("selection_too_small");
@@ -207,6 +218,14 @@ public final class CircleLiveController {
             overlay = null;
         }
 
+        private void recycleScreenshot() {
+            Bitmap b = screenshot;
+            screenshot = null;
+            if (b != null && !b.isRecycled()) {
+                try { b.recycle(); } catch (Throwable ignored) { }
+            }
+        }
+
         private float dp(float value) {
             return value * context.getResources().getDisplayMetrics().density;
         }
@@ -241,7 +260,9 @@ public final class CircleLiveController {
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            canvas.drawBitmap(screenshot, null, new Rect(0, 0, getWidth(), getHeight()), bitmapPaint);
+            if (!screenshot.isRecycled()) {
+                canvas.drawBitmap(screenshot, null, new Rect(0, 0, getWidth(), getHeight()), bitmapPaint);
+            }
             canvas.drawRect(0, 0, getWidth(), getHeight(), shade);
             if (points != null && !points.isEmpty()) {
                 Path path = new Path();
