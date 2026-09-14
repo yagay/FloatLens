@@ -615,8 +615,38 @@ public class FloatService extends Service implements android.content.SharedPrefe
         recomputeVisibility();
     }
 
+    private void refreshVisibilitySettings() {
+        visibility.applySettings(fs);
+        KeyguardManager km = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+        visibility.setLockHidden(km != null && km.isKeyguardLocked() && !fs.showOnLock());
+        updateImeAvoidance();
+        recomputeVisibility();
+    }
+
+    private void refreshIconSettingsOnly() {
+        if (primary != null) primary.refreshSettings();
+        if (secondary != null) secondary.refreshSettings();
+        updateNotification();
+    }
+
     @Override public void onSharedPreferenceChanged(android.content.SharedPreferences prefs, String key) {
-        refreshAppearance();
+        FloatPreferenceImpact.Impact impact = FloatPreferenceImpact.classify(key);
+        if (impact == FloatPreferenceImpact.Impact.IGNORE) {
+            DiagnosticLog.i(this, "PREF_REFRESH", "ignore key=" + key);
+            return;
+        }
+
+        // Keep service-level action/screenshot/Root/track preferences current for every external
+        // settings change, but only touch WindowManager when the key actually affects icon layout.
+        fs = new FloatSettings(this);
+        DiagnosticLog.i(this, "PREF_REFRESH", "key=" + key + " impact=" + impact);
+        switch (impact) {
+            case APPEARANCE_LAYOUT -> refreshAppearance();
+            case VISIBILITY -> refreshVisibilitySettings();
+            case ICON_SETTINGS -> refreshIconSettingsOnly();
+            case SERVICE_SETTINGS -> updateNotification();
+            case IGNORE -> { }
+        }
     }
 
     @Override public void onConfigurationChanged(Configuration configuration) {
