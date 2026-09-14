@@ -5,7 +5,7 @@ import android.view.MotionEvent;
 import android.view.View;
 
 /**
- * Invisible FV-style edge handle that enlarges the touch target of a partially hidden float icon.
+ * Invisible FL-style edge handle that enlarges the touch target of a partially hidden float icon.
  *
  * FV keeps a separate FloatIconView$l window beside the 119x119 visible icon. Runtime capture shows
  * that helper at roughly 0.5x icon width and 1.16x icon height. This view mirrors that role without
@@ -35,7 +35,7 @@ final class FloatIconTouchHandle extends View {
                     event.getRawX() - targetLocation[0],
                     event.getRawY() - targetLocation[1]);
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                DiagnosticLog.i(getContext(), "FV_HANDLE", "DOWN raw="
+                DiagnosticLog.i(getContext(), "FL_HANDLE", "DOWN raw="
                         + Math.round(event.getRawX()) + "," + Math.round(event.getRawY())
                         + " owner=" + targetLocation[0] + "," + targetLocation[1]
                         + " local=" + Math.round(forwarded.getX()) + "," + Math.round(forwarded.getY()));

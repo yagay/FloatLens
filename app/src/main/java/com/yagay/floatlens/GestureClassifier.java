@@ -1,6 +1,6 @@
 package com.yagay.floatlens;
 
-/** Clean-room gesture classifier derived from observed FV runtime behavior. */
+/** FloatLens gesture classifier for the FL touch state machine. */
 public final class GestureClassifier {
     public static GestureDecision classify(GestureSession session, FloatSettings fs, float density) {
         if (session == null || session.points.isEmpty()) return GestureDecision.NONE;

@@ -2,7 +2,7 @@ package com.yagay.floatlens;
 
 import android.graphics.Rect;
 
-/** Immutable snapshot of an AccessibilityNodeInfo suitable for FV-style overlay selection. */
+/** Immutable snapshot of an AccessibilityNodeInfo suitable for FL overlay selection. */
 public final class ViewNodeCandidate {
     private final Rect bounds;
     private final String text;

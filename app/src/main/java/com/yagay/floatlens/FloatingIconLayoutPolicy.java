@@ -87,7 +87,7 @@ final class FloatingIconLayoutPolicy {
         lp.y = Math.max(0, Math.min(lp.y, wh[1] - lp.height));
     }
 
-    /** First phase of FV-style snapping: move to the fully visible left/right edge. */
+    /** First phase of FL-style snapping: move to the fully visible left/right edge. */
     void snapToVisibleEdge(WindowManager.LayoutParams lp) {
         if (lp == null) return;
         int[] wh = displaySize();

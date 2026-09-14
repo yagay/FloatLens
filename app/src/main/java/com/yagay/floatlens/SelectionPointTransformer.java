@@ -8,7 +8,7 @@ import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.WindowManager;
 
-/** Converts the original floating-icon touch stream into FV FooViewService.v3()-style coordinates. */
+/** Converts the original floating-icon touch stream into FL selection coordinates. */
 public final class SelectionPointTransformer {
     private static final float FL_EDGE_LEAD_DP = 10f;
     private static final float FL_X_PROBE_OFFSET_DP = 25f;
@@ -40,7 +40,7 @@ public final class SelectionPointTransformer {
     }
 
     /**
-     * FV starts from the FloatIconView's actual current Window position, including a partially hidden
+     * FL starts from the FloatIconView's actual current Window position, including a partially hidden
      * edge position. raw-local gives that real overlay origin before the View is ever expanded.
      */
     public void begin(MotionEvent e) {
@@ -99,7 +99,7 @@ public final class SelectionPointTransformer {
         float helperInset = dp(FL_Y_HELPER_INSET_DP);
         float iconLeft = startIconLeft + (rawX - downRawX);
 
-        // Normal FV X path: K(false) + rawX - downRawX - 25dp.
+        // FL X path: K(false) + rawX - downRawX - 25dp.
         float x = iconLeft - dp(FL_X_PROBE_OFFSET_DP);
         boolean rightCompensation = false;
         float rightThreshold = Float.NaN;
@@ -112,7 +112,7 @@ public final class SelectionPointTransformer {
             }
         }
 
-        // Normal FV Y path: rawY + 10dp - 20dp - 50dp == rawY - 60dp.
+        // FL Y path: rawY + 10dp - 20dp - 50dp == rawY - 60dp.
         float edgeY = rawY + lead;
         float y = edgeY - helperInset - edgeSpan;
         boolean bottomCompensation = false;

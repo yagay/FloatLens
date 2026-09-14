@@ -14,7 +14,7 @@ import androidx.core.app.NotificationCompat;
 
 import java.util.List;
 
-/** Persistent floating icon service with FV-style temporary-follow positioning. */
+/** Persistent floating icon service with FL temporary-follow positioning. */
 public class FloatService extends Service implements android.content.SharedPreferences.OnSharedPreferenceChangeListener {
     public static final String ACT_START = "com.yagay.floatlens.START";
     public static final String ACT_STOP = "com.yagay.floatlens.STOP";
@@ -339,7 +339,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
             primaryHandle = handle;
             primaryHandleLp = handleLp;
         }
-        DiagnosticLog.i(this, "FV_HANDLE", "ADD side=" + (layout.isLeft(iconLp) ? "L" : "R")
+        DiagnosticLog.i(this, "FL_HANDLE", "ADD side=" + (layout.isLeft(iconLp) ? "L" : "R")
                 + " icon=" + iconLp.width + "x" + iconLp.height
                 + " handle=" + handleLp.width + "x" + handleLp.height
                 + " pos=" + handleLp.x + "," + handleLp.y);

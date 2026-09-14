@@ -10,7 +10,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 
-/** Large View-candidate frame with FV red TRACKING -> yellow READY feedback. */
+/** Large View-candidate frame with FL red TRACKING -> yellow READY feedback. */
 final class ViewCandidateFrameOverlay {
     private final Context context;
     private final FlOverlayWindowHost windowHost;

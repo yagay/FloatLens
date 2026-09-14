@@ -1,152 +1,40 @@
-name: One-time FL Naming Cleanup
+name: Debug Build
 
 on:
   push:
-    branches: [ "rename/fv-to-fl" ]
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  rename:
-    if: github.actor != 'github-actions[bot]'
+  build-debug:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout branch
+      - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
-          ref: rename/fv-to-fl
-          fetch-depth: 0
+          distribution: temurin
+          java-version: '17'
 
-      - name: Rename migrated internals
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
+      - name: Set up Gradle 9.4.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.4.1'
 
-          replacements = {
-              'app/src/main/java/com/yagay/floatlens/FlProbePointOverlay.java': [
-                  ('geometry follows the behavior observed in FV m2/g', 'uses FL selection geometry'),
-              ],
-              'app/src/main/java/com/yagay/floatlens/FlPointerOperationHintOverlay.java': [
-                  ('geometry follows the behavior observed in FV m2/g', 'uses FL selection geometry'),
-              ],
-              'app/src/main/java/com/yagay/floatlens/VisualCandidateDetector.java': [('FV-style', 'FL-style')],
-              'app/src/main/java/com/yagay/floatlens/CandidateGeometryFilter.java': [
-                  ('FV-style semantic preparation', 'FL semantic preparation'),
-                  ('Important: FV keeps', 'Important: FL keeps'),
-                  ('FV performs its geometry cleanup', 'FL performs its geometry cleanup'),
-              ],
-              'app/src/main/java/com/yagay/floatlens/ScreenSelectionModel.java': [
-                  ('FV-style cached hit-test model.', 'FL cached hit-test model.'),
-                  ('Reverse engineering of fooView 1.6.4 shows that its selection overlay does not flatten every\\n * Accessibility rectangle into one global depth-ranked list. FooAccessibilityService prepares\\n * semantic lists first, and o1/n1#getSelectedRect() walks those lists in order and returns the first\\n * candidate whose rectangle contains the pointer. FooAccessibilityService#c1() prepares each list\\n * by putting contained/smaller overlapping rectangles before broader ones.\\n *\\n * FloatLens keeps the same important invariants here:',
-                   'FloatLens prepares semantic candidate buckets before MOVE-time hit testing.\\n * Important FL invariants:'),
-                  ("Matches the meaningful part of FV's getSelectedRect() ordering for the normal selection", 'Matches FL semantic ordering for the normal selection'),
-                  ('remains behind FV', 'remains behind FL'),
-                  ('FV MOVE-time behavior', 'FL MOVE-time behavior'),
-                  ('Clean-room equivalent of the ordering behavior observed in FV FooAccessibilityService#c1().', 'FL geometry preparation keeps narrower/contained candidates ahead of broader candidates.'),
-              ],
-              'app/src/main/java/com/yagay/floatlens/FloatingIconLayoutPolicy.java': [('FV-style', 'FL-style')],
-              'app/src/main/java/com/yagay/floatlens/ScreenCandidate.java': [("inspired by FV's Rect/Text + NonText candidate pipeline", 'used by the FL Rect/Text + NonText candidate pipeline')],
-              'app/src/main/java/com/yagay/floatlens/LensAccessibilityService.java': [
-                  ("FV's window helper switches floating windows to type 2032 when accessibility is available.", 'FL switches floating windows to type 2032 when accessibility is available.'),
-                  ('notification shade and quick settings, just like FV.', 'notification shade and quick settings while the accessibility host is available.'),
-                  ('FV r0(x,y)-style collection', 'FL point-scoped collection'),
-              ],
-              'app/src/main/java/com/yagay/floatlens/FlRegionFrameOverlay.java': [('FV View readiness colors', 'FL View readiness colors')],
-              'app/src/main/java/com/yagay/floatlens/ViewSelectionOverlay.java': [
-                  ('FV hosts the interactive selection surface', 'FL hosts the interactive selection surface'),
-                  ("Match FV's cached-tree behavior", 'Use FL cached-tree behavior'),
-              ],
-              'app/src/main/java/com/yagay/floatlens/GestureSession.java': [('FV records a full point stream', 'FL records a full point stream')],
-              'app/src/main/java/com/yagay/floatlens/ShadeDismissActivity.java': [
-                  ('Modern non-root equivalent of FV ShadowActivity request=21.', 'FL transient Activity used to assist notification-shade dismissal on modern Android.'),
-                  ('FV starts ShadowActivity and finishes it 300 ms later.', 'FL keeps this Activity short-lived and finishes it 300 ms later.'),
-              ],
-              'app/src/main/java/com/yagay/floatlens/FloatIconTouchHandle.java': [
-                  ('Invisible FV-style edge handle', 'Invisible FL-style edge handle'),
-                  ('FV keeps a separate FloatIconView$l window beside the 119x119 visible icon. Runtime capture shows\\n * that helper at roughly 0.5x icon width and 1.16x icon height. This view mirrors that role without', 'FL keeps a separate invisible edge handle beside the visible icon at roughly 0.5x icon width\\n * and 1.16x icon height. This view expands the touch target without'),
-                  ('"FV_HANDLE"', '"FL_HANDLE"'),
-              ],
-              'app/src/main/java/com/yagay/floatlens/FlSystemPanelController.java': [('behavior verified in FV', 'FL result-ready behavior')],
-              'app/src/main/java/com/yagay/floatlens/AccessibilityCandidateCollector.java': [
-                  ('FV-style accessibility candidate collector.', 'FL accessibility candidate collector.'),
-                  ('This matches FV more closely than the old text/image-only collector', 'FL extends the old text/image-only collector'),
-                  ('FV keeps ordinary View rectangles', 'FL keeps ordinary View rectangles'),
-              ],
-              'app/src/main/java/com/yagay/floatlens/GestureClassifier.java': [('Clean-room gesture classifier derived from observed FV runtime behavior.', 'FloatLens gesture classifier for the FL touch state machine.')],
-              'app/src/main/java/com/yagay/floatlens/ViewCandidateFrameOverlay.java': [('FV red TRACKING -> yellow READY feedback', 'FL red TRACKING -> yellow READY feedback')],
-              'app/src/main/java/com/yagay/floatlens/ScreenshotController.java': [('"fv_region_capture"', '"fl_region_capture"')],
-              'app/src/main/java/com/yagay/floatlens/SelectionVisualState.java': [('Shared FV drag-selection visual state.', 'Shared FL drag-selection visual state.')],
-              'app/src/main/java/com/yagay/floatlens/SelectionVisuals.java': [
-                  ('Shared FV 1.6.4 drag-selection visuals.', 'Shared FL drag-selection visuals.'),
-                  ('FV o1/n1.onDraw(): normal selection is red.', 'FL normal selection is red.'),
-                  ('FV o1/n1.onDraw(): confirmed/extractable selection is yellow.', 'FL confirmed/extractable selection is yellow.'),
-                  ('FV calls m5/q.a(2) then uses that as Paint stroke width: exactly 2dp.', 'FL selection frame uses an exact 2dp Paint stroke width.'),
-                  ("This intentionally matches FV's single STROKE Paint rather than the previous double outline.", 'FL intentionally uses one STROKE Paint rather than a double outline.'),
-              ],
-              'app/src/main/java/com/yagay/floatlens/ViewSelectionEngine.java': [
-                  ('FV-style same-touch selection engine.', 'FL same-touch selection engine.'),
-                  ("Region dragging and selected-View readiness are intentionally separate. FV's FooViewService owns\\n * the dwell/re-arm state and calls o1/n1.d(false/true) on the selected View rectangle. FloatLens\\n * mirrors that relationship: ViewHoverOverlay is passive; this engine owns the 400ms / ±3dp state.", 'Region dragging and selected-View readiness are intentionally separate. ViewHoverOverlay is\\n * passive; this engine owns the FL 400ms / ±3dp dwell/re-arm state.'),
-                  ('Immediate FV m2/g-style region state', 'Immediate FL region state'),
-                  ('FV o1/n1.d state applies only to the selected View rectangle.', 'FL readiness state applies only to the selected View rectangle.'),
-                  ("FV's pointer_op_hint is anchored from the", 'The FL pointer hint is anchored from the'),
-                  ('FV m2/g.v() is unconditional', 'FL region/select mode is unconditional'),
-                  ("Snapshot FV's real small-icon origin", "Snapshot FL's real small-icon origin"),
-                  ('fvViewState=', 'flViewState='),
-                  ('FV FooViewService -> o1/n1.d(false): every newly selected View starts red.', 'FL rule: every newly selected View starts red.'),
-                  ('FV c3: leave the ±3dp stable box -> d(false), then re-arm the 400ms runnable.', 'FL rule: leaving the ±3dp stable box returns to TRACKING and re-arms the 400ms timer.'),
-                  ("after FV's 5ms delay", 'after the FL 5ms release delay'),
-              ],
-              'app/src/main/java/com/yagay/floatlens/SelectionPointTransformer.java': [
-                  ('into FV FooViewService.v3()-style coordinates', 'into FL selection coordinates'),
-                  ("FV starts from the FloatIconView's actual current Window position", "FL starts from the FloatIconView's actual current Window position"),
-                  ('Clean-room reconstruction of FooViewService.v3(). The output is the Point later sent both to\\n     * q2/e4(circle_focus) and to the selection/View hit-test layer.', 'Returns the FL probe point shared by the selection and View hit-test layers.'),
-                  ('Normal FV X path', 'FL X path'),
-                  ('Normal FV Y path', 'FL Y path'),
-              ],
-              'app/src/main/java/com/yagay/floatlens/ViewHoverOverlay.java': [
-                  ('Mirrors FV o1/n1: this class is only the selected-View visual.', 'FL rule: this class is only the selected-View visual.'),
-                  ('FV o1/n1.d(false/true) equivalent.', 'FL TRACKING/READY visual-state update.'),
-              ],
-              'app/src/main/java/com/yagay/floatlens/ViewNodeCandidate.java': [('FV-style overlay selection', 'FL overlay selection')],
-              'app/src/main/java/com/yagay/floatlens/FloatService.java': [
-                  ('FV-style temporary-follow positioning', 'FL temporary-follow positioning'),
-                  ('"FV_HANDLE"', '"FL_HANDLE"'),
-              ],
-              'app/src/main/res/values/strings.xml': [('FloatLens floating OCR tool and fooView FV runtime inspector.', 'FloatLens floating OCR, View selection and screenshot tool.')],
-              'docs/ARCHITECTURE.md': [
-                  ('keep FV-compatible\\ninteraction semantics', 'keep FL\\ninteraction semantics stable'),
-                  ('FV-style 400 ms direct-selection dwell', 'FL 400 ms direct-selection dwell'),
-                  ('Only owner of FV direct-drag selection state', 'Only owner of FL direct-drag selection state'),
-                  ('FV-compatible 5 ms release delay', 'FL 5 ms release delay'),
-                  ('Activity-result FV compatibility sequence', 'Activity-result FL compatibility sequence'),
-                  ('The scoped BACK fallback is a FloatLens/OxygenOS adaptation, not original FV behavior.', 'The scoped BACK fallback is a FloatLens/OxygenOS adaptation.'),
-                  ('Preserve FV touch timing and pointer order', 'Preserve FL touch timing and pointer order'),
-                  ('Document modern Android/OxygenOS adaptations instead of presenting them as FV-original behavior.', 'Document modern Android/OxygenOS adaptations explicitly.'),
-              ],
-          }
+      - name: Build debug APK
+        run: gradle --stacktrace assembleDebug
 
-          for name, pairs in replacements.items():
-              path = Path(name)
-              text = path.read_text(encoding='utf-8')
-              original = text
-              for old, new in pairs:
-                  text = text.replace(old, new)
-              if text != original:
-                  path.write_text(text, encoding='utf-8')
-                  print('changed', name)
-          PY
-          git fetch origin main
-          git show origin/main:.github/workflows/debug.yml > .github/workflows/debug.yml
-
-      - name: Show remaining FV references
-        run: grep -RniE 'FV|fv[A-Z_]|fv_' app/src/main docs README.md || true
-
-      - name: Commit cleanup
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/src/main docs .github/workflows/debug.yml
-          git commit -m 'Rename migrated FV internals to FL'
-          git push origin HEAD:rename/fv-to-fl
+      - name: Upload debug APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: FloatLens-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: ignore

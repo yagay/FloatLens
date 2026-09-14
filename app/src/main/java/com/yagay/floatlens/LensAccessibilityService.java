@@ -68,10 +68,10 @@ public class LensAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * FV's window helper switches floating windows to type 2032 when accessibility is available.
+     * FL switches floating windows to type 2032 when accessibility is available.
      * 2032 is TYPE_ACCESSIBILITY_OVERLAY. Hosting the icon from the AccessibilityService's own
      * WindowManager gives it the accessibility overlay token/layer so it remains above SystemUI's
-     * notification shade and quick settings, just like FV.
+     * notification shade and quick settings while the accessibility host is available.
      */
     public boolean addAccessibilityOverlay(View view, WindowManager.LayoutParams lp) {
         if(view==null||lp==null)return false;
@@ -250,7 +250,7 @@ public class LensAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * FV r0(x,y)-style collection: return the whole Accessibility candidate chain at the point,
+     * FL point-scoped collection: return the whole Accessibility candidate chain at the point,
      * not one pre-ranked node. Window order is Android's documented top-most -> bottom-most order.
      * Candidate attributes are descriptive only; final selection is performed geometrically by
      * ScreenSelectionModel.

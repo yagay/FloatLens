@@ -111,7 +111,7 @@ public final class ScreenshotController {
         if (screenBounds == null || screenBounds.isEmpty()) return;
         Context app = c.getApplicationContext();
         final FlSystemPanelController.CaptureState shadeState = FlSystemPanelController.beginCapture(
-                app, "fv_region_capture");
+                app, "fl_region_capture");
         Rect bounds = new Rect(screenBounds);
         captureBounds(app, bounds, crop -> {
             DiagnosticLog.i(app, "FL_REGION_CAPTURE", "crop=" + bitmapSize(crop)

@@ -43,7 +43,7 @@ public final class ViewSelectionOverlay {
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
-        // FV hosts the interactive selection surface as TYPE_ACCESSIBILITY_OVERLAY whenever the
+        // FL hosts the interactive selection surface as TYPE_ACCESSIBILITY_OVERLAY whenever the
         // accessibility service is available. FlOverlayWindowHost falls back to an application
         // overlay only when that host is unavailable.
         if (!host.add(view, lp, "explicit_view_picker")) {
@@ -124,7 +124,7 @@ public final class ViewSelectionOverlay {
             if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
                 lastRawX = e.getRawX();
                 lastRawY = e.getRawY();
-                // Match FV's cached-tree behavior: MOVE only performs geometry hit-testing. Never
+                // Use FL cached-tree behavior: MOVE only performs geometry hit-testing. Never
                 // recursively walk AccessibilityNodeInfo on the touch/UI thread.
                 updateFromCache(lastRawX, lastRawY);
                 invalidate();

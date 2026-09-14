@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * FV-style accessibility candidate collector.
+ * FL accessibility candidate collector.
  *
  * Candidate classes:
  *  1) TEXT: node with visible text/contentDescription/hint/stateDescription;
@@ -17,7 +17,7 @@ import java.util.Locale;
  *     WebView/SurfaceView/TextureView/android.view.View, and whole-page Views;
  *  4) ROOT: last-resort near-fullscreen fallback when no better View identity is exposed.
  *
- * This matches FV more closely than the old text/image-only collector: an ordinary View does not
+ * FL extends the old text/image-only collector: an ordinary View does not
  * need text or image semantics to be selectable.
  */
 public final class AccessibilityCandidateCollector {
@@ -225,7 +225,7 @@ public final class AccessibilityCandidateCollector {
         return imageClass || imageId;
     }
 
-    /** FV keeps ordinary View rectangles instead of requiring text/image semantics. */
+    /** FL keeps ordinary View rectangles instead of requiring text/image semantics. */
     private static boolean isGenericViewCandidate(LensAccessibilityService service,
                                                    Rect r, String cls, String id,
                                                    boolean fullscreen) {
