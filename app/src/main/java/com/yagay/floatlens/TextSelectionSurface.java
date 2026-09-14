@@ -8,6 +8,8 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ScrollView;
 
+import androidx.appcompat.widget.AppCompatEditText;
+
 /** Reusable native Android text-selection surface for the unified result panel. */
 public class TextSelectionSurface extends FrameLayout {
     public interface Listener {
@@ -88,7 +90,7 @@ public class TextSelectionSurface extends FrameLayout {
         return Math.round(v * getResources().getDisplayMetrics().density);
     }
 
-    private static final class SelectionEditText extends EditText {
+    private static final class SelectionEditText extends AppCompatEditText {
         TextSelectionSurface owner;
         SelectionEditText(Context context) { super(context); }
 
