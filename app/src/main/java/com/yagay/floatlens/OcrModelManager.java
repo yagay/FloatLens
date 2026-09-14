@@ -5,11 +5,14 @@ import android.os.Handler;
 import android.os.Looper;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.security.MessageDigest;
 import java.util.HashSet;
+import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -26,6 +29,8 @@ public final class OcrModelManager {
         return t;
     });
     private static final Set<Integer> DOWNLOADING = new HashSet<>();
+    private static final String MANIFEST_FILE = "integrity.properties";
+    private static final String MANIFEST_VERSION = "1";
 
     public interface Callback {
         void onProgress(String stage, int percent);
@@ -77,7 +82,9 @@ public final class OcrModelManager {
     public static File detFile(Context c, int model) { return new File(dir(c, model), "det/inference.onnx"); }
     public static File recFile(Context c, int model) { return new File(dir(c, model), "rec/inference.onnx"); }
     public static File ymlFile(Context c, int model) { return new File(dir(c, model), "rec/inference.yml"); }
+    private static File manifestFile(Context c, int model) { return new File(dir(c, model), MANIFEST_FILE); }
 
+    /** Fast readiness check used by UI/strategy selection. It intentionally does not hash large files. */
     public static boolean isReady(Context c, int model) {
         try {
             Spec s = spec(model);
@@ -86,6 +93,35 @@ public final class OcrModelManager {
                     && r.isFile() && r.length() >= s.recMin
                     && y.isFile() && y.length() >= 4_000L;
         } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * Expensive integrity verification. Call only immediately before cold-loading a model, never from
+     * settings rendering. A successful download writes SHA-256 hashes atomically. Existing installs
+     * from older FloatLens versions get a one-time local baseline manifest on first verified load.
+     */
+    public static boolean verifyIntegrity(Context c, int model) {
+        Context app = c.getApplicationContext();
+        if (!isReady(app, model) || isDownloading(model)) return false;
+        try {
+            File manifest = manifestFile(app, model);
+            if (!manifest.isFile()) {
+                writeIntegrityManifest(app, model);
+                DiagnosticLog.i(app, "OCR_MODEL", "integrity baseline created model=" + model
+                        + " legacy=true");
+            }
+
+            Properties p = loadProperties(manifest);
+            if (!MANIFEST_VERSION.equals(p.getProperty("version"))) return false;
+            boolean ok = verifyFile(detFile(app, model), p, "det")
+                    && verifyFile(recFile(app, model), p, "rec")
+                    && verifyFile(ymlFile(app, model), p, "yml");
+            DiagnosticLog.i(app, "OCR_MODEL", "integrity model=" + model + " ok=" + ok);
+            return ok;
+        } catch (Throwable t) {
+            DiagnosticLog.i(app, "OCR_MODEL", "integrity failure model=" + model + " " + safe(t));
             return false;
         }
     }
@@ -114,6 +150,11 @@ public final class OcrModelManager {
             try {
                 File root = dir(app, model);
                 if (!root.exists() && !root.mkdirs()) throw new IllegalStateException("无法创建模型目录");
+                File oldManifest = manifestFile(app, model);
+                if (oldManifest.exists() && !oldManifest.delete()) {
+                    throw new IllegalStateException("无法更新模型完整性清单");
+                }
+
                 long total = sp.estimatedTotal;
                 long[] doneBase = {0L};
                 downloadOne(sp.detUrl, detFile(app, model), sp.detMin, doneBase, total, "检测模型", cb);
@@ -121,12 +162,14 @@ public final class OcrModelManager {
                 downloadOne(sp.recUrl, recFile(app, model), sp.recMin, doneBase, total, "识别模型", cb);
                 doneBase[0] += recFile(app, model).length();
                 downloadOne(sp.ymlUrl, ymlFile(app, model), 4_000L, doneBase, total, "字符配置", cb);
-                if (!isReady(app, model)) throw new IllegalStateException("下载完成但模型校验失败");
+                if (!isReady(app, model)) throw new IllegalStateException("下载完成但模型大小校验失败");
+                writeIntegrityManifest(app, model);
+                if (!verifyIntegrity(app, model)) throw new IllegalStateException("下载完成但 SHA-256 校验失败");
                 // A previous engine may still map the old model files. Invalidate it after all new
                 // files have been atomically moved into place so the next OCR run reloads them.
                 PaddleOcrBridge.releaseModel(model);
                 DiagnosticLog.i(app, "OCR_MODEL", "download success model=" + model
-                        + " bytes=" + installedBytes(app, model) + " runtimeReload=true");
+                        + " bytes=" + installedBytes(app, model) + " integrity=sha256 runtimeReload=true");
                 if (cb != null) MAIN.post(cb::onSuccess);
             } catch (Throwable t) {
                 DiagnosticLog.i(app, "OCR_MODEL", "download failure model=" + model + " " + safe(t));
@@ -174,6 +217,60 @@ public final class OcrModelManager {
         if (part.length() < minBytes) throw new IllegalStateException(stage + " 文件过小: " + part.length());
         if (out.exists() && !out.delete()) throw new IllegalStateException("无法替换旧模型");
         if (!part.renameTo(out)) throw new IllegalStateException("无法保存 " + stage);
+    }
+
+    private static void writeIntegrityManifest(Context c, int model) throws Exception {
+        File root = dir(c, model);
+        if (!root.exists() && !root.mkdirs()) throw new IllegalStateException("无法创建模型目录");
+        Properties p = new Properties();
+        p.setProperty("version", MANIFEST_VERSION);
+        putFileProperties(p, "det", detFile(c, model));
+        putFileProperties(p, "rec", recFile(c, model));
+        putFileProperties(p, "yml", ymlFile(c, model));
+
+        File out = manifestFile(c, model);
+        File part = new File(out.getAbsolutePath() + ".part");
+        try (FileOutputStream fos = new FileOutputStream(part, false)) {
+            p.store(fos, "FloatLens OCR model integrity");
+            fos.getFD().sync();
+        }
+        if (out.exists() && !out.delete()) throw new IllegalStateException("无法替换完整性清单");
+        if (!part.renameTo(out)) throw new IllegalStateException("无法保存完整性清单");
+    }
+
+    private static void putFileProperties(Properties p, String key, File file) throws Exception {
+        if (file == null || !file.isFile()) throw new IllegalStateException(key + " 模型文件不存在");
+        p.setProperty(key + ".length", Long.toString(file.length()));
+        p.setProperty(key + ".sha256", sha256(file));
+    }
+
+    private static boolean verifyFile(File file, Properties p, String key) throws Exception {
+        if (file == null || !file.isFile()) return false;
+        long expectedLength = Long.parseLong(p.getProperty(key + ".length", "-1"));
+        String expectedHash = p.getProperty(key + ".sha256", "");
+        if (file.length() != expectedLength || expectedHash.length() != 64) return false;
+        return expectedHash.equalsIgnoreCase(sha256(file));
+    }
+
+    private static String sha256(File file) throws Exception {
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        try (InputStream in = new FileInputStream(file)) {
+            byte[] buf = new byte[1024 * 1024];
+            int n;
+            while ((n = in.read(buf)) >= 0) {
+                if (Thread.currentThread().isInterrupted()) throw new InterruptedException("model hash interrupted");
+                if (n > 0) md.update(buf, 0, n);
+            }
+        }
+        StringBuilder hex = new StringBuilder(64);
+        for (byte b : md.digest()) hex.append(String.format(java.util.Locale.ROOT, "%02x", b & 0xff));
+        return hex.toString();
+    }
+
+    private static Properties loadProperties(File file) throws Exception {
+        Properties p = new Properties();
+        try (InputStream in = new FileInputStream(file)) { p.load(in); }
+        return p;
     }
 
     public static void delete(Context c, int model) {
