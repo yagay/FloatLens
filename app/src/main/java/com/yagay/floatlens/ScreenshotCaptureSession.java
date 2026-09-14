@@ -14,40 +14,31 @@ import java.util.function.Consumer;
 final class ScreenshotCaptureSession {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final long HIDE_SETTLE_MS = 100L;
-    private static final long RESTORE_DELAY_MS = 80L;
 
     static void capture(Context c, FloatSettings settings,
                         Consumer<Bitmap> ok, Consumer<Throwable> fail) {
         Context app = c.getApplicationContext();
-        FloatService service = FloatService.get();
-        boolean hideIcon = !settings.keepInScreenshot() && service != null;
+        boolean hideIcon = !settings.keepInScreenshot() && FloatService.get() != null;
+        ScreenshotVisibilityLease.Lease visibilityLease = hideIcon
+                ? ScreenshotVisibilityLease.acquire(app, "screenshot_session") : null;
         DiagnosticLog.i(app, "SCREENSHOT_SESSION", "begin hideIcon=" + hideIcon
                 + " accessibility=" + settings.accessibilityScreenshot()
                 + " root=" + settings.rootScreenshot());
-        if (hideIcon) service.setScreenshotHidden(true);
 
         MAIN.postDelayed(() -> {
             DiagnosticLog.i(app, "SCREENSHOT_SESSION", "capture after settleMs="
                     + (hideIcon ? HIDE_SETTLE_MS : 0L));
             ScreenCaptureBackend.capture(app, settings, raw -> {
                 DiagnosticLog.i(app, "SCREENSHOT_SESSION", "backend success bitmap=" + size(raw));
-                restore(app, service, hideIcon);
+                ScreenshotVisibilityLease.release(app, visibilityLease, "success");
                 ok.accept(raw);
             }, error -> {
                 DiagnosticLog.i(app, "SCREENSHOT_SESSION", "backend failed error="
                         + ScreenCaptureBackend.safeMessage(error));
-                restore(app, service, hideIcon);
+                ScreenshotVisibilityLease.release(app, visibilityLease, "failure");
                 fail.accept(error);
             });
         }, hideIcon ? HIDE_SETTLE_MS : 0L);
-    }
-
-    private static void restore(Context app, FloatService service, boolean hidden) {
-        if (!hidden || service == null) return;
-        MAIN.postDelayed(() -> {
-            service.setScreenshotHidden(false);
-            DiagnosticLog.i(app, "SCREENSHOT_SESSION", "icon restored delayMs=" + RESTORE_DELAY_MS);
-        }, RESTORE_DELAY_MS);
     }
 
     private static String size(Bitmap b) {
