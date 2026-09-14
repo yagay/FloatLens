@@ -5,11 +5,27 @@ import android.graphics.Bitmap;
 
 import java.util.function.Consumer;
 
-/** Chooses Accessibility/Root screenshot backends; owns no UI visibility or crop policy. */
+/**
+ * Selects the screenshot backend while respecting the optional privilege layer.
+ *
+ * <p>Normal mode never calls RootCapture. Root is considered only when all three conditions are
+ * true: enhanced mode, Root provider, and the per-feature Root screenshot switch. Enhanced
+ * failures can fall back to Accessibility when the user keeps fallback enabled.</p>
+ */
 final class ScreenCaptureBackend {
     static void capture(Context c, FloatSettings settings,
                         Consumer<Bitmap> ok, Consumer<Throwable> fail) {
         Context app = c.getApplicationContext();
+        boolean rootAllowed = settings.effectiveRootScreenshot();
+        boolean fallbackNormal = settings.privilegeFallback();
+
+        DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "mode="
+                + PrivilegeManager.modeLabel(settings)
+                + " accessibilityPreferred=" + settings.accessibilityScreenshot()
+                + " rootFeature=" + settings.rootScreenshot()
+                + " rootAllowed=" + rootAllowed
+                + " fallbackNormal=" + fallbackNormal);
+
         if (settings.accessibilityScreenshot()) {
             DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "try accessibility primary");
             captureAccessibility(app, b -> {
@@ -17,8 +33,8 @@ final class ScreenCaptureBackend {
                 ok.accept(b);
             }, accessError -> {
                 DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "accessibility failed=" + safeMessage(accessError));
-                if (settings.rootScreenshot()) {
-                    DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "fallback root");
+                if (rootAllowed) {
+                    DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "fallback enhanced root");
                     RootCapture.captureAsync(app, b -> {
                         DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "root fallback success bitmap=" + size(b));
                         ok.accept(b);
@@ -32,23 +48,37 @@ final class ScreenCaptureBackend {
             });
             return;
         }
-        if (settings.rootScreenshot()) {
-            DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "try root primary");
+
+        if (rootAllowed) {
+            DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "try enhanced root primary");
             RootCapture.captureAsync(app, b -> {
                 DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "root success bitmap=" + size(b));
                 ok.accept(b);
-            }, error -> {
-                DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "root failed=" + safeMessage(error));
-                fail.accept(error);
+            }, rootError -> {
+                DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "root failed=" + safeMessage(rootError));
+                if (!fallbackNormal) {
+                    fail.accept(rootError);
+                    return;
+                }
+                DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "fallback normal accessibility");
+                captureAccessibility(app, b -> {
+                    DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "normal fallback success bitmap=" + size(b));
+                    ok.accept(b);
+                }, accessError -> {
+                    DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "normal fallback failed=" + safeMessage(accessError));
+                    fail.accept(combined(rootError, accessError));
+                });
             });
             return;
         }
-        DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "try accessibility implicit");
+
+        // Enhanced mode is off, Root is off, or Root screenshot is off: ordinary path only.
+        DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "try accessibility normal path");
         captureAccessibility(app, b -> {
-            DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "accessibility implicit success bitmap=" + size(b));
+            DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "accessibility normal success bitmap=" + size(b));
             ok.accept(b);
         }, error -> {
-            DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "accessibility implicit failed=" + safeMessage(error));
+            DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "accessibility normal failed=" + safeMessage(error));
             fail.accept(error);
         });
     }
@@ -57,15 +87,16 @@ final class ScreenCaptureBackend {
                                              Consumer<Throwable> fail) {
         LensAccessibilityService service = LensAccessibilityService.get();
         if (service == null) {
-            fail.accept(new IllegalStateException("需要开启 FloatLens 无障碍服务，或启用 Root 截图"));
+            fail.accept(new IllegalStateException(
+                    "需要开启 FloatLens 无障碍服务；Root 截图需同时开启增强模式、Root 功能和 Root 截图增强"));
             return;
         }
         service.capture(ok, fail);
     }
 
     private static IllegalStateException combined(Throwable a, Throwable b) {
-        return new IllegalStateException("Accessibility 与 Root 截图均失败；Accessibility="
-                + safeMessage(a) + "，Root=" + safeMessage(b));
+        return new IllegalStateException("两个截图后端均失败；first="
+                + safeMessage(a) + "，second=" + safeMessage(b));
     }
 
     static String safeMessage(Throwable t) {
