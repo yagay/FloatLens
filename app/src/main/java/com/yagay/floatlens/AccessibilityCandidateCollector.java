@@ -19,13 +19,17 @@ import java.util.Locale;
  *
  * FL extends the old text/image-only collector: an ordinary View does not
  * need text or image semantics to be selectable.
+ *
+ * The collector is intentionally interruption-aware. ViewSelectionEngine cancels stale scans when
+ * the pointer leaves Direct mode or a newer session replaces the old one; recursion and window loops
+ * must stop promptly so the single worker does not accumulate obsolete full-tree traversals.
  */
 public final class AccessibilityCandidateCollector {
     private AccessibilityCandidateCollector() {}
 
     public static List<ScreenCandidate> collect(LensAccessibilityService service) {
         ArrayList<ScreenCandidate> out = new ArrayList<>();
-        if (service == null) return out;
+        if (service == null || cancelled()) return out;
         Rect screen = service.screenBounds();
         int[] count = {0};
 
@@ -33,6 +37,7 @@ public final class AccessibilityCandidateCollector {
             List<AccessibilityWindowInfo> windows = service.getWindows();
             if (windows != null) {
                 for (int wi = 0; wi < windows.size(); wi++) {
+                    if (cancelled()) break;
                     AccessibilityWindowInfo w = windows.get(wi);
                     if (w == null) continue;
                     AccessibilityNodeInfo root = null;
@@ -41,19 +46,26 @@ public final class AccessibilityCandidateCollector {
                     String pkg = nodePackage(root);
                     if (service.getPackageName().equals(pkg)) continue;
                     collectNode(service, root, screen, 0, count, out);
-                    if (count[0] > 6000) break;
+                    if (count[0] > 6000 || cancelled()) break;
                 }
             }
 
-            AccessibilityNodeInfo active = null;
-            try { active = service.getRootInActiveWindow(); } catch (Throwable ignored) {}
-            if (active != null && !service.getPackageName().equals(nodePackage(active))) {
-                collectNode(service, active, screen, 0, count, out);
+            if (!cancelled()) {
+                AccessibilityNodeInfo active = null;
+                try { active = service.getRootInActiveWindow(); } catch (Throwable ignored) {}
+                if (active != null && !service.getPackageName().equals(nodePackage(active))) {
+                    collectNode(service, active, screen, 0, count, out);
+                }
             }
         } catch (Throwable t) {
-            DiagnosticLog.i(service, "FL_TREE", "collect failed=" + t);
+            if (!cancelled()) DiagnosticLog.i(service, "FL_TREE", "collect failed=" + t);
         }
 
+        if (cancelled()) {
+            DiagnosticLog.i(service, "FL_TREE", "collect cancelled nodes=" + count[0]
+                    + " partial=" + out.size());
+            return new ArrayList<>();
+        }
         List<ScreenCandidate> filtered = CandidateGeometryFilter.filter(out, screen);
         DiagnosticLog.i(service, "FL_TREE", "text/image/view/root raw=" + out.size()
                 + " filtered=" + filtered.size());
@@ -62,7 +74,7 @@ public final class AccessibilityCandidateCollector {
 
     public static List<ScreenCandidate> collectAtPoint(LensAccessibilityService service, float x, float y) {
         ArrayList<ScreenCandidate> out = new ArrayList<>();
-        if (service == null) return out;
+        if (service == null || cancelled()) return out;
         Rect screen = service.screenBounds();
         int px = Math.round(x), py = Math.round(y);
         int[] count = {0};
@@ -70,6 +82,7 @@ public final class AccessibilityCandidateCollector {
             List<AccessibilityWindowInfo> windows = service.getWindows();
             if (windows != null) {
                 for (int wi = 0; wi < windows.size(); wi++) {
+                    if (cancelled()) break;
                     AccessibilityWindowInfo w = windows.get(wi);
                     if (w == null) continue;
                     Rect wr = new Rect();
@@ -79,24 +92,27 @@ public final class AccessibilityCandidateCollector {
                     try { root = w.getRoot(); } catch (Throwable ignored) {}
                     if (root == null || service.getPackageName().equals(nodePackage(root))) continue;
                     collectNodeAtPoint(service, root, screen, px, py, 0, count, out);
-                    if (count[0] > 2200) break;
+                    if (count[0] > 2200 || cancelled()) break;
                 }
             }
-            AccessibilityNodeInfo active = null;
-            try { active = service.getRootInActiveWindow(); } catch (Throwable ignored) {}
-            if (active != null && !service.getPackageName().equals(nodePackage(active))) {
-                collectNodeAtPoint(service, active, screen, px, py, 0, count, out);
+            if (!cancelled()) {
+                AccessibilityNodeInfo active = null;
+                try { active = service.getRootInActiveWindow(); } catch (Throwable ignored) {}
+                if (active != null && !service.getPackageName().equals(nodePackage(active))) {
+                    collectNodeAtPoint(service, active, screen, px, py, 0, count, out);
+                }
             }
         } catch (Throwable t) {
-            DiagnosticLog.i(service, "FL_TREE", "point collect failed=" + t);
+            if (!cancelled()) DiagnosticLog.i(service, "FL_TREE", "point collect failed=" + t);
         }
+        if (cancelled()) return new ArrayList<>();
         return CandidateGeometryFilter.filter(out, screen);
     }
 
     private static void collectNodeAtPoint(LensAccessibilityService service, AccessibilityNodeInfo n,
                                            Rect screen, int px, int py, int depth, int[] count,
                                            List<ScreenCandidate> out) {
-        if (n == null || depth > 80 || count[0]++ > 2200) return;
+        if (cancelled() || n == null || depth > 80 || count[0]++ > 2200) return;
         try { if (!n.isVisibleToUser()) return; } catch (Throwable ignored) {}
         Rect r = new Rect();
         try { n.getBoundsInScreen(r); } catch (Throwable t) { return; }
@@ -135,6 +151,7 @@ public final class AccessibilityCandidateCollector {
 
         int children = Math.min(300, safeChildCount(n));
         for (int i = 0; i < children; i++) {
+            if (cancelled()) return;
             AccessibilityNodeInfo child = null;
             try { child = n.getChild(i); } catch (Throwable ignored) {}
             if (child != null) collectNodeAtPoint(service, child, screen, px, py,
@@ -144,7 +161,7 @@ public final class AccessibilityCandidateCollector {
 
     private static void collectNode(LensAccessibilityService service, AccessibilityNodeInfo n,
                                     Rect screen, int depth, int[] count, List<ScreenCandidate> out) {
-        if (n == null || depth > 80 || count[0]++ > 6500) return;
+        if (cancelled() || n == null || depth > 80 || count[0]++ > 6500) return;
         try { if (!n.isVisibleToUser()) return; } catch (Throwable ignored) {}
 
         Rect r = new Rect();
@@ -188,10 +205,15 @@ public final class AccessibilityCandidateCollector {
 
         int children = Math.min(300, safeChildCount(n));
         for (int i = 0; i < children; i++) {
+            if (cancelled()) return;
             AccessibilityNodeInfo child = null;
             try { child = n.getChild(i); } catch (Throwable ignored) {}
             if (child != null) collectNode(service, child, screen, depth + 1, count, out);
         }
+    }
+
+    private static boolean cancelled() {
+        return Thread.currentThread().isInterrupted();
     }
 
     private static boolean isImageCandidate(LensAccessibilityService service,
