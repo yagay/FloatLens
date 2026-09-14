@@ -291,6 +291,9 @@ object PaddleOcrBridge {
             } else {
                 DiagnosticLog.i(context, "PPOCRV6_BRIDGE", "opencv_init_ok")
                 if (!OcrModelManager.isReady(context, model)) throw IllegalStateException("model_not_downloaded")
+                if (!OcrModelManager.verifyIntegrity(context, model)) {
+                    throw IllegalStateException("model_integrity_failed")
+                }
                 val config = PaddleOCRConfig(
                     detThresh = 0.20f,
                     detBoxThresh = 0.45f,
@@ -311,7 +314,7 @@ object PaddleOcrBridge {
             DiagnosticLog.i(
                 context,
                 "PPOCRV6_BRIDGE",
-                "loaded model=$model coldLoadMs=${created.coldLoadTimeMs} detBytes=${OcrModelManager.detFile(context, model).length()} recBytes=${OcrModelManager.recFile(context, model).length()}",
+                "loaded model=$model coldLoadMs=${created.coldLoadTimeMs} detBytes=${OcrModelManager.detFile(context, model).length()} recBytes=${OcrModelManager.recFile(context, model).length()} integrity=sha256",
             )
             created
         }
