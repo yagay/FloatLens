@@ -195,9 +195,8 @@ public class SettingsActivity extends AppCompatActivity {
         LinearLayout root = AppUi.pageRoot(this, "截图与 OCR",
                 "截图来源、结果显示和 OCR 模型分开管理。" );
 
-        AppUi.Section capture = AppUi.section(this, "截图", null);
-        seek(capture.body, "高亮 View 停留确认", FloatSettings.K_VIEW_CAPTURE_DWELL,
-                200, 2000, fs.viewCaptureDwellMs(), " ms");
+        AppUi.Section capture = AppUi.section(this, "截图",
+                "悬浮拖选采用已验证的 FV 时序：移动时红色探针，稳定约 400 ms 后进入黄色 Direct 状态；不会对每个 View 再重复等待。" );
         check(capture.body, "截图保留悬浮图标", null,
                 FloatSettings.K_KEEP_IN_SCREENSHOT, fs.keepInScreenshot());
         check(capture.body, "截图保留状态栏", null,
