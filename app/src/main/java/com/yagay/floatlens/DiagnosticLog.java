@@ -73,7 +73,24 @@ public final class DiagnosticLog {
         i(x,"SESSION","FloatLens="+BuildConfig.VERSION_NAME+" sdk="+Build.VERSION.SDK_INT+" device="+Build.MANUFACTURER+"/"+Build.MODEL+" fingerprint="+Build.FINGERPRINT);
     }
     private static void flush(){try{Future<?> f=IO.submit(()->{});f.get(2,TimeUnit.SECONDS);}catch(Throwable ignored){}}
-    public static String read(Context c){Context x=c!=null?c.getApplicationContext():app;if(x==null)return "";flush();synchronized(LOCK){try{File f=file(x);if(!f.exists())return "";return java.nio.file.Files.readString(f.toPath());}catch(Throwable t){return "读取日志失败: "+t;}}}
+    public static String read(Context c){
+        Context x=c!=null?c.getApplicationContext():app;
+        if(x==null)return "";
+        flush();
+        synchronized(LOCK){
+            try{
+                File f=file(x);
+                if(!f.exists())return "";
+                StringBuilder out=new StringBuilder((int)Math.min(Integer.MAX_VALUE,Math.max(0L,f.length())));
+                char[] buffer=new char[8192];
+                try(Reader reader=new InputStreamReader(new FileInputStream(f),java.nio.charset.StandardCharsets.UTF_8)){
+                    int n;
+                    while((n=reader.read(buffer))>=0){if(n>0)out.append(buffer,0,n);}
+                }
+                return out.toString();
+            }catch(Throwable t){return "读取日志失败: "+t;}
+        }
+    }
     public static void clear(Context c){Context x=c!=null?c.getApplicationContext():app;if(x==null)return;flush();synchronized(HOT_LAST){HOT_LAST.clear();}synchronized(LOCK){try{File f=file(x);if(f.exists())f.delete();}catch(Throwable ignored){}}}
     private static File file(Context c){return new File(c.getFilesDir(),FILE);}
     private static void rotate(File f)throws IOException{File old=new File(f.getParentFile(),FILE+".old");if(old.exists())old.delete();if(!f.renameTo(old)){try(FileOutputStream o=new FileOutputStream(f,false)){}}}
