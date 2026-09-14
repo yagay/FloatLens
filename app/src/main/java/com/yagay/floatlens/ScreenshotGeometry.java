@@ -20,7 +20,15 @@ final class ScreenshotGeometry {
         int top = clamp(Math.round((screenBounds.top - display.top) * sy), 0, raw.getHeight() - 1);
         int right = clamp(Math.round((screenBounds.right - display.left) * sx), left + 1, raw.getWidth());
         int bottom = clamp(Math.round((screenBounds.bottom - display.top) * sy), top + 1, raw.getHeight());
-        return Bitmap.createBitmap(raw, left, top, right - left, bottom - top);
+        Bitmap crop = Bitmap.createBitmap(raw, left, top, right - left, bottom - top);
+        // A full-bounds Bitmap.createBitmap call may return the original object. Callers treat a
+        // bounds crop as an independently owned result, so never leak the raw capture identity.
+        if (crop == raw) {
+            Bitmap copy = raw.copy(Bitmap.Config.ARGB_8888, false);
+            if (copy == null) throw new IllegalStateException("unable to copy full screenshot crop");
+            return copy;
+        }
+        return crop;
     }
 
     static Bitmap maybeCropStatusBar(Context c, Bitmap raw, boolean keepStatusBar) {
