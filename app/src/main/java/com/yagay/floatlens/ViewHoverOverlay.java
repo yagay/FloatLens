@@ -16,15 +16,12 @@ import java.util.List;
 /**
  * Cached Accessibility candidate + highlight layer used by ViewSelectionEngine.
  *
- * FL rule: this class is only the selected-View visual. The gesture/service state machine
- * decides when d(false)/d(true) happens; this layer merely renders TRACKING red or READY yellow.
- * Region dragging is a separate visual and never participates in this state.
+ * <p>This class is a passive visual/cache layer. TRACKING/red versus READY/yellow belongs to the
+ * pointer phase supplied by ViewSelectionEngine. In the verified FV flow, once the initial dwell
+ * enters DIRECT the probe remains READY while the pointer moves across cached TEXT / IMAGE / VIEW
+ * candidates; changing candidates must not create another red/400 ms confirmation phase.</p>
  */
 public final class ViewHoverOverlay {
-    public interface CandidateListener {
-        void onCandidateChanged(ScreenCandidate candidate);
-    }
-
     private static final int LARGE_TARGET_PERCENT = 72;
 
     private final Context context;
@@ -35,7 +32,6 @@ public final class ViewHoverOverlay {
     private ViewCandidateFrameOverlay largeCandidateFrame;
     private ScreenCandidate current;
     private SelectionVisualState visualState = SelectionVisualState.TRACKING;
-    private CandidateListener candidateListener;
 
     public ViewHoverOverlay(Context c) {
         context = c.getApplicationContext();
@@ -45,11 +41,7 @@ public final class ViewHoverOverlay {
 
     public boolean available() { return accessibility != null; }
 
-    public void setCandidateListener(CandidateListener listener) {
-        candidateListener = listener;
-    }
-
-    /** FL TRACKING/READY visual-state update. */
+    /** TRACKING/READY is controlled by the owner pointer phase and preserved across candidates. */
     public void setVisualState(SelectionVisualState next) {
         if (next == null) next = SelectionVisualState.TRACKING;
         if (visualState == next) return;
@@ -100,20 +92,19 @@ public final class ViewHoverOverlay {
         if (sameCandidate(current, next)) return;
 
         current = next;
-        visualState = SelectionVisualState.TRACKING;
 
         if (shouldRenderCandidate(next)) {
             closeLargeCandidateFrame();
             ensureView();
             if (view != null) {
-                view.setVisualState(SelectionVisualState.TRACKING);
+                view.setVisualState(visualState);
                 view.setCandidate(next);
             }
         } else {
             detachView();
             if (next != null) {
                 if (largeCandidateFrame == null) largeCandidateFrame = new ViewCandidateFrameOverlay(context);
-                largeCandidateFrame.setVisualState(SelectionVisualState.TRACKING);
+                largeCandidateFrame.setVisualState(visualState);
                 largeCandidateFrame.show(next.bounds());
             } else {
                 closeLargeCandidateFrame();
@@ -121,7 +112,8 @@ public final class ViewHoverOverlay {
         }
 
         if (next != null) {
-            DiagnosticLog.i(context, "VIEW_HOVER", "candidate_changed tracking=true source=" + next.source()
+            DiagnosticLog.i(context, "VIEW_HOVER", "candidate_changed state=" + visualState
+                    + " source=" + next.source()
                     + " type=" + next.type() + " screenBounds=" + next.bounds()
                     + " depth=" + next.depth() + " textLen=" + next.text().length()
                     + " class=" + next.className() + " id=" + next.viewId()
@@ -131,11 +123,8 @@ public final class ViewHoverOverlay {
         } else {
             DiagnosticLog.i(context, "VIEW_HOVER", "candidate_changed none selection="
                     + Math.round(selectionX) + "," + Math.round(selectionY)
-                    + " cached=" + model.size());
+                    + " cached=" + model.size() + " state=" + visualState);
         }
-
-        CandidateListener listener = candidateListener;
-        if (listener != null) listener.onCandidateChanged(next);
     }
 
     public ScreenCandidate currentCandidate() { return current; }
@@ -145,7 +134,6 @@ public final class ViewHoverOverlay {
         closeLargeCandidateFrame();
         current = null;
         visualState = SelectionVisualState.TRACKING;
-        candidateListener = null;
         model.setAccessibility(Collections.emptyList());
         model.setVisual(Collections.emptyList());
     }
