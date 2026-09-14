@@ -7,26 +7,29 @@ import android.os.SystemClock;
 import android.view.View;
 import android.view.ViewTreeObserver;
 
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** Bridges the visible result dialog first frame back to the capture state machine. */
+/** Bridges each captured result dialog's first frame back to its own capture state. */
 final class ResultReadyCoordinator {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final AtomicLong NEXT_ID = new AtomicLong(1L);
-    private static final Object LOCK = new Object();
     private static final long EXPIRE_MS = 4_000L;
-    private static Pending pending;
 
-    static final class Ticket { final long id; Ticket(long id) { this.id = id; } }
-
-    private static final class Pending {
-        final Ticket ticket;
+    /**
+     * Self-contained ticket: no global single-pending slot. Rapid captured results can therefore be
+     * in flight at the same time without replacing each other's notification-shade state.
+     */
+    static final class Ticket {
+        final long id;
         final FlSystemPanelController.CaptureState state;
         final String reason;
         final long armedAt;
-        boolean attached;
-        Pending(Ticket ticket, FlSystemPanelController.CaptureState state, String reason) {
-            this.ticket = ticket;
+        final AtomicBoolean consumed = new AtomicBoolean(false);
+        final AtomicBoolean attached = new AtomicBoolean(false);
+
+        Ticket(long id, FlSystemPanelController.CaptureState state, String reason) {
+            this.id = id;
             this.state = state;
             this.reason = reason == null ? "result_dialog_shown" : reason;
             this.armedAt = SystemClock.uptimeMillis();
@@ -45,40 +48,28 @@ final class ResultReadyCoordinator {
     private static Ticket armInternal(android.content.Context app,
                                       FlSystemPanelController.CaptureState state, String reason) {
         if (state == null) return null;
-        Ticket ticket = new Ticket(NEXT_ID.getAndIncrement());
-        Pending next = new Pending(ticket, state, reason);
-        Pending replaced;
-        synchronized (LOCK) { replaced = pending; pending = next; }
+        Ticket ticket = new Ticket(NEXT_ID.getAndIncrement(), state, reason);
         if (app != null) DiagnosticLog.i(app, "RESULT_READY", "arm id=" + ticket.id
-                + " reason=" + next.reason + (replaced == null ? "" : " replaced=" + replaced.ticket.id));
+                + " reason=" + ticket.reason);
         MAIN.postDelayed(() -> expire(ticket, app), EXPIRE_MS);
         return ticket;
     }
 
     static void cancel(Ticket ticket, android.content.Context context, String reason) {
-        if (ticket == null) return;
-        boolean removed = false;
-        synchronized (LOCK) {
-            if (pending != null && pending.ticket.id == ticket.id) { pending = null; removed = true; }
-        }
-        if (removed && context != null) DiagnosticLog.i(context.getApplicationContext(), "RESULT_READY",
+        if (ticket == null || !ticket.consumed.compareAndSet(false, true)) return;
+        if (context != null) DiagnosticLog.i(context.getApplicationContext(), "RESULT_READY",
                 "cancel id=" + ticket.id + " reason=" + reason);
     }
 
-    static void onResultDialogReady(ResultActivity activity, View root) {
-        if (activity == null || root == null) return;
-        Pending selected;
-        synchronized (LOCK) {
-            selected = pending;
-            if (selected == null || selected.attached) return;
-            selected.attached = true;
-        }
-        final Pending target = selected;
-        DiagnosticLog.i(activity, "RESULT_READY", "dialog attached id=" + target.ticket.id
-                + " reason=" + target.reason);
+    static void onResultDialogReady(ResultActivity activity, View root, Ticket ticket) {
+        if (activity == null || root == null || ticket == null || ticket.consumed.get()) return;
+        if (!ticket.attached.compareAndSet(false, true)) return;
+
+        DiagnosticLog.i(activity, "RESULT_READY", "dialog attached id=" + ticket.id
+                + " reason=" + ticket.reason);
         ViewTreeObserver observer = root.getViewTreeObserver();
         if (!observer.isAlive()) {
-            root.post(() -> deliver(activity, target, "dialog_observer_dead"));
+            root.post(() -> deliver(activity, ticket, "dialog_observer_dead"));
             return;
         }
         ViewTreeObserver.OnPreDrawListener listener = new ViewTreeObserver.OnPreDrawListener() {
@@ -87,7 +78,7 @@ final class ResultReadyCoordinator {
                     ViewTreeObserver current = root.getViewTreeObserver();
                     if (current.isAlive()) current.removeOnPreDrawListener(this);
                 } catch (Throwable ignored) { }
-                root.postOnAnimation(() -> deliver(activity, target, "dialog_first_frame"));
+                root.postOnAnimation(() -> deliver(activity, ticket, "dialog_first_frame"));
                 return true;
             }
         };
@@ -95,23 +86,18 @@ final class ResultReadyCoordinator {
         root.invalidate();
     }
 
-    private static void deliver(Activity activity, Pending target, String stage) {
-        boolean accepted = false;
-        synchronized (LOCK) { if (pending == target) { pending = null; accepted = true; } }
-        if (!accepted) return;
-        long elapsed = Math.max(0L, SystemClock.uptimeMillis() - target.armedAt);
-        DiagnosticLog.i(activity, "RESULT_READY", "deliver id=" + target.ticket.id
-                + " stage=" + stage + " elapsedMs=" + elapsed + " reason=" + target.reason);
-        FlSystemPanelController.onResultReady(activity, target.state, target.reason);
+    private static void deliver(Activity activity, Ticket ticket, String stage) {
+        if (!ticket.consumed.compareAndSet(false, true)) return;
+        long elapsed = Math.max(0L, SystemClock.uptimeMillis() - ticket.armedAt);
+        DiagnosticLog.i(activity, "RESULT_READY", "deliver id=" + ticket.id
+                + " stage=" + stage + " elapsedMs=" + elapsed + " reason=" + ticket.reason);
+        FlSystemPanelController.onResultReady(activity, ticket.state, ticket.reason);
     }
 
     private static void expire(Ticket ticket, android.content.Context app) {
-        Pending expired = null;
-        synchronized (LOCK) {
-            if (pending != null && pending.ticket.id == ticket.id) { expired = pending; pending = null; }
-        }
-        if (expired != null && app != null) DiagnosticLog.i(app, "RESULT_READY",
-                "expire id=" + ticket.id + " reason=" + expired.reason);
+        if (ticket == null || !ticket.consumed.compareAndSet(false, true)) return;
+        if (app != null) DiagnosticLog.i(app, "RESULT_READY",
+                "expire id=" + ticket.id + " reason=" + ticket.reason);
     }
 
     private ResultReadyCoordinator() { }
