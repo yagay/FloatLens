@@ -23,12 +23,18 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
-import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
 public class LensAccessibilityService extends AccessibilityService {
     private static volatile LensAccessibilityService s;
     private static final long ENV_INSPECT_MIN_MS = 180L;
+    private static final ExecutorService CAPTURE_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "FloatLens-accessibility-capture");
+        t.setDaemon(true);
+        return t;
+    });
     private volatile EnvironmentState env = new EnvironmentState("", false, 0, true, false, false);
     private final Set<String> homePackages = new HashSet<>();
     private long lastEnvironmentInspectAt;
@@ -324,7 +330,7 @@ public class LensAccessibilityService extends AccessibilityService {
         appendNodeText(n,text,0,new int[]{0});
         String cls="",id="",pkg=nodePackage(n);
         try{if(n.getClassName()!=null)cls=n.getClassName().toString();}catch(Throwable ignored){}
-        try{if(n.getViewIdResourceName()!=null)id=n.getViewIdResourceName();}catch(Throwable ignored){}
+        try{if(n.getViewIdResourceName()!=null)id=n.getViewIdResourceName().toString();}catch(Throwable ignored){}
         boolean clickable=false,editable=false,focusable=false;
         try{clickable=n.isClickable()||n.isLongClickable();}catch(Throwable ignored){}
         try{editable=n.isEditable();}catch(Throwable ignored){}
@@ -440,16 +446,29 @@ public class LensAccessibilityService extends AccessibilityService {
     }
 
     public void capture(Consumer<Bitmap> ok, Consumer<Throwable> fail){
-        Executor ex=getMainExecutor();
-        takeScreenshot(Display.DEFAULT_DISPLAY,ex,new TakeScreenshotCallback(){
+        // HardwareBuffer -> software Bitmap copy can be expensive on QHD/4K screens. Run that copy
+        // off the accessibility/main thread, then marshal only the finished callback back to main.
+        takeScreenshot(Display.DEFAULT_DISPLAY,CAPTURE_EXECUTOR,new TakeScreenshotCallback(){
             @Override public void onSuccess(ScreenshotResult r){
+                Bitmap copy=null;
+                Throwable error=null;
                 try(HardwareBuffer hb=r.getHardwareBuffer()){
                     Bitmap hw=Bitmap.wrapHardwareBuffer(hb,r.getColorSpace());
                     if(hw==null)throw new IllegalStateException("wrapHardwareBuffer returned null");
-                    ok.accept(hw.copy(Bitmap.Config.ARGB_8888,false));
-                } catch(Throwable t){fail.accept(t);}
+                    copy=hw.copy(Bitmap.Config.ARGB_8888,false);
+                    if(copy==null)throw new IllegalStateException("software screenshot copy failed");
+                } catch(Throwable t){error=t;}
+                final Bitmap result=copy;
+                final Throwable failure=error;
+                getMainExecutor().execute(() -> {
+                    if(failure==null)ok.accept(result);
+                    else fail.accept(failure);
+                });
             }
-            @Override public void onFailure(int errorCode){ fail.accept(new IllegalStateException("takeScreenshot error="+errorCode)); }
+            @Override public void onFailure(int errorCode){
+                getMainExecutor().execute(() ->
+                        fail.accept(new IllegalStateException("takeScreenshot error="+errorCode)));
+            }
         });
     }
 
