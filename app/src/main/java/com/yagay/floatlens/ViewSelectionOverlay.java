@@ -6,15 +6,24 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
-import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Toast;
 
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 /** Explicit full-screen View picker used by ActionId.OCR. */
 public final class ViewSelectionOverlay {
+    private static final ExecutorService TREE_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "FloatLens-view-picker-tree");
+        t.setPriority(Thread.NORM_PRIORITY - 1);
+        return t;
+    });
+
     public static void show(Context c) {
         Context app = c.getApplicationContext();
         LensAccessibilityService accessibility = LensAccessibilityService.get();
@@ -34,10 +43,15 @@ public final class ViewSelectionOverlay {
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
-        if (!host.addApplication(view, lp, "explicit_view_picker")) {
+        // FV hosts the interactive selection surface as TYPE_ACCESSIBILITY_OVERLAY whenever the
+        // accessibility service is available. FlOverlayWindowHost falls back to an application
+        // overlay only when that host is unavailable.
+        if (!host.add(view, lp, "explicit_view_picker")) {
             Toast.makeText(app, "View 选择层启动失败，改用 OCR", Toast.LENGTH_SHORT).show();
             ScreenshotController.captureForOcr(app);
+            return;
         }
+        view.prepareCacheAsync();
     }
 
     private static final class PickView extends View {
@@ -46,9 +60,13 @@ public final class ViewSelectionOverlay {
         private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private ScreenSelectionModel model;
         private ViewNodeCandidate current;
-        private long lastScan;
+        private boolean cacheReady;
         private boolean closed;
+        private float lastRawX = Float.NaN;
+        private float lastRawY = Float.NaN;
+        private long cacheGeneration;
 
         PickView(Context c, LensAccessibilityService accessibility, FlOverlayWindowHost host) {
             super(c);
@@ -65,6 +83,26 @@ public final class ViewSelectionOverlay {
             setBackgroundColor(0x22000000);
         }
 
+        void prepareCacheAsync() {
+            final long gen = ++cacheGeneration;
+            cacheReady = false;
+            TREE_EXECUTOR.execute(() -> {
+                List<ScreenCandidate> candidates = AccessibilityCandidateCollector.collect(accessibility);
+                ScreenSelectionModel next = new ScreenSelectionModel();
+                next.setAccessibility(candidates);
+                post(() -> {
+                    if (closed || gen != cacheGeneration) return;
+                    model = next;
+                    cacheReady = true;
+                    updateFromCache(lastRawX, lastRawY);
+                    DiagnosticLog.i(getContext(), "VIEW_PICK",
+                            "cache ready candidates=" + candidates.size()
+                                    + " accessibilityHost=" + host.isAccessibilityHosted());
+                    invalidate();
+                });
+            });
+        }
+
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             if (current != null) {
@@ -73,6 +111,8 @@ public final class ViewSelectionOverlay {
                 canvas.drawRect(r, border);
                 float y = Math.max(dp(24), r.top - dp(8));
                 canvas.drawText(current.label(), Math.max(dp(8), r.left), y, textPaint);
+            } else if (!cacheReady) {
+                canvas.drawText("正在建立 View 索引…", dp(18), dp(42), textPaint);
             } else {
                 canvas.drawText("移动手指选择 View · 松手提取文字", dp(18), dp(42), textPaint);
             }
@@ -82,20 +122,18 @@ public final class ViewSelectionOverlay {
             if (closed) return true;
             int action = e.getActionMasked();
             if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
-                long now = SystemClock.uptimeMillis();
-                if (action == MotionEvent.ACTION_DOWN || now - lastScan >= 40) {
-                    lastScan = now;
-                    current = accessibility.findViewAt(e.getRawX(), e.getRawY());
-                    if (current != null) {
-                        DiagnosticLog.i(getContext(), "VIEW_PICK", "bounds=" + current.bounds()
-                                + " textLen=" + current.text().length()
-                                + " class=" + current.className());
-                    }
-                    invalidate();
-                }
+                lastRawX = e.getRawX();
+                lastRawY = e.getRawY();
+                // Match FV's cached-tree behavior: MOVE only performs geometry hit-testing. Never
+                // recursively walk AccessibilityNodeInfo on the touch/UI thread.
+                updateFromCache(lastRawX, lastRawY);
+                invalidate();
                 return true;
             }
             if (action == MotionEvent.ACTION_UP) {
+                lastRawX = e.getRawX();
+                lastRawY = e.getRawY();
+                updateFromCache(lastRawX, lastRawY);
                 finishSelection();
                 return true;
             }
@@ -104,6 +142,18 @@ public final class ViewSelectionOverlay {
                 return true;
             }
             return true;
+        }
+
+        private void updateFromCache(float rawX, float rawY) {
+            ScreenSelectionModel local = model;
+            if (!cacheReady || local == null || Float.isNaN(rawX) || Float.isNaN(rawY)) return;
+            ScreenCandidate selected = local.selectAt(rawX, rawY);
+            current = selected == null ? null : selected.toViewNodeCandidate();
+            if (current != null) {
+                DiagnosticLog.i(getContext(), "VIEW_PICK", "cacheHit bounds=" + current.bounds()
+                        + " textLen=" + current.text().length()
+                        + " class=" + current.className());
+            }
         }
 
         private void finishSelection() {
@@ -128,6 +178,9 @@ public final class ViewSelectionOverlay {
         private void close() {
             if (closed) return;
             closed = true;
+            cacheGeneration++;
+            current = null;
+            model = null;
             host.remove(this, "explicit_view_picker");
         }
 
