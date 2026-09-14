@@ -58,6 +58,7 @@ public final class ViewSelectionOverlay {
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private ViewNodeCandidate current;
+        private String currentKey = "";
         private boolean ready;
         private boolean closed;
         private float lastRawX = Float.NaN;
@@ -146,11 +147,11 @@ public final class ViewSelectionOverlay {
         private void updateCurrent(float rawX, float rawY) {
             if (!ready || Float.isNaN(rawX) || Float.isNaN(rawY)) return;
             ScreenCandidate selected = model.selectAt(rawX, rawY);
-            ViewNodeCandidate next = selected == null ? null : selected.toViewNodeCandidate();
-            String oldKey = current == null ? "" : current.stableKey();
-            String nextKey = next == null ? "" : next.stableKey();
-            current = next;
-            if (!oldKey.equals(nextKey) && current != null) {
+            String nextKey = selected == null ? "" : selected.stableKey();
+            if (currentKey.equals(nextKey)) return;
+            currentKey = nextKey;
+            current = selected == null ? null : selected.toViewNodeCandidate();
+            if (current != null) {
                 DiagnosticLog.i(getContext(), "VIEW_PICK", "bounds=" + current.bounds()
                         + " textLen=" + current.text().length()
                         + " class=" + current.className());
