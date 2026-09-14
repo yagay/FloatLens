@@ -178,14 +178,8 @@ object PaddleOcrBridge {
         val lengthRatio = min(at.codePointCount(0, at.length), bt.codePointCount(0, bt.length)).toFloat() /
             max(1, max(at.codePointCount(0, at.length), bt.codePointCount(0, bt.length))).toFloat()
 
-        // Exact duplicates can differ slightly because DB's unclip creates nested rectangles.
         if (exact && (minCoverage >= 0.52f || iou >= 0.38f)) return true
-
-        // A duplicate recognizer pass can lose or add one punctuation/character. Require much
-        // stronger spatial containment before treating those lines as the same visual line.
         if (related && lengthRatio >= 0.78f && minCoverage >= 0.72f) return true
-
-        // Final guard for two almost-identical boxes with a one-character OCR disagreement.
         if (lengthRatio >= 0.88f && minCoverage >= 0.90f && normalizedEditSimilarity(at, bt) >= 0.82f) return true
         return false
     }
@@ -267,12 +261,15 @@ object PaddleOcrBridge {
 
     @JvmStatic fun isLoaded(model: Int): Boolean = synchronized(engines) { engines.containsKey(model) }
 
+    /** Never release an ONNX session while runMutex is protecting active native inference. */
     @JvmStatic
     fun releaseModel(model: Int) {
         scope.launch {
-            initMutex.withLock {
-                val old = synchronized(engines) { engines.remove(model) }
-                try { old?.release() } catch (_: Throwable) { }
+            runMutex.withLock {
+                initMutex.withLock {
+                    val old = synchronized(engines) { engines.remove(model) }
+                    try { old?.release() } catch (_: Throwable) { }
+                }
             }
         }
     }
