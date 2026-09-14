@@ -45,12 +45,21 @@ public final class PrivilegeManager {
         return settings != null && settings.enhancedMode() && settings.rootEnabled();
     }
 
+    /**
+     * The API-102 module entry is currently deliberately hook-free. A future LSPosed provider must
+     * first add a real cross-process configuration/status channel before this can become true.
+     */
+    public static boolean lsposedProviderAvailable() {
+        return false;
+    }
+
     public static boolean canUseLsposed(Context context) {
         return canUseLsposed(new FloatSettings(context));
     }
 
     public static boolean canUseLsposed(FloatSettings settings) {
-        return settings != null && settings.enhancedMode() && settings.lsposedEnabled();
+        return settings != null && lsposedProviderAvailable()
+                && settings.enhancedMode() && settings.lsposedEnabled();
     }
 
     public static Mode mode(FloatSettings settings) {
