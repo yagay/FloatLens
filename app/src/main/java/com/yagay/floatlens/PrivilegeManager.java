@@ -110,7 +110,7 @@ public final class PrivilegeManager {
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null && out.length() < 512) {
-                    if (!out.isEmpty()) out.append(' ');
+                    if (out.length() > 0) out.append(' ');
                     out.append(line);
                 }
             }
