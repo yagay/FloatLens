@@ -46,6 +46,7 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
 
     void showSession(ResultSession value, ResultReadyCoordinator.Ticket ticket) {
         if (value == null) return;
+        ResultSession previous = session;
         cancelCurrentOcr("new_session");
         session = value;
         readyTicket = ticket;
@@ -54,6 +55,9 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
             panel.setOcrRunning(false);
             resizeDialog();
             notifyVisibleResultReady(ticket);
+        }
+        if (previous != null && previous != value) {
+            try { previous.close(); } catch (Throwable ignored) {}
         }
         DiagnosticLog.i(requireContext(), "RESULT_DIALOG", "session mode=" + session.mode()
                 + " origin=" + session.originMode()
@@ -226,5 +230,14 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
         FloatMenuAnchor.clear();
         panel = null;
         super.onDestroyView();
+    }
+
+    @Override public void onDestroy() {
+        ResultSession owned = session;
+        session = null;
+        if (owned != null) {
+            try { owned.close(); } catch (Throwable ignored) {}
+        }
+        super.onDestroy();
     }
 }
