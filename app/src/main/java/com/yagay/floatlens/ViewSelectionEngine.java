@@ -15,9 +15,9 @@ import java.util.concurrent.Executors;
 /**
  * FL same-touch selection engine.
  *
- * Region dragging and selected-View readiness are intentionally separate. FV's FooViewService owns
- * the dwell/re-arm state and calls o1/n1.d(false/true) on the selected View rectangle. FloatLens
- * mirrors that relationship: ViewHoverOverlay is passive; this engine owns the 400ms / ±3dp state.
+ * Region dragging and selected-View readiness are intentionally separate. FL owns
+ * the dwell/re-arm state for the selected View rectangle. FloatLens
+ * keeps ViewHoverOverlay passive; this engine owns the 400ms / ±3dp state.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }

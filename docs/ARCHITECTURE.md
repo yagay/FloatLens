@@ -1,6 +1,6 @@
 # FloatLens Architecture
 
-This document defines the single-owner boundaries used by FloatLens. The goal is to keep FV-compatible
+This document defines the single-owner boundaries used by FloatLens. The goal is to keep FL
 interaction semantics while making each capability easy to add, remove and maintain without parallel
 implementations.
 

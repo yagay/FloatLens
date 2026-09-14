@@ -7,7 +7,7 @@ import android.view.View;
 /**
  * Invisible FL-style edge handle that enlarges the touch target of a partially hidden float icon.
  *
- * FV keeps a separate FloatIconView$l window beside the 119x119 visible icon. Runtime capture shows
+ * FL keeps a separate invisible edge handle beside the visible icon. The current geometry uses
  * that helper at roughly 0.5x icon width and 1.16x icon height. This view mirrors that role without
  * changing the visible icon size: it forwards the touch stream to the real FloatIconView while
  * remapping local coordinates to the real owner's current window origin.
