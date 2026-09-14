@@ -22,8 +22,12 @@ public final class ScreenshotController {
                 app, region ? "screenshot_region" : "screenshot_full");
         getBitmap(app, b -> {
             try {
-                if (region) RegionOverlay.show(app, b, false);
-                else save(app, b);
+                if (region) {
+                    RegionOverlay.show(app, b, false);
+                } else {
+                    save(app, b);
+                    recycle(b);
+                }
                 FlSystemPanelController.onResultReady(
                         app, shadeState, region ? "region_overlay_shown" : "screenshot_saved");
                 DiagnosticLog.i(app, "SCREENSHOT_FLOW", "full result region=" + region
@@ -46,6 +50,7 @@ public final class ScreenshotController {
                 RegionOverlay.show(app, b, true);
                 FlSystemPanelController.onResultReady(app, shadeState, "ocr_region_overlay_shown");
             } catch (Throwable t) {
+                recycle(b);
                 DiagnosticLog.i(app, "SCREENSHOT_FLOW", "ocr region result failed error="
                         + ScreenCaptureBackend.safeMessage(t));
                 Toast.makeText(app, "OCR 区域选择器启动失败", Toast.LENGTH_LONG).show();
@@ -75,6 +80,7 @@ public final class ScreenshotController {
                 EditableRegionOverlay.show(app, raw);
                 FlSystemPanelController.onResultReady(app, shadeState, "editable_region_overlay_shown");
             } catch (Throwable t) {
+                recycle(raw);
                 DiagnosticLog.i(app, "REGION_EDIT", "open failed=" + ScreenCaptureBackend.safeMessage(t));
                 Toast.makeText(app, "区域编辑器启动失败", Toast.LENGTH_LONG).show();
             }
@@ -116,6 +122,7 @@ public final class ScreenshotController {
                 DiagnosticLog.i(app, "FL_REGION_CAPTURE",
                         "all result surfaces failed; save image as final fallback");
                 save(app, crop);
+                recycle(crop);
                 FlSystemPanelController.onResultReady(app, shadeState, "fl_region_saved_fallback");
             }
         }, "区域截图", false);
@@ -146,6 +153,7 @@ public final class ScreenshotController {
             }
             DiagnosticLog.i(app, "VIEW_CAPTURE", "result shown=" + shown);
             if (!shown) {
+                recycle(crop);
                 DiagnosticLog.i(app, "VIEW_CAPTURE", "all result surfaces failed");
                 FlSystemPanelController.onResultReady(app, shadeState, "view_result_failed");
             }
@@ -165,6 +173,7 @@ public final class ScreenshotController {
             boolean shown = ResultSurfaceRouter.showCapturedViewImage(app, crop, candidate, bounds, shadeState);
             DiagnosticLog.i(app, "VIEW_CAPTURE", "visual result shown=" + shown);
             if (!shown) {
+                recycle(crop);
                 DiagnosticLog.i(app, "VIEW_CAPTURE", "visual result surfaces failed");
                 FlSystemPanelController.onResultReady(app, shadeState, "visual_result_failed");
             }
@@ -190,6 +199,7 @@ public final class ScreenshotController {
                         + " raw=" + bitmapSize(raw) + " requested=" + screenBounds
                         + " crop=" + bitmapSize(crop));
             } catch (Throwable t) {
+                recycle(raw);
                 DiagnosticLog.i(app, "SCREENSHOT_CROP", "failed label=" + label
                         + " raw=" + bitmapSize(raw) + " requested=" + screenBounds
                         + " error=" + ScreenCaptureBackend.safeMessage(t));
@@ -197,10 +207,12 @@ public final class ScreenshotController {
                 if (fallbackToFreeOcr) captureForOcr(app);
                 return;
             }
+            recycle(raw);
 
             try {
                 onCrop.accept(crop);
             } catch (Throwable t) {
+                recycle(crop);
                 DiagnosticLog.i(app, "SCREENSHOT_RESULT", "failed label=" + label
                         + " crop=" + bitmapSize(crop)
                         + " error=" + ScreenCaptureBackend.safeMessage(t));
@@ -222,10 +234,12 @@ public final class ScreenshotController {
             try {
                 Bitmap out = ScreenshotGeometry.maybeCropStatusBar(
                         app, raw, fs.keepStatusBarInScreenshot());
+                if (out != raw) recycle(raw);
                 DiagnosticLog.i(app, "SCREENSHOT_CROP", "full statusBar keep="
                         + fs.keepStatusBarInScreenshot() + " output=" + bitmapSize(out));
                 ok.accept(out);
             } catch (Throwable t) {
+                recycle(raw);
                 DiagnosticLog.i(app, "SCREENSHOT_CROP", "full failed error="
                         + ScreenCaptureBackend.safeMessage(t));
                 Toast.makeText(app, "截图处理失败", Toast.LENGTH_LONG).show();
@@ -236,6 +250,12 @@ public final class ScreenshotController {
             Toast.makeText(app,
                     "截图失败: " + ScreenCaptureBackend.safeMessage(t), Toast.LENGTH_LONG).show();
         });
+    }
+
+    private static void recycle(Bitmap b) {
+        if (b != null && !b.isRecycled()) {
+            try { b.recycle(); } catch (Throwable ignored) {}
+        }
     }
 
     private static String bitmapSize(Bitmap b) {
