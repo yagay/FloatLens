@@ -58,6 +58,18 @@ public final class FloatSettings {
     public static final String K_IME_AVOID = "ime_avoid_icon";
     public static final String K_QUICK_MOVE = "quickMoveIcon";
     public static final String K_DIAGNOSTIC = "fv_diagnostic_logging";
+
+    // Optional privilege layer. These are intentionally independent from per-feature switches.
+    public static final String K_ENHANCED_MODE = "privilege_enhanced_mode_v1";
+    public static final String K_ROOT_ENABLED = "privilege_root_enabled_v1";
+    public static final String K_LSPOSED_ENABLED = "privilege_lsposed_enabled_v1";
+    public static final String K_PRIVILEGE_FALLBACK = "privilege_fallback_normal_v1";
+    public static final String K_ROOT_LAST_GRANTED = "privilege_root_last_granted_v1";
+    public static final String K_ROOT_LAST_CHECK = "privilege_root_last_check_ms_v1";
+    public static final String K_ROOT_LAST_DETAIL = "privilege_root_last_detail_v1";
+    public static final String K_LSPOSED_LAST_SEEN = "privilege_lsposed_last_seen_ms_v1";
+    public static final String K_LSPOSED_LAST_SOURCE = "privilege_lsposed_last_source_v1";
+
     private static final String K_MIGRATE_LONG_PRESS_CONFIG_V1 = "migrate_long_press_config_v1";
 
     public static final String K_POS_X_PORTRAIT = "float_pos_x_portrait";
@@ -136,6 +148,24 @@ public final class FloatSettings {
     public boolean imeAvoid() { return p.getBoolean(K_IME_AVOID, true); }
     public boolean defaultHideByApp() { return p.getBoolean(K_GLOBAL_DEFAULT_HIDE, false); }
     public boolean hideWithoutNotify() { return p.getBoolean(K_HIDE_ICON_NO_NOTIFY, false); }
+
+    /** Master gate: false means feature code must stay on the normal Android path. */
+    public boolean enhancedMode() { return p.getBoolean(K_ENHANCED_MODE, false); }
+    /** Root provider preference; only effective while enhancedMode() is true. */
+    public boolean rootEnabled() { return p.getBoolean(K_ROOT_ENABLED, false); }
+    /** LSPosed provider preference; only effective while enhancedMode() is true. */
+    public boolean lsposedEnabled() { return p.getBoolean(K_LSPOSED_ENABLED, false); }
+    /** If an enhanced provider fails, retry the ordinary provider when possible. */
+    public boolean privilegeFallback() { return p.getBoolean(K_PRIVILEGE_FALLBACK, true); }
+    public boolean canUseRoot() { return enhancedMode() && rootEnabled(); }
+    public boolean canUseLsposed() { return enhancedMode() && lsposedEnabled(); }
+    public boolean effectiveRootScreenshot() { return canUseRoot() && rootScreenshot(); }
+    public long rootLastCheckMs() { return p.getLong(K_ROOT_LAST_CHECK, 0L); }
+    public boolean rootLastGranted() { return p.getBoolean(K_ROOT_LAST_GRANTED, false); }
+    public String rootLastDetail() { return p.getString(K_ROOT_LAST_DETAIL, ""); }
+    public long lsposedLastSeenMs() { return p.getLong(K_LSPOSED_LAST_SEEN, 0L); }
+    public String lsposedLastSource() { return p.getString(K_LSPOSED_LAST_SOURCE, ""); }
+
     public int fullscreenHideMode() {
         Object raw = p.getAll().get(K_HIDE_FULLSCREEN);
         if (raw instanceof Number n) return clamp(n.intValue(), 0, 3);

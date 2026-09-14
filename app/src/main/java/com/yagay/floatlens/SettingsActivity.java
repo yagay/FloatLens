@@ -32,6 +32,7 @@ public class SettingsActivity extends AppCompatActivity {
     public static final int SECTION_CAPTURE = 3;
     public static final int SECTION_ENVIRONMENT = 4;
     public static final int SECTION_ACTIONS = 5;
+    public static final int SECTION_PRIVILEGE = 6;
 
     private FloatSettings fs;
     private EditText hidePackagesEdit;
@@ -52,6 +53,7 @@ public class SettingsActivity extends AppCompatActivity {
             case SECTION_CAPTURE -> root = buildCapturePage();
             case SECTION_ENVIRONMENT -> root = buildEnvironmentPage();
             case SECTION_ACTIONS -> root = buildActionsPage();
+            case SECTION_PRIVILEGE -> root = buildPrivilegePage();
             default -> root = buildHomePage();
         }
         setContentView(AppUi.scrollPage(this, root));
@@ -65,6 +67,7 @@ public class SettingsActivity extends AppCompatActivity {
         addCategory(categories.body, "手势与轨迹", "点击、长按、滑动阈值与轨迹", SECTION_GESTURE);
         addCategory(categories.body, "截图与 OCR", "截图来源、OCR 引擎、模型与语言", SECTION_CAPTURE);
         addCategory(categories.body, "环境与显示", "键盘避让、智能入口、按应用隐藏", SECTION_ENVIRONMENT);
+        addCategory(categories.body, "高级权限", "Root / LSPosed 可选增强、状态与失败回退", SECTION_PRIVILEGE);
         addCategory(categories.body, "手势动作映射", "给每种手势分配动作", SECTION_ACTIONS);
         AppUi.addSection(root, categories);
         return root;
@@ -199,9 +202,9 @@ public class SettingsActivity extends AppCompatActivity {
                 FloatSettings.K_KEEP_IN_SCREENSHOT, fs.keepInScreenshot());
         check(capture.body, "截图保留状态栏", null,
                 FloatSettings.K_KEEP_STATUS_BAR, fs.keepStatusBarInScreenshot());
-        check(capture.body, "优先无障碍截图", "不可用时自动尝试其他后备方案",
+        check(capture.body, "优先无障碍截图", "普通截图后端；关闭后只有满足增强条件时才优先尝试 Root",
                 FloatSettings.K_ACCESSIBILITY_SCREENSHOT, fs.accessibilityScreenshot());
-        check(capture.body, "Root 截图增强", "作为增强和后备截图来源",
+        check(capture.body, "Root 截图增强", "还需要在“高级权限”同时开启“增强模式”和“使用 Root 功能”",
                 FloatSettings.K_ROOT_SCREENSHOT, fs.rootScreenshot());
         AppUi.addSection(root, capture);
 
@@ -266,6 +269,10 @@ public class SettingsActivity extends AppCompatActivity {
         AppUi.addRow(hidden.body, hideBlock);
         AppUi.addSection(root, hidden);
         return root;
+    }
+
+    private LinearLayout buildPrivilegePage() {
+        return PrivilegeSettingsPanel.build(this, fs);
     }
 
     private LinearLayout buildActionsPage() {
