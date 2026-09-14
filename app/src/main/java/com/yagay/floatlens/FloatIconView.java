@@ -16,8 +16,8 @@ import java.util.List;
  * Floating icon touch engine modelled from FV FooViewService$c3.onTouch.
  *
  * Visual resource loading and slideshow timing live in FloatIconRenderer. This class owns only FV
- * pointer semantics: immediate temporary-follow movement, 400ms direct-selection dwell, gestures,
- * long press and explicit position-move mode.
+ * pointer semantics: immediate temporary-follow movement, configurable direct-selection dwell,
+ * gestures, long press and explicit position-move mode.
  */
 public class FloatIconView extends View {
     public interface Callback {
@@ -34,7 +34,7 @@ public class FloatIconView extends View {
         void onDirectSelectionEnd();
     }
 
-    private static final long FL_DIRECT_SELECT_DELAY_MS = 400L;
+    private static final long FV_DIRECT_SELECT_DEFAULT_MS = 400L;
     private static final float FL_DIRECT_MOVE_START_DP = 3f;
     // FV FooViewService uses a two-stage long press: arm at T-100 ms, then require a final
     // 100 ms stable window. During that final window, ~3 px movement re-arms only the window.
@@ -95,7 +95,7 @@ public class FloatIconView extends View {
                 return;
             }
             DiagnosticLog.i(getContext(), "FL_DIRECT", "ENTER delay="
-                    + FL_DIRECT_SELECT_DELAY_MS + "ms raw=" + Math.round(lastSelectionRawX)
+                    + directSelectionDelayMs() + "ms raw=" + Math.round(lastSelectionRawX)
                     + "," + Math.round(lastSelectionRawY)
                     + " anchor=" + Math.round(directTimerAnchorX) + "," + Math.round(directTimerAnchorY)
                     + " axisSlopPx=" + Math.round(directRearmSlopPx));
@@ -210,6 +210,7 @@ public class FloatIconView extends View {
                 DiagnosticLog.i(getContext(), "STATE", "DOWN begin="+Math.round(rx)+","+Math.round(ry)
                         +" fvDirectAvailable="+(selectionEngine!=null&&selectionEngine.available())
                         +" directAxisSlopPx="+Math.round(directRearmSlopPx)
+                        +" directDelayMs="+directSelectionDelayMs()
                         +" positionMove="+positionMoveMode);
                 invalidate();
 
@@ -419,15 +420,16 @@ public class FloatIconView extends View {
     private void armOrRearmDirectSelection(float rawX, float rawY) {
         lastSelectionRawX = rawX;
         lastSelectionRawY = rawY;
+        long delayMs = directSelectionDelayMs();
 
         if (!directTimerArmed || Float.isNaN(directTimerAnchorX) || Float.isNaN(directTimerAnchorY)) {
             directTimerAnchorX = rawX;
             directTimerAnchorY = rawY;
             directTimerArmed = true;
             handler.removeCallbacks(directSelectionRunnable);
-            handler.postDelayed(directSelectionRunnable, FL_DIRECT_SELECT_DELAY_MS);
+            handler.postDelayed(directSelectionRunnable, delayMs);
             DiagnosticLog.i(getContext(), "FL_DIRECT", "ARM anchor="+Math.round(rawX)+","+Math.round(rawY)
-                    +" delay="+FL_DIRECT_SELECT_DELAY_MS+" axisSlopPx="+Math.round(directRearmSlopPx));
+                    +" delay="+delayMs+" axisSlopPx="+Math.round(directRearmSlopPx));
             return;
         }
 
@@ -438,10 +440,15 @@ public class FloatIconView extends View {
         handler.removeCallbacks(directSelectionRunnable);
         directTimerAnchorX = rawX;
         directTimerAnchorY = rawY;
-        handler.postDelayed(directSelectionRunnable, FL_DIRECT_SELECT_DELAY_MS);
+        handler.postDelayed(directSelectionRunnable, delayMs);
         DiagnosticLog.i(getContext(), "FL_DIRECT", "REARM anchor="+Math.round(rawX)+","+Math.round(rawY)
                 +" dx="+Math.round(dx)+" dy="+Math.round(dy)
+                +" delay="+delayMs
                 +" axisSlopPx="+Math.round(directRearmSlopPx));
+    }
+
+    private long directSelectionDelayMs() {
+        return fs == null ? FV_DIRECT_SELECT_DEFAULT_MS : fs.viewCaptureDwellMs();
     }
 
     private void finish(long now, boolean cancelled) {
