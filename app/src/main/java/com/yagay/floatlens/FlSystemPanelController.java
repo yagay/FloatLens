@@ -2,7 +2,6 @@ package com.yagay.floatlens;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.Context;
-import android.content.Intent;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Handler;
@@ -163,19 +162,9 @@ public final class FlSystemPanelController {
     private static void dismissSystemPanel(Context caller, String reason) {
         Context app = caller.getApplicationContext();
         MAIN.post(() -> {
-            int targetSdk = app.getApplicationInfo().targetSdkVersion;
-            boolean broadcast = false;
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || targetSdk < Build.VERSION_CODES.S) {
-                try {
-                    app.sendBroadcast(new Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS));
-                    broadcast = true;
-                } catch (Throwable t) {
-                    DiagnosticLog.i(app, "FL_SHADE", "CLOSE_SYSTEM_DIALOGS failed=" + t);
-                }
-            } else {
-                DiagnosticLog.i(app, "FL_SHADE", "skip CLOSE_SYSTEM_DIALOGS targetSdk=" + targetSdk);
-            }
-
+            // FloatLens targets API 31+, where broadcasting ACTION_CLOSE_SYSTEM_DIALOGS is a
+            // privileged/system-only compatibility path. Use the documented Accessibility global
+            // action first, then the existing shadow-activity and optional Root fallbacks.
             LensAccessibilityService service = LensAccessibilityService.get();
             SystemActions actions = inspectSystemActions(service);
             boolean global = false;
@@ -188,7 +177,6 @@ public final class FlSystemPanelController {
             }
 
             DiagnosticLog.i(app, "FL_SHADE", "dismiss result-ready reason=" + reason
-                    + " broadcast=" + broadcast
                     + " action15Available=" + actions.hasDismissShade
                     + " global15=" + global
                     + " systemActions=" + actions.ids
