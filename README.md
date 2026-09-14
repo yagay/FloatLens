@@ -6,7 +6,7 @@ FloatLens 是一个 Android 悬浮取词、View 选择、截图和 OCR 工具。
 
 ## Root / LSPosed 增强模式
 
-入口：`FloatLens → 设置 → 高级权限`
+入口：`FloatLens → 高级 → 高级权限`
 
 主要开关：
 
@@ -29,11 +29,11 @@ Root 截图需要同时打开：
 
 ### LSPosed
 
-`使用 LSPosed 功能` 控制的是 FloatLens 是否允许功能层选择 LSPosed 增强 Provider。它不会代替 LSPosed 管理器管理模块启用状态或作用域。
+`使用 LSPosed 功能` 只控制 FloatLens 是否允许 LSPosed 增强 Provider。模块启用状态和作用域仍由 LSPosed 管理器负责。
 
-设置页还会记录最近一次现有 Hook 通信，用于判断 LSPosed 注入链路是否曾经正常工作。当前仓库中的 LSPosed 模块主要用于 FooView 运行时分析；后续通用 View / WebView / Compose Provider 应继续通过统一的 `PrivilegeManager` 门控。
+原先用于抓取 FV/fooView 运行时行为的代码已经完全移除，包括固定 FV 作用域、方法 Hook、Method Probe、对象快照、Hook 日志回传和 Runtime Inspector ZIP。现在保留的是一个干净的 LSPosed 模块入口，不会对 FV 安装任何 Hook。
 
-完整行为、回退规则、开发约束和状态说明见 [`docs/PRIVILEGED_MODE.md`](docs/PRIVILEGED_MODE.md)。
+完整权限与回退规则见 [`docs/PRIVILEGED_MODE.md`](docs/PRIVILEGED_MODE.md)。
 
 ## Build
 

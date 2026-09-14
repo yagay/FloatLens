@@ -10,13 +10,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
-/**
- * Central privilege gate for optional Root / LSPosed enhancements.
- *
- * <p>Feature code should never call {@code su} or an LSPosed provider by checking a raw preference
- * directly. Always go through this class so the master switch and fallback policy are respected.
- * When enhanced mode is off, FloatLens stays on its normal Android / Accessibility path.</p>
- */
+/** Central privilege gate for optional Root / LSPosed enhancements. */
 public final class PrivilegeManager {
     public enum Mode {
         NORMAL,
@@ -77,10 +71,7 @@ public final class PrivilegeManager {
         };
     }
 
-    /**
-     * Explicit Root authorization test. This is only called after the user taps the test button;
-     * merely opening settings must not unexpectedly show a root-manager authorization prompt.
-     */
+    /** Explicit Root authorization test. Opening settings alone never calls su. */
     public static void checkRootAsync(Context context, Consumer<RootStatus> callback) {
         Context app = context.getApplicationContext();
         ROOT_IO.execute(() -> {
@@ -127,20 +118,6 @@ public final class PrivilegeManager {
                 try { process.destroy(); } catch (Throwable ignored) {}
             }
         }
-    }
-
-    /** Called by the hook-log receiver when a live LSPosed-injected process talks back to FloatLens. */
-    public static void markLsposedSeen(Context context, String source) {
-        Context app = context.getApplicationContext();
-        app.getSharedPreferences(FloatSettings.PREF, Context.MODE_PRIVATE).edit()
-                .putLong(FloatSettings.K_LSPOSED_LAST_SEEN, System.currentTimeMillis())
-                .putString(FloatSettings.K_LSPOSED_LAST_SOURCE,
-                        source == null || source.isBlank() ? "hook" : source)
-                .apply();
-    }
-
-    public static boolean lsposedCommunicationSeen(Context context) {
-        return new FloatSettings(context).lsposedLastSeenMs() > 0L;
     }
 
     /** Human-readable stored Root test result; does not execute su. */

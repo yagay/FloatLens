@@ -105,7 +105,7 @@ public class MainActivity extends AppCompatActivity {
                 () -> startActivity(SettingsActivity.intent(this, SettingsActivity.SECTION_PRIVILEGE))));
         AppUi.addRow(advanced.body, AppUi.navRow(this,
                 "诊断与调试",
-                "FL 日志、Runtime Inspector、Method Probe",
+                "FloatLens 自身运行日志",
                 () -> startActivity(new Intent(this, DiagnosticsActivity.class))));
         AppUi.addSection(root, advanced);
 
