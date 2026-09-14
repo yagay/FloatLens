@@ -20,7 +20,7 @@ final class ScreenshotGeometry {
         int top = clamp(Math.round((screenBounds.top - display.top) * sy), 0, raw.getHeight() - 1);
         int right = clamp(Math.round((screenBounds.right - display.left) * sx), left + 1, raw.getWidth());
         int bottom = clamp(Math.round((screenBounds.bottom - display.top) * sy), top + 1, raw.getHeight());
-        return Bitmap.createBitmap(raw, left, top, right - left, bottom - top);
+        return detachedCrop(raw, left, top, right - left, bottom - top);
     }
 
     static Bitmap maybeCropStatusBar(Context c, Bitmap raw, boolean keepStatusBar) {
@@ -34,10 +34,18 @@ final class ScreenshotGeometry {
             if (topPx <= 0 || screenH <= 0) return raw;
             float sy = raw.getHeight() / (float) screenH;
             int cropTop = clamp(Math.round(topPx * sy), 0, raw.getHeight() - 1);
-            return Bitmap.createBitmap(raw, 0, cropTop, raw.getWidth(), raw.getHeight() - cropTop);
+            return detachedCrop(raw, 0, cropTop, raw.getWidth(), raw.getHeight() - cropTop);
         } catch (Throwable ignored) {
             return raw;
         }
+    }
+
+    private static Bitmap detachedCrop(Bitmap raw, int left, int top, int width, int height) {
+        Bitmap out = Bitmap.createBitmap(raw, left, top, width, height);
+        if (out != raw) return out;
+        Bitmap copy = raw.copy(Bitmap.Config.ARGB_8888, false);
+        if (copy == null) throw new IllegalStateException("unable to detach screenshot crop");
+        return copy;
     }
 
     private static int clamp(int v, int min, int max) {
