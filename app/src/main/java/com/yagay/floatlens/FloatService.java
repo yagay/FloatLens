@@ -67,6 +67,8 @@ public class FloatService extends Service implements android.content.SharedPrefe
 
     @Override public int onStartCommand(Intent intent, int flags, int id) {
         if (intent != null && ACT_STOP.equals(intent.getAction())) {
+            // Notification "Stop" is an explicit user disable, not a transient service death.
+            FloatServiceState.setEnabled(this, false);
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -85,10 +87,18 @@ public class FloatService extends Service implements android.content.SharedPrefe
     }
 
     private void addPrimary() {
-        primaryLp = layout.createPrimary();
-        primary = newIcon(primaryLp, false);
-        primary.setAlpha(fs.alpha());
-        addIconWindow(primary, primaryLp);
+        WindowManager.LayoutParams candidateLp = layout.createPrimary();
+        FloatIconView candidate = newIcon(candidateLp, false);
+        candidate.setAlpha(fs.alpha());
+        if (!addIconWindow(candidate, candidateLp)) {
+            DiagnosticLog.i(this, "FL_WINDOW", "primary add failed; keep state retryable");
+            candidate.onDetachedFromWindow();
+            primary = null;
+            primaryLp = null;
+            return;
+        }
+        primaryLp = candidateLp;
+        primary = candidate;
         layout.edgeHide(primaryLp);
         safeUpdate(primary, primaryLp);
         addTouchHandle(primary, primaryLp, false);
@@ -97,10 +107,18 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private void syncSecondary() {
         if (fs.bothSide()) {
             if (secondary == null && primaryLp != null) {
-                secondaryLp = layout.createMirror(primaryLp);
-                secondary = newIcon(secondaryLp, true);
-                secondary.setAlpha(fs.alpha());
-                addIconWindow(secondary, secondaryLp);
+                WindowManager.LayoutParams candidateLp = layout.createMirror(primaryLp);
+                FloatIconView candidate = newIcon(candidateLp, true);
+                candidate.setAlpha(fs.alpha());
+                if (!addIconWindow(candidate, candidateLp)) {
+                    DiagnosticLog.i(this, "FL_WINDOW", "secondary add failed; keep state retryable");
+                    candidate.onDetachedFromWindow();
+                    secondary = null;
+                    secondaryLp = null;
+                    return;
+                }
+                secondaryLp = candidateLp;
+                secondary = candidate;
                 layout.edgeHide(secondaryLp);
                 safeUpdate(secondary, secondaryLp);
                 addTouchHandle(secondary, secondaryLp, true);
@@ -314,6 +332,10 @@ public class FloatService extends Service implements android.content.SharedPrefe
         removeTouchHandle(mirrored);
         FloatIconTouchHandle handle = new FloatIconTouchHandle(this, icon);
         WindowManager.LayoutParams handleLp = createTouchHandleLayout(iconLp);
+        if (!iconHost.add(handle, handleLp, "float_icon_handle")) {
+            DiagnosticLog.i(this, "FV_HANDLE", "ADD failed side=" + (layout.isLeft(iconLp) ? "L" : "R"));
+            return;
+        }
         if (mirrored) {
             secondaryHandle = handle;
             secondaryHandleLp = handleLp;
@@ -321,7 +343,6 @@ public class FloatService extends Service implements android.content.SharedPrefe
             primaryHandle = handle;
             primaryHandleLp = handleLp;
         }
-        iconHost.add(handle, handleLp, "float_icon_handle");
         DiagnosticLog.i(this, "FV_HANDLE", "ADD side=" + (layout.isLeft(iconLp) ? "L" : "R")
                 + " icon=" + iconLp.width + "x" + iconLp.height
                 + " handle=" + handleLp.width + "x" + handleLp.height
@@ -547,12 +568,11 @@ public class FloatService extends Service implements android.content.SharedPrefe
                     "需要开启 FloatLens 无障碍服务", android.widget.Toast.LENGTH_SHORT).show();
             return;
         }
-        setScreenshotHidden(true);
+        ScreenshotVisibilityLease.Lease lease = ScreenshotVisibilityLease.acquire(this, "click_under");
         getMainExecutor().execute(() -> new android.os.Handler(android.os.Looper.getMainLooper())
                 .postDelayed(() -> {
                     boolean ok = accessibility.tap(lastActionX, lastActionY);
-                    new android.os.Handler(android.os.Looper.getMainLooper())
-                            .postDelayed(() -> setScreenshotHidden(false), 100);
+                    ScreenshotVisibilityLease.release(this, lease, "click_dispatched");
                     if (!ok) android.widget.Toast.makeText(this,
                             "点击下方屏幕失败", android.widget.Toast.LENGTH_SHORT).show();
                 }, 80));
