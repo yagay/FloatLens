@@ -28,6 +28,9 @@ jobs:
         with:
           gradle-version: '9.4.1'
 
+      - name: Run unit tests
+        run: gradle --stacktrace testDebugUnitTest
+
       - name: Build debug APK
         run: gradle --stacktrace assembleDebug
 
