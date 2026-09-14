@@ -13,9 +13,9 @@ import android.view.View;
 import java.util.List;
 
 /**
- * Floating icon touch engine modelled from FV FooViewService$c3.onTouch.
+ * FloatLens floating icon touch engine.
  *
- * Visual resource loading and slideshow timing live in FloatIconRenderer. This class owns only FV
+ * Visual resource loading and slideshow timing live in FloatIconRenderer. This class owns FL
  * pointer semantics: immediate temporary-follow movement, 400ms direct-selection dwell, gestures,
  * long press and explicit position-move mode.
  */
@@ -36,10 +36,10 @@ public class FloatIconView extends View {
 
     private static final long FL_DIRECT_SELECT_DELAY_MS = 400L;
     private static final float FL_DIRECT_MOVE_START_DP = 3f;
-    // FV FooViewService uses a two-stage long press: arm at T-100 ms, then require a final
+    // FL long press uses a two-stage timer: arm at T-100 ms, then require a final
     // 100 ms stable window. During that final window, ~3 px movement re-arms only the window.
-    private static final long FV_LONG_PRESS_FINAL_STABLE_MS = 100L;
-    private static final float FV_LONG_PRESS_REARM_PX = 3f;
+    private static final long FL_LONG_PRESS_FINAL_STABLE_MS = 100L;
+    private static final float FL_LONG_PRESS_REARM_PX = 3f;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final GestureSession session = new GestureSession();
@@ -65,9 +65,9 @@ public class FloatIconView extends View {
     private float longPressAnchorRawX = Float.NaN, longPressAnchorRawY = Float.NaN;
     private ViewSelectionEngine selectionEngine;
 
-    private boolean fvWindowKnown;
-    private int fvWindowStartX, fvWindowStartY;
-    private int fvWindowX, fvWindowY;
+    private boolean flWindowKnown;
+    private int flWindowStartX, flWindowStartY;
+    private int flWindowX, flWindowY;
 
     public FloatIconView(Context c, Callback cb) {
         super(c);
@@ -116,31 +116,31 @@ public class FloatIconView extends View {
         invalidate();
     }
 
-    /** Current owner-window rectangle used by FV FooViewService.D4()-style hint positioning. */
-    RectF currentFvWindowBounds() {
-        if (!fvWindowKnown) beginFvWindowTracking();
+    /** Current FL owner-window rectangle used for hint positioning. */
+    RectF currentFlWindowBounds() {
+        if (!flWindowKnown) beginFlWindowTracking();
         int w = Math.max(1, getWidth() > 0 ? getWidth() : getMeasuredWidth());
         int h = Math.max(1, getHeight() > 0 ? getHeight() : getMeasuredHeight());
-        return new RectF(fvWindowX, fvWindowY, fvWindowX + w, fvWindowY + h);
+        return new RectF(flWindowX, flWindowY, flWindowX + w, flWindowY + h);
     }
 
-    private void beginFvWindowTracking() {
+    private void beginFlWindowTracking() {
         int[] loc = new int[2];
         try {
             getLocationOnScreen(loc);
-            fvWindowStartX = fvWindowX = loc[0];
-            fvWindowStartY = fvWindowY = loc[1];
-            fvWindowKnown = true;
+            flWindowStartX = flWindowX = loc[0];
+            flWindowStartY = flWindowY = loc[1];
+            flWindowKnown = true;
         } catch (Throwable ignored) {
-            fvWindowKnown = false;
+            flWindowKnown = false;
         }
     }
 
-    private void updateFvWindowTracking(int dxFromDown, int dyFromDown) {
-        if (!fvWindowKnown) beginFvWindowTracking();
-        if (!fvWindowKnown) return;
-        fvWindowX = fvWindowStartX + dxFromDown;
-        fvWindowY = fvWindowStartY + dyFromDown;
+    private void updateFlWindowTracking(int dxFromDown, int dyFromDown) {
+        if (!flWindowKnown) beginFlWindowTracking();
+        if (!flWindowKnown) return;
+        flWindowX = flWindowStartX + dxFromDown;
+        flWindowY = flWindowStartY + dyFromDown;
     }
 
     @Override protected void onDetachedFromWindow() {
@@ -193,7 +193,7 @@ public class FloatIconView extends View {
                 if(circleActive)CircleLiveController.cancel("new_down");
                 FloatService service=FloatService.get();
                 positionMoveMode=service!=null&&service.isPositionMoveArmed();
-                beginFvWindowTracking();
+                beginFlWindowTracking();
                 selectionEngine=positionMoveMode?null:new ViewSelectionEngine(getContext(), this);
                 selectionTookOver=false;
                 circleActive=false;
@@ -208,12 +208,12 @@ public class FloatIconView extends View {
                 session.begin(rx, ry, now);
                 if(selectionEngine!=null&&selectionEngine.available())selectionEngine.dispatchTouchEvent(e);
                 DiagnosticLog.i(getContext(), "STATE", "DOWN begin="+Math.round(rx)+","+Math.round(ry)
-                        +" fvDirectAvailable="+(selectionEngine!=null&&selectionEngine.available())
+                        +" flDirectAvailable="+(selectionEngine!=null&&selectionEngine.available())
                         +" directAxisSlopPx="+Math.round(directRearmSlopPx)
                         +" positionMove="+positionMoveMode);
                 invalidate();
 
-                if(!positionMoveMode) armFvLongPress(rx, ry);
+                if(!positionMoveMode) armFlLongPress(rx, ry);
                 return true;
             }
 
@@ -228,7 +228,7 @@ public class FloatIconView extends View {
                 if(positionMoveMode){
                     if((moveDx!=0||moveDy!=0)&&dist>=dp(1.5f)){
                         if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","explicit position move started");}
-                        updateFvWindowTracking(moveDx, moveDy);
+                        updateFlWindowTracking(moveDx, moveDy);
                         cb.onMove(moveDx,moveDy);
                         session.moved=true;
                         session.phase=GestureSession.Phase.ICON_DRAG;
@@ -240,7 +240,7 @@ public class FloatIconView extends View {
 
                 if(directSelectionActive){
                     if ((moveDx!=0||moveDy!=0) && followStarted) {
-                        updateFvWindowTracking(moveDx, moveDy);
+                        updateFlWindowTracking(moveDx, moveDy);
                         cb.onMove(moveDx, moveDy);
                         session.moved=true;
                     }
@@ -253,14 +253,14 @@ public class FloatIconView extends View {
                     return true;
                 }
 
-                // FV keeps immediate temporary-follow movement independent from long-press
+                // FL keeps immediate temporary-follow movement independent from long-press
                 // eligibility. Once the T-100 ms prime has fired, only the final 100 ms stable
                 // window is re-armed when the pointer shifts by roughly 3 raw pixels.
-                rearmFvLongPressIfNeeded(rx, ry);
+                rearmFlLongPressIfNeeded(rx, ry);
 
                 if ((moveDx!=0||moveDy!=0) && dist>=dp(1.5f)) {
-                    if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","fvTemporaryFollowStart distance="+Math.round(dist));}
-                    updateFvWindowTracking(moveDx, moveDy);
+                    if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","flTemporaryFollowStart distance="+Math.round(dist));}
+                    updateFlWindowTracking(moveDx, moveDy);
                     cb.onMove(moveDx,moveDy);
                     session.moved=true;
                 }
@@ -305,7 +305,7 @@ public class FloatIconView extends View {
                     cb.onRelease(followStarted);
                     DiagnosticLog.i(getContext(),"GESTURE_LAYER","code="+GestureCode.RECOGNIZE
                             +" label="+GestureCode.label(GestureCode.RECOGNIZE)
-                            +" source=fv_direct_release result="+selectionTookOver);
+                            +" source=fl_direct_release result="+selectionTookOver);
                     resetSession();
                     return true;
                 }
@@ -344,8 +344,8 @@ public class FloatIconView extends View {
         return true;
     }
 
-    /** Mirror FV's J0 -> I0 long-press timing: prime at T-100 ms, trigger after 100 ms stability. */
-    private void armFvLongPress(float rawX, float rawY) {
+    /** FL long-press timing: prime at T-100 ms, trigger after 100 ms stability. */
+    private void armFlLongPress(float rawX, float rawY) {
         cancelLongPress();
         longPressPrimed = false;
         longPressAnchorRawX = rawX;
@@ -383,37 +383,37 @@ public class FloatIconView extends View {
             longPressAnchorRawX = session.lastX;
             longPressAnchorRawY = session.lastY;
             handler.removeCallbacks(longPressRunnable);
-            handler.postDelayed(longPressRunnable, FV_LONG_PRESS_FINAL_STABLE_MS);
+            handler.postDelayed(longPressRunnable, FL_LONG_PRESS_FINAL_STABLE_MS);
             DiagnosticLog.i(getContext(), "LONG_PRESS", "prime duration="
                     + session.duration(SystemClock.uptimeMillis())
                     + " anchor=" + Math.round(longPressAnchorRawX) + "," + Math.round(longPressAnchorRawY)
-                    + " stableMs=" + FV_LONG_PRESS_FINAL_STABLE_MS
-                    + " rearmPx=" + Math.round(FV_LONG_PRESS_REARM_PX)
+                    + " stableMs=" + FL_LONG_PRESS_FINAL_STABLE_MS
+                    + " rearmPx=" + Math.round(FL_LONG_PRESS_REARM_PX)
                     + " followed=" + followStarted);
         };
 
-        long primeDelay = Math.max(0L, fs.longPressMs() - FV_LONG_PRESS_FINAL_STABLE_MS);
+        long primeDelay = Math.max(0L, fs.longPressMs() - FL_LONG_PRESS_FINAL_STABLE_MS);
         handler.postDelayed(longPressPrimeRunnable, primeDelay);
         DiagnosticLog.i(getContext(), "LONG_PRESS", "arm totalMs=" + fs.longPressMs()
                 + " primeDelayMs=" + primeDelay
-                + " finalStableMs=" + FV_LONG_PRESS_FINAL_STABLE_MS);
+                + " finalStableMs=" + FL_LONG_PRESS_FINAL_STABLE_MS);
     }
 
-    private void rearmFvLongPressIfNeeded(float rawX, float rawY) {
+    private void rearmFlLongPressIfNeeded(float rawX, float rawY) {
         if (!longPressPrimed || longPressRunnable == null || longPressActionTriggered
                 || Float.isNaN(longPressAnchorRawX) || Float.isNaN(longPressAnchorRawY)) return;
         float dx = rawX - longPressAnchorRawX;
         float dy = rawY - longPressAnchorRawY;
-        if (Math.abs(dx) < FV_LONG_PRESS_REARM_PX && Math.abs(dy) < FV_LONG_PRESS_REARM_PX) return;
+        if (Math.abs(dx) < FL_LONG_PRESS_REARM_PX && Math.abs(dy) < FL_LONG_PRESS_REARM_PX) return;
 
         handler.removeCallbacks(longPressRunnable);
         longPressAnchorRawX = rawX;
         longPressAnchorRawY = rawY;
-        handler.postDelayed(longPressRunnable, FV_LONG_PRESS_FINAL_STABLE_MS);
+        handler.postDelayed(longPressRunnable, FL_LONG_PRESS_FINAL_STABLE_MS);
         DiagnosticLog.i(getContext(), "LONG_PRESS", "rearm dx=" + Math.round(dx)
                 + " dy=" + Math.round(dy)
                 + " anchor=" + Math.round(rawX) + "," + Math.round(rawY)
-                + " stableMs=" + FV_LONG_PRESS_FINAL_STABLE_MS);
+                + " stableMs=" + FL_LONG_PRESS_FINAL_STABLE_MS);
     }
 
     private void armOrRearmDirectSelection(float rawX, float rawY) {
@@ -449,7 +449,7 @@ public class FloatIconView extends View {
         DiagnosticLog.i(getContext(), "FINISH", "ended="+ended+" cancelled="+cancelled
                 +" duration="+session.duration(now)+" distance="+Math.round(session.distance())
                 +" points="+session.points.size()+" multi="+session.multiTouch
-                +" followed="+followStarted+" fvSelectionTookOver="+selectionTookOver);
+                +" followed="+followStarted+" flSelectionTookOver="+selectionTookOver);
         session.phase = GestureSession.Phase.FINISHING;
         cb.onGestureEnd(session.snapshot());
         if (session.multiTouch || cancelled) {
@@ -487,7 +487,7 @@ public class FloatIconView extends View {
         directSelectionActive=false;
         positionMoveMode=false;
         followStarted=false;
-        fvWindowKnown=false;
+        flWindowKnown=false;
         lastSelectionRawX=lastSelectionRawY=Float.NaN;
         longPressAnchorRawX=longPressAnchorRawY=Float.NaN;
         session.reset();

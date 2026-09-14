@@ -3,7 +3,7 @@ package com.yagay.floatlens;
 import android.graphics.Rect;
 
 /**
- * Unified clean-room screen candidate inspired by FV's Rect/Text + NonText candidate pipeline.
+ * Unified clean-room screen candidate used by the FL Rect/Text + NonText candidate pipeline.
  * Type/source describe the candidate only; they are never semantic ranking weights.
  */
 public final class ScreenCandidate {

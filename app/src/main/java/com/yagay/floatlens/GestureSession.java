@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** One complete touch session. FV records a full point stream and can switch to Circle mid-session. */
+/** One complete touch session. FL records a full point stream and can switch to Circle mid-session. */
 final class GestureSession {
     enum Phase { IDLE, DOWN, GESTURE, ICON_DRAG, CIRCLE, FINISHING }
     final ArrayList<GesturePointSample> points = new ArrayList<>();

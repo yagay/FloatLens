@@ -12,9 +12,9 @@ import android.view.Window;
 import android.view.WindowManager;
 
 /**
- * Modern non-root equivalent of FV ShadowActivity request=21.
+ * FL transient Activity used to assist notification-shade dismissal on modern Android.
  *
- * FV starts ShadowActivity and finishes it 300 ms later. Android 12+ also documents that starting an
+ * FL keeps this Activity short-lived and finishes it 300 ms later. Android 12+ also documents that starting an
  * Activity while the app has a window above the notification drawer can cause the drawer to close.
  * This Activity is intentionally empty/translucent and exists only as a compatibility fallback after
  * GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE failed and the shade is still confirmed expanded.

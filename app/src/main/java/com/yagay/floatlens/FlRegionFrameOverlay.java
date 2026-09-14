@@ -10,7 +10,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 
-/** Region-drag frame. FV View readiness colors do not apply to this frame. */
+/** Region-drag frame. FL View readiness colors do not apply to this frame. */
 final class FlRegionFrameOverlay {
     private final Context context;
     private final FlOverlayWindowHost windowHost;

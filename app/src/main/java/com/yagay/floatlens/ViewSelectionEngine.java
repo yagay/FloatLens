@@ -13,11 +13,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * FV-style same-touch selection engine.
+ * FL same-touch selection engine.
  *
- * Region dragging and selected-View readiness are intentionally separate. FV's FooViewService owns
- * the dwell/re-arm state and calls o1/n1.d(false/true) on the selected View rectangle. FloatLens
- * mirrors that relationship: ViewHoverOverlay is passive; this engine owns the 400ms / ±3dp state.
+ * Region dragging and selected-View readiness are intentionally separate. FL owns
+ * the dwell/re-arm state for the selected View rectangle. FloatLens
+ * keeps ViewHoverOverlay passive; this engine owns the 400ms / ±3dp state.
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
@@ -44,7 +44,7 @@ public final class ViewSelectionEngine {
     private FlProbePointOverlay probeOverlay;
     private FlPointerOperationHintOverlay pointerHintOverlay;
 
-    /** Immediate FV m2/g-style region state, independent of Accessibility readiness. */
+    /** Immediate FL region state, independent of Accessibility readiness. */
     private FlRegionFrameOverlay directRegionFrame;
     private final Rect directRegion = new Rect();
     private float directStartX = Float.NaN, directStartY = Float.NaN;
@@ -54,7 +54,7 @@ public final class ViewSelectionEngine {
     private float selectionX = Float.NaN, selectionY = Float.NaN;
     private long targetGeneration;
 
-    /** FV o1/n1.d state applies only to the selected View rectangle. */
+    /** FL readiness state applies only to the selected View rectangle. */
     private SelectionVisualState viewVisualState = SelectionVisualState.TRACKING;
     private float viewReadyAnchorX = Float.NaN, viewReadyAnchorY = Float.NaN;
     private String viewReadyCandidateKey = "";
@@ -70,7 +70,7 @@ public final class ViewSelectionEngine {
     }
 
     /**
-     * ownerIcon is retained for call-site compatibility. FV's pointer_op_hint is anchored from the
+     * ownerIcon is retained for call-site compatibility. The FL pointer hint is anchored from the
      * moving pen/probe window, not from the owner FloatIconView itself.
      */
     public ViewSelectionEngine(Context c, FloatIconView ownerIcon) {
@@ -84,12 +84,12 @@ public final class ViewSelectionEngine {
         viewReadyAxisSlopPx = Math.max(1f, FL_VIEW_READY_AXIS_SLOP_DP * density);
     }
 
-    /** FV m2/g.v() is unconditional: region/select mode is not gated by Accessibility. */
+    /** FL region/select mode is unconditional: region/select mode is not gated by Accessibility. */
     public boolean available() { return true; }
     public boolean isActive() { return state == State.DIRECT; }
     public State state() { return state; }
 
-    /** Snapshot FV's real small-icon origin while ACTION_DOWN still belongs to that Window. */
+    /** Snapshot FL's real small-icon origin while ACTION_DOWN still belongs to that Window. */
     public void dispatchTouchEvent(MotionEvent e) {
         if (e == null) return;
         int action = e.getActionMasked();
@@ -257,12 +257,12 @@ public final class ViewSelectionEngine {
                 updateOperationHint();
                 DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_APPLY gen=" + generation
                         + " elapsedMs=" + (SystemClock.elapsedRealtime() - started)
-                        + " region=false fvViewState=" + viewVisualState);
+                        + " region=false flViewState=" + viewVisualState);
             });
         });
     }
 
-    /** FV FooViewService -> o1/n1.d(false): every newly selected View starts red. */
+    /** FL rule: every newly selected View starts red. */
     private void onViewCandidateChanged(ScreenCandidate candidate) {
         cancelViewReadyTimer();
         setViewVisualState(SelectionVisualState.TRACKING, "candidate_changed");
@@ -277,7 +277,7 @@ public final class ViewSelectionEngine {
         armViewReadyTimer("candidate_changed");
     }
 
-    /** FV c3: leave the ±3dp stable box -> d(false), then re-arm the 400ms runnable. */
+    /** FL rule: leaving the ±3dp stable box returns to TRACKING and re-arms the 400ms timer. */
     private void updateViewCandidateStability(float x, float y) {
         if (overlay == null || overlay.currentCandidate() == null) return;
         if (Float.isNaN(viewReadyAnchorX) || Float.isNaN(viewReadyAnchorY)) {
@@ -341,7 +341,7 @@ public final class ViewSelectionEngine {
         return shown;
     }
 
-    /** Same-touch ACTION_UP: snapshot, remove helpers, then execute after FV's 5ms delay. */
+    /** Same-touch ACTION_UP: snapshot, remove helpers, then execute after the FL 5ms release delay. */
     public boolean finishDirect(float rawX, float rawY) {
         if (state != State.DIRECT) {
             cancel();

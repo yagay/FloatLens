@@ -16,7 +16,7 @@ import java.util.List;
 /**
  * Cached Accessibility candidate + highlight layer used by ViewSelectionEngine.
  *
- * Mirrors FV o1/n1: this class is only the selected-View visual. The gesture/service state machine
+ * FL rule: this class is only the selected-View visual. The gesture/service state machine
  * decides when d(false)/d(true) happens; this layer merely renders TRACKING red or READY yellow.
  * Region dragging is a separate visual and never participates in this state.
  */
@@ -49,7 +49,7 @@ public final class ViewHoverOverlay {
         candidateListener = listener;
     }
 
-    /** FV o1/n1.d(false/true) equivalent. */
+    /** FL TRACKING/READY visual-state update. */
     public void setVisualState(SelectionVisualState next) {
         if (next == null) next = SelectionVisualState.TRACKING;
         if (visualState == next) return;

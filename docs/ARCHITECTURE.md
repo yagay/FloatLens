@@ -1,6 +1,6 @@
 # FloatLens Architecture
 
-This document defines the single-owner boundaries used by FloatLens. The goal is to keep FV-compatible
+This document defines the single-owner boundaries used by FloatLens. The goal is to keep FL
 interaction semantics while making each capability easy to add, remove and maintain without parallel
 implementations.
 
@@ -10,7 +10,7 @@ implementations.
 Owns pointer semantics only:
 
 - immediate temporary-follow movement from `ACTION_DOWN` absolute displacement;
-- FV-style 400 ms direct-selection dwell;
+- FL 400 ms direct-selection dwell;
 - 3 dp per-axis dwell re-arm box;
 - long press, tap/double tap and gesture state;
 - hand-off to `ViewSelectionEngine`;
@@ -207,8 +207,8 @@ require another hard-coded settings list.
 ## 8. View selection
 
 ### `ViewSelectionEngine`
-Only owner of FV direct-drag selection state: probe position, 400 ms DIRECT transition, direct-region
-state, async candidate preparation, operation choice and FV-compatible 5 ms release delay.
+Only owner of FL direct-drag selection state: probe position, 400 ms DIRECT transition, direct-region
+state, async candidate preparation, operation choice and FL 5 ms release delay.
 
 ### `ViewHoverOverlay`
 Candidate cache/hit-test/highlight layer only. It must not own another direct-region gesture state.
@@ -262,13 +262,13 @@ These stores are intentionally separate because their persisted data semantics d
 ## 11. Notification shade
 
 ### `FlSystemPanelController`
-Live SystemUI shade detection and Activity-result FV compatibility sequence.
+Live SystemUI shade detection and Activity-result FL compatibility sequence.
 
 ### `OverlayShadeCoordinator`
 Compatibility utility for specialized overlay flows only. Official result windows no longer use an
 overlay host.
 
-The scoped BACK fallback is a FloatLens/OxygenOS adaptation, not original FV behavior.
+The scoped BACK fallback is a FloatLens/OxygenOS adaptation.
 
 ## 12. Rules for future changes
 
@@ -282,8 +282,8 @@ The scoped BACK fallback is a FloatLens/OxygenOS adaptation, not original FV beh
 8. Selection crop math belongs in `SelectionCropper`/`ScreenshotGeometry`, not feature Views.
 9. Visibility reasons belong in `FloatVisibilityController`, not new `FloatService` booleans.
 10. Keep different pointer/lifecycle models separate even when their visuals are similar.
-11. Preserve FV touch timing and pointer order unless diagnostics prove a mismatch.
-12. Document modern Android/OxygenOS adaptations instead of presenting them as FV-original behavior.
+11. Preserve FL touch timing and pointer order unless diagnostics prove a mismatch.
+12. Document modern Android/OxygenOS adaptations explicitly.
 13. Run Debug Build after structural changes and test: icon drag/dwell, View extraction, region screenshot,
     notification-shade capture, screenshot->OCR in-place update, native text selection/magnifier,
     CircleLive and CircleSelect.

@@ -12,7 +12,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-/** FloatLens pointer operation hint; geometry follows the behavior observed in FV m2/g. */
+/** FloatLens pointer operation hint; uses FL selection geometry. */
 public final class FlPointerOperationHintOverlay {
     public enum Mode { TEXT, IMAGE, SCREENSHOT }
 

@@ -6,11 +6,11 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
 
-/** Shared FV 1.6.4 drag-selection visuals. */
+/** Shared FL drag-selection visuals. */
 final class SelectionVisuals {
-    /** FV o1/n1.onDraw(): normal selection is red. */
+    /** FL normal selection is red. */
     static final int FL_ACTIVE_COLOR = 0xFFFF0000;
-    /** FV o1/n1.onDraw(): confirmed/extractable selection is yellow. */
+    /** FL confirmed/extractable selection is yellow. */
     static final int FL_CONFIRMED_COLOR = 0xFFFFFF00;
 
     static int frameColor(SelectionVisualState state) {
@@ -23,13 +23,13 @@ final class SelectionVisuals {
     }
 
     static int edgeThicknessPx(Context c) {
-        // FV calls m5/q.a(2) then uses that as Paint stroke width: exactly 2dp.
+        // FL selection frame uses an exact 2dp Paint stroke width.
         return Math.max(1, Math.round(dp(c, 2f)));
     }
 
     /**
      * Kept with the old two-Paint signature so callers stay simple, but only one Paint is drawn.
-     * This intentionally matches FV's single STROKE Paint rather than the previous double outline.
+     * FL intentionally uses one STROKE Paint rather than a double outline.
      */
     static void configureFramePaints(Context c, Paint frame, Paint unused, SelectionVisualState state) {
         frame.setAntiAlias(true);

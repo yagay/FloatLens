@@ -10,7 +10,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 
-/** FloatLens probe point; geometry follows the behavior observed in FV m2/g. */
+/** FloatLens probe point; uses FL selection geometry. */
 public final class FlProbePointOverlay {
     private static final float FL_PROBE_SIZE_DP = 15f;
 

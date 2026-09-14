@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * FloatLens system-panel state and close path. The sequence is based on the behavior verified in FV,
+ * FloatLens system-panel state and close path. The sequence is based on the FL result-ready behavior,
  * while modern-target adaptations remain explicit.
  */
 public final class FlSystemPanelController {

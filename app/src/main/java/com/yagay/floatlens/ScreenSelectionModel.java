@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * FV-style cached hit-test model.
+ * FL cached hit-test model.
  *
  * Reverse engineering of fooView 1.6.4 shows that its selection overlay does not flatten every
  * Accessibility rectangle into one global depth-ranked list. FooAccessibilityService prepares
@@ -59,9 +59,9 @@ public final class ScreenSelectionModel {
         replacePrepared(view);
         replacePrepared(root);
 
-        // Matches the meaningful part of FV's getSelectedRect() ordering for the normal selection
+        // Matches FL semantic ordering for the normal selection
         // path: usable text is resolved before ordinary non-text candidates. Empty editable nodes are
-        // kept as a separate fallback class, and FloatLens' generic VIEW extension remains behind FV
+        // kept as a separate fallback class, and FloatLens' generic VIEW extension remains behind FL
         // semantic candidates instead of being allowed to hide them by depth.
         accessibility.addAll(text);
         accessibility.addAll(editable);
@@ -84,7 +84,7 @@ public final class ScreenSelectionModel {
     public boolean isEmpty() { return accessibility.isEmpty(); }
     public int size() { return accessibility.size(); }
 
-    /** FV MOVE-time behavior: first prepared candidate containing the pointer wins. */
+    /** FL MOVE-time behavior: first prepared candidate containing the pointer wins. */
     public ScreenCandidate selectAccessibilityAt(float x, float y) {
         final int px = Math.round(x), py = Math.round(y);
         for (ScreenCandidate c : accessibility) {
@@ -110,7 +110,7 @@ public final class ScreenSelectionModel {
     }
 
     /**
-     * Clean-room equivalent of the ordering behavior observed in FV FooAccessibilityService#c1().
+     * FL geometry preparation keeps narrower/contained candidates ahead of broader candidates.
      * Exact duplicate rectangles are ignored. A candidate contained by an existing candidate is
      * inserted before it. For partially overlapping candidates, the smaller rectangle is inserted
      * before the larger one. Unrelated candidates preserve traversal order.

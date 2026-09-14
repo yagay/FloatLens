@@ -9,7 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Local screenshot detector for FV-style NonText rectangles.
+ * Local screenshot detector for FL-style NonText rectangles.
  * It intentionally does not classify by app/widget semantics. Around the current selection point it
  * finds compact connected edge regions and returns their geometry as visual candidates. This lets a
  * launcher icon be represented separately from its BubbleTextView label when Accessibility exposes
