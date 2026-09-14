@@ -31,6 +31,7 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
     private static final long OCR_TIMEOUT_MS = 12_000L;
 
     private ResultSession session;
+    private ResultReadyCoordinator.Ticket readyTicket;
     private UnifiedResultPanel panel;
     private boolean ocrRunning;
     private long ocrGeneration;
@@ -38,22 +39,26 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
 
     public UnifiedResultDialogFragment() {}
 
-    void setInitialSession(ResultSession value) {
+    void setInitialSession(ResultSession value, ResultReadyCoordinator.Ticket ticket) {
         session = value;
+        readyTicket = ticket;
     }
 
-    void showSession(ResultSession value) {
+    void showSession(ResultSession value, ResultReadyCoordinator.Ticket ticket) {
         if (value == null) return;
         cancelCurrentOcr("new_session");
         session = value;
+        readyTicket = ticket;
         if (panel != null) {
             panel.render(session);
             panel.setOcrRunning(false);
             resizeDialog();
-            notifyVisibleResultReady();
+            notifyVisibleResultReady(ticket);
         }
         DiagnosticLog.i(requireContext(), "RESULT_DIALOG", "session mode=" + session.mode()
-                + " origin=" + session.originMode() + " sameDialog=true");
+                + " origin=" + session.originMode()
+                + " ready=" + (ticket == null ? "none" : ticket.id)
+                + " sameDialog=true");
     }
 
     @Override public void onCreate(@Nullable Bundle state) {
@@ -89,16 +94,17 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
         super.onStart();
         configureDialogWindow();
         resizeDialog();
-        notifyVisibleResultReady();
+        notifyVisibleResultReady(readyTicket);
         DiagnosticLog.i(requireContext(), "RESULT_DIALOG", "started mode="
                 + (session == null ? "none" : session.mode()) + " wrapContent=true fixedActions=true");
     }
 
-    private void notifyVisibleResultReady() {
-        if (panel == null) return;
-        panel.root().post(() -> {
+    private void notifyVisibleResultReady(ResultReadyCoordinator.Ticket ticket) {
+        if (panel == null || ticket == null) return;
+        View root = panel.root();
+        root.post(() -> {
             if (getActivity() instanceof ResultActivity host && panel != null) {
-                ResultReadyCoordinator.onResultDialogReady(host, panel.root());
+                ResultReadyCoordinator.onResultDialogReady(host, root, ticket);
             }
         });
     }
