@@ -23,10 +23,12 @@ import java.util.List;
  */
 public final class CircleLiveController {
     private static Session active;
+    private static long generation;
 
     public static synchronized boolean start(Context c, float x, float y) {
+        long gen = ++generation;
         if (active != null) active.cancel("restart");
-        active = new Session(c.getApplicationContext(), x, y);
+        active = new Session(c.getApplicationContext(), x, y, gen);
         active.start();
         return true;
     }
@@ -34,10 +36,19 @@ public final class CircleLiveController {
     public static synchronized boolean active() { return active != null; }
     public static synchronized void move(float x, float y) { if (active != null) active.move(x, y); }
     public static synchronized void finish(float x, float y) {
-        Session s = active; active = null; if (s != null) s.finish(x, y, false);
+        Session s = active;
+        active = null;
+        if (s != null) s.finish(x, y, false);
     }
     public static synchronized void cancel(String reason) {
-        Session s = active; active = null; if (s != null) s.cancel(reason == null ? "cancel" : reason);
+        generation++;
+        Session s = active;
+        active = null;
+        if (s != null) s.cancel(reason == null ? "cancel" : reason);
+    }
+
+    private static synchronized boolean isCurrent(long gen) {
+        return gen == generation;
     }
 
     private static final class Session {
@@ -46,15 +57,17 @@ public final class CircleLiveController {
         private final FloatSettings settings;
         private final FlSystemPanelController.CaptureState shadeState;
         private final List<PointF> points = new ArrayList<>();
+        private final long generationId;
         private LiveView overlay;
         private Bitmap screenshot;
         private boolean ended, cancelled, processed;
 
-        Session(Context c, float x, float y) {
+        Session(Context c, float x, float y, long generationId) {
             context = c;
             wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
             settings = new FloatSettings(c);
             shadeState = FlSystemPanelController.beginCapture(c, "circle_live");
+            this.generationId = generationId;
             points.add(new PointF(x, y));
         }
 
@@ -62,15 +75,16 @@ public final class CircleLiveController {
             FloatService service = FloatService.get();
             if (service != null) service.onCircleCaptureStarted();
             DiagnosticLog.i(context, "CIRCLE_LIVE", "ENTER code=" + GestureCode.ENTER_CIRCLE
+                    + " gen=" + generationId
                     + " x=" + Math.round(points.get(0).x) + " y=" + Math.round(points.get(0).y)
                     + " shadeExpanded=" + shadeState.expandedAtCapture());
-            // Shared backend owns Accessibility -> Root fallback. Do not hide the icon here because
-            // replacing the touch owner can terminate the current MotionEvent stream.
+            // FV keeps selection in the same touch session. The current icon remains MotionEvent
+            // owner while the frozen layer is NOT_TOUCHABLE, so do not replace the owner window.
             ScreenCaptureBackend.capture(context, settings, this::onScreenshot, this::onCaptureFailure);
         }
 
         void move(float x, float y) {
-            if (ended) return;
+            if (ended || !isCurrent(generationId)) return;
             PointF last = points.get(points.size() - 1);
             if (Math.abs(last.x - x) < 0.5f && Math.abs(last.y - y) < 0.5f) return;
             points.add(new PointF(x, y));
@@ -83,7 +97,7 @@ public final class CircleLiveController {
             cancelled = wasCancelled;
             points.add(new PointF(x, y));
             DiagnosticLog.i(context, "CIRCLE_LIVE", "RELEASE code=" + GestureCode.CIRCLE_FINISH
-                    + " points=" + points.size() + " cancelled=" + cancelled);
+                    + " gen=" + generationId + " points=" + points.size() + " cancelled=" + cancelled);
             if (overlay != null) overlay.setPoints(points);
             maybeProcess();
         }
@@ -93,21 +107,23 @@ public final class CircleLiveController {
             ended = true;
             cancelled = true;
             closeOverlay();
+            recycleScreenshot();
             FloatService f = FloatService.get();
             if (f != null) f.onCircleFinished(reason);
-            DiagnosticLog.i(context, "CIRCLE_LIVE", "CANCEL reason=" + reason);
+            DiagnosticLog.i(context, "CIRCLE_LIVE", "CANCEL gen=" + generationId + " reason=" + reason);
         }
 
         private void onScreenshot(Bitmap bitmap) {
-            if (cancelled) {
-                if (bitmap != null) bitmap.recycle();
+            if (cancelled || !isCurrent(generationId)) {
+                if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+                DiagnosticLog.i(context, "CIRCLE_LIVE", "drop stale screenshot gen=" + generationId);
                 return;
             }
             screenshot = bitmap;
             showOverlay();
             if (ended && overlay != null) {
                 overlay.postDelayed(() -> {
-                    if (cancelled) return;
+                    if (cancelled || !isCurrent(generationId)) return;
                     onCandidateReady();
                     maybeProcess();
                 }, 16L);
@@ -118,11 +134,18 @@ public final class CircleLiveController {
         }
 
         private void onCandidateReady() {
+            if (!isCurrent(generationId)) return;
             FlSystemPanelController.onResultReady(context, shadeState, "circle_live_candidate_shown");
         }
 
         private void onCaptureFailure(Throwable error) {
+            if (cancelled || !isCurrent(generationId)) {
+                DiagnosticLog.i(context, "CIRCLE_LIVE", "drop stale capture failure gen="
+                        + generationId + " error=" + ScreenCaptureBackend.safeMessage(error));
+                return;
+            }
             closeOverlay();
+            recycleScreenshot();
             FloatService f = FloatService.get();
             if (f != null) f.onCircleFinished("capture_failed");
             String message = ScreenCaptureBackend.safeMessage(error);
@@ -132,7 +155,7 @@ public final class CircleLiveController {
         }
 
         private void showOverlay() {
-            if (overlay != null || screenshot == null || cancelled) return;
+            if (overlay != null || screenshot == null || cancelled || !isCurrent(generationId)) return;
             overlay = new LiveView(context, screenshot, points);
             WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                     -1, -1,
@@ -152,14 +175,20 @@ public final class CircleLiveController {
         }
 
         private void maybeProcess() {
-            if (processed || !ended || screenshot == null) return;
+            if (processed || !ended || screenshot == null || !isCurrent(generationId)) return;
             processed = true;
             closeOverlay();
-            if (cancelled) return;
+            if (cancelled) {
+                recycleScreenshot();
+                return;
+            }
 
             Rect display = wm.getCurrentWindowMetrics().getBounds();
-            Bitmap masked = SelectionCropper.maskedCrop(screenshot, points,
+            Bitmap source = screenshot;
+            Bitmap masked = SelectionCropper.maskedCrop(source, points,
                     Math.max(1, display.width()), Math.max(1, display.height()), dp(8));
+            screenshot = null;
+            if (source != null && !source.isRecycled()) source.recycle();
             if (masked == null) {
                 FloatService f = FloatService.get();
                 if (f != null) f.onCircleFinished("selection_too_small");
@@ -205,6 +234,14 @@ public final class CircleLiveController {
                 try { wm.removeView(overlay); } catch (Throwable ignored) { }
             }
             overlay = null;
+        }
+
+        private void recycleScreenshot() {
+            Bitmap value = screenshot;
+            screenshot = null;
+            if (value != null && !value.isRecycled()) {
+                try { value.recycle(); } catch (Throwable ignored) {}
+            }
         }
 
         private float dp(float value) {
