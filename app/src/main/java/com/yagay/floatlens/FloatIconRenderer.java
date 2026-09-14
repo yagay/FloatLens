@@ -12,9 +12,18 @@ import android.os.Looper;
 import android.view.View;
 
 import java.util.ArrayList;
+import java.util.Objects;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /** Owns icon artwork/resource decoding and slideshow timing; touch semantics stay in FloatIconView. */
 final class FloatIconRenderer {
+    private static final ExecutorService DECODE_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "FloatLens-icon-decode");
+        t.setDaemon(true);
+        return t;
+    });
+
     private final View owner;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -22,10 +31,16 @@ final class FloatIconRenderer {
     private FloatSettings settings;
     private Drawable customDrawable;
     private int slideIndex;
+    private long decodeGeneration;
+    private boolean detached;
+    private int loadedStyle = Integer.MIN_VALUE;
+    private String loadedCustomUri = "";
+    private String loadedSlideUris = "";
+    private int loadedSlideInterval = -1;
 
     private final Runnable slideRunnable = new Runnable() {
         @Override public void run() {
-            if (settings == null || settings.style() != 4 || slides.size() <= 1) return;
+            if (detached || settings == null || settings.style() != 4 || slides.size() <= 1) return;
             slideIndex = (slideIndex + 1) % slides.size();
             owner.invalidate();
             main.postDelayed(this, settings.slideIntervalMs());
@@ -36,40 +51,138 @@ final class FloatIconRenderer {
         this.owner = owner;
     }
 
-    void refresh(FloatSettings settings) {
-        this.settings = settings;
-        main.removeCallbacks(slideRunnable);
-        customDrawable = null;
-        slides.clear();
-        slideIndex = 0;
-        if (settings == null) return;
+    void refresh(FloatSettings next) {
+        settings = next;
+        if (detached || next == null) {
+            if (next == null) clearArtwork();
+            return;
+        }
 
-        if (settings.style() == 3) {
-            String raw = settings.customIconUri();
-            if (raw == null || raw.isBlank()) return;
-            try {
-                ImageDecoder.Source src = ImageDecoder.createSource(
-                        owner.getContext().getContentResolver(), Uri.parse(raw));
-                customDrawable = ImageDecoder.decodeDrawable(src);
+        int style = next.style();
+        String customUri = safe(next.customIconUri());
+        String slideUris = safe(next.slidePics());
+        int slideInterval = next.slideIntervalMs();
+
+        boolean sameArtwork = style == loadedStyle
+                && Objects.equals(customUri, loadedCustomUri)
+                && Objects.equals(slideUris, loadedSlideUris);
+        if (sameArtwork) {
+            if (style == 4 && loadedSlideInterval != slideInterval) {
+                loadedSlideInterval = slideInterval;
+                restartSlideshow();
+            }
+            return;
+        }
+
+        long generation = ++decodeGeneration;
+        main.removeCallbacks(slideRunnable);
+        clearArtwork();
+        loadedStyle = style;
+        loadedCustomUri = customUri;
+        loadedSlideUris = slideUris;
+        loadedSlideInterval = slideInterval;
+        slideIndex = 0;
+
+        if (style == 3 && !customUri.isBlank()) {
+            int targetPx = targetSizePx(next);
+            DECODE_EXECUTOR.execute(() -> decodeCustom(generation, customUri, targetPx));
+        } else if (style == 4 && !slideUris.isBlank()) {
+            int targetPx = targetSizePx(next);
+            DECODE_EXECUTOR.execute(() -> decodeSlides(generation, slideUris, targetPx));
+        } else {
+            owner.invalidate();
+        }
+    }
+
+    private void decodeCustom(long generation, String uri, int targetPx) {
+        Drawable decoded = null;
+        try {
+            ImageDecoder.Source src = ImageDecoder.createSource(
+                    owner.getContext().getContentResolver(), Uri.parse(uri));
+            decoded = ImageDecoder.decodeDrawable(src, (decoder, info, source) -> {
+                if (targetPx > 0) decoder.setTargetSize(targetPx, targetPx);
+            });
+        } catch (Throwable t) {
+            DiagnosticLog.i(owner.getContext(), "ICON_RENDER", "custom decode failed=" + t);
+        }
+        final Drawable result = decoded;
+        main.post(() -> {
+            if (detached || generation != decodeGeneration) {
+                stopAnimated(result);
+                return;
+            }
+            customDrawable = result;
+            if (customDrawable != null) {
                 customDrawable.setCallback(owner);
                 if (customDrawable instanceof AnimatedImageDrawable animated) animated.start();
-            } catch (Throwable ignored) {
-                customDrawable = null;
             }
-        } else if (settings.style() == 4) {
-            String raw = settings.slidePics();
-            if (raw == null || raw.isBlank()) return;
-            for (String value : raw.split("\\|")) {
-                if (value.isBlank()) continue;
-                try {
-                    Drawable drawable = ImageDecoder.decodeDrawable(ImageDecoder.createSource(
-                            owner.getContext().getContentResolver(), Uri.parse(value)));
-                    drawable.setCallback(owner);
-                    slides.add(drawable);
-                } catch (Throwable ignored) {}
+            owner.invalidate();
+        });
+    }
+
+    private void decodeSlides(long generation, String raw, int targetPx) {
+        ArrayList<Drawable> decoded = new ArrayList<>();
+        for (String value : raw.split("\\|")) {
+            if (value.isBlank() || generation != decodeGeneration || detached) continue;
+            try {
+                Drawable drawable = ImageDecoder.decodeDrawable(ImageDecoder.createSource(
+                                owner.getContext().getContentResolver(), Uri.parse(value)),
+                        (decoder, info, source) -> {
+                            if (targetPx > 0) decoder.setTargetSize(targetPx, targetPx);
+                        });
+                decoded.add(drawable);
+            } catch (Throwable t) {
+                DiagnosticLog.i(owner.getContext(), "ICON_RENDER", "slide decode failed=" + t);
             }
-            if (slides.size() > 1) main.postDelayed(slideRunnable, settings.slideIntervalMs());
         }
+        main.post(() -> {
+            if (detached || generation != decodeGeneration) {
+                for (Drawable drawable : decoded) stopAnimated(drawable);
+                return;
+            }
+            slides.clear();
+            for (Drawable drawable : decoded) {
+                drawable.setCallback(owner);
+                slides.add(drawable);
+            }
+            slideIndex = 0;
+            restartSlideshow();
+            owner.invalidate();
+        });
+    }
+
+    private int targetSizePx(FloatSettings value) {
+        return Math.max(1, Math.round(value.sizeDp()
+                * owner.getResources().getDisplayMetrics().density));
+    }
+
+    private void restartSlideshow() {
+        main.removeCallbacks(slideRunnable);
+        slideIndex = Math.min(slideIndex, Math.max(0, slides.size() - 1));
+        if (!detached && settings != null && settings.style() == 4 && slides.size() > 1) {
+            main.postDelayed(slideRunnable, settings.slideIntervalMs());
+        }
+        owner.invalidate();
+    }
+
+    private void clearArtwork() {
+        main.removeCallbacks(slideRunnable);
+        stopAnimated(customDrawable);
+        customDrawable = null;
+        for (Drawable drawable : slides) stopAnimated(drawable);
+        slides.clear();
+        slideIndex = 0;
+    }
+
+    private void stopAnimated(Drawable drawable) {
+        if (drawable instanceof AnimatedImageDrawable animated) {
+            try { animated.stop(); } catch (Throwable ignored) {}
+        }
+        if (drawable != null) drawable.setCallback(null);
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
     }
 
     void draw(Canvas canvas, int width, int height, boolean pressed) {
@@ -102,11 +215,9 @@ final class FloatIconRenderer {
     }
 
     void detach() {
+        detached = true;
+        decodeGeneration++;
         main.removeCallbacksAndMessages(null);
-        if (customDrawable instanceof AnimatedImageDrawable animated) {
-            try { animated.stop(); } catch (Throwable ignored) {}
-        }
-        customDrawable = null;
-        slides.clear();
+        clearArtwork();
     }
 }
