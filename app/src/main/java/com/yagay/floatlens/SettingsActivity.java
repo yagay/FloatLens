@@ -566,13 +566,18 @@ public class SettingsActivity extends AppCompatActivity {
         row.addView(button, lp);
     }
 
+    private void persistReadPermission(android.net.Uri uri) {
+        if (uri == null) return;
+        try {
+            getContentResolver().takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Throwable ignored) {}
+    }
+
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == 401 && resultCode == RESULT_OK && data != null && data.getData() != null) {
-            try {
-                getContentResolver().takePersistableUriPermission(data.getData(),
-                        data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            } catch (Throwable ignored) {}
+            persistReadPermission(data.getData());
             fs.prefs().edit().putString(FloatSettings.K_CUSTOM_ICON, data.getData().toString())
                     .putInt(FloatSettings.K_STYLE, 3).apply();
         } else if (requestCode == 402 && resultCode == RESULT_OK && data != null) {
@@ -582,13 +587,11 @@ public class SettingsActivity extends AppCompatActivity {
                     android.net.Uri uri = data.getClipData().getItemAt(i).getUri();
                     if (uri == null) continue;
                     uris.add(uri.toString());
-                    try {
-                        getContentResolver().takePersistableUriPermission(uri,
-                                data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                    } catch (Throwable ignored) {}
+                    persistReadPermission(uri);
                 }
             } else if (data.getData() != null) {
                 uris.add(data.getData().toString());
+                persistReadPermission(data.getData());
             }
             if (!uris.isEmpty()) {
                 fs.prefs().edit().putString(FloatSettings.K_SLIDE_PICS, String.join("|", uris))
