@@ -68,6 +68,8 @@ final class ResultController {
             if (removed != null && removed.readyTicket != null) {
                 ResultReadyCoordinator.cancel(removed.readyTicket, app, "activity_start_failed");
             }
+            // Do not close the session here. show() returning false transfers ownership back to the
+            // caller, which may save/reuse the same bitmap as its fallback path.
             DiagnosticLog.i(app, "RESULT_CONTROLLER", "show failed token=" + token
                     + " error=" + ScreenCaptureBackend.safeMessage(t));
             return false;
@@ -92,6 +94,7 @@ final class ResultController {
         if (pending == null) return null;
         if (SystemClock.uptimeMillis() - pending.createdAt > PENDING_TTL_MS) {
             ResultReadyCoordinator.cancel(pending.readyTicket, null, "result_token_expired");
+            close(pending.session);
             return null;
         }
         return new Delivery(pending.session, pending.readyTicket);
@@ -100,7 +103,10 @@ final class ResultController {
     static void discard(long token) {
         if (token == 0L) return;
         Pending pending = PENDING.remove(token);
-        if (pending != null) ResultReadyCoordinator.cancel(pending.readyTicket, null, "result_discarded");
+        if (pending != null) {
+            ResultReadyCoordinator.cancel(pending.readyTicket, null, "result_discarded");
+            close(pending.session);
+        }
     }
 
     private static void expire(long token, Context app) {
@@ -109,6 +115,7 @@ final class ResultController {
         if (SystemClock.uptimeMillis() - pending.createdAt < PENDING_TTL_MS) return;
         if (PENDING.remove(token, pending)) {
             ResultReadyCoordinator.cancel(pending.readyTicket, app, "unconsumed_result_expired");
+            close(pending.session);
             DiagnosticLog.i(app, "RESULT_CONTROLLER", "expire unconsumed token=" + token);
         }
     }
@@ -120,6 +127,7 @@ final class ResultController {
             if (pending != null && now - pending.createdAt >= PENDING_TTL_MS
                     && PENDING.remove(entry.getKey(), pending)) {
                 ResultReadyCoordinator.cancel(pending.readyTicket, app, "cleanup_expired_result");
+                close(pending.session);
                 DiagnosticLog.i(app, "RESULT_CONTROLLER", "cleanup expired token=" + entry.getKey());
             }
         }
@@ -138,8 +146,14 @@ final class ResultController {
             }
             if (oldest == null || oldestToken == 0L || !PENDING.remove(oldestToken, oldest)) break;
             ResultReadyCoordinator.cancel(oldest.readyTicket, app, "pending_result_trimmed");
+            close(oldest.session);
             DiagnosticLog.i(app, "RESULT_CONTROLLER", "trim pending token=" + oldestToken);
         }
+    }
+
+    private static void close(ResultSession session) {
+        if (session == null) return;
+        try { session.close(); } catch (Throwable ignored) {}
     }
 
     private ResultController() {}
