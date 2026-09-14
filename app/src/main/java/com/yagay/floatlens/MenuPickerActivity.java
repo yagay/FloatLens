@@ -19,6 +19,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.google.android.material.button.MaterialButton;
@@ -55,6 +56,11 @@ public final class MenuPickerActivity extends AppCompatActivity {
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override public void handleOnBackPressed() {
+                handleBackNavigation();
+            }
+        });
         section = SECTION_TARGET.equals(getIntent().getStringExtra(EXTRA_SECTION))
                 ? SECTION_TARGET : SECTION_CUSTOM;
         targetMode = TargetMenuStore.MODE_PROCESS.equals(getIntent().getStringExtra(EXTRA_MODE))
@@ -769,13 +775,13 @@ public final class MenuPickerActivity extends AppCompatActivity {
         return AppUi.dp(this, value);
     }
 
-    @Override public void onBackPressed() {
+    private void handleBackNavigation() {
         Runnable action = localBackAction;
         if (action != null) {
             localBackAction = null;
             action.run();
         } else {
-            super.onBackPressed();
+            finish();
         }
     }
 
