@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -31,6 +32,7 @@ public final class FlSystemPanelController {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final long PRIMARY_RECHECK_MS = 140L;
     private static final long SHADOW_RECHECK_MS = 380L;
+    private static final long ROOT_COLLAPSE_TIMEOUT_SECONDS = 4L;
 
     private static volatile boolean cachedShadeExpanded;
     private static volatile boolean cachedShadeKnown;
@@ -201,9 +203,11 @@ public final class FlSystemPanelController {
                 + " expanded=" + expanded + " delayMs=" + PRIMARY_RECHECK_MS);
         if (!expanded) return;
 
+        // This preserves the sequence observed in FV: normal/system action first, then its tiny
+        // translucent ShadowActivity compatibility step. Root is not part of the normal FV path.
         boolean launched = ShadeDismissActivity.launch(caller, reason);
         if (!launched) {
-            collapseWithRoot(app, reason + ":shadow_launch_failed");
+            collapseWithOptionalRoot(app, reason + ":shadow_launch_failed");
             return;
         }
 
@@ -211,7 +215,7 @@ public final class FlSystemPanelController {
             boolean stillExpanded = notificationShadeExpanded();
             DiagnosticLog.i(app, "FL_SHADE", "shadow recheck reason=" + reason
                     + " expanded=" + stillExpanded + " delayMs=" + SHADOW_RECHECK_MS);
-            if (stillExpanded) collapseWithRoot(app, reason + ":shadow_still_expanded");
+            if (stillExpanded) collapseWithOptionalRoot(app, reason + ":shadow_still_expanded");
         }, SHADOW_RECHECK_MS);
     }
 
@@ -279,22 +283,43 @@ public final class FlSystemPanelController {
         }
     }
 
-    private static void collapseWithRoot(Context app, String reason) {
+    /**
+     * Optional FloatLens enhancement after the FV-compatible normal path is exhausted.
+     * Opening Settings or using the normal shade path never calls su. Both the enhanced master
+     * switch and Root provider switch must be enabled before this fallback is allowed.
+     */
+    private static void collapseWithOptionalRoot(Context app, String reason) {
+        FloatSettings settings = new FloatSettings(app);
+        if (!PrivilegeManager.canUseRoot(settings)) {
+            DiagnosticLog.i(app, "FL_SHADE", "root collapse skipped provider=disabled reason=" + reason);
+            return;
+        }
+
         ROOT_IO.execute(() -> {
             int code = -1;
             String error = "";
+            Process process = null;
             try {
-                Process p = new ProcessBuilder("su", "-c", "cmd statusbar collapse")
+                process = new ProcessBuilder("su", "-c", "cmd statusbar collapse")
                         .redirectErrorStream(true)
                         .start();
-                code = p.waitFor();
+                boolean finished = process.waitFor(ROOT_COLLAPSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                if (!finished) {
+                    process.destroyForcibly();
+                    error = "timeout";
+                } else {
+                    code = process.exitValue();
+                }
             } catch (Throwable t) {
                 error = String.valueOf(t);
+                if (process != null && process.isAlive()) {
+                    try { process.destroyForcibly(); } catch (Throwable ignored) {}
+                }
             }
             final int exitCode = code;
             final String failure = error;
             MAIN.post(() -> DiagnosticLog.i(app, "FL_SHADE",
-                    "root collapse reason=" + reason + " exit=" + exitCode
+                    "optional root collapse reason=" + reason + " exit=" + exitCode
                             + (failure.isEmpty() ? "" : " error=" + failure)));
         });
     }
