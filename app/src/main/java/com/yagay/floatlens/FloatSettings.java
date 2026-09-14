@@ -119,7 +119,7 @@ public final class FloatSettings {
     public int longPressMs() { return clamp(p.getInt(K_LONG_PRESS, 300), 100, 1500); }
     public int doubleTapMs() { return clamp(p.getInt(K_DOUBLE_TAP, 200), 120, 800); }
     public int tapMaxMs() { return clamp(p.getInt(K_TAP_MAX_MS, 150), 80, 400); }
-    public int viewCaptureDwellMs() { return clamp(p.getInt(K_VIEW_CAPTURE_DWELL, 500), 200, 2000); }
+    public int viewCaptureDwellMs() { return clamp(p.getInt(K_VIEW_CAPTURE_DWELL, 400), 200, 2000); }
     public int downShortDistance() { return clamp(p.getInt(K_DOWN_SHORT_DISTANCE, 200), 30, 900); }
     public int sideShortDistance() { return clamp(p.getInt(K_SIDE_SHORT_DISTANCE, 320), 30, 1200); }
     public int gestureStartDistance() { return clamp(p.getInt(K_GESTURE_START_DISTANCE, 30), 5, 100); }
