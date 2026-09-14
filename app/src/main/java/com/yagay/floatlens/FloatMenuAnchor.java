@@ -67,8 +67,8 @@ public final class FloatMenuAnchor {
                     Math.round(local.bottom + dy));
 
             Rect visible = new Rect();
-            if (tv.getGlobalVisibleRect(visible) && Rect.intersects(out, visible)) {
-                out.intersect(visible);
+            if (tv.getGlobalVisibleRect(visible) && !visible.isEmpty()) {
+                if (!out.intersect(visible)) return forView(tv);
             }
             return out.isEmpty() ? forView(tv) : out;
         } catch (Throwable ignored) {
