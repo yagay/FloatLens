@@ -71,12 +71,14 @@ public final class ResultActivity extends AppCompatActivity {
 
     private boolean acceptIntent(Intent intent, boolean reuse) {
         long token = intent == null ? 0L : intent.getLongExtra(ResultController.EXTRA_TOKEN, 0L);
-        ResultSession next = ResultController.take(token);
-        if (next == null) {
+        ResultController.Delivery delivery = ResultController.take(token);
+        if (delivery == null || delivery.session == null) {
             DiagnosticLog.i(this, "RESULT_ACTIVITY", "missing session token=" + token
                     + " reuse=" + reuse);
             return false;
         }
+        ResultSession next = delivery.session;
+        ResultReadyCoordinator.Ticket readyTicket = delivery.readyTicket;
 
         Fragment existing = getSupportFragmentManager().findFragmentByTag(DIALOG_TAG);
         UnifiedResultDialogFragment dialog = existing instanceof UnifiedResultDialogFragment
@@ -84,21 +86,24 @@ public final class ResultActivity extends AppCompatActivity {
 
         if (dialog == null) {
             dialog = new UnifiedResultDialogFragment();
-            dialog.setInitialSession(next);
+            dialog.setInitialSession(next, readyTicket);
             try {
                 dialog.showNow(getSupportFragmentManager(), DIALOG_TAG);
             } catch (Throwable t) {
+                ResultReadyCoordinator.cancel(readyTicket, this, "dialog_show_failed");
                 DiagnosticLog.i(this, "RESULT_ACTIVITY", "dialog show failed token=" + token
                         + " error=" + ScreenCaptureBackend.safeMessage(t));
                 return false;
             }
         } else {
-            dialog.showSession(next);
+            dialog.showSession(next, readyTicket);
         }
 
         DiagnosticLog.i(this, "RESULT_ACTIVITY", (reuse ? "REUSE" : "CREATED")
                 + " token=" + token + " mode=" + next.mode()
-                + " origin=" + next.originMode() + " dialogHost=true");
+                + " origin=" + next.originMode()
+                + " ready=" + (readyTicket == null ? "none" : readyTicket.id)
+                + " dialogHost=true");
         return true;
     }
 

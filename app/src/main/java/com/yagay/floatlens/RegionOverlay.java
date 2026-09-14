@@ -46,6 +46,7 @@ public final class RegionOverlay {
         final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         boolean selecting;
+        boolean closed;
         final Path lasso = new Path();
         final List<PointF> points = new ArrayList<>();
 
@@ -61,7 +62,9 @@ public final class RegionOverlay {
         }
 
         @Override protected void onDraw(Canvas canvas) {
-            canvas.drawBitmap(source, null, new Rect(0, 0, getWidth(), getHeight()), paint);
+            if (!source.isRecycled()) {
+                canvas.drawBitmap(source, null, new Rect(0, 0, getWidth(), getHeight()), paint);
+            }
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(0x77000000);
             canvas.drawRect(0, 0, getWidth(), getHeight(), paint);
@@ -77,6 +80,7 @@ public final class RegionOverlay {
         }
 
         @Override public boolean onTouchEvent(MotionEvent e) {
+            if (closed) return true;
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN -> {
                     sx = ex = e.getX();
@@ -115,7 +119,7 @@ public final class RegionOverlay {
                         FloatService f = FloatService.get();
                         if (f != null) f.onCircleFinished("selection_cancel");
                     }
-                    close();
+                    close(true);
                     return true;
                 }
             }
@@ -143,9 +147,9 @@ public final class RegionOverlay {
                     Math.round(selected.top) + origin[1],
                     Math.round(selected.right) + origin[0],
                     Math.round(selected.bottom) + origin[1]);
-            close();
 
             if (selected.width() < dp(8) || selected.height() < dp(8)) {
+                close(true);
                 if (ocr) {
                     FloatService f = FloatService.get();
                     if (f != null) f.onCircleFinished("selection_too_small");
@@ -153,19 +157,20 @@ public final class RegionOverlay {
                 return;
             }
 
+            Bitmap crop = null;
             try {
-                Bitmap crop = ocr
+                crop = ocr
                         ? SelectionCropper.maskedCrop(source, points, viewWidth, viewHeight, dp(8))
                         : SelectionCropper.cropRect(source, selected, viewWidth, viewHeight);
                 if (crop == null) throw new IllegalStateException("empty selection crop");
+                // SelectionCropper guarantees the crop does not alias source, so the frozen
+                // full-screen frame can be released before OCR/result UI takes ownership of crop.
+                close(true);
                 if (ocr) {
                     FloatService f = FloatService.get();
                     if (f != null) f.onCircleRecognizeStarted();
                     OcrEngine.recognize(getContext(), crop, anchor);
                 } else {
-                    // Region screenshots now use the same result surface as direct-selection
-                    // screenshots. This keeps one result flow and exposes OCR / Save in the same
-                    // place instead of silently saving the crop with no OCR entry point.
                     boolean shown = ResultSurfaceRouter.showScreenshot(getContext(), crop, anchor);
                     DiagnosticLog.i(getContext(), "REGION_SCREENSHOT",
                             "result shown=" + shown + " bounds=" + anchor.toShortString());
@@ -176,6 +181,10 @@ public final class RegionOverlay {
                     }
                 }
             } catch (Throwable t) {
+                close(true);
+                if (crop != null && !crop.isRecycled()) {
+                    try { crop.recycle(); } catch (Throwable ignored) { }
+                }
                 if (ocr) {
                     FloatService f = FloatService.get();
                     if (f != null) f.onCircleFinished("selection_error");
@@ -184,8 +193,13 @@ public final class RegionOverlay {
             }
         }
 
-        private void close() {
+        private void close(boolean recycleSource) {
+            if (closed) return;
+            closed = true;
             try { wm.removeView(this); } catch (Throwable ignored) { }
+            if (recycleSource && !source.isRecycled()) {
+                try { source.recycle(); } catch (Throwable ignored) { }
+            }
         }
 
         private float dp(float v) {
