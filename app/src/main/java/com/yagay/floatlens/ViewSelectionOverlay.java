@@ -6,15 +6,24 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
-import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Toast;
 
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 /** Explicit full-screen View picker used by ActionId.OCR. */
 public final class ViewSelectionOverlay {
+    private static final ExecutorService TARGET_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "FloatLens-explicit-view-cache");
+        t.setDaemon(true);
+        return t;
+    });
+
     public static void show(Context c) {
         Context app = c.getApplicationContext();
         LensAccessibilityService accessibility = LensAccessibilityService.get();
@@ -35,6 +44,7 @@ public final class ViewSelectionOverlay {
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
         if (!host.addApplication(view, lp, "explicit_view_picker")) {
+            view.close();
             Toast.makeText(app, "View 选择层启动失败，改用 OCR", Toast.LENGTH_SHORT).show();
             ScreenshotController.captureForOcr(app);
         }
@@ -43,12 +53,15 @@ public final class ViewSelectionOverlay {
     private static final class PickView extends View {
         private final LensAccessibilityService accessibility;
         private final FlOverlayWindowHost host;
+        private final ScreenSelectionModel model = new ScreenSelectionModel();
         private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private ViewNodeCandidate current;
-        private long lastScan;
+        private boolean ready;
         private boolean closed;
+        private float lastRawX = Float.NaN;
+        private float lastRawY = Float.NaN;
 
         PickView(Context c, LensAccessibilityService accessibility, FlOverlayWindowHost host) {
             super(c);
@@ -63,6 +76,31 @@ public final class ViewSelectionOverlay {
             textPaint.setTextSize(dp(15));
             textPaint.setShadowLayer(dp(3), 0, dp(1), Color.BLACK);
             setBackgroundColor(0x22000000);
+            prepareTargetsAsync();
+        }
+
+        private void prepareTargetsAsync() {
+            TARGET_EXECUTOR.execute(() -> {
+                List<ScreenCandidate> candidates;
+                Throwable failure = null;
+                try {
+                    candidates = AccessibilityCandidateCollector.collect(accessibility);
+                } catch (Throwable t) {
+                    candidates = List.of();
+                    failure = t;
+                }
+                final List<ScreenCandidate> prepared = candidates;
+                final Throwable error = failure;
+                post(() -> {
+                    if (closed) return;
+                    model.setAccessibility(prepared);
+                    ready = true;
+                    updateCurrent(lastRawX, lastRawY);
+                    invalidate();
+                    DiagnosticLog.i(getContext(), "VIEW_PICK", "cache ready candidates="
+                            + model.size() + (error == null ? "" : " error=" + error));
+                });
+            });
         }
 
         @Override protected void onDraw(Canvas canvas) {
@@ -74,7 +112,10 @@ public final class ViewSelectionOverlay {
                 float y = Math.max(dp(24), r.top - dp(8));
                 canvas.drawText(current.label(), Math.max(dp(8), r.left), y, textPaint);
             } else {
-                canvas.drawText("移动手指选择 View · 松手提取文字", dp(18), dp(42), textPaint);
+                canvas.drawText(ready
+                                ? "移动手指选择 View · 松手提取文字"
+                                : "正在准备 View 候选…",
+                        dp(18), dp(42), textPaint);
             }
         }
 
@@ -82,20 +123,16 @@ public final class ViewSelectionOverlay {
             if (closed) return true;
             int action = e.getActionMasked();
             if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
-                long now = SystemClock.uptimeMillis();
-                if (action == MotionEvent.ACTION_DOWN || now - lastScan >= 40) {
-                    lastScan = now;
-                    current = accessibility.findViewAt(e.getRawX(), e.getRawY());
-                    if (current != null) {
-                        DiagnosticLog.i(getContext(), "VIEW_PICK", "bounds=" + current.bounds()
-                                + " textLen=" + current.text().length()
-                                + " class=" + current.className());
-                    }
-                    invalidate();
-                }
+                lastRawX = e.getRawX();
+                lastRawY = e.getRawY();
+                updateCurrent(lastRawX, lastRawY);
+                invalidate();
                 return true;
             }
             if (action == MotionEvent.ACTION_UP) {
+                lastRawX = e.getRawX();
+                lastRawY = e.getRawY();
+                updateCurrent(lastRawX, lastRawY);
                 finishSelection();
                 return true;
             }
@@ -104,6 +141,20 @@ public final class ViewSelectionOverlay {
                 return true;
             }
             return true;
+        }
+
+        private void updateCurrent(float rawX, float rawY) {
+            if (!ready || Float.isNaN(rawX) || Float.isNaN(rawY)) return;
+            ScreenCandidate selected = model.selectAt(rawX, rawY);
+            ViewNodeCandidate next = selected == null ? null : selected.toViewNodeCandidate();
+            String oldKey = current == null ? "" : current.stableKey();
+            String nextKey = next == null ? "" : next.stableKey();
+            current = next;
+            if (!oldKey.equals(nextKey) && current != null) {
+                DiagnosticLog.i(getContext(), "VIEW_PICK", "bounds=" + current.bounds()
+                        + " textLen=" + current.text().length()
+                        + " class=" + current.className());
+            }
         }
 
         private void finishSelection() {
