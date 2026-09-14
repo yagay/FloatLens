@@ -7,16 +7,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 /** Single mutable business state for screenshot, View and OCR results. */
-final class ResultSession {
+final class ResultSession implements AutoCloseable {
     enum Mode { SCREENSHOT, VIEW_TEXT, VIEW_IMAGE, OCR }
 
     private final Mode originMode;
     private Mode mode;
-    private final Bitmap image;
+    private Bitmap image;
     private final Rect anchor;
     private String text;
     private List<String> blocks;
     private final String meta;
+    private boolean closed;
 
     private ResultSession(Mode mode, Bitmap image, Rect anchor,
                           String text, List<String> blocks, String meta) {
@@ -105,6 +106,22 @@ final class ResultSession {
 
     /** OcrEngine enters the shared Circle/OCR state machine for every recognition request. */
     boolean notifyCircleOnClose() { return mode == Mode.OCR; }
+
+    /**
+     * A successfully delivered ResultSession owns its bitmap. Pending sessions and the visible
+     * result host close the session when it is replaced, discarded or destroyed so rapid capture
+     * sequences do not retain several full-resolution bitmaps until a later GC cycle.
+     */
+    @Override public void close() {
+        if (closed) return;
+        closed = true;
+        Bitmap owned = image;
+        image = null;
+        if (owned != null && !owned.isRecycled()) {
+            try { owned.recycle(); } catch (Throwable ignored) {}
+        }
+        blocks.clear();
+    }
 
     private static String buildViewMeta(ViewNodeCandidate view) {
         if (view == null) return "图片 View";
