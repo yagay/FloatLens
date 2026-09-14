@@ -36,6 +36,9 @@ public final class OcrEngine {
         return t;
     });
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    private static final int ML_TIER_ORIGINAL = 0;
+    private static final int ML_TIER_ENHANCED = 1;
+    private static final int ML_TIER_MONO = 2;
 
     // Visible-result OCR and internal document/ROI OCR are independent workloads. The previous
     // single generation meant starting a small Circle ROI refinement could silently cancel an
@@ -232,12 +235,12 @@ public final class OcrEngine {
             if (!chinese && !english) { chinese = true; english = true; }
 
             ArrayList<PassSpec> plan = new ArrayList<>();
-            if (chinese) plan.add(new PassSpec("zh-original", OcrImagePreprocessor.MODE_ORIGINAL, true));
-            if (english) plan.add(new PassSpec("latin-original", OcrImagePreprocessor.MODE_ORIGINAL, false));
-            if (chinese) plan.add(new PassSpec("zh-enhanced", OcrImagePreprocessor.MODE_ENHANCED, true));
-            if (english) plan.add(new PassSpec("latin-enhanced", OcrImagePreprocessor.MODE_ENHANCED, false));
-            if (chinese) plan.add(new PassSpec("zh-mono", OcrImagePreprocessor.MODE_MONO, true));
-            if (english) plan.add(new PassSpec("latin-mono", OcrImagePreprocessor.MODE_MONO, false));
+            if (chinese) plan.add(new PassSpec("zh-original", OcrImagePreprocessor.MODE_ORIGINAL, true, ML_TIER_ORIGINAL));
+            if (english) plan.add(new PassSpec("latin-original", OcrImagePreprocessor.MODE_ORIGINAL, false, ML_TIER_ORIGINAL));
+            if (chinese) plan.add(new PassSpec("zh-enhanced", OcrImagePreprocessor.MODE_ENHANCED, true, ML_TIER_ENHANCED));
+            if (english) plan.add(new PassSpec("latin-enhanced", OcrImagePreprocessor.MODE_ENHANCED, false, ML_TIER_ENHANCED));
+            if (chinese) plan.add(new PassSpec("zh-mono", OcrImagePreprocessor.MODE_MONO, true, ML_TIER_MONO));
+            if (english) plan.add(new PassSpec("latin-mono", OcrImagePreprocessor.MODE_MONO, false, ML_TIER_MONO));
 
             DiagnosticLog.i(app, "OCR_PIPELINE", "start request=" + requestId
                     + " lane=" + laneName(generation)
@@ -251,9 +254,15 @@ public final class OcrEngine {
     }
 
     private static final class PassSpec {
-        final String name; final int mode; final boolean chinese;
-        PassSpec(String name, int mode, boolean chinese) {
-            this.name = name; this.mode = mode; this.chinese = chinese;
+        final String name;
+        final int mode;
+        final boolean chinese;
+        final int tier;
+        PassSpec(String name, int mode, boolean chinese, int tier) {
+            this.name = name;
+            this.mode = mode;
+            this.chinese = chinese;
+            this.tier = tier;
         }
     }
 
@@ -298,6 +307,7 @@ public final class OcrEngine {
                 TextRecognizer finalClient = client;
                 client.process(InputImage.fromBitmap(prepared.bitmap, 0))
                         .addOnSuccessListener(text -> {
+                            boolean finishEarly = false;
                             try {
                                 if (!stale(app, generation, requestId, "mlkit_success_" + spec.name)) {
                                     OcrDocument doc = mlDocument(spec.name, text, prepared,
@@ -305,12 +315,13 @@ public final class OcrEngine {
                                     if (!doc.fullText().isBlank()) results.add(doc);
                                     DiagnosticLog.i(app, "OCR_PASS", spec.name + " chars=" + doc.chars().size()
                                             + " score=" + Math.round(doc.score()));
+                                    finishEarly = shouldStopAfter(spec);
                                 }
                             } finally {
                                 try { finalClient.close(); } catch (Throwable ignored) {}
                                 OcrImagePreprocessor.recycle(prepared);
                             }
-                            next();
+                            if (finishEarly) MAIN.post(this::finishOnMain); else next();
                         })
                         .addOnFailureListener(error -> {
                             try { DiagnosticLog.i(app, "OCR_PASS", spec.name + " failure=" + safe(error)); }
@@ -327,10 +338,34 @@ public final class OcrEngine {
             }
         }
 
-        private void finishOnMain() {
-            if (stale(app, generation, requestId, "mlkit_finish")) return;
+        private boolean shouldStopAfter(PassSpec completed) {
+            if (completed == null || completed.tier >= ML_TIER_MONO || results.isEmpty()) return false;
+            // When both Chinese and English are enabled, finish both recognizers for the same image
+            // tier before deciding. This avoids a fast Chinese pass suppressing a better Latin pass
+            // (or vice versa) on mixed-language screens.
+            if (index < plan.size() && plan.get(index).tier == completed.tier) return false;
+            OcrDocument best = bestResult();
+            if (best == null || !OcrQualityPolicy.strongMlKitResult(best.fullText(), best.score())) {
+                return false;
+            }
+            DiagnosticLog.i(app, "OCR_PIPELINE", "early_stop request=" + requestId
+                    + " tier=" + tierName(completed.tier)
+                    + " engine=" + best.engine()
+                    + " score=" + Math.round(best.score())
+                    + " skipped=" + Math.max(0, plan.size() - index));
+            index = plan.size();
+            return true;
+        }
+
+        private OcrDocument bestResult() {
             OcrDocument best = null;
             for (OcrDocument d : results) if (best == null || d.score() > best.score()) best = d;
+            return best;
+        }
+
+        private void finishOnMain() {
+            if (stale(app, generation, requestId, "mlkit_finish")) return;
+            OcrDocument best = bestResult();
             if (best == null || best.fullText().isBlank()) {
                 fail(app, service, callback, deliverUi, generation, requestId, "ocr_empty",
                         "未识别到文字", new IllegalStateException("ML Kit empty"));
@@ -339,6 +374,14 @@ public final class OcrEngine {
             deliver(app, service, source, anchor, callback, deliverUi,
                     best, generation, requestId);
         }
+    }
+
+    private static String tierName(int tier) {
+        return switch (tier) {
+            case ML_TIER_ORIGINAL -> "original";
+            case ML_TIER_ENHANCED -> "enhanced";
+            default -> "mono";
+        };
     }
 
     private static OcrDocument mlDocument(String passName, Text text,
