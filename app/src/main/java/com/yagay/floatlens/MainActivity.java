@@ -100,6 +100,10 @@ public class MainActivity extends AppCompatActivity {
 
         AppUi.Section advanced = AppUi.section(this, "高级", null);
         AppUi.addRow(advanced.body, AppUi.navRow(this,
+                "高级权限",
+                "Root / LSPosed 可选增强、授权状态与失败回退",
+                () -> startActivity(SettingsActivity.intent(this, SettingsActivity.SECTION_PRIVILEGE))));
+        AppUi.addRow(advanced.body, AppUi.navRow(this,
                 "诊断与调试",
                 "FL 日志、Runtime Inspector、Method Probe",
                 () -> startActivity(new Intent(this, DiagnosticsActivity.class))));
