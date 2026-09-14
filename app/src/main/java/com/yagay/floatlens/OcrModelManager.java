@@ -14,7 +14,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** File-only manager for separately downloaded OCR models. It deliberately has no Paddle/ORT references. */
+/** Downloaded PP-OCR model files plus runtime invalidation when those files change. */
 public final class OcrModelManager {
     public static final int SMALL = 1;
     public static final int MEDIUM = 2;
@@ -122,9 +122,12 @@ public final class OcrModelManager {
                 doneBase[0] += recFile(app, model).length();
                 downloadOne(sp.ymlUrl, ymlFile(app, model), 4_000L, doneBase, total, "字符配置", cb);
                 if (!isReady(app, model)) throw new IllegalStateException("下载完成但模型校验失败");
+                // A previous engine may still map the old model files. Invalidate it after all new
+                // files have been atomically moved into place so the next OCR run reloads them.
+                PaddleOcrBridge.releaseModel(model);
                 DiagnosticLog.i(app, "OCR_MODEL", "download success model=" + model
-                        + " bytes=" + installedBytes(app, model));
-                MAIN.post(cb::onSuccess);
+                        + " bytes=" + installedBytes(app, model) + " runtimeReload=true");
+                if (cb != null) MAIN.post(cb::onSuccess);
             } catch (Throwable t) {
                 DiagnosticLog.i(app, "OCR_MODEL", "download failure model=" + model + " " + safe(t));
                 fail(cb, safe(t));
@@ -163,7 +166,7 @@ public final class OcrModelManager {
                 if (percent != lastPercent) {
                     lastPercent = percent;
                     int p = percent;
-                    MAIN.post(() -> cb.onProgress(stage, p));
+                    if (cb != null) MAIN.post(() -> cb.onProgress(stage, p));
                 }
             }
             fos.getFD().sync();
@@ -173,13 +176,16 @@ public final class OcrModelManager {
         if (!part.renameTo(out)) throw new IllegalStateException("无法保存 " + stage);
     }
 
-    /** Delete only files here; OCR runtime is intentionally not loaded from SettingsActivity. */
     public static void delete(Context c, int model) {
+        Context app = c.getApplicationContext();
         try {
-            deleteRecursively(dir(c, model));
-            DiagnosticLog.i(c, "OCR_MODEL", "deleted model=" + model);
+            // Release/make-stale the runtime as well as deleting its backing files. releaseModel()
+            // is serialized with inference, so native ORT sessions are never closed mid-run.
+            PaddleOcrBridge.releaseModel(model);
+            deleteRecursively(dir(app, model));
+            DiagnosticLog.i(app, "OCR_MODEL", "deleted model=" + model + " runtimeRelease=true");
         } catch (Throwable t) {
-            DiagnosticLog.i(c, "OCR_MODEL", "delete failure model=" + model + " " + safe(t));
+            DiagnosticLog.i(app, "OCR_MODEL", "delete failure model=" + model + " " + safe(t));
         }
     }
 
