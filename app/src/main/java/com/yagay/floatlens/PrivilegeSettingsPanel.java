@@ -16,16 +16,16 @@ public final class PrivilegeSettingsPanel {
 
     public static LinearLayout build(AppCompatActivity activity, FloatSettings fs) {
         LinearLayout root = AppUi.pageRoot(activity, "高级权限",
-                "Root 和 LSPosed 是可选增强层。关闭增强模式时只使用普通 Android / 无障碍方法。" );
+                "Root 是当前可用增强层；LSPosed 保留 Provider 入口，但当前版本不会安装系统级或第三方 Hook。" );
 
         TextView modeStatus = AppUi.caption(activity, "", 13);
         TextView rootStatus = AppUi.caption(activity, "", 13);
 
         AppUi.Section master = AppUi.section(activity, "增强模式总开关",
-                "关闭后保留子开关选择，但运行时不会进入 Root 或 LSPosed Provider。" );
+                "关闭后保留子开关选择，运行时只使用普通 Android / 无障碍实现。" );
         SwitchMaterial enhanced = preferenceSwitch(activity, fs,
                 "启用增强模式",
-                "开启后才允许下面单独启用的 Root / LSPosed 功能参与后端选择。",
+                "开启后才允许已经接入且单独启用的增强 Provider 参与后端选择。",
                 FloatSettings.K_ENHANCED_MODE, fs.enhancedMode(),
                 () -> refresh(activity, fs, modeStatus, rootStatus));
         AppUi.addRow(master.body, AppUi.switchContainer(enhanced));
@@ -65,15 +65,16 @@ public final class PrivilegeSettingsPanel {
         AppUi.addSection(root, rootSection);
 
         AppUi.Section lsposedSection = AppUi.section(activity, "LSPosed",
-                "这里只控制 FloatLens 是否允许未来/当前的 LSPosed 增强 Provider。作用域和模块启用状态仍由 LSPosed 管理器负责。" );
+                "当前 API 102 模块入口保持无 Hook。后续只有建立可由应用开关真实控制的跨进程 Provider 后才会启用具体能力。" );
         SwitchMaterial lsposedSwitch = preferenceSwitch(activity, fs,
-                "使用 LSPosed 功能",
-                "关闭后 FloatLens 只走 Accessibility / OCR / 系统 API 等普通实现。",
+                "使用 LSPosed 功能（预留）",
+                "当前版本没有活动的 LSPosed Provider；不会绕过 FLAG_SECURE，也不会修改其他应用。",
                 FloatSettings.K_LSPOSED_ENABLED, fs.lsposedEnabled(),
                 () -> refresh(activity, fs, modeStatus, rootStatus));
+        lsposedSwitch.setEnabled(PrivilegeManager.lsposedProviderAvailable());
         AppUi.addRow(lsposedSection.body, AppUi.switchContainer(lsposedSwitch));
         TextView lsposedNote = AppUi.caption(activity,
-                "已删除原先用于抓取 FV 运行时的固定作用域、方法 Hook、Method Probe、对象快照、Hook 日志和 Inspector ZIP。现在保留的 LSPosed 入口不包含任何针对 FV 的抓取逻辑。",
+                "已移除无条件 system_server FLAG_SECURE Hook，也不包含 FV/fooView 固定作用域、Method Probe、对象快照、Hook 日志或 Runtime Inspector。这样应用里的增强开关与真实运行行为不会再互相矛盾。",
                 12);
         AppUi.addRow(lsposedSection.body, simpleBlock(activity, lsposedNote));
         AppUi.addSection(root, lsposedSection);
@@ -119,8 +120,11 @@ public final class PrivilegeSettingsPanel {
 
     private static void refresh(AppCompatActivity activity, FloatSettings fs,
                                 TextView modeStatus, TextView rootStatus) {
+        String providerNote = !PrivilegeManager.lsposedProviderAvailable() && fs.lsposedEnabled()
+                ? " · LSPosed 选择已保留但 Provider 未接入" : "";
         modeStatus.setText(PrivilegeManager.modeLabel(fs)
-                + (fs.enhancedMode() ? " · 增强总开关已开启" : " · 增强总开关已关闭"));
+                + (fs.enhancedMode() ? " · 增强总开关已开启" : " · 增强总开关已关闭")
+                + providerNote);
         modeStatus.setTextColor(fs.enhancedMode() ? AppUi.success(activity) : AppUi.textPrimary(activity));
 
         long rootAt = fs.rootLastCheckMs();
