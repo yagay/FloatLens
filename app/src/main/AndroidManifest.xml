@@ -22,7 +22,7 @@
         </intent>
     </queries>
 
-    <application android:name=".FloatLensApp" android:theme="@style/Theme.FloatLens" android:label="FloatLens" android:description="@string/app_description" android:allowBackup="false" android:supportsRtl="true" android:usesCleartextTraffic="true">
+    <application android:name=".FloatLensApp" android:theme="@style/Theme.FloatLens" android:label="FloatLens" android:description="@string/app_description" android:allowBackup="false" android:supportsRtl="true" android:usesCleartextTraffic="false">
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
