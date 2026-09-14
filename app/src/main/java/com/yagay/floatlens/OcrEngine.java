@@ -36,12 +36,16 @@ public final class OcrEngine {
         return t;
     });
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
-    private static final AtomicLong REQUEST_GENERATION = new AtomicLong(0L);
+    // Visible-result OCR and internal document/ROI OCR are independent workflows. Encoding the
+    // channel in bit 0 keeps every existing stale(requestId) call simple while preventing one
+    // workflow from cancelling the other.
+    private static final AtomicLong UI_GENERATION = new AtomicLong(0L);
+    private static final AtomicLong DOCUMENT_GENERATION = new AtomicLong(0L);
 
     public static void invalidatePending(Context c, String reason) {
-        long generation = REQUEST_GENERATION.incrementAndGet();
+        long generation = UI_GENERATION.incrementAndGet();
         if (c != null) {
-            DiagnosticLog.i(c.getApplicationContext(), "OCR_SESSION", "invalidate generation="
+            DiagnosticLog.i(c.getApplicationContext(), "OCR_SESSION", "invalidate uiGeneration="
                     + generation + " reason=" + (reason == null ? "unknown" : reason));
         }
     }
@@ -62,8 +66,10 @@ public final class OcrEngine {
         if (c == null) return;
         Context app = c.getApplicationContext();
         FloatService service = deliverUi ? FloatService.get() : null;
-        long requestId = REQUEST_GENERATION.incrementAndGet();
+        long generation = (deliverUi ? UI_GENERATION : DOCUMENT_GENERATION).incrementAndGet();
+        long requestId = (generation << 1) | (deliverUi ? 0L : 1L);
         DiagnosticLog.i(app, "OCR_REQUEST", "request=" + requestId
+                + " generation=" + generation
                 + " mode=" + (deliverUi ? "result" : "document")
                 + " bitmap=" + bitmapSize(b)
                 + " anchor=" + (anchor == null ? "none" : anchor.toShortString()));
@@ -449,9 +455,13 @@ public final class OcrEngine {
     }
 
     private static boolean stale(Context app, long requestId, String stage) {
-        long current = REQUEST_GENERATION.get();
-        if (requestId == current) return false;
+        boolean document = (requestId & 1L) != 0L;
+        long expectedGeneration = requestId >>> 1;
+        long current = (document ? DOCUMENT_GENERATION : UI_GENERATION).get();
+        if (expectedGeneration == current) return false;
         DiagnosticLog.i(app, "OCR_SESSION", "drop stale request=" + requestId
+                + " channel=" + (document ? "document" : "ui")
+                + " generation=" + expectedGeneration
                 + " current=" + current + " stage=" + stage);
         return true;
     }
