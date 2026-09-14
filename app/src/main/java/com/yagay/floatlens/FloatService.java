@@ -405,17 +405,17 @@ public class FloatService extends Service implements android.content.SharedPrefe
     }
 
     private void rehostIconWindows(boolean useAccessibility) {
-        if (primary == null || primaryLp == null || iconHost == null) return;
         int target = useAccessibility
                 ? WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
                 : WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
-        if (primaryLp.type == target && (secondaryLp == null || secondaryLp.type == target)) return;
-        DiagnosticLog.i(this, "FL_WINDOW", "rehost icons target=" + target
+        DiagnosticLog.i(this, "FL_WINDOW", "rehost overlays target=" + target
                 + " notif=" + visibility.notificationExpanded());
         rehostOne(primary, primaryLp, useAccessibility);
-        if (primaryHandle != null && primaryHandleLp != null) rehostOne(primaryHandle, primaryHandleLp, useAccessibility);
-        if (secondary != null && secondaryLp != null) rehostOne(secondary, secondaryLp, useAccessibility);
-        if (secondaryHandle != null && secondaryHandleLp != null) rehostOne(secondaryHandle, secondaryHandleLp, useAccessibility);
+        rehostOne(primaryHandle, primaryHandleLp, useAccessibility);
+        rehostOne(secondary, secondaryLp, useAccessibility);
+        rehostOne(secondaryHandle, secondaryHandleLp, useAccessibility);
+        rehostOne(wakeLeft, wakeLeftLp, useAccessibility);
+        rehostOne(wakeRight, wakeRightLp, useAccessibility);
     }
 
     private void rehostOne(View view, WindowManager.LayoutParams lp, boolean useAccessibility) {
@@ -523,24 +523,35 @@ public class FloatService extends Service implements android.content.SharedPrefe
     }
 
     private void addWakeViews() {
-        if (wakeLeft != null) return;
+        if (wakeLeft != null || iconHost == null) return;
         int width = dp(18);
-        wakeLeft = new EdgeWakeView(this, true, () -> setManualHidden(false));
-        wakeRight = new EdgeWakeView(this, false, () -> setManualHidden(false));
-        wakeLeftLp = wakeLp(width, Gravity.LEFT);
-        wakeRightLp = wakeLp(width, Gravity.RIGHT);
-        try {
-            wm.addView(wakeLeft, wakeLeftLp);
-            wm.addView(wakeRight, wakeRightLp);
-        } catch (Throwable t) {
-            removeWakeViews();
+        EdgeWakeView left = new EdgeWakeView(this, true, () -> setManualHidden(false));
+        EdgeWakeView right = new EdgeWakeView(this, false, () -> setManualHidden(false));
+        WindowManager.LayoutParams leftLp = wakeLp(width, Gravity.LEFT);
+        WindowManager.LayoutParams rightLp = wakeLp(width, Gravity.RIGHT);
+
+        if (!iconHost.add(left, leftLp, "edge_wake_left")) return;
+        if (!iconHost.add(right, rightLp, "edge_wake_right")) {
+            iconHost.remove(left, "edge_wake_left_rollback");
+            return;
         }
+
+        wakeLeft = left;
+        wakeRight = right;
+        wakeLeftLp = leftLp;
+        wakeRightLp = rightLp;
+        DiagnosticLog.i(this, "FL_WAKE", "ADD hosts="
+                + (iconHost.isAccessibilityHosted(left) ? "A" : "O") + "/"
+                + (iconHost.isAccessibilityHosted(right) ? "A" : "O"));
     }
 
     private WindowManager.LayoutParams wakeLp(int width, int side) {
+        int type = LensAccessibilityService.ready()
+                ? WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+                : WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 width, WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                type,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
@@ -549,8 +560,8 @@ public class FloatService extends Service implements android.content.SharedPrefe
     }
 
     private void removeWakeViews() {
-        if (wakeLeft != null) try { wm.removeView(wakeLeft); } catch (Throwable ignored) { }
-        if (wakeRight != null) try { wm.removeView(wakeRight); } catch (Throwable ignored) { }
+        if (wakeLeft != null && iconHost != null) iconHost.remove(wakeLeft, "edge_wake_left");
+        if (wakeRight != null && iconHost != null) iconHost.remove(wakeRight, "edge_wake_right");
         wakeLeft = wakeRight = null;
         wakeLeftLp = wakeRightLp = null;
     }
