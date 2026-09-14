@@ -105,9 +105,14 @@ public final class OcrModelManager {
     public static boolean verifyIntegrity(Context c, int model) {
         Context app = c.getApplicationContext();
         if (!isReady(app, model) || isDownloading(model)) return false;
+        return verifyIntegrityFiles(app, model, true);
+    }
+
+    private static boolean verifyIntegrityFiles(Context app, int model, boolean allowLegacyBaseline) {
         try {
             File manifest = manifestFile(app, model);
             if (!manifest.isFile()) {
+                if (!allowLegacyBaseline) return false;
                 writeIntegrityManifest(app, model);
                 DiagnosticLog.i(app, "OCR_MODEL", "integrity baseline created model=" + model
                         + " legacy=true");
@@ -164,7 +169,11 @@ public final class OcrModelManager {
                 downloadOne(sp.ymlUrl, ymlFile(app, model), 4_000L, doneBase, total, "字符配置", cb);
                 if (!isReady(app, model)) throw new IllegalStateException("下载完成但模型大小校验失败");
                 writeIntegrityManifest(app, model);
-                if (!verifyIntegrity(app, model)) throw new IllegalStateException("下载完成但 SHA-256 校验失败");
+                // Internal post-download verification must run while DOWNLOADING is still true so no
+                // other cold load can race a not-yet-validated model into memory.
+                if (!verifyIntegrityFiles(app, model, false)) {
+                    throw new IllegalStateException("下载完成但 SHA-256 校验失败");
+                }
                 // A previous engine may still map the old model files. Invalidate it after all new
                 // files have been atomically moved into place so the next OCR run reloads them.
                 PaddleOcrBridge.releaseModel(model);
