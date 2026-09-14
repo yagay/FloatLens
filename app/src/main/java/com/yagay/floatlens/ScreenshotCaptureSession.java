@@ -19,34 +19,34 @@ final class ScreenshotCaptureSession {
     static void capture(Context c, FloatSettings settings,
                         Consumer<Bitmap> ok, Consumer<Throwable> fail) {
         Context app = c.getApplicationContext();
-        FloatService service = FloatService.get();
-        boolean hideIcon = !settings.keepInScreenshot() && service != null;
+        boolean hideIcon = !settings.keepInScreenshot() && FloatService.get() != null;
+        ScreenshotHideCoordinator.Lease hideLease = hideIcon
+                ? ScreenshotHideCoordinator.acquire(app, "screenshot_session") : null;
         DiagnosticLog.i(app, "SCREENSHOT_SESSION", "begin hideIcon=" + hideIcon
                 + " accessibility=" + settings.accessibilityScreenshot()
                 + " root=" + settings.rootScreenshot());
-        if (hideIcon) service.setScreenshotHidden(true);
 
         MAIN.postDelayed(() -> {
             DiagnosticLog.i(app, "SCREENSHOT_SESSION", "capture after settleMs="
                     + (hideIcon ? HIDE_SETTLE_MS : 0L));
             ScreenCaptureBackend.capture(app, settings, raw -> {
                 DiagnosticLog.i(app, "SCREENSHOT_SESSION", "backend success bitmap=" + size(raw));
-                restore(app, service, hideIcon);
+                restore(app, hideLease);
                 ok.accept(raw);
             }, error -> {
                 DiagnosticLog.i(app, "SCREENSHOT_SESSION", "backend failed error="
                         + ScreenCaptureBackend.safeMessage(error));
-                restore(app, service, hideIcon);
+                restore(app, hideLease);
                 fail.accept(error);
             });
         }, hideIcon ? HIDE_SETTLE_MS : 0L);
     }
 
-    private static void restore(Context app, FloatService service, boolean hidden) {
-        if (!hidden || service == null) return;
+    private static void restore(Context app, ScreenshotHideCoordinator.Lease lease) {
+        if (lease == null) return;
         MAIN.postDelayed(() -> {
-            service.setScreenshotHidden(false);
-            DiagnosticLog.i(app, "SCREENSHOT_SESSION", "icon restored delayMs=" + RESTORE_DELAY_MS);
+            lease.release(app);
+            DiagnosticLog.i(app, "SCREENSHOT_SESSION", "hide lease released delayMs=" + RESTORE_DELAY_MS);
         }, RESTORE_DELAY_MS);
     }
 
