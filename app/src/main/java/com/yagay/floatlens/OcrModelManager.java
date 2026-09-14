@@ -124,7 +124,7 @@ public final class OcrModelManager {
                 if (!isReady(app, model)) throw new IllegalStateException("下载完成但模型校验失败");
                 DiagnosticLog.i(app, "OCR_MODEL", "download success model=" + model
                         + " bytes=" + installedBytes(app, model));
-                MAIN.post(cb::onSuccess);
+                if (cb != null) MAIN.post(cb::onSuccess);
             } catch (Throwable t) {
                 DiagnosticLog.i(app, "OCR_MODEL", "download failure model=" + model + " " + safe(t));
                 fail(cb, safe(t));
@@ -163,7 +163,7 @@ public final class OcrModelManager {
                 if (percent != lastPercent) {
                     lastPercent = percent;
                     int p = percent;
-                    MAIN.post(() -> cb.onProgress(stage, p));
+                    if (cb != null) MAIN.post(() -> cb.onProgress(stage, p));
                 }
             }
             fos.getFD().sync();
@@ -173,11 +173,12 @@ public final class OcrModelManager {
         if (!part.renameTo(out)) throw new IllegalStateException("无法保存 " + stage);
     }
 
-    /** Delete only files here; OCR runtime is intentionally not loaded from SettingsActivity. */
+    /** Release any live ONNX engine before removing its backing files. */
     public static void delete(Context c, int model) {
         try {
+            PaddleOcrBridge.releaseModel(model);
             deleteRecursively(dir(c, model));
-            DiagnosticLog.i(c, "OCR_MODEL", "deleted model=" + model);
+            DiagnosticLog.i(c, "OCR_MODEL", "deleted model=" + model + " runtimeReleaseRequested=true");
         } catch (Throwable t) {
             DiagnosticLog.i(c, "OCR_MODEL", "delete failure model=" + model + " " + safe(t));
         }
