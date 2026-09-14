@@ -146,6 +146,10 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
         panel.root().postDelayed(() -> {
             if (!isAdded() || !ocrRunning || ocrGeneration != gen) return;
             OcrResultDispatcher.cancel(image);
+            // Cancelling only the dispatcher used to let the still-running OCR finish later and
+            // fall through to the default result surface. Invalidate the UI OCR lane as well.
+            OcrEngine.invalidatePending(requireContext().getApplicationContext(),
+                    "result_dialog_timeout");
             ocrRunning = false;
             if (panel != null) panel.setOcrRunning(false);
             DiagnosticLog.i(requireContext(), "RESULT_DIALOG", "OCR_INLINE_TIMEOUT gen=" + gen);
