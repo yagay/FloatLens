@@ -36,12 +36,27 @@ public final class OcrEngine {
         return t;
     });
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
-    private static final AtomicLong REQUEST_GENERATION = new AtomicLong(0L);
 
+    // Visible-result OCR and internal document/ROI OCR are independent workloads. The previous
+    // single generation meant starting a small Circle ROI refinement could silently cancel an
+    // unrelated screenshot OCR (and vice versa). Keep each lane latest-wins without cross-cancelling.
+    private static final AtomicLong UI_GENERATION = new AtomicLong(0L);
+    private static final AtomicLong DOCUMENT_GENERATION = new AtomicLong(0L);
+
+    /** Cancel only pending OCR that is supposed to produce/update the visible result surface. */
     public static void invalidatePending(Context c, String reason) {
-        long generation = REQUEST_GENERATION.incrementAndGet();
+        long generation = UI_GENERATION.incrementAndGet();
         if (c != null) {
-            DiagnosticLog.i(c.getApplicationContext(), "OCR_SESSION", "invalidate generation="
+            DiagnosticLog.i(c.getApplicationContext(), "OCR_SESSION", "invalidate lane=ui generation="
+                    + generation + " reason=" + (reason == null ? "unknown" : reason));
+        }
+    }
+
+    /** Cancel pending internal document/ROI OCR without disturbing a visible result OCR. */
+    public static void invalidateDocumentPending(Context c, String reason) {
+        long generation = DOCUMENT_GENERATION.incrementAndGet();
+        if (c != null) {
+            DiagnosticLog.i(c.getApplicationContext(), "OCR_SESSION", "invalidate lane=document generation="
                     + generation + " reason=" + (reason == null ? "unknown" : reason));
         }
     }
@@ -62,65 +77,69 @@ public final class OcrEngine {
         if (c == null) return;
         Context app = c.getApplicationContext();
         FloatService service = deliverUi ? FloatService.get() : null;
-        long requestId = REQUEST_GENERATION.incrementAndGet();
+        AtomicLong generation = deliverUi ? UI_GENERATION : DOCUMENT_GENERATION;
+        long requestId = generation.incrementAndGet();
         DiagnosticLog.i(app, "OCR_REQUEST", "request=" + requestId
-                + " mode=" + (deliverUi ? "result" : "document")
+                + " lane=" + (deliverUi ? "ui" : "document")
                 + " bitmap=" + bitmapSize(b)
                 + " anchor=" + (anchor == null ? "none" : anchor.toShortString()));
 
         if (deliverUi && service != null) service.onCircleRecognizeStarted();
         if (b == null || b.isRecycled() || b.getWidth() <= 0 || b.getHeight() <= 0) {
-            fail(app, service, callback, deliverUi, requestId, "ocr_invalid_bitmap",
+            fail(app, service, callback, deliverUi, generation, requestId, "ocr_invalid_bitmap",
                     "OCR失败: 图片无效", new IllegalArgumentException("invalid bitmap"));
             return;
         }
-        startSelectedEngine(app, service, b, anchor, callback, deliverUi, requestId);
+        startSelectedEngine(app, service, b, anchor, callback, deliverUi, generation, requestId);
     }
 
     private static void startSelectedEngine(Context app, FloatService service, Bitmap source, Rect anchor,
-                                            DocumentCallback callback, boolean deliverUi, long requestId) {
-        if (stale(app, requestId, "engine_start")) return;
+                                            DocumentCallback callback, boolean deliverUi,
+                                            AtomicLong generation, long requestId) {
+        if (stale(app, generation, requestId, "engine_start")) return;
         int mode = readOcrEngineModeSafely(app);
         boolean smallReady = OcrModelManager.isReady(app, OcrModelManager.SMALL);
         boolean mediumReady = OcrModelManager.isReady(app, OcrModelManager.MEDIUM);
         DiagnosticLog.i(app, "OCR_ENGINE", "request=" + requestId + " mode=" + mode
+                + " lane=" + laneName(generation)
                 + " small=" + smallReady + " medium=" + mediumReady);
 
         if (mode == 3) {
             startMlKitPipeline(app, service, source, anchor, callback, deliverUi,
-                    "manual_mlkit", requestId);
+                    "manual_mlkit", generation, requestId);
         } else if (mode == 1) {
             runPaddle(app, service, source, anchor, callback, deliverUi,
-                    OcrModelManager.MEDIUM, false, null, requestId);
+                    OcrModelManager.MEDIUM, false, null, generation, requestId);
         } else if (mode == 2) {
             runPaddle(app, service, source, anchor, callback, deliverUi,
-                    OcrModelManager.SMALL, false, null, requestId);
+                    OcrModelManager.SMALL, false, null, generation, requestId);
         } else if (smallReady) {
             runPaddle(app, service, source, anchor, callback, deliverUi,
-                    OcrModelManager.SMALL, true, null, requestId);
+                    OcrModelManager.SMALL, true, null, generation, requestId);
         } else if (mediumReady) {
             runPaddle(app, service, source, anchor, callback, deliverUi,
-                    OcrModelManager.MEDIUM, true, null, requestId);
+                    OcrModelManager.MEDIUM, true, null, generation, requestId);
         } else {
             if (deliverUi) {
                 Toast.makeText(app, "未下载 PP-OCRv6 模型，暂用 ML Kit；可在设置中下载",
                         Toast.LENGTH_SHORT).show();
             }
             startMlKitPipeline(app, service, source, anchor, callback, deliverUi,
-                    "no_local_model", requestId);
+                    "no_local_model", generation, requestId);
         }
     }
 
     private static void runPaddle(Context app, FloatService service, Bitmap source, Rect anchor,
                                   DocumentCallback callback, boolean deliverUi,
-                                  int model, boolean auto, OcrDocument previous, long requestId) {
-        if (stale(app, requestId, "paddle_start")) return;
+                                  int model, boolean auto, OcrDocument previous,
+                                  AtomicLong generation, long requestId) {
+        if (stale(app, generation, requestId, "paddle_start")) return;
         if (!OcrModelManager.isReady(app, model)) {
             if (auto) {
                 startMlKitPipeline(app, service, source, anchor, callback, deliverUi,
-                        "local_model_missing", requestId);
+                        "local_model_missing", generation, requestId);
             } else {
-                fail(app, service, callback, deliverUi, requestId, "ppocr_model_missing",
+                fail(app, service, callback, deliverUi, generation, requestId, "ppocr_model_missing",
                         "请先在设置中下载 " + OcrModelManager.displayName(model),
                         new IllegalStateException("PP-OCR model missing"));
             }
@@ -129,22 +148,24 @@ public final class OcrEngine {
 
         PaddleOcrBridge.recognize(app, source, model, new PaddleOcrBridge.Callback() {
             @Override public void onSuccess(OcrDocument raw, long totalMs, int lineCount) {
-                if (stale(app, requestId, "paddle_success")) return;
+                if (stale(app, generation, requestId, "paddle_success")) return;
                 double score = paddleScore(raw.fullText(), raw.confidence(), raw.blocks().size());
                 OcrDocument now = new OcrDocument(raw.fullText(), raw.blocks(), raw.lines(),
                         raw.engine(), raw.confidence(), score, source.getWidth(), source.getHeight());
                 DiagnosticLog.i(app, "PPOCRV6", "success request=" + requestId + " model=" + model
+                        + " lane=" + laneName(generation)
                         + " chars=" + now.chars().size() + " lines=" + lineCount
                         + " avgConf=" + now.confidence() + " totalMs=" + totalMs);
 
                 if (now.fullText().isBlank()) {
                     if (previous != null && !previous.fullText().isBlank()) {
-                        deliver(app, service, source, anchor, callback, deliverUi, previous, requestId);
+                        deliver(app, service, source, anchor, callback, deliverUi,
+                                previous, generation, requestId);
                     } else if (auto) {
                         startMlKitPipeline(app, service, source, anchor, callback, deliverUi,
-                                "ppocr_empty", requestId);
+                                "ppocr_empty", generation, requestId);
                     } else {
-                        fail(app, service, callback, deliverUi, requestId, "ppocr_empty",
+                        fail(app, service, callback, deliverUi, generation, requestId, "ppocr_empty",
                                 "未识别到文字", new IllegalStateException("PP-OCR empty"));
                     }
                     return;
@@ -154,22 +175,23 @@ public final class OcrEngine {
                         && OcrModelManager.isReady(app, OcrModelManager.MEDIUM)
                         && shouldEscalate(now)) {
                     runPaddle(app, service, source, anchor, callback, deliverUi,
-                            OcrModelManager.MEDIUM, true, now, requestId);
+                            OcrModelManager.MEDIUM, true, now, generation, requestId);
                     return;
                 }
                 deliver(app, service, source, anchor, callback, deliverUi,
-                        chooseBetter(previous, now), requestId);
+                        chooseBetter(previous, now), generation, requestId);
             }
 
             @Override public void onFailure(String message) {
-                if (stale(app, requestId, "paddle_failure")) return;
+                if (stale(app, generation, requestId, "paddle_failure")) return;
                 if (previous != null && !previous.fullText().isBlank()) {
-                    deliver(app, service, source, anchor, callback, deliverUi, previous, requestId);
+                    deliver(app, service, source, anchor, callback, deliverUi,
+                            previous, generation, requestId);
                 } else if (auto) {
                     startMlKitPipeline(app, service, source, anchor, callback, deliverUi,
-                            "ppocr_failure:" + message, requestId);
+                            "ppocr_failure:" + message, generation, requestId);
                 } else {
-                    fail(app, service, callback, deliverUi, requestId, "ppocr_failure",
+                    fail(app, service, callback, deliverUi, generation, requestId, "ppocr_failure",
                             "PP-OCRv6 失败: " + message, new IllegalStateException(message));
                 }
             }
@@ -201,8 +223,8 @@ public final class OcrEngine {
 
     private static void startMlKitPipeline(Context app, FloatService service, Bitmap source, Rect anchor,
                                            DocumentCallback callback, boolean deliverUi,
-                                           String reason, long requestId) {
-        if (stale(app, requestId, "mlkit_start")) return;
+                                           String reason, AtomicLong generation, long requestId) {
+        if (stale(app, generation, requestId, "mlkit_start")) return;
         try {
             Set<String> languages = OcrLanguages.get(app);
             boolean chinese = OcrLanguages.chineseEnabled(languages);
@@ -218,10 +240,12 @@ public final class OcrEngine {
             if (english) plan.add(new PassSpec("latin-mono", OcrImagePreprocessor.MODE_MONO, false));
 
             DiagnosticLog.i(app, "OCR_PIPELINE", "start request=" + requestId
+                    + " lane=" + laneName(generation)
                     + " passes=" + plan.size() + " reason=" + reason);
-            new MlRunState(app, service, source, anchor, callback, deliverUi, plan, requestId).next();
+            new MlRunState(app, service, source, anchor, callback, deliverUi,
+                    plan, generation, requestId).next();
         } catch (Throwable t) {
-            fail(app, service, callback, deliverUi, requestId, "mlkit_init_failure",
+            fail(app, service, callback, deliverUi, generation, requestId, "mlkit_init_failure",
                     "OCR失败: " + safe(t), t);
         }
     }
@@ -236,17 +260,20 @@ public final class OcrEngine {
     private static final class MlRunState {
         final Context app; final FloatService service; final Bitmap source; final Rect anchor;
         final DocumentCallback callback; final boolean deliverUi; final List<PassSpec> plan;
-        final long requestId; final List<OcrDocument> results = new ArrayList<>();
+        final AtomicLong generation; final long requestId;
+        final List<OcrDocument> results = new ArrayList<>();
         int index;
 
         MlRunState(Context app, FloatService service, Bitmap source, Rect anchor,
-                   DocumentCallback callback, boolean deliverUi, List<PassSpec> plan, long requestId) {
+                   DocumentCallback callback, boolean deliverUi, List<PassSpec> plan,
+                   AtomicLong generation, long requestId) {
             this.app = app; this.service = service; this.source = source; this.anchor = anchor;
-            this.callback = callback; this.deliverUi = deliverUi; this.plan = plan; this.requestId = requestId;
+            this.callback = callback; this.deliverUi = deliverUi; this.plan = plan;
+            this.generation = generation; this.requestId = requestId;
         }
 
         void next() {
-            if (stale(app, requestId, "mlkit_next")) return;
+            if (stale(app, generation, requestId, "mlkit_next")) return;
             if (index >= plan.size()) { MAIN.post(this::finishOnMain); return; }
             PassSpec spec = plan.get(index++);
             try { PREP_EXECUTOR.execute(() -> prepareAndRun(spec)); }
@@ -254,12 +281,12 @@ public final class OcrEngine {
         }
 
         private void prepareAndRun(PassSpec spec) {
-            if (stale(app, requestId, "mlkit_prepare_" + spec.name) || source.isRecycled()) return;
+            if (stale(app, generation, requestId, "mlkit_prepare_" + spec.name) || source.isRecycled()) return;
             OcrImagePreprocessor.Prepared prepared;
             try { prepared = OcrImagePreprocessor.prepare(source, spec.mode); }
             catch (Throwable t) { next(); return; }
             if (prepared == null || prepared.bitmap == null || prepared.bitmap.isRecycled()) { next(); return; }
-            if (stale(app, requestId, "mlkit_prepared_" + spec.name)) {
+            if (stale(app, generation, requestId, "mlkit_prepared_" + spec.name)) {
                 OcrImagePreprocessor.recycle(prepared); return;
             }
 
@@ -272,8 +299,9 @@ public final class OcrEngine {
                 client.process(InputImage.fromBitmap(prepared.bitmap, 0))
                         .addOnSuccessListener(text -> {
                             try {
-                                if (!stale(app, requestId, "mlkit_success_" + spec.name)) {
-                                    OcrDocument doc = mlDocument(spec.name, text, prepared, source.getWidth(), source.getHeight());
+                                if (!stale(app, generation, requestId, "mlkit_success_" + spec.name)) {
+                                    OcrDocument doc = mlDocument(spec.name, text, prepared,
+                                            source.getWidth(), source.getHeight());
                                     if (!doc.fullText().isBlank()) results.add(doc);
                                     DiagnosticLog.i(app, "OCR_PASS", spec.name + " chars=" + doc.chars().size()
                                             + " score=" + Math.round(doc.score()));
@@ -300,15 +328,16 @@ public final class OcrEngine {
         }
 
         private void finishOnMain() {
-            if (stale(app, requestId, "mlkit_finish")) return;
+            if (stale(app, generation, requestId, "mlkit_finish")) return;
             OcrDocument best = null;
             for (OcrDocument d : results) if (best == null || d.score() > best.score()) best = d;
             if (best == null || best.fullText().isBlank()) {
-                fail(app, service, callback, deliverUi, requestId, "ocr_empty",
+                fail(app, service, callback, deliverUi, generation, requestId, "ocr_empty",
                         "未识别到文字", new IllegalStateException("ML Kit empty"));
                 return;
             }
-            deliver(app, service, source, anchor, callback, deliverUi, best, requestId);
+            deliver(app, service, source, anchor, callback, deliverUi,
+                    best, generation, requestId);
         }
     }
 
@@ -413,10 +442,11 @@ public final class OcrEngine {
 
     private static void deliver(Context app, FloatService service, Bitmap source, Rect anchor,
                                 DocumentCallback callback, boolean deliverUi,
-                                OcrDocument document, long requestId) {
-        if (document == null || document.fullText().isBlank() || stale(app, requestId, "deliver")) return;
+                                OcrDocument document, AtomicLong generation, long requestId) {
+        if (document == null || document.fullText().isBlank()
+                || stale(app, generation, requestId, "deliver")) return;
         MAIN.post(() -> {
-            if (stale(app, requestId, "deliver_main")) return;
+            if (stale(app, generation, requestId, "deliver_main")) return;
             if (callback != null) {
                 try { callback.onSuccess(document); }
                 catch (Throwable t) { DiagnosticLog.i(app, "OCR_DISPATCH", "callback failed=" + safe(t)); }
@@ -431,11 +461,11 @@ public final class OcrEngine {
     }
 
     private static void fail(Context app, FloatService service, DocumentCallback callback,
-                             boolean deliverUi, long requestId, String reason,
+                             boolean deliverUi, AtomicLong generation, long requestId, String reason,
                              String userMessage, Throwable error) {
-        if (stale(app, requestId, "fail_" + reason)) return;
+        if (stale(app, generation, requestId, "fail_" + reason)) return;
         MAIN.post(() -> {
-            if (stale(app, requestId, "fail_main_" + reason)) return;
+            if (stale(app, generation, requestId, "fail_main_" + reason)) return;
             if (callback != null) {
                 try { callback.onFailure(error == null ? new IllegalStateException(reason) : error); }
                 catch (Throwable ignored) { }
@@ -448,12 +478,16 @@ public final class OcrEngine {
         });
     }
 
-    private static boolean stale(Context app, long requestId, String stage) {
-        long current = REQUEST_GENERATION.get();
+    private static boolean stale(Context app, AtomicLong generation, long requestId, String stage) {
+        long current = generation.get();
         if (requestId == current) return false;
-        DiagnosticLog.i(app, "OCR_SESSION", "drop stale request=" + requestId
-                + " current=" + current + " stage=" + stage);
+        DiagnosticLog.i(app, "OCR_SESSION", "drop stale lane=" + laneName(generation)
+                + " request=" + requestId + " current=" + current + " stage=" + stage);
         return true;
+    }
+
+    private static String laneName(AtomicLong generation) {
+        return generation == DOCUMENT_GENERATION ? "document" : "ui";
     }
 
     private static int readOcrEngineModeSafely(Context app) {
