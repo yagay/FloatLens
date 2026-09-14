@@ -15,16 +15,19 @@ import java.util.concurrent.Executors;
 /**
  * FL same-touch selection engine.
  *
- * Region dragging and selected-View readiness are intentionally separate. FL owns
- * the dwell/re-arm state for the selected View rectangle. FloatLens
- * keeps ViewHoverOverlay passive; this engine owns the 400ms / ±3dp state.
+ * <p>The verified FV flow has one dwell gate only: FloatIconView keeps the moving probe in
+ * TRACKING/red while the pointer is moving, and after the 400 ms / ±3 dp dwell it hands the same
+ * touch session to this engine. From that point the probe is READY/yellow and cached
+ * Accessibility candidates can immediately drive TEXT / IMAGE / SCREENSHOT routing. There is no
+ * second per-candidate 400 ms confirmation timer.</p>
+ *
+ * <p>Region dragging is independent of Accessibility readiness. Candidate collection is prepared
+ * asynchronously so MOVE in DIRECT mode only performs cached geometry hit-testing.</p>
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
 
     private static final long FL_RELEASE_ACTION_DELAY_MS = 5L;
-    private static final long FL_VIEW_READY_DELAY_MS = 400L;
-    private static final float FL_VIEW_READY_AXIS_SLOP_DP = 3f;
 
     private static final ExecutorService TARGET_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "FloatLens-FL-targets");
@@ -37,7 +40,6 @@ public final class ViewSelectionEngine {
     private final SelectionPointTransformer pointTransformer;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final float regionStartSlopPx;
-    private final float viewReadyAxisSlopPx;
 
     /** Optional View/text target layer. It is never required for region screenshot. */
     private ViewHoverOverlay overlay;
@@ -53,17 +55,6 @@ public final class ViewSelectionEngine {
     private State state = State.IDLE;
     private float selectionX = Float.NaN, selectionY = Float.NaN;
     private long targetGeneration;
-
-    /** FL readiness state applies only to the selected View rectangle. */
-    private SelectionVisualState viewVisualState = SelectionVisualState.TRACKING;
-    private float viewReadyAnchorX = Float.NaN, viewReadyAnchorY = Float.NaN;
-    private String viewReadyCandidateKey = "";
-    private final Runnable viewReadyRunnable = () -> {
-        if (state != State.DIRECT || directRegionMode || overlay == null) return;
-        ScreenCandidate candidate = overlay.currentCandidate();
-        if (candidate == null || !candidate.stableKey().equals(viewReadyCandidateKey)) return;
-        setViewVisualState(SelectionVisualState.READY, "candidate_stable_400ms");
-    };
 
     public ViewSelectionEngine(Context c) {
         this(c, null);
@@ -81,7 +72,6 @@ public final class ViewSelectionEngine {
         float px = fs.sizeDp() * density;
         pointTransformer = new SelectionPointTransformer(context, px, px);
         regionStartSlopPx = Math.max(1f, ViewConfiguration.get(context).getScaledTouchSlop());
-        viewReadyAxisSlopPx = Math.max(1f, FL_VIEW_READY_AXIS_SLOP_DP * density);
     }
 
     /** FL region/select mode is unconditional: region/select mode is not gated by Accessibility. */
@@ -130,7 +120,7 @@ public final class ViewSelectionEngine {
         pointerHintOverlay = null;
     }
 
-    /** Initial FloatIconView dwell has expired; enter direct selection immediately. */
+    /** FloatIconView's verified FV dwell has expired; enter DIRECT immediately. */
     public boolean activateDirect(float rawX, float rawY) {
         if (state == State.DIRECT) {
             updateDirect(rawX, rawY);
@@ -141,7 +131,6 @@ public final class ViewSelectionEngine {
         directRegionMode = false;
         directRegion.setEmpty();
         closeDirectRegionFrame();
-        resetViewReadiness();
 
         ensureProbe();
         if (probeOverlay != null) probeOverlay.setReady();
@@ -160,7 +149,6 @@ public final class ViewSelectionEngine {
                 + Math.round(rawX) + "," + Math.round(rawY)
                 + " focusHit=" + Math.round(selectionX) + "," + Math.round(selectionY)
                 + " slop=" + Math.round(regionStartSlopPx)
-                + " viewAxisSlopPx=" + Math.round(viewReadyAxisSlopPx)
                 + " accessibilityAsync=" + (accessibility != null));
         return true;
     }
@@ -184,7 +172,6 @@ public final class ViewSelectionEngine {
         float dy = selectionY - directStartY;
         if (!directRegionMode && dx * dx + dy * dy >= regionStartSlopPx * regionStartSlopPx) {
             directRegionMode = true;
-            cancelViewReadyTimer();
             if (overlay != null) {
                 overlay.cancel();
                 overlay = null;
@@ -208,7 +195,6 @@ public final class ViewSelectionEngine {
             }
         } else if (overlay != null) {
             overlay.update(selectionX, selectionY);
-            updateViewCandidateStability(selectionX, selectionY);
         }
 
         updateOperationHint();
@@ -251,80 +237,17 @@ public final class ViewSelectionEngine {
 
                 if (overlay != null) overlay.cancel();
                 overlay = ready;
-                overlay.setCandidateListener(this::onViewCandidateChanged);
-                overlay.setVisualState(SelectionVisualState.TRACKING);
+                // FV's 400 ms dwell has already completed before DIRECT. A candidate arriving now
+                // is therefore immediately in the yellow/ready visual state; do not add a second
+                // candidate-specific dwell.
+                overlay.setVisualState(SelectionVisualState.READY);
                 overlay.update(selectionX, selectionY);
                 updateOperationHint();
                 DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_APPLY gen=" + generation
                         + " elapsedMs=" + (SystemClock.elapsedRealtime() - started)
-                        + " region=false flViewState=" + viewVisualState);
+                        + " region=false directReady=true");
             });
         });
-    }
-
-    /** FL rule: every newly selected View starts red. */
-    private void onViewCandidateChanged(ScreenCandidate candidate) {
-        cancelViewReadyTimer();
-        setViewVisualState(SelectionVisualState.TRACKING, "candidate_changed");
-        if (candidate == null) {
-            viewReadyCandidateKey = "";
-            viewReadyAnchorX = viewReadyAnchorY = Float.NaN;
-            return;
-        }
-        viewReadyCandidateKey = candidate.stableKey();
-        viewReadyAnchorX = selectionX;
-        viewReadyAnchorY = selectionY;
-        armViewReadyTimer("candidate_changed");
-    }
-
-    /** FL rule: leaving the ±3dp stable box returns to TRACKING and re-arms the 400ms timer. */
-    private void updateViewCandidateStability(float x, float y) {
-        if (overlay == null || overlay.currentCandidate() == null) return;
-        if (Float.isNaN(viewReadyAnchorX) || Float.isNaN(viewReadyAnchorY)) {
-            viewReadyAnchorX = x;
-            viewReadyAnchorY = y;
-            armViewReadyTimer("missing_anchor");
-            return;
-        }
-
-        float dx = x - viewReadyAnchorX;
-        float dy = y - viewReadyAnchorY;
-        if (Math.abs(dx) <= viewReadyAxisSlopPx && Math.abs(dy) <= viewReadyAxisSlopPx) return;
-
-        setViewVisualState(SelectionVisualState.TRACKING, "moved_outside_3dp");
-        viewReadyAnchorX = x;
-        viewReadyAnchorY = y;
-        armViewReadyTimer("moved_outside_3dp");
-        DiagnosticLog.i(context, "FL_VIEW_READY", "REARM x=" + Math.round(x)
-                + " y=" + Math.round(y) + " dx=" + Math.round(dx) + " dy=" + Math.round(dy)
-                + " axisSlopPx=" + Math.round(viewReadyAxisSlopPx));
-    }
-
-    private void armViewReadyTimer(String reason) {
-        mainHandler.removeCallbacks(viewReadyRunnable);
-        if (overlay == null || overlay.currentCandidate() == null || directRegionMode) return;
-        mainHandler.postDelayed(viewReadyRunnable, FL_VIEW_READY_DELAY_MS);
-        DiagnosticLog.i(context, "FL_VIEW_READY", "ARM reason=" + reason
-                + " delayMs=" + FL_VIEW_READY_DELAY_MS
-                + " candidate=" + overlay.currentCandidate().type());
-    }
-
-    private void setViewVisualState(SelectionVisualState next, String reason) {
-        if (next == null) next = SelectionVisualState.TRACKING;
-        viewVisualState = next;
-        if (overlay != null) overlay.setVisualState(next);
-        DiagnosticLog.i(context, "FL_VIEW_READY", "STATE " + next + " reason=" + reason);
-    }
-
-    private void cancelViewReadyTimer() {
-        mainHandler.removeCallbacks(viewReadyRunnable);
-    }
-
-    private void resetViewReadiness() {
-        cancelViewReadyTimer();
-        viewVisualState = SelectionVisualState.TRACKING;
-        viewReadyCandidateKey = "";
-        viewReadyAnchorX = viewReadyAnchorY = Float.NaN;
     }
 
     /** Keep the sibling operation-hint window synchronized to the + probe. */
@@ -372,7 +295,6 @@ public final class ViewSelectionEngine {
         }
 
         targetGeneration++;
-        resetViewReadiness();
         if (overlay != null) overlay.cancel();
         overlay = null;
         state = State.IDLE;
@@ -413,7 +335,6 @@ public final class ViewSelectionEngine {
     public void cancel() {
         boolean active = state == State.DIRECT;
         targetGeneration++;
-        resetViewReadiness();
         if (overlay != null) overlay.cancel();
         overlay = null;
         state = State.IDLE;
