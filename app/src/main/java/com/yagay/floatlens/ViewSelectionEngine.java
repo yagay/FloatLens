@@ -11,6 +11,7 @@ import android.view.ViewConfiguration;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /**
  * FL same-touch selection engine.
@@ -22,7 +23,8 @@ import java.util.concurrent.Executors;
  * second per-candidate 400 ms confirmation timer.</p>
  *
  * <p>Region dragging is independent of Accessibility readiness. Candidate collection is prepared
- * asynchronously so MOVE in DIRECT mode only performs cached geometry hit-testing.</p>
+ * asynchronously so MOVE in DIRECT mode only performs cached geometry hit-testing. Obsolete tree
+ * scans are cancelled with interruption instead of being allowed to queue behind newer sessions.</p>
  */
 public final class ViewSelectionEngine {
     public enum State { IDLE, DIRECT }
@@ -55,6 +57,7 @@ public final class ViewSelectionEngine {
     private State state = State.IDLE;
     private float selectionX = Float.NaN, selectionY = Float.NaN;
     private long targetGeneration;
+    private Future<?> targetFuture;
 
     public ViewSelectionEngine(Context c) {
         this(c, null);
@@ -172,6 +175,7 @@ public final class ViewSelectionEngine {
         float dy = selectionY - directStartY;
         if (!directRegionMode && dx * dx + dy * dy >= regionStartSlopPx * regionStartSlopPx) {
             directRegionMode = true;
+            cancelTargetPreparation("enter_region");
             if (overlay != null) {
                 overlay.cancel();
                 overlay = null;
@@ -203,21 +207,33 @@ public final class ViewSelectionEngine {
     /** Accessibility candidates arrive as an optional late result, after direct selection is active. */
     private void prepareTargetsAsync() {
         if (accessibility == null || state != State.DIRECT || directRegionMode) return;
+        cancelTargetPreparation("replace");
         final long generation = ++targetGeneration;
         final long started = SystemClock.elapsedRealtime();
         DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_START gen=" + generation);
 
-        TARGET_EXECUTOR.execute(() -> {
+        targetFuture = TARGET_EXECUTOR.submit(() -> {
             ViewHoverOverlay prepared = null;
             Throwable error = null;
             try {
+                if (Thread.currentThread().isInterrupted()) return;
                 ViewHoverOverlay next = new ViewHoverOverlay(context);
                 if (next.available()) {
                     next.begin();
+                    if (Thread.currentThread().isInterrupted()) {
+                        next.cancel();
+                        DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_INTERRUPTED gen=" + generation);
+                        return;
+                    }
                     prepared = next;
                 }
             } catch (Throwable t) {
-                error = t;
+                if (!Thread.currentThread().isInterrupted()) error = t;
+            }
+
+            if (Thread.currentThread().isInterrupted()) {
+                if (prepared != null) prepared.cancel();
+                return;
             }
 
             final ViewHoverOverlay ready = prepared;
@@ -229,6 +245,7 @@ public final class ViewSelectionEngine {
                             + " current=" + targetGeneration + " region=" + directRegionMode);
                     return;
                 }
+                targetFuture = null;
                 if (failure != null || ready == null) {
                     DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_FAILED gen=" + generation
                             + " error=" + (failure == null ? "unavailable" : failure));
@@ -248,6 +265,16 @@ public final class ViewSelectionEngine {
                         + " region=false directReady=true");
             });
         });
+    }
+
+    private void cancelTargetPreparation(String reason) {
+        Future<?> future = targetFuture;
+        targetFuture = null;
+        if (future != null && !future.isDone()) {
+            boolean cancelled = future.cancel(true);
+            DiagnosticLog.i(context, "FL_TREE_CACHE", "ASYNC_CANCEL reason=" + reason
+                    + " success=" + cancelled);
+        }
     }
 
     /** Keep the sibling operation-hint window synchronized to the + probe. */
@@ -294,6 +321,7 @@ public final class ViewSelectionEngine {
             text = "";
         }
 
+        cancelTargetPreparation("finish");
         targetGeneration++;
         if (overlay != null) overlay.cancel();
         overlay = null;
@@ -334,6 +362,7 @@ public final class ViewSelectionEngine {
 
     public void cancel() {
         boolean active = state == State.DIRECT;
+        cancelTargetPreparation("cancel");
         targetGeneration++;
         if (overlay != null) overlay.cancel();
         overlay = null;
