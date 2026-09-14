@@ -110,7 +110,7 @@ public final class VisualCandidateDetector {
                         Math.min(bitmap.getHeight(), search.top + (maxGY + 1) * step));
                 int expand = Math.max(step * 2, Math.round(3f * density * Math.max(sx, sy)));
                 br.inset(-expand, -expand);
-                br.intersect(search);
+                if (!br.intersect(search)) continue;
                 if (br.width() < minDimPx || br.height() < minDimPx) continue;
                 if (br.width() > maxDimPx || br.height() > maxDimPx) continue;
 
@@ -121,8 +121,7 @@ public final class VisualCandidateDetector {
                 if (!pointerTest.contains(pointerBx, pointerBy)) continue;
 
                 Rect screenRect = mapToScreen(br, displayBounds, sx, sy);
-                screenRect.intersect(displayBounds);
-                if (screenRect.isEmpty()) continue;
+                if (!screenRect.intersect(displayBounds) || screenRect.isEmpty()) continue;
                 out.add(ScreenCandidate.visual(screenRect));
             }
         }
@@ -132,13 +131,12 @@ public final class VisualCandidateDetector {
     private static Rect buildSearchRect(Rect display, float x, float y, Rect hint, float density) {
         Rect around = new Rect(Math.round(x - 110f * density), Math.round(y - 110f * density),
                 Math.round(x + 110f * density), Math.round(y + 110f * density));
-        around.intersect(display);
+        if (!around.intersect(display)) return new Rect();
         if (hint == null || hint.isEmpty()) return around;
         Rect h = new Rect(hint);
         int pad = Math.round(8f * density);
         h.inset(-pad, -pad);
-        h.intersect(display);
-        if (h.isEmpty()) return around;
+        if (!h.intersect(display) || h.isEmpty()) return around;
         // A huge/root accessibility node is not a useful visual search constraint.
         long ha = (long)h.width() * h.height();
         long da = (long)display.width() * display.height();
