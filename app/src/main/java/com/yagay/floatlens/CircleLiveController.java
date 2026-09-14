@@ -43,6 +43,7 @@ public final class CircleLiveController {
     private static final class Session {
         private final Context context;
         private final WindowManager wm;
+        private final FlOverlayWindowHost overlayHost;
         private final FloatSettings settings;
         private final FlSystemPanelController.CaptureState shadeState;
         private final List<PointF> points = new ArrayList<>();
@@ -53,6 +54,7 @@ public final class CircleLiveController {
         Session(Context c, float x, float y) {
             context = c;
             wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
+            overlayHost = new FlOverlayWindowHost(c);
             settings = new FloatSettings(c);
             shadeState = FlSystemPanelController.beginCapture(c, "circle_live");
             points.add(new PointF(x, y));
@@ -140,7 +142,7 @@ public final class CircleLiveController {
 
         private void showOverlay() {
             if (overlay != null || screenshot == null || screenshot.isRecycled() || cancelled || processed) return;
-            overlay = new LiveView(context, screenshot, points);
+            LiveView next = new LiveView(context, screenshot, points);
             WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                     -1, -1,
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -150,11 +152,17 @@ public final class CircleLiveController {
                             | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                     PixelFormat.TRANSLUCENT);
             lp.gravity = Gravity.TOP | Gravity.START;
-            try {
-                wm.addView(overlay, lp);
-            } catch (Throwable t) {
-                overlay = null;
-                DiagnosticLog.i(context, "CIRCLE_LIVE", "overlay add failed=" + t);
+
+            // FV helper/highlight windows use the accessibility overlay layer when that host is
+            // available. The frozen Circle layer is NOT_TOUCHABLE, so changing its host does not
+            // steal the MotionEvent stream from the small floating icon.
+            if (overlayHost.add(next, lp, "circle_live")) {
+                overlay = next;
+                DiagnosticLog.i(context, "CIRCLE_LIVE", "overlay host="
+                        + (overlayHost.isAccessibilityHosted(next) ? "accessibility" : "application")
+                        + " type=" + lp.type);
+            } else {
+                DiagnosticLog.i(context, "CIRCLE_LIVE", "overlay add failed on all hosts");
             }
         }
 
@@ -212,10 +220,9 @@ public final class CircleLiveController {
         }
 
         private void closeOverlay() {
-            if (overlay != null) {
-                try { wm.removeView(overlay); } catch (Throwable ignored) { }
-            }
+            LiveView current = overlay;
             overlay = null;
+            if (current != null) overlayHost.remove(current, "circle_live");
         }
 
         private void recycleScreenshot() {
