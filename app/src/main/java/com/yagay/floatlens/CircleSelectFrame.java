@@ -2,9 +2,7 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.Insets;
 import android.graphics.Rect;
-import android.view.WindowInsets;
 import android.view.WindowManager;
 
 import java.util.function.Consumer;
@@ -12,10 +10,9 @@ import java.util.function.Consumer;
 /**
  * Circle Select frame geometry.
  *
- * Keep the status bar inside the frozen workspace, but leave the live navigation bar outside it.
- * In three-button navigation this keeps Back/Home/Recents directly usable while Circle Select is
- * active. The frozen screenshot is cropped to the exact same bounds as the overlay so screenshot
- * pixels, OCR bounds, touch coordinates and result crops stay in one coordinate space.
+ * Circle Select uses the same status/navigation-bar capture policy as normal screenshots. The
+ * frozen screenshot is cropped to the exact same bounds as the overlay so screenshot pixels, OCR
+ * bounds, touch coordinates and result crops stay in one coordinate space.
  */
 final class CircleSelectFrame {
     static void capture(Context c, Consumer<Bitmap> ok, Consumer<Throwable> fail) {
@@ -29,13 +26,21 @@ final class CircleSelectFrame {
             Rect display = displayBounds(app);
             Rect content = contentBounds(app);
             try {
-                Bitmap frame = ScreenshotGeometry.cropScreenBounds(app, raw, content);
-                if (frame != raw && !raw.isRecycled()) raw.recycle();
-                DiagnosticLog.i(app, "CIRCLE_SELECT", "navigation-safe frame display="
+                Bitmap frame;
+                if (content.equals(display)) {
+                    frame = raw;
+                } else {
+                    frame = ScreenshotGeometry.cropScreenBounds(app, raw, content);
+                    if (frame != raw && !raw.isRecycled()) raw.recycle();
+                }
+                FloatSettings fs = new FloatSettings(app);
+                boolean keepNavigation = CaptureSystemBarsPolicy.keepNavigationBar(app);
+                DiagnosticLog.i(app, "CIRCLE_SELECT", "configured frame display="
                         + display.toShortString()
                         + " content=" + content.toShortString()
                         + " bitmap=" + frame.getWidth() + "x" + frame.getHeight()
-                        + " navigationBarExcluded=" + !content.equals(display));
+                        + " keepStatusBar=" + fs.keepStatusBarInScreenshot()
+                        + " keepNavigationBar=" + keepNavigation);
                 ok.accept(frame);
             } catch (Throwable error) {
                 if (!raw.isRecycled()) raw.recycle();
@@ -44,27 +49,12 @@ final class CircleSelectFrame {
         }, fail);
     }
 
-    /**
-     * Full display minus only the currently visible navigation bar. Status-bar pixels remain part of
-     * the Circle Select workspace. With three-button navigation, the live Back/Home/Recents strip is
-     * therefore never covered by the accessibility overlay.
-     */
     static Rect contentBounds(Context c) {
-        WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
-        var metrics = wm.getCurrentWindowMetrics();
-        Rect display = new Rect(metrics.getBounds());
-        try {
-            Insets navigation = metrics.getWindowInsets().getInsets(WindowInsets.Type.navigationBars());
-            Rect content = new Rect(
-                    display.left + Math.max(0, navigation.left),
-                    display.top + Math.max(0, navigation.top),
-                    display.right - Math.max(0, navigation.right),
-                    display.bottom - Math.max(0, navigation.bottom));
-            if (!content.isEmpty()) return content;
-        } catch (Throwable ignored) {
-            // Fall back to the full display rather than failing Circle Select on unusual OEM metrics.
-        }
-        return display;
+        FloatSettings fs = new FloatSettings(c);
+        return CaptureSystemBarsPolicy.captureBounds(
+                c,
+                fs.keepStatusBarInScreenshot(),
+                CaptureSystemBarsPolicy.keepNavigationBar(c));
     }
 
     static Rect displayBounds(Context c) {
