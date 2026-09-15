@@ -13,7 +13,7 @@ FloatLens 的悬浮图标拖选行为以已经验证的 fooView/FV 运行时行�
 - 指针在约 ±3 dp 范围内稳定约 400 ms 后进入 Direct，探针变为黄色 READY；
 - Direct 之后在缓存的 TEXT / IMAGE / VIEW 候选之间移动不会再为每个候选重复等待 400 ms；
 - Direct 松手后保留约 5 ms 的执行延迟；
-- 辅助高亮/冻结窗口在无障碍宿主可用时优先使用 Accessibility Overlay，同时保持悬浮图标拥有原 MotionEvent 流。
+- 辅助高亮/冻结/轨迹窗口在无障碍宿主可用时优先使用 Accessibility Overlay，同时保持悬浮图标拥有原 MotionEvent 流。
 
 FV 只能决定已经实测确认的交互、时序和窗口行为。截图后端、OCR、结果生命周期、Root / LSPosed 权限边界等 FloatLens 自身架构按项目的单一 owner 规则实现。
 
@@ -29,7 +29,7 @@ Root 截图需要同时打开：
 2. `高级权限 → 使用 Root 功能`
 3. `截图与 OCR → Root 截图增强`
 
-任意一个关闭，截图代码都不会进入 Root 截图路径。设置页提供独立的 Root 授权检测按钮；仅打开设置页不会主动执行 `su`。
+任意一个关闭，截图代码都不会进入 Root 截图路径。设置页提供独立的 Root 授权检测按钮；仅打开设置页不会主动执行 `su`。Root 截图通过 `screencap -p` 标准输出直接解码，不依赖共享临时 PNG 文件。
 
 ### LSPosed
 
@@ -41,7 +41,11 @@ Root 截图需要同时打开：
 
 完整权限与回退规则见 [`docs/PRIVILEGED_MODE.md`](docs/PRIVILEGED_MODE.md)。
 
-## Build
+## OCR 模型
+
+PP-OCRv6 Small / Medium 模型与 APK 分离。成功下载后 FloatLens 会生成本地 SHA-256 完整性清单，并在冷加载模型前校验；ML Kit 多语言流程采用保守的 completed-tier early-stop，只有当前图像层级的已启用语言全部完成且质量足够时才提前结束。
+
+## Build / CI
 
 当前 Android 配置：
 
@@ -51,4 +55,11 @@ Root 截图需要同时打开：
 - Java 17
 - libxposed API 102（compileOnly）
 
-GitHub Actions 的 Debug Build 使用 Gradle 9.4.1 + JDK 17 执行 `assembleDebug`。
+GitHub Actions 的 Debug Build 使用 Gradle 9.4.1 + JDK 17，依次执行：
+
+1. `testDebugUnitTest`
+2. `lintDebug`
+3. `assembleDebug`
+4. 上传 Debug APK artifact
+
+结构性修改只有在最终 HEAD 的这套流程全部通过后才视为源码侧完成。
