@@ -116,9 +116,10 @@ final class ScreenCaptureBackend {
         });
     }
 
-    private static void captureSecureAccessibility(Context app,
-                                                   Consumer<Bitmap> ok,
-                                                   Consumer<Throwable> fail) {
+    /** Shared by production capture and the on-device FLAG_SECURE self-test. */
+    static void captureSecureAccessibility(Context app,
+                                           Consumer<Bitmap> ok,
+                                           Consumer<Throwable> fail) {
         LensAccessibilityService service = LensAccessibilityService.get();
         if (service == null) {
             fail.accept(new IllegalStateException("需要开启 FloatLens 无障碍服务才能使用安全窗口截图增强"));
