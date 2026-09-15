@@ -19,8 +19,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * FloatLens system-panel state and close path. The sequence is based on the FL result-ready behavior,
- * while modern-target adaptations remain explicit.
+ * Single FloatLens owner for SystemUI panel state and post-capture dismissal.
  */
 public final class FlSystemPanelController {
     private static final ExecutorService ROOT_IO = Executors.newSingleThreadExecutor(r -> {
@@ -31,12 +30,15 @@ public final class FlSystemPanelController {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final long PRIMARY_RECHECK_MS = 140L;
     private static final long SHADOW_RECHECK_MS = 380L;
+    private static final long OVERLAY_RESULT_RECHECK_MS = 700L;
     private static final long ROOT_COLLAPSE_TIMEOUT_SECONDS = 5L;
 
     private static volatile boolean cachedShadeExpanded;
     private static volatile boolean cachedShadeKnown;
     private static volatile long cachedShadeUpdatedAt;
     private static volatile Boolean cachedMiui;
+
+    public interface PanelCallback { void onComplete(boolean collapsed); }
 
     private FlSystemPanelController() {}
 
@@ -101,6 +103,30 @@ public final class FlSystemPanelController {
         dismissSystemPanel(context, reason == null ? state.startReason() : reason);
     }
 
+    /**
+     * Overlay flows use the same dismissal owner but may need to regain key focus after the shade
+     * has had time to collapse. No overlay controller should implement its own collapse/retry timer.
+     */
+    public static void onOverlayReady(Context context, CaptureState state, String reason,
+                                      PanelCallback callback) {
+        if (context == null || state == null) return;
+        Context app = context.getApplicationContext();
+        PanelCallback done = callback == null ? collapsed -> { } : callback;
+        boolean liveExpanded = notificationShadeExpanded();
+        boolean waitForCollapse = state.expandedAtCapture() || liveExpanded || isMiuiDevice();
+        onResultReady(app, state, reason);
+        if (!waitForCollapse) {
+            done.onComplete(true);
+            return;
+        }
+        MAIN.postDelayed(() -> {
+            boolean collapsed = !notificationShadeExpanded();
+            DiagnosticLog.i(app, "FL_SHADE", "overlay recheck reason=" + reason
+                    + " collapsed=" + collapsed + " delayMs=" + OVERLAY_RESULT_RECHECK_MS);
+            done.onComplete(collapsed);
+        }, OVERLAY_RESULT_RECHECK_MS);
+    }
+
     public static boolean notificationShadeExpanded() {
         LensAccessibilityService service = LensAccessibilityService.get();
         Boolean live = probeNotificationShadeExpanded(service);
@@ -162,9 +188,8 @@ public final class FlSystemPanelController {
     private static void dismissSystemPanel(Context caller, String reason) {
         Context app = caller.getApplicationContext();
         MAIN.post(() -> {
-            // FloatLens targets API 31+, where broadcasting ACTION_CLOSE_SYSTEM_DIALOGS is a
-            // privileged/system-only compatibility path. Use the documented Accessibility global
-            // action first, then the existing shadow-activity and optional Root fallbacks.
+            // API 31+ does not permit ordinary apps to depend on ACTION_CLOSE_SYSTEM_DIALOGS.
+            // Prefer the documented Accessibility action, then shadow-activity and optional Root.
             LensAccessibilityService service = LensAccessibilityService.get();
             SystemActions actions = inspectSystemActions(service);
             boolean global = false;
@@ -279,21 +304,21 @@ public final class FlSystemPanelController {
         ROOT_IO.execute(() -> {
             int code = -1;
             String error = "";
-            Process p = null;
+            Process process = null;
             try {
-                p = new ProcessBuilder("su", "-c", "cmd statusbar collapse")
+                process = new ProcessBuilder("su", "-c", "cmd statusbar collapse")
                         .redirectErrorStream(true)
                         .start();
-                if (!p.waitFor(ROOT_COLLAPSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                    p.destroy();
-                    if (p.isAlive()) p.destroyForcibly();
+                if (!process.waitFor(ROOT_COLLAPSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    process.destroy();
+                    if (process.isAlive()) process.destroyForcibly();
                     throw new IllegalStateException("root shade collapse timeout");
                 }
-                code = p.exitValue();
+                code = process.exitValue();
             } catch (Throwable t) {
                 error = String.valueOf(t);
-                if (p != null && p.isAlive()) {
-                    try { p.destroyForcibly(); } catch (Throwable ignored) { }
+                if (process != null && process.isAlive()) {
+                    try { process.destroyForcibly(); } catch (Throwable ignored) { }
                 }
             }
             final int exitCode = code;
