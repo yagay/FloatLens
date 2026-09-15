@@ -20,17 +20,21 @@ import android.widget.Magnifier;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Frozen-screen Circle Select workspace with a fast per-session text index. */
+/** Frozen-screen Circle Select workspace with one absolute-screen text coordinate system. */
 public final class CircleSelectOverlay {
     private static WorkspaceView active;
 
-    public static synchronized boolean show(Context c, Bitmap screenshot, Runnable onClosed) {
+    public static synchronized boolean show(Context c, Bitmap screenshot,
+                                            CircleViewTextSnapshot viewSnapshot,
+                                            Runnable onClosed) {
         if (screenshot == null || screenshot.isRecycled()) return false;
         dismissActive("replace");
         Context app = c.getApplicationContext();
         FlOverlayWindowHost host = new FlOverlayWindowHost(app);
         Rect contentBounds = CircleSelectFrame.contentBounds(app);
-        Rect displayBounds = CircleSelectFrame.displayBounds(app);
+        Rect displayBounds = ScreenGeometry.displayBounds(app);
+        ScreenBitmapTransform transform = new ScreenBitmapTransform(
+                contentBounds, screenshot.getWidth(), screenshot.getHeight());
         boolean shadeExpanded = FlSystemPanelController.notificationShadeExpanded();
 
         int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
@@ -44,7 +48,8 @@ public final class CircleSelectOverlay {
         lp.x = contentBounds.left - displayBounds.left;
         lp.y = contentBounds.top - displayBounds.top;
 
-        WorkspaceView view = new WorkspaceView(app, host, lp, screenshot, onClosed, !shadeExpanded);
+        WorkspaceView view = new WorkspaceView(app, host, lp, screenshot,
+                viewSnapshot, transform, onClosed, !shadeExpanded);
         if (!host.add(view, lp, "circle_select")) {
             DiagnosticLog.i(app, "CIRCLE_SELECT", "overlay add failed");
             return false;
@@ -55,7 +60,8 @@ public final class CircleSelectOverlay {
         view.startRecognitionSession();
         DiagnosticLog.i(app, "CIRCLE_SELECT", "overlay shown "
                 + screenshot.getWidth() + "x" + screenshot.getHeight()
-                + " bounds=" + contentBounds.toShortString()
+                + " frame=" + contentBounds.toShortString()
+                + " coordinateSpace=absolute_screen"
                 + " accessibilityHost=" + host.isAccessibilityHosted());
         return true;
     }
@@ -92,6 +98,8 @@ public final class CircleSelectOverlay {
         private final FlOverlayWindowHost host;
         private final WindowManager.LayoutParams windowLayout;
         private final Bitmap screenshot;
+        private final CircleViewTextSnapshot viewSnapshot;
+        private final ScreenBitmapTransform transform;
         private final Runnable onClosed;
         private final CircleTextSelectionModel selection;
         private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
@@ -121,15 +129,20 @@ public final class CircleSelectOverlay {
         private Magnifier magnifier;
 
         WorkspaceView(Context c, FlOverlayWindowHost host, WindowManager.LayoutParams windowLayout,
-                      Bitmap screenshot, Runnable onClosed, boolean keyFocusEnabled) {
+                      Bitmap screenshot, CircleViewTextSnapshot viewSnapshot,
+                      ScreenBitmapTransform transform, Runnable onClosed,
+                      boolean keyFocusEnabled) {
             super(c);
             context = c;
             this.host = host;
             this.windowLayout = windowLayout;
             this.screenshot = screenshot;
+            this.viewSnapshot = viewSnapshot == null
+                    ? CircleViewTextSnapshot.empty(ScreenGeometry.displayBounds(c)) : viewSnapshot;
+            this.transform = transform;
             this.onClosed = onClosed;
             this.keyFocusEnabled = keyFocusEnabled;
-            selection = new CircleTextSelectionModel(screenshot.getWidth(), screenshot.getHeight());
+            selection = new CircleTextSelectionModel(transform);
             setClickable(true);
             setFocusable(true);
             setFocusableInTouchMode(true);
@@ -168,6 +181,7 @@ public final class CircleSelectOverlay {
 
         void startRecognitionSession() {
             recognitionSession = new CircleRecognitionSession(context, screenshot,
+                    viewSnapshot, transform,
                     new CircleRecognitionSession.Callback() {
                         @Override public void onUpdate(OcrDocument document,
                                                        CircleRecognitionSession.Stage stage,
@@ -200,6 +214,7 @@ public final class CircleSelectOverlay {
                             }
                             DiagnosticLog.i(context, "CIRCLE_SELECT", "index stage=" + stage
                                     + " chars=" + document.chars().size()
+                                    + " coordinateSpace=" + document.coordinateSpace()
                                     + " applied=" + (pendingDocument == null)
                                     + " ready=" + fastIndexReady);
                             invalidate();
@@ -215,7 +230,6 @@ public final class CircleSelectOverlay {
                             invalidate();
                         }
                     });
-            // Let the overlay attach and draw before walking the accessibility tree.
             post(() -> {
                 if (!closed && recognitionSession != null) recognitionSession.start();
             });
@@ -422,7 +436,7 @@ public final class CircleSelectOverlay {
                 invalidate();
                 return;
             }
-            Rect region = imageRectAroundTap(viewX, viewY);
+            Rect region = screenRectAroundTap(viewX, viewY);
             if (region == null || region.isEmpty()) {
                 invalidate();
                 return;
@@ -430,13 +444,13 @@ public final class CircleSelectOverlay {
             refinementTapX = viewX;
             refinementTapY = viewY;
             tapRefining = true;
-            DiagnosticLog.i(context, "CIRCLE_SELECT", "tap miss -> roi precise "
+            DiagnosticLog.i(context, "CIRCLE_SELECT", "tap miss -> roi precise screen="
                     + region.toShortString());
             invalidate();
             recognitionSession.refine(region);
         }
 
-        private Rect imageRectAroundTap(float viewX, float viewY) {
+        private Rect screenRectAroundTap(float viewX, float viewY) {
             if (getWidth() <= 0 || getHeight() <= 0) return null;
             float halfW = Math.min(240f, getWidth() * 0.20f);
             float halfH = Math.min(100f, getHeight() * 0.055f);
@@ -445,7 +459,8 @@ public final class CircleSelectOverlay {
                     Math.max(0f, viewY - halfH),
                     Math.min(getWidth(), viewX + halfW),
                     Math.min(getHeight(), viewY + halfH));
-            return imageRectFromView(viewRect);
+            Rect screen = transform.viewToScreen(viewRect, getWidth(), getHeight());
+            return screen.isEmpty() ? null : screen;
         }
 
         private void updateSelectionEndpoint(int hit) {
@@ -473,38 +488,34 @@ public final class CircleSelectOverlay {
         }
 
         private Rect selectionScreenRect() {
-            RectF union = selection.selectionViewBounds(getWidth(), getHeight());
-            if (union == null || union.isEmpty()) return null;
-            int[] loc = new int[2];
-            try { getLocationOnScreen(loc); } catch (Throwable ignored) { return null; }
-            return new Rect(Math.round(union.left) + loc[0], Math.round(union.top) + loc[1],
-                    Math.round(union.right) + loc[0], Math.round(union.bottom) + loc[1]);
-        }
-
-        private Rect imageRectFromView(RectF viewRect) {
-            if (viewRect == null || viewRect.isEmpty() || getWidth() <= 0 || getHeight() <= 0) return null;
-            float sx = screenshot.getWidth() / (float) getWidth();
-            float sy = screenshot.getHeight() / (float) getHeight();
-            int left = Math.max(0, Math.min(screenshot.getWidth() - 1, (int) Math.floor(viewRect.left * sx)));
-            int top = Math.max(0, Math.min(screenshot.getHeight() - 1, (int) Math.floor(viewRect.top * sy)));
-            int right = Math.max(left + 1, Math.min(screenshot.getWidth(), (int) Math.ceil(viewRect.right * sx)));
-            int bottom = Math.max(top + 1, Math.min(screenshot.getHeight(), (int) Math.ceil(viewRect.bottom * sy)));
-            return new Rect(left, top, right, bottom);
+            return selection.selectionScreenBounds();
         }
 
         private Rect screenRectFromView(RectF viewRect) {
-            int[] loc = new int[2];
-            try { getLocationOnScreen(loc); } catch (Throwable ignored) { loc[0] = loc[1] = 0; }
-            return new Rect(
-                    Math.round(viewRect.left) + loc[0],
-                    Math.round(viewRect.top) + loc[1],
-                    Math.round(viewRect.right) + loc[0],
-                    Math.round(viewRect.bottom) + loc[1]);
+            return transform.viewToScreen(viewRect, getWidth(), getHeight());
+        }
+
+        private Bitmap cropScreenRect(Rect screenRect) {
+            Rect bitmapRect = transform.screenToBitmap(screenRect);
+            if (bitmapRect.isEmpty()) return null;
+            try {
+                Bitmap crop = Bitmap.createBitmap(screenshot,
+                        bitmapRect.left, bitmapRect.top, bitmapRect.width(), bitmapRect.height());
+                if (crop == screenshot) {
+                    Bitmap copy = screenshot.copy(Bitmap.Config.ARGB_8888, false);
+                    return copy;
+                }
+                return crop;
+            } catch (Throwable t) {
+                DiagnosticLog.i(context, "CIRCLE_SELECT", "crop failed=" + safe(t));
+                return null;
+            }
         }
 
         private void finishSnappedCircle(RectF viewRect) {
             if (closed) return;
-            Bitmap crop = CircleCropGeometry.crop(screenshot, viewRect, getWidth(), getHeight());
+            Rect anchor = screenRectFromView(viewRect);
+            Bitmap crop = cropScreenRect(anchor);
             if (crop == null) {
                 circleResolving = false;
                 snappedCircleRect.setEmpty();
@@ -512,7 +523,6 @@ public final class CircleSelectOverlay {
                 return;
             }
 
-            Rect anchor = screenRectFromView(viewRect);
             DiagnosticLog.i(context, "CIRCLE_SELECT", "circle screenshot="
                     + crop.getWidth() + "x" + crop.getHeight()
                     + " anchor=" + anchor.toShortString());
