@@ -25,9 +25,13 @@ public final class FloatLensApp extends Application implements Application.Activ
 
     @Override public void onActivityResumed(Activity activity) {
         ThemeSettings.applySystemBars(activity);
+        AppSystemBarInsets.install(activity);
         install(activity);
         View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
-        if (decor != null) decor.post(() -> install(activity));
+        if (decor != null) decor.post(() -> {
+            AppSystemBarInsets.install(activity);
+            install(activity);
+        });
     }
 
     private void install(Activity activity) {
@@ -86,6 +90,7 @@ public final class FloatLensApp extends Application implements Application.Activ
 
     @Override public void onActivityCreated(Activity activity, Bundle state) {
         ThemeSettings.applySystemBars(activity);
+        AppSystemBarInsets.install(activity);
     }
     @Override public void onActivityStarted(Activity activity) { }
     @Override public void onActivityStopped(Activity activity) { }
