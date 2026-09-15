@@ -15,14 +15,9 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Immutable View-text snapshot captured before Circle Select installs its overlay.
- *
- * All geometry is kept in absolute screen coordinates. Screenshot bounds and bitmap resolution are
- * deliberately not part of this class, so changing screenshot policy can never move View text.
- *
- * Circle Select only indexes native node text. Accessibility semantic descriptions/hints/state are
- * useful metadata, but they often describe an entire card or compound control and therefore do not
- * provide trustworthy visible-text geometry. Those pixels are left to ML Kit in hybrid mode.
+ * Immutable visible View-text snapshot captured before Circle installs its overlay.
+ * Geometry is always absolute screen space. Only native getText() is selectable text; the shared
+ * AccessibilityNodeSemantics helper owns that definition for Direct, View picker and Circle.
  */
 final class CircleViewTextSnapshot {
     private static final int MAX_NODES = 4200;
@@ -47,7 +42,7 @@ final class CircleViewTextSnapshot {
         Context app = context.getApplicationContext();
         LensAccessibilityService service = LensAccessibilityService.get();
         Rect display = safeDisplayBounds(app, service);
-        if (service == null) return empty(display);
+        if (service == null || interrupted()) return empty(display);
 
         ArrayList<TextNode> out = new ArrayList<>();
         HashSet<String> seen = new HashSet<>();
@@ -58,13 +53,14 @@ final class CircleViewTextSnapshot {
             List<AccessibilityWindowInfo> windows = service.getWindows();
             if (windows != null && !windows.isEmpty()) {
                 for (AccessibilityWindowInfo window : windows) {
-                    if (window == null || visited[0] >= MAX_NODES || out.size() >= MAX_TEXT_NODES) break;
+                    if (interrupted() || window == null || visited[0] >= MAX_NODES
+                            || out.size() >= MAX_TEXT_NODES) break;
                     AccessibilityNodeInfo root = null;
                     try { root = window.getRoot(); } catch (Throwable ignored) {}
                     if (root == null || ownPackage(service, root)) continue;
                     collect(root, display, out, seen, visited, exact, 0);
                 }
-            } else {
+            } else if (!interrupted()) {
                 AccessibilityNodeInfo active = null;
                 try { active = service.getRootInActiveWindow(); } catch (Throwable ignored) {}
                 if (active != null && !ownPackage(service, active)) {
@@ -72,7 +68,15 @@ final class CircleViewTextSnapshot {
                 }
             }
         } catch (Throwable t) {
-            DiagnosticLog.i(service, "CIRCLE_VIEW_SNAPSHOT", "capture failed=" + safe(t));
+            if (!interrupted()) {
+                DiagnosticLog.i(service, "CIRCLE_VIEW_SNAPSHOT", "capture failed=" + safe(t));
+            }
+        }
+
+        if (interrupted()) {
+            DiagnosticLog.i(service, "CIRCLE_VIEW_SNAPSHOT", "capture interrupted visited="
+                    + visited[0] + " partial=" + out.size());
+            return empty(display);
         }
 
         List<TextNode> pruned = pruneDuplicateContainers(out);
@@ -147,7 +151,7 @@ final class CircleViewTextSnapshot {
                 Rect lineBounds = new Rect(node.bounds.left, top, node.bounds.right,
                         Math.max(top + 1, bottom));
                 ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>();
-                int visible = countVisible(row);
+                int visible = MlKitTextCore.countVisible(row);
                 int visibleIndex = 0;
                 int rowGroup = group++;
                 for (int cp : row.codePoints().toArray()) {
@@ -201,31 +205,26 @@ final class CircleViewTextSnapshot {
                                 int[] visited,
                                 int[] exact,
                                 int depth) {
-        if (node == null || depth > 80 || visited[0]++ >= MAX_NODES || out.size() >= MAX_TEXT_NODES) return;
+        if (interrupted() || node == null || depth > 80 || visited[0]++ >= MAX_NODES
+                || out.size() >= MAX_TEXT_NODES) return;
         try { if (!node.isVisibleToUser()) return; } catch (Throwable ignored) {}
 
-        Rect bounds = new Rect();
-        try { node.getBoundsInScreen(bounds); } catch (Throwable ignored) { return; }
-        if (bounds.isEmpty()) return;
-        Rect clipped = new Rect(bounds);
-        if (display != null && !display.isEmpty() && !clipped.intersect(display)) return;
+        Rect clipped = AccessibilityNodeSemantics.clippedBounds(node, display);
+        if (clipped.isEmpty()) return;
 
-        CharSequence nativeText = safeText(node);
-        if (nativeText != null) {
-            String text = nativeText.toString().trim();
-            if (!text.isEmpty()) {
-                String key = clipped.flattenToString() + "\u0000" + text;
-                if (seen.add(key)) {
-                    List<CharacterBox> characters = requestCharacterBoxes(node, nativeText.toString(), display);
-                    if (!characters.isEmpty()) exact[0]++;
-                    out.add(new TextNode(clipped, text, characters, depth));
-                }
+        String text = AccessibilityNodeSemantics.visibleText(node);
+        if (!text.isEmpty()) {
+            String key = clipped.flattenToString() + "\u0000" + text;
+            if (seen.add(key)) {
+                List<CharacterBox> characters = requestCharacterBoxes(node, text, display);
+                if (!characters.isEmpty()) exact[0]++;
+                out.add(new TextNode(clipped, text, characters, depth));
             }
         }
 
-        int children = Math.min(300, safeChildCount(node));
+        int children = Math.min(300, AccessibilityNodeSemantics.childCount(node));
         for (int i = 0; i < children; i++) {
-            if (visited[0] >= MAX_NODES || out.size() >= MAX_TEXT_NODES) return;
+            if (interrupted() || visited[0] >= MAX_NODES || out.size() >= MAX_TEXT_NODES) return;
             AccessibilityNodeInfo child = null;
             try { child = node.getChild(i); } catch (Throwable ignored) {}
             if (child != null) collect(child, display, out, seen, visited, exact, depth + 1);
@@ -235,7 +234,7 @@ final class CircleViewTextSnapshot {
     private static List<CharacterBox> requestCharacterBoxes(AccessibilityNodeInfo node,
                                                              String text,
                                                              Rect display) {
-        if (node == null || text == null || text.isEmpty()) return List.of();
+        if (interrupted() || node == null || text == null || text.isEmpty()) return List.of();
         try {
             List<String> available = node.getAvailableExtraData();
             if (available == null
@@ -250,12 +249,14 @@ final class CircleViewTextSnapshot {
             if (!node.refreshWithExtraData(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY, args)) {
                 return List.of();
             }
+            if (interrupted()) return List.of();
             Parcelable[] raw = node.getExtras().getParcelableArray(
                     AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY);
             if (raw == null || raw.length == 0) return List.of();
 
             ArrayList<CharacterBox> out = new ArrayList<>();
             for (int offset = 0; offset < length;) {
+                if (interrupted()) return List.of();
                 int cp = text.codePointAt(offset);
                 int cpLength = Character.charCount(cp);
                 RectF union = null;
@@ -287,9 +288,9 @@ final class CircleViewTextSnapshot {
         ArrayList<TextNode> kept = new ArrayList<>();
         for (TextNode candidate : sorted) {
             boolean duplicate = false;
-            String compact = compact(candidate.text);
+            String compact = MlKitTextCore.compact(candidate.text);
             for (TextNode existing : kept) {
-                if (!compact.equals(compact(existing.text))) continue;
+                if (!compact.equals(MlKitTextCore.compact(existing.text))) continue;
                 if (containsWithTolerance(candidate.bounds, existing.bounds)
                         || containsWithTolerance(existing.bounds, candidate.bounds)) {
                     duplicate = true;
@@ -341,35 +342,12 @@ final class CircleViewTextSnapshot {
                 && outer.bottom >= inner.bottom - tolerance;
     }
 
-    private static String compact(String value) {
-        if (value == null) return "";
-        return value.replaceAll("\\s+", "").trim();
-    }
-
-    private static int countVisible(String value) {
-        int count = 0;
-        if (value != null) {
-            for (int cp : value.codePoints().toArray()) if (!Character.isWhitespace(cp)) count++;
-        }
-        return count;
-    }
-
     private static boolean ownPackage(LensAccessibilityService service, AccessibilityNodeInfo node) {
-        return service != null && service.getPackageName().equals(safePackage(node));
+        return service != null && service.getPackageName().equals(
+                AccessibilityNodeSemantics.packageName(node));
     }
 
-    private static CharSequence safeText(AccessibilityNodeInfo n) {
-        try { return n.getText(); } catch (Throwable t) { return null; }
-    }
-
-    private static String safePackage(AccessibilityNodeInfo n) {
-        try { return n.getPackageName() == null ? "" : n.getPackageName().toString(); }
-        catch (Throwable t) { return ""; }
-    }
-
-    private static int safeChildCount(AccessibilityNodeInfo n) {
-        try { return n.getChildCount(); } catch (Throwable ignored) { return 0; }
-    }
+    private static boolean interrupted() { return Thread.currentThread().isInterrupted(); }
 
     private static String safe(Throwable t) {
         if (t == null) return "unknown";
