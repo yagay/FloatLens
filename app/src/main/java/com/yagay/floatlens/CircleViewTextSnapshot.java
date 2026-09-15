@@ -94,7 +94,8 @@ final class CircleViewTextSnapshot {
         int width = Math.max(1, displayBounds.width());
         int height = Math.max(1, displayBounds.height());
         if (nodes.isEmpty() || displayBounds.isEmpty()) {
-            return new OcrDocument("", List.of(), List.of(), "view-snapshot", 1f, 0d, width, height);
+            return OcrDocument.screenSpace("", List.of(), List.of(),
+                    "view-snapshot", 1f, 0d, width, height);
         }
 
         ArrayList<OcrDocument.Line> lines = new ArrayList<>();
@@ -174,18 +175,16 @@ final class CircleViewTextSnapshot {
         }
         double score = lines.size() * 8d;
         for (OcrDocument.Line line : lines) score += line.chars().size() * 2d;
-        return new OcrDocument(full.toString(), blocks, lines, "view-snapshot",
-                1f, score, width, height);
+        return OcrDocument.screenSpace(full.toString(), blocks, lines,
+                "view-snapshot", 1f, score, width, height);
     }
 
     private static Rect safeDisplayBounds(Context app, LensAccessibilityService service) {
+        Rect display = ScreenGeometry.displayBounds(app);
+        if (!display.isEmpty()) return display;
         try {
-            Rect display = CircleSelectFrame.displayBounds(app);
-            if (display != null && !display.isEmpty()) return display;
-        } catch (Throwable ignored) {}
-        try {
-            Rect display = service == null ? null : service.screenBounds();
-            if (display != null && !display.isEmpty()) return new Rect(display);
+            Rect fallback = service == null ? null : service.screenBounds();
+            if (fallback != null && !fallback.isEmpty()) return new Rect(fallback);
         } catch (Throwable ignored) {}
         return new Rect();
     }
