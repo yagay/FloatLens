@@ -8,8 +8,14 @@ public final class LsposedRuntimeConfig {
     public static final String K_SCHEMA_VERSION = "schema_version";
     public static final String K_ENHANCED_MODE = "enhanced_mode";
     public static final String K_LSPOSED_ENABLED = "lsposed_enabled";
+    public static final String K_SECURE_SCREENSHOT_ENABLED = "secure_screenshot_enabled";
+    public static final String K_SECURE_CAPTURE_ARMED_UNTIL = "secure_capture_armed_until_elapsed";
     public static final String K_UPDATED_AT = "updated_at";
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
+
+    /** Short lease: never leave secure capture armed after a stalled/aborted capture. */
+    public static final long SECURE_CAPTURE_LEASE_MS = 3_000L;
+    public static final long MAX_VALID_SECURE_CAPTURE_FUTURE_MS = 10_000L;
 
     private LsposedRuntimeConfig() {}
 
@@ -23,5 +29,26 @@ public final class LsposedRuntimeConfig {
         return isEnabled(
                 preferences.getBoolean(K_ENHANCED_MODE, false),
                 preferences.getBoolean(K_LSPOSED_ENABLED, false));
+    }
+
+    public static boolean isSecureCaptureActive(boolean enhancedMode,
+                                                boolean lsposedEnabled,
+                                                boolean secureScreenshotEnabled,
+                                                long armedUntilElapsed,
+                                                long nowElapsed) {
+        if (!isEnabled(enhancedMode, lsposedEnabled) || !secureScreenshotEnabled) return false;
+        long remaining = armedUntilElapsed - nowElapsed;
+        return remaining > 0L && remaining <= MAX_VALID_SECURE_CAPTURE_FUTURE_MS;
+    }
+
+    public static boolean isSecureCaptureActive(SharedPreferences preferences, long nowElapsed) {
+        if (preferences == null) return false;
+        if (preferences.getInt(K_SCHEMA_VERSION, 0) < SCHEMA_VERSION) return false;
+        return isSecureCaptureActive(
+                preferences.getBoolean(K_ENHANCED_MODE, false),
+                preferences.getBoolean(K_LSPOSED_ENABLED, false),
+                preferences.getBoolean(K_SECURE_SCREENSHOT_ENABLED, false),
+                preferences.getLong(K_SECURE_CAPTURE_ARMED_UNTIL, 0L),
+                nowElapsed);
     }
 }
