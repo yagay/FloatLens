@@ -6,7 +6,7 @@ import android.graphics.RectF;
 
 import java.util.List;
 
-/** Pure gesture classification and selection geometry for the new Google-style workflow. */
+/** Exact gesture classification and geometry for the Google-style workflow. */
 final class GoogleCircleSelection {
     enum Kind { TAP, CIRCLE, HIGHLIGHT, SCRIBBLE }
 
@@ -27,107 +27,98 @@ final class GoogleCircleSelection {
     }
 
     static Selection fromStroke(List<PointF> points, int bitmapWidth, int bitmapHeight,
-                                float tapSlopPx, float minShapePx,
-                                float tapHalfWidthPx, float tapHalfHeightPx) {
-        if (points == null || points.isEmpty()) return null;
+                                float tapSlopPx, float minShapePx) {
+        if (points == null || points.isEmpty() || bitmapWidth <= 0 || bitmapHeight <= 0) return null;
+
         PointF first = points.get(0);
-        float minX = first.x, maxX = first.x, minY = first.y, maxY = first.y;
+        float minX = first.x;
+        float maxX = first.x;
+        float minY = first.y;
+        float maxY = first.y;
         float length = 0f;
-        PointF prev = first;
-        for (PointF p : points) {
-            minX = Math.min(minX, p.x);
-            maxX = Math.max(maxX, p.x);
-            minY = Math.min(minY, p.y);
-            maxY = Math.max(maxY, p.y);
-            length += distance(prev, p);
-            prev = p;
+        PointF previous = first;
+
+        for (PointF point : points) {
+            minX = Math.min(minX, point.x);
+            maxX = Math.max(maxX, point.x);
+            minY = Math.min(minY, point.y);
+            maxY = Math.max(maxY, point.y);
+            length += distance(previous, point);
+            previous = point;
         }
+
         PointF last = points.get(points.size() - 1);
-        float width = Math.max(1f, maxX - minX);
-        float height = Math.max(1f, maxY - minY);
-        float diagonal = (float) Math.hypot(width, height);
+        float widthForClassification = Math.max(1f, maxX - minX);
+        float heightForClassification = Math.max(1f, maxY - minY);
+        float diagonal = (float) Math.hypot(widthForClassification, heightForClassification);
         float closure = distance(first, last);
-        float centreX = (minX + maxX) * 0.5f;
-        float centreY = (minY + maxY) * 0.5f;
-        PointF focus = new PointF(centreX, centreY);
+        PointF focus = new PointF((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
 
         boolean tap = length <= tapSlopPx * 1.8f
-                && width <= tapSlopPx * 1.25f
-                && height <= tapSlopPx * 1.25f;
+                && widthForClassification <= tapSlopPx * 1.25f
+                && heightForClassification <= tapSlopPx * 1.25f;
+
         Kind kind;
         RectF bounds;
         if (tap) {
             kind = Kind.TAP;
             focus = new PointF(last.x, last.y);
-            bounds = new RectF(last.x - tapHalfWidthPx, last.y - tapHalfHeightPx,
-                    last.x + tapHalfWidthPx, last.y + tapHalfHeightPx);
+            // A tap is a point selection. Do not synthesize a surrounding OCR rectangle.
+            bounds = new RectF(last.x, last.y, last.x + 1f, last.y + 1f);
         } else {
-            boolean highlight = width >= height * 2.35f && height <= minShapePx * 1.35f;
+            boolean highlight = widthForClassification >= heightForClassification * 2.35f
+                    && heightForClassification <= minShapePx * 1.35f;
             boolean closed = points.size() >= 8
-                    && width >= minShapePx && height >= minShapePx
+                    && widthForClassification >= minShapePx
+                    && heightForClassification >= minShapePx
                     && closure <= Math.max(minShapePx, diagonal * 0.34f);
+
             if (highlight) kind = Kind.HIGHLIGHT;
             else if (closed) kind = Kind.CIRCLE;
             else kind = Kind.SCRIBBLE;
 
-            float pad = switch (kind) {
-                case HIGHLIGHT -> Math.max(8f, minShapePx * 0.30f);
-                case CIRCLE -> Math.max(6f, minShapePx * 0.18f);
-                case SCRIBBLE -> Math.max(10f, minShapePx * 0.35f);
-                default -> 0f;
-            };
-            bounds = new RectF(minX - pad, minY - pad, maxX + pad, maxY + pad);
+            // Exact user stroke bounds. No gesture-specific padding is allowed here.
+            bounds = new RectF(minX, minY, maxX, maxY);
         }
 
-        clamp(bounds, bitmapWidth, bitmapHeight);
+        clampExact(bounds, bitmapWidth, bitmapHeight);
         if (bounds.width() < 1f || bounds.height() < 1f) return null;
         return new Selection(kind, bounds, focus);
     }
 
-    static Rect ensureMinAndClamp(RectF source, int bitmapWidth, int bitmapHeight, int minPixels) {
-        RectF r = new RectF(source);
-        float min = Math.max(32f, minPixels);
-        if (r.width() < min) {
-            float cx = r.centerX();
-            r.left = cx - min / 2f;
-            r.right = cx + min / 2f;
-        }
-        if (r.height() < min) {
-            float cy = r.centerY();
-            r.top = cy - min / 2f;
-            r.bottom = cy + min / 2f;
-        }
-        shiftIntoBounds(r, bitmapWidth, bitmapHeight);
-        clamp(r, bitmapWidth, bitmapHeight);
-        int left = Math.max(0, Math.min(bitmapWidth - 1, (int) Math.floor(r.left)));
-        int top = Math.max(0, Math.min(bitmapHeight - 1, (int) Math.floor(r.top)));
-        int right = Math.max(left + 1, Math.min(bitmapWidth, (int) Math.ceil(r.right)));
-        int bottom = Math.max(top + 1, Math.min(bitmapHeight, (int) Math.ceil(r.bottom)));
+    /** Convert a user selection to bitmap pixels without growing it to any minimum size. */
+    static Rect exactRectAndClamp(RectF source, int bitmapWidth, int bitmapHeight) {
+        if (source == null || bitmapWidth <= 0 || bitmapHeight <= 0) return new Rect();
+        RectF rect = new RectF(source);
+        clampExact(rect, bitmapWidth, bitmapHeight);
+
+        int left = Math.max(0, Math.min(bitmapWidth - 1, (int) Math.floor(rect.left)));
+        int top = Math.max(0, Math.min(bitmapHeight - 1, (int) Math.floor(rect.top)));
+        int right = Math.max(left + 1, Math.min(bitmapWidth, (int) Math.ceil(rect.right)));
+        int bottom = Math.max(top + 1, Math.min(bitmapHeight, (int) Math.ceil(rect.bottom)));
         return new Rect(left, top, right, bottom);
     }
 
-    static RectF clampEditable(RectF source, int bitmapWidth, int bitmapHeight, float minSizePx) {
-        RectF r = new RectF(source);
-        float min = Math.max(24f, minSizePx);
-        if (r.width() < min) r.right = r.left + min;
-        if (r.height() < min) r.bottom = r.top + min;
-        shiftIntoBounds(r, bitmapWidth, bitmapHeight);
-        clamp(r, bitmapWidth, bitmapHeight);
-        return r;
+    /** Keep an edited rectangle on-screen. No minimum selection size is imposed. */
+    static RectF clampEditable(RectF source, int bitmapWidth, int bitmapHeight) {
+        RectF rect = new RectF(source);
+        shiftIntoBounds(rect, bitmapWidth, bitmapHeight);
+        clampExact(rect, bitmapWidth, bitmapHeight);
+        return rect;
     }
 
-    private static void shiftIntoBounds(RectF r, int width, int height) {
-        if (r.left < 0) r.offset(-r.left, 0);
-        if (r.top < 0) r.offset(0, -r.top);
-        if (r.right > width) r.offset(width - r.right, 0);
-        if (r.bottom > height) r.offset(0, height - r.bottom);
+    private static void shiftIntoBounds(RectF rect, int width, int height) {
+        if (rect.left < 0f) rect.offset(-rect.left, 0f);
+        if (rect.top < 0f) rect.offset(0f, -rect.top);
+        if (rect.right > width) rect.offset(width - rect.right, 0f);
+        if (rect.bottom > height) rect.offset(0f, height - rect.bottom);
     }
 
-    private static void clamp(RectF r, int width, int height) {
-        r.left = Math.max(0f, Math.min(r.left, Math.max(0, width - 1)));
-        r.top = Math.max(0f, Math.min(r.top, Math.max(0, height - 1)));
-        r.right = Math.max(r.left + 1f, Math.min(r.right, Math.max(1, width)));
-        r.bottom = Math.max(r.top + 1f, Math.min(r.bottom, Math.max(1, height)));
+    private static void clampExact(RectF rect, int width, int height) {
+        rect.left = Math.max(0f, Math.min(rect.left, Math.max(0, width - 1)));
+        rect.top = Math.max(0f, Math.min(rect.top, Math.max(0, height - 1)));
+        rect.right = Math.max(rect.left + 1f, Math.min(rect.right, Math.max(1, width)));
+        rect.bottom = Math.max(rect.top + 1f, Math.min(rect.bottom, Math.max(1, height)));
     }
 
     private static float distance(PointF a, PointF b) {
