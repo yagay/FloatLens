@@ -22,10 +22,9 @@ import java.util.List;
 /**
  * The single visible result container for screenshot, View and OCR content.
  *
- * ResultActivity is only a transparent native-selection host. This DialogFragment owns the result
- * session, the one UnifiedResultPanel instance and the inline OCR lifecycle. The dialog window uses
- * WRAP_CONTENT height; only the content slots have maximum heights, so the fixed action row can
- * never be clipped by hand-computed window geometry.
+ * ResultActivity is only a transparent host. This fragment owns the current ResultSession and one
+ * teardown path so close button, outside-tap, Back/dismiss and destruction cannot leave recognition
+ * state behind.
  */
 public final class UnifiedResultDialogFragment extends DialogFragment {
     private static final long OCR_TIMEOUT_MS = 12_000L;
@@ -36,12 +35,14 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
     private boolean ocrRunning;
     private long ocrGeneration;
     private boolean closing;
+    private boolean workflowFinished;
 
     public UnifiedResultDialogFragment() {}
 
     void setInitialSession(ResultSession value, ResultReadyCoordinator.Ticket ticket) {
         session = value;
         readyTicket = ticket;
+        workflowFinished = false;
     }
 
     void showSession(ResultSession value, ResultReadyCoordinator.Ticket ticket) {
@@ -50,6 +51,8 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
         cancelCurrentOcr("new_session");
         session = value;
         readyTicket = ticket;
+        closing = false;
+        workflowFinished = false;
         if (panel != null) {
             panel.render(session);
             panel.setOcrRunning(false);
@@ -156,8 +159,6 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
         panel.root().postDelayed(() -> {
             if (!isAdded() || !ocrRunning || ocrGeneration != gen) return;
             OcrResultDispatcher.cancel(image);
-            // Cancelling only the dispatcher used to let the still-running OCR finish later and
-            // fall through to the default result surface. Invalidate the UI OCR lane as well.
             OcrEngine.invalidatePending(requireContext().getApplicationContext(),
                     "result_dialog_timeout");
             ocrRunning = false;
@@ -174,6 +175,7 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
         if (!isAdded() || session == null || panel == null || gen != ocrGeneration) return;
         ocrRunning = false;
         session.applyOcr(text, blocks);
+        workflowFinished = false;
         panel.render(session);
         panel.setOcrRunning(false);
         resizeDialog();
@@ -195,13 +197,21 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
         if (panel != null) panel.setOcrRunning(false);
     }
 
+    private void finishWorkflowState(String reason) {
+        if (workflowFinished) return;
+        workflowFinished = true;
+        if (session != null && session.notifyCircleOnClose()) {
+            FloatService service = FloatService.get();
+            if (service != null) service.onCircleFinished(reason);
+        }
+        DiagnosticLog.i(requireContext(), "RESULT_DIALOG", "workflow teardown reason=" + reason
+                + " mode=" + (session == null ? "none" : session.mode()));
+    }
+
     private void closeResult() {
         if (closing) return;
         closing = true;
-        if (session != null && session.notifyCircleOnClose()) {
-            FloatService f = FloatService.get();
-            if (f != null) f.onCircleFinished("result_closed");
-        }
+        finishWorkflowState("result_closed");
         dismissAllowingStateLoss();
         finishHost();
     }
@@ -213,12 +223,14 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
     }
 
     @Override public void onCancel(@NonNull android.content.DialogInterface dialog) {
-        super.onCancel(dialog);
+        finishWorkflowState("result_cancelled");
         closing = true;
+        super.onCancel(dialog);
         finishHost();
     }
 
     @Override public void onDismiss(@NonNull android.content.DialogInterface dialog) {
+        if (!closing) finishWorkflowState("result_dismissed");
         super.onDismiss(dialog);
         if (!closing) finishHost();
     }
@@ -233,6 +245,9 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
     }
 
     @Override public void onDestroy() {
+        if (session != null && session.notifyCircleOnClose()) {
+            try { finishWorkflowState("result_destroyed"); } catch (Throwable ignored) { }
+        }
         ResultSession owned = session;
         session = null;
         if (owned != null) {
