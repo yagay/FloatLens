@@ -31,6 +31,8 @@ final class CircleRecognitionSession {
         void onFailure(Stage stage, Throwable error, boolean fastReady);
     }
 
+    private static final int MLKIT_MIN_IMAGE_EDGE = 32;
+
     private final Context app;
     private final Bitmap screenshot;
     private final CircleViewTextSnapshot viewSnapshot;
@@ -119,10 +121,16 @@ final class CircleRecognitionSession {
         }
         if (closed || screenRegion == null || screenRegion.isEmpty()
                 || screenshot == null || screenshot.isRecycled() || index == null) return;
-        Rect region = new Rect(screenRegion);
-        if (!region.intersect(transform.screenFrame()) || region.isEmpty()) return;
-        Rect bitmapRegion = transform.screenToBitmap(region);
+        Rect requestedRegion = new Rect(screenRegion);
+        if (!requestedRegion.intersect(transform.screenFrame()) || requestedRegion.isEmpty()) return;
+        Rect requestedBitmap = transform.screenToBitmap(requestedRegion);
+        if (requestedBitmap.isEmpty()) return;
+
+        Rect bitmapRegion = ensureMinBitmapRegion(requestedBitmap,
+                screenshot.getWidth(), screenshot.getHeight(), MLKIT_MIN_IMAGE_EDGE);
         if (bitmapRegion.isEmpty()) return;
+        Rect region = transform.bitmapToScreen(bitmapRegion);
+        if (region.isEmpty()) return;
 
         Bitmap crop;
         try {
@@ -141,7 +149,9 @@ final class CircleRecognitionSession {
             roiRecognizer = recognizer;
             String engine = recognizerEngine("roi-mlkit");
             TextRecognizer finalRecognizer = recognizer;
-            DiagnosticLog.i(app, "CIRCLE_INDEX", "roi mlkit start screen=" + region.toShortString()
+            DiagnosticLog.i(app, "CIRCLE_INDEX", "roi mlkit start requested="
+                    + requestedRegion.toShortString()
+                    + " screen=" + region.toShortString()
                     + " bitmap=" + bitmapRegion.toShortString()
                     + " crop=" + crop.getWidth() + "x" + crop.getHeight()
                     + " ppocr=false");
@@ -231,6 +241,8 @@ final class CircleRecognitionSession {
                                     + " viewChars=" + index.viewDocument().chars().size()
                                     + " ocrChars=" + screenFast.chars().size()
                                     + " mergedChars=" + current.chars().size()
+                                    + " geometryRefined=" + index.lastGeometryRefinedChars()
+                                    + " approximateView=" + index.lastApproximateViewChars()
                                     + " coordinateSpace=" + screenFast.coordinateSpace()
                                     + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started)
                                     + " ppocr=false");
@@ -280,6 +292,24 @@ final class CircleRecognitionSession {
     private void closeRoiRecognizer(TextRecognizer recognizer) {
         if (roiRecognizer == recognizer) roiRecognizer = null;
         try { recognizer.close(); } catch (Throwable ignored) {}
+    }
+
+    private static Rect ensureMinBitmapRegion(Rect source, int bitmapWidth, int bitmapHeight,
+                                              int minEdge) {
+        if (source == null || source.isEmpty() || bitmapWidth <= 0 || bitmapHeight <= 0) {
+            return new Rect();
+        }
+        Rect bounds = new Rect(0, 0, bitmapWidth, bitmapHeight);
+        Rect clipped = new Rect(source);
+        if (!clipped.intersect(bounds) || clipped.isEmpty()) return new Rect();
+
+        int targetWidth = Math.min(bitmapWidth, Math.max(Math.max(1, minEdge), clipped.width()));
+        int targetHeight = Math.min(bitmapHeight, Math.max(Math.max(1, minEdge), clipped.height()));
+        int left = clipped.centerX() - targetWidth / 2;
+        int top = clipped.centerY() - targetHeight / 2;
+        left = Math.max(0, Math.min(left, bitmapWidth - targetWidth));
+        top = Math.max(0, Math.min(top, bitmapHeight - targetHeight));
+        return new Rect(left, top, left + targetWidth, top + targetHeight);
     }
 
     /** Build symbol/element geometry in bitmap space before one-time screen normalization. */
