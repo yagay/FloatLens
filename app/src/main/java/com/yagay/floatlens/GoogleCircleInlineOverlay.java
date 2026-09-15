@@ -235,7 +235,7 @@ final class GoogleCircleInlineOverlay {
             canvas.drawRect(0, 0, getWidth(), Math.max(0, r.top), shadePaint);
             canvas.drawRect(0, Math.min(getHeight(), r.bottom), getWidth(), getHeight(), shadePaint);
             canvas.drawRect(0, Math.max(0, r.top), Math.max(0, r.left),
-                    Math.min(getWidth(), r.left), Math.min(getHeight(), r.bottom), shadePaint);
+                    Math.min(getHeight(), r.bottom), shadePaint);
             canvas.drawRect(Math.min(getWidth(), r.right), Math.max(0, r.top),
                     getWidth(), Math.min(getHeight(), r.bottom), shadePaint);
         }
