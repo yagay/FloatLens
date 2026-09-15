@@ -21,11 +21,14 @@ import java.util.Set;
 /**
  * Refines OCR character geometry without changing the recognizer's text.
  *
- * PP/Rapid style CTC recognizers are good at reading tiny text but their character boxes are
- * reconstructed from the recognition time axis. ML Kit exposes symbol geometry directly. For a
- * small ROI we therefore upscale the image, run one ML Kit pass, map symbol boxes back to source
- * coordinates, then transfer only the geometry onto the PP text. If ML Kit still cannot see the
- * text, the original PP document is returned unchanged.
+ * PP/Rapid style CTC recognizers are good at reading tiny text but their detector/CTC boxes can be
+ * substantially larger than the visible glyphs. ML Kit exposes tighter symbol geometry. For a small
+ * ROI we upscale the image, run one ML Kit pass, map symbol boxes back to source coordinates, then
+ * transfer only the geometry onto the PP text.
+ *
+ * A partially matched line must not mix tight ML boxes with oversized PP fallback boxes. Missing
+ * character slots are completed from the matched ML line geometry, preserving PP text/order while
+ * keeping the selectable rectangles close to the visual glyph row.
  */
 final class OcrGeometryRefiner {
     private static final int MAX_SOURCE_AREA = 650_000;
@@ -65,7 +68,8 @@ final class OcrGeometryRefiner {
                     + " source=" + source.getWidth() + "x" + source.getHeight()
                     + " scaled=" + scaledWidth + "x" + scaledHeight
                     + " scale=" + String.format(Locale.ROOT, "%.2f", scale)
-                    + " ppChars=" + pp.chars().size());
+                    + " ppChars=" + pp.chars().size()
+                    + " ppMedianH=" + medianCharHeight(pp));
 
             Text result = Tasks.await(recognizer.process(InputImage.fromBitmap(scaled, 0)));
             OcrDocument mlScaled = mlKitDocument(result, engine, scaledWidth, scaledHeight);
@@ -73,7 +77,11 @@ final class OcrGeometryRefiner {
             RefineResult refined = transferGeometry(pp, ml);
             DiagnosticLog.i(context, "PPOCR_GEOMETRY", "ready mlChars=" + ml.chars().size()
                     + " refinedChars=" + refined.refinedChars
+                    + " completedChars=" + refined.completedChars
                     + " ppChars=" + pp.chars().size()
+                    + " medianH(pp/ml/final)=" + medianCharHeight(pp)
+                    + "/" + medianCharHeight(ml)
+                    + "/" + medianCharHeight(refined.document)
                     + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
             return refined.refinedChars > 0 ? refined.document : pp;
         } catch (Throwable t) {
@@ -176,9 +184,10 @@ final class OcrGeometryRefiner {
     }
 
     private static RefineResult transferGeometry(OcrDocument pp, OcrDocument ml) {
-        if (ml == null || ml.lines().isEmpty()) return new RefineResult(pp, 0);
+        if (ml == null || ml.lines().isEmpty()) return new RefineResult(pp, 0, 0);
         ArrayList<OcrDocument.Line> output = new ArrayList<>();
         int refinedCount = 0;
+        int completedCount = 0;
         int order = 0;
         boolean[] usedMl = new boolean[ml.lines().size()];
 
@@ -187,9 +196,23 @@ final class OcrGeometryRefiner {
             int best = bestMlLine(pLine, ml.lines(), usedMl);
             List<OcrDocument.CharUnit> geometry = null;
             if (best >= 0) {
-                geometry = alignGeometry(pLine.chars(), ml.lines().get(best).chars(),
-                        lineSpatialScore(pLine.bounds(), ml.lines().get(best).bounds()));
-                if (geometry != null) usedMl[best] = true;
+                OcrDocument.Line mLine = ml.lines().get(best);
+                float spatial = lineSpatialScore(pLine.bounds(), mLine.bounds());
+                float similarity = textSimilarity(compact(pLine.text()), compact(mLine.text()));
+                geometry = alignGeometry(pLine.chars(), mLine.chars(), spatial);
+                if (geometry != null) {
+                    CompletionResult completed = completeMissingGeometry(
+                            pLine.chars(), geometry, pLine.bounds(), mLine);
+                    geometry = completed.geometry;
+                    completedCount += completed.completedChars;
+                    usedMl[best] = true;
+                } else if (similarity >= 0.55f || (similarity >= 0.30f && spatial >= 0.55f)) {
+                    // The logical line matches but character-level text alignment did not. Project
+                    // PP ordering into the ML visual line instead of keeping the oversized PP boxes.
+                    geometry = projectLineGeometry(pLine.chars(), pLine.bounds(), mLine);
+                    completedCount += countNonNull(geometry);
+                    usedMl[best] = geometry != null;
+                }
             }
 
             ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>();
@@ -207,7 +230,146 @@ final class OcrGeometryRefiner {
         }
         OcrDocument out = documentFromLines(output, pp.engine() + "+mlkit-geometry",
                 pp.confidence(), pp.imageWidth(), pp.imageHeight());
-        return new RefineResult(out, refinedCount);
+        return new RefineResult(out, refinedCount, completedCount);
+    }
+
+    /**
+     * Fill LCS gaps using the matched ML line. Exact ML symbol boxes stay untouched. Missing slots
+     * are interpolated between their nearest ML neighbours, so they share the visual row height and
+     * no longer fall back to PP detector boxes.
+     */
+    private static CompletionResult completeMissingGeometry(List<OcrDocument.CharUnit> pp,
+                                                              List<OcrDocument.CharUnit> aligned,
+                                                              Rect ppLineBounds,
+                                                              OcrDocument.Line mlLine) {
+        if (pp == null || aligned == null || pp.isEmpty() || aligned.size() != pp.size()
+                || mlLine == null || mlLine.chars().isEmpty()) {
+            return new CompletionResult(aligned, 0);
+        }
+        ArrayList<OcrDocument.CharUnit> out = new ArrayList<>(aligned);
+        Rect band = tightLineBand(mlLine);
+        if (band.isEmpty()) return new CompletionResult(out, 0);
+
+        int completed = 0;
+        int i = 0;
+        while (i < out.size()) {
+            if (out.get(i) != null) {
+                i++;
+                continue;
+            }
+            int start = i;
+            while (i < out.size() && out.get(i) == null) i++;
+            int end = i - 1;
+            int prev = start - 1;
+            int next = i < out.size() ? i : -1;
+
+            Rect prevBox = prev >= 0 && out.get(prev) != null ? out.get(prev).bounds() : null;
+            Rect nextBox = next >= 0 && out.get(next) != null ? out.get(next).bounds() : null;
+            int left = prevBox == null ? band.left : prevBox.right;
+            int right = nextBox == null ? band.right : nextBox.left;
+            int count = end - start + 1;
+
+            if (right <= left || right - left < count) {
+                // Neighbour boxes overlap or leave too little space. Project each PP horizontal slot
+                // into the tight ML line band instead of inventing a large rectangle.
+                for (int index = start; index <= end; index++) {
+                    Rect projected = projectRect(pp.get(index).bounds(), ppLineBounds, band);
+                    if (!projected.isEmpty()) {
+                        out.set(index, geometryUnit(pp.get(index), projected));
+                        completed++;
+                    }
+                }
+                continue;
+            }
+
+            int top;
+            int bottom;
+            if (prevBox != null && nextBox != null) {
+                top = Math.max(band.top, Math.min(prevBox.top, nextBox.top));
+                bottom = Math.min(band.bottom, Math.max(prevBox.bottom, nextBox.bottom));
+            } else if (prevBox != null) {
+                top = Math.max(band.top, prevBox.top);
+                bottom = Math.min(band.bottom, prevBox.bottom);
+            } else if (nextBox != null) {
+                top = Math.max(band.top, nextBox.top);
+                bottom = Math.min(band.bottom, nextBox.bottom);
+            } else {
+                top = band.top;
+                bottom = band.bottom;
+            }
+            if (bottom <= top) {
+                top = band.top;
+                bottom = band.bottom;
+            }
+
+            for (int index = start; index <= end; index++) {
+                int slot = index - start;
+                int x1 = left + Math.round((right - left) * slot / (float) count);
+                int x2 = left + Math.round((right - left) * (slot + 1) / (float) count);
+                x1 = Math.max(band.left, Math.min(band.right - 1, x1));
+                x2 = Math.max(x1 + 1, Math.min(band.right, x2));
+                Rect filled = new Rect(x1, top, x2, Math.max(top + 1, bottom));
+                out.set(index, geometryUnit(pp.get(index), filled));
+                completed++;
+            }
+        }
+        return new CompletionResult(out, completed);
+    }
+
+    /** Project PP character ordering into the matched ML visual line. */
+    private static List<OcrDocument.CharUnit> projectLineGeometry(List<OcrDocument.CharUnit> pp,
+                                                                   Rect ppLineBounds,
+                                                                   OcrDocument.Line mlLine) {
+        if (pp == null || pp.isEmpty() || ppLineBounds == null || ppLineBounds.isEmpty()
+                || mlLine == null) return null;
+        Rect band = tightLineBand(mlLine);
+        if (band.isEmpty()) return null;
+        ArrayList<OcrDocument.CharUnit> out = new ArrayList<>();
+        for (OcrDocument.CharUnit c : pp) {
+            Rect projected = projectRect(c.bounds(), ppLineBounds, band);
+            out.add(projected.isEmpty() ? null : geometryUnit(c, projected));
+        }
+        return out;
+    }
+
+    private static Rect projectRect(Rect source, Rect sourceLine, Rect targetBand) {
+        if (source == null || source.isEmpty() || sourceLine == null || sourceLine.isEmpty()
+                || targetBand == null || targetBand.isEmpty()) return new Rect();
+        float leftRatio = (source.left - sourceLine.left) / (float) Math.max(1, sourceLine.width());
+        float rightRatio = (source.right - sourceLine.left) / (float) Math.max(1, sourceLine.width());
+        leftRatio = clamp01(leftRatio);
+        rightRatio = clamp01(rightRatio);
+        int left = targetBand.left + Math.round(targetBand.width() * leftRatio);
+        int right = targetBand.left + Math.round(targetBand.width() * rightRatio);
+        left = Math.max(targetBand.left, Math.min(targetBand.right - 1, left));
+        right = Math.max(left + 1, Math.min(targetBand.right, right));
+        return new Rect(left, targetBand.top, right, targetBand.bottom);
+    }
+
+    private static Rect tightLineBand(OcrDocument.Line line) {
+        if (line == null) return new Rect();
+        Rect fromChars = union(line.chars(), new Rect());
+        if (!fromChars.isEmpty()) return fromChars;
+        return line.bounds();
+    }
+
+    private static OcrDocument.CharUnit geometryUnit(OcrDocument.CharUnit source, Rect bounds) {
+        return new OcrDocument.CharUnit(source == null ? "" : source.text(), bounds,
+                source == null ? 0.62f : source.confidence(),
+                source == null ? 0 : source.line(),
+                source == null ? 0 : source.group(),
+                source == null ? 0 : source.order());
+    }
+
+    private static int countNonNull(List<OcrDocument.CharUnit> source) {
+        if (source == null) return 0;
+        int count = 0;
+        for (OcrDocument.CharUnit c : source) if (c != null && !c.bounds().isEmpty()) count++;
+        return count;
+    }
+
+    private static float clamp01(float value) {
+        return Math.max(0f, Math.min(1f, value));
     }
 
     private static int bestMlLine(OcrDocument.Line pp, List<OcrDocument.Line> ml, boolean[] used) {
@@ -329,6 +491,18 @@ final class OcrGeometryRefiner {
         return index;
     }
 
+    private static int medianCharHeight(OcrDocument document) {
+        if (document == null || document.chars().isEmpty()) return 0;
+        ArrayList<Integer> heights = new ArrayList<>();
+        for (OcrDocument.CharUnit c : document.chars()) {
+            Rect r = c.bounds();
+            if (!r.isEmpty()) heights.add(r.height());
+        }
+        if (heights.isEmpty()) return 0;
+        heights.sort(Integer::compareTo);
+        return heights.get(heights.size() / 2);
+    }
+
     private static String compactChars(List<OcrDocument.CharUnit> chars) {
         StringBuilder out = new StringBuilder();
         for (OcrDocument.CharUnit c : chars) out.append(compact(c.text()));
@@ -376,12 +550,23 @@ final class OcrGeometryRefiner {
         return m == null || m.isBlank() ? t.getClass().getSimpleName() : m;
     }
 
+    private static final class CompletionResult {
+        final List<OcrDocument.CharUnit> geometry;
+        final int completedChars;
+        CompletionResult(List<OcrDocument.CharUnit> geometry, int completedChars) {
+            this.geometry = geometry;
+            this.completedChars = completedChars;
+        }
+    }
+
     private static final class RefineResult {
         final OcrDocument document;
         final int refinedChars;
-        RefineResult(OcrDocument document, int refinedChars) {
+        final int completedChars;
+        RefineResult(OcrDocument document, int refinedChars, int completedChars) {
             this.document = document;
             this.refinedChars = refinedChars;
+            this.completedChars = completedChars;
         }
     }
 }
