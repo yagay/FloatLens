@@ -26,6 +26,11 @@ final class SettingsCapturePage {
                 FloatSettings.K_ACCESSIBILITY_SCREENSHOT, fs.accessibilityScreenshot());
         AppUi.addSection(root, capture);
 
+        AppUi.Section circleBorder = AppUi.section(activity, "圈画激活提示",
+                "边框圆角会根据当前设备和屏幕方向自动适配；它只用于提示激活状态，FloatLens 截图时会自动隐藏。" );
+        CircleBorderSettingsUi.add(activity, fs, circleBorder.body);
+        AppUi.addSection(root, circleBorder);
+
         AppUi.Section result = AppUi.section(activity, "OCR 结果", null);
         ui.check(result.body, "显示原选区图片", null,
                 FloatSettings.K_OCR_SHOW_IMAGE, fs.ocrShowImage());
