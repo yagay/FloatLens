@@ -7,9 +7,12 @@ import android.graphics.Rect;
 import java.util.List;
 
 /**
- * Resolves selected content without ever enlarging the user's selection.
- * Native screen text is used when it fits the exact selection; OCR is a fallback only when the
- * exact region is already large enough for the OCR backend. Image output also keeps exact bounds.
+ * Resolve Google-style selection gestures without enlarging user geometry.
+ *
+ * Gesture roles are intentionally different:
+ * - CIRCLE / SCRIBBLE: exact visual screenshot selection. Accessibility text must never steal it.
+ * - HIGHLIGHT: exact-region text selection, then OCR, then exact screenshot fallback.
+ * - TAP: semantic point selection (native text/image) without synthesizing an OCR rectangle.
  */
 final class GoogleCircleResultCoordinator {
     private static final int OCR_MIN_SIDE_PX = 32;
@@ -59,48 +62,59 @@ final class GoogleCircleResultCoordinator {
         }
 
         Rect exactSelection = selectionScreenBounds(frame, selection);
-        GoogleCircleContentSnapshot.Target target = content == null
-                ? GoogleCircleContentSnapshot.Target.none(exactSelection)
-                : content.resolve(frame, selection);
-
         DiagnosticLog.i(app, "G_CIRCLE_TARGET", "gesture=" + selection.kind
-                + " target=" + target.kind
-                + " targetAnchor=" + target.screenBounds.toShortString()
                 + " exactSelection=" + exactSelection.toShortString()
-                + " textChars=" + target.text.length()
                 + " autoExpand=false");
 
-        if (target.hasText()) {
-            boolean tap = selection.kind == GoogleCircleSelection.Kind.TAP;
-            boolean targetInsideExactSelection = containsRect(exactSelection, target.screenBounds);
-            if (tap || targetInsideExactSelection) {
-                Rect anchor = tap ? target.screenBounds : exactSelection;
-                callback.onResolved(new Resolution(Kind.NATIVE_TEXT, null, anchor,
-                        target.text, List.of(target.text), null, "accessibility_text_exact"));
-                return;
-            }
-            // Do not promote a partially intersecting large text node to the whole node.
-            DiagnosticLog.i(app, "G_CIRCLE_TARGET", "native text rejected because target exceeds exact selection");
-        }
-
-        if (target.kind == GoogleCircleContentSnapshot.Kind.IMAGE
-                && selection.kind != GoogleCircleSelection.Kind.HIGHLIGHT) {
-            Rect imageBounds = selection.kind == GoogleCircleSelection.Kind.TAP
-                    ? target.screenBounds : exactSelection;
-            resolveImage(app, frame, imageBounds, callback, "accessibility_image_exact");
+        // Circle and scribble are visual selections. Never let an Accessibility TextView inside the
+        // region turn the user's screenshot selection into a text result.
+        if (selection.kind == GoogleCircleSelection.Kind.CIRCLE
+                || selection.kind == GoogleCircleSelection.Kind.SCRIBBLE) {
+            resolveImage(app, frame, exactSelection, callback,
+                    selection.kind == GoogleCircleSelection.Kind.CIRCLE
+                            ? "circle_screenshot_exact" : "scribble_screenshot_exact");
             return;
         }
 
-        Rect fallbackScreen = selection.kind == GoogleCircleSelection.Kind.TAP
-                && target.kind == GoogleCircleContentSnapshot.Kind.IMAGE
-                ? target.screenBounds : exactSelection;
-        recognizeVisualText(app, frame, selection, fallbackScreen, callback);
+        GoogleCircleContentSnapshot.Target target = content == null
+                ? GoogleCircleContentSnapshot.Target.none(exactSelection)
+                : content.resolve(frame, selection);
+        DiagnosticLog.i(app, "G_CIRCLE_TARGET", "gesture=" + selection.kind
+                + " semanticTarget=" + target.kind
+                + " targetAnchor=" + target.screenBounds.toShortString()
+                + " textChars=" + target.text.length());
+
+        if (selection.kind == GoogleCircleSelection.Kind.TAP) {
+            if (target.hasText()) {
+                callback.onResolved(new Resolution(Kind.NATIVE_TEXT, null, target.screenBounds,
+                        target.text, List.of(target.text), null, "tap_accessibility_text"));
+                return;
+            }
+            if (target.kind == GoogleCircleContentSnapshot.Kind.IMAGE
+                    && target.screenBounds != null && !target.screenBounds.isEmpty()) {
+                resolveImage(app, frame, target.screenBounds, callback, "tap_accessibility_image");
+                return;
+            }
+            callback.onResolved(new Resolution(Kind.IMAGE, null, exactSelection,
+                    "", List.of(), null, "tap_no_semantic_target"));
+            return;
+        }
+
+        // HIGHLIGHT is text-biased. Native text is accepted only when the whole text node fits
+        // inside the exact highlight. Otherwise OCR runs strictly on the exact user region.
+        if (target.hasText() && containsRect(exactSelection, target.screenBounds)) {
+            callback.onResolved(new Resolution(Kind.NATIVE_TEXT, null, target.screenBounds,
+                    target.text, List.of(target.text), null, "highlight_accessibility_text"));
+            return;
+        }
+
+        recognizeHighlightText(app, frame, selection, exactSelection, callback);
     }
 
-    private static void recognizeVisualText(Context app, GoogleCircleCapture.Frame frame,
-                                             GoogleCircleSelection.Selection selection,
-                                             Rect fallbackScreen,
-                                             Callback callback) {
+    private static void recognizeHighlightText(Context app, GoogleCircleCapture.Frame frame,
+                                               GoogleCircleSelection.Selection selection,
+                                               Rect exactSelection,
+                                               Callback callback) {
         Bitmap source = frame.bitmap;
         Rect roi = GoogleCircleSelection.exactRectAndClamp(selection.bounds,
                 source.getWidth(), source.getHeight());
@@ -113,77 +127,82 @@ final class GoogleCircleResultCoordinator {
         Rect screenAnchor = frame.bitmapRectToScreen(roi);
         if (roi.width() < OCR_MIN_SIDE_PX || roi.height() < OCR_MIN_SIDE_PX) {
             DiagnosticLog.i(app, "G_CIRCLE_ROI", "gesture=" + selection.kind
-                    + " purpose=content_ocr skipped=too_small"
+                    + " purpose=highlight_ocr skipped=too_small"
                     + " bitmap=" + roi.toShortString()
-                    + " screen=" + screenAnchor.toShortString()
                     + " autoExpand=false");
-            Rect anchor = fallbackScreen == null || fallbackScreen.isEmpty()
-                    ? screenAnchor : fallbackScreen;
-            callback.onResolved(new Resolution(Kind.IMAGE, null, anchor,
-                    "", List.of(), null, "ocr_skipped_small_exact"));
+            resolveImage(app, frame, exactSelection, callback, "highlight_small_screenshot_exact");
             return;
         }
 
-        Bitmap crop;
+        final Bitmap crop;
         try {
             crop = Bitmap.createBitmap(source, roi.left, roi.top, roi.width(), roi.height());
         } catch (Throwable t) {
             callback.onResolved(new Resolution(Kind.IMAGE, null, screenAnchor,
-                    "", List.of(), t, "crop_failed_exact"));
+                    "", List.of(), t, "highlight_crop_failed_exact"));
             return;
         }
 
         DiagnosticLog.i(app, "G_CIRCLE_ROI", "gesture=" + selection.kind
-                + " purpose=content_ocr bitmap=" + roi.toShortString()
+                + " purpose=highlight_ocr bitmap=" + roi.toShortString()
                 + " crop=" + crop.getWidth() + "x" + crop.getHeight()
-                + " screen=" + screenAnchor.toShortString()
                 + " autoExpand=false");
 
         OcrEngine.recognizeDocument(app, crop, new OcrEngine.DocumentCallback() {
             @Override public void onSuccess(OcrDocument document) {
-                String text = resolveText(selection, roi, document);
+                String text = document == null ? "" : document.fullText();
                 if (!text.isBlank()) {
-                    List<String> blocks = selection.kind == GoogleCircleSelection.Kind.TAP
-                            ? List.of(text) : document.blocks();
-                    DiagnosticLog.i(app, "G_CIRCLE_OCR", "gesture=" + selection.kind
-                            + " resolved=text chars=" + text.length()
-                            + " engine=" + document.engine()
+                    Rect textAnchor = ocrTextAnchor(frame, roi, document, screenAnchor);
+                    List<String> blocks = document.blocks();
+                    DiagnosticLog.i(app, "G_CIRCLE_OCR", "gesture=HIGHLIGHT resolved=text"
+                            + " chars=" + text.length()
+                            + " anchor=" + textAnchor.toShortString()
                             + " autoExpand=false");
                     recycle(crop);
-                    callback.onResolved(new Resolution(Kind.OCR_TEXT, null, screenAnchor,
-                            text, blocks, null, "ocr_text_exact"));
+                    callback.onResolved(new Resolution(Kind.OCR_TEXT, null, textAnchor,
+                            text, blocks, null, "highlight_ocr_text_exact"));
                     return;
                 }
 
-                DiagnosticLog.i(app, "G_CIRCLE_OCR", "gesture=" + selection.kind
-                        + " resolved=image reason=no_text engine=" + document.engine()
-                        + " autoExpand=false");
-                Rect imageAnchor = fallbackScreen == null || fallbackScreen.isEmpty()
-                        ? screenAnchor : fallbackScreen;
-                if (!imageAnchor.equals(screenAnchor)) {
-                    recycle(crop);
-                    resolveImage(app, frame, imageAnchor, callback, "visual_no_text_exact");
-                } else {
-                    callback.onResolved(new Resolution(Kind.IMAGE, crop, screenAnchor,
-                            "", List.of(), null, "visual_no_text_exact"));
-                }
+                DiagnosticLog.i(app, "G_CIRCLE_OCR",
+                        "gesture=HIGHLIGHT resolved=screenshot reason=no_text autoExpand=false");
+                callback.onResolved(new Resolution(Kind.IMAGE, crop, screenAnchor,
+                        "", List.of(), null, "highlight_no_text_screenshot_exact"));
             }
 
             @Override public void onFailure(Throwable error) {
-                DiagnosticLog.i(app, "G_CIRCLE_OCR", "gesture=" + selection.kind
-                        + " failed error=" + ScreenCaptureBackend.safeMessage(error)
-                        + " autoExpand=false");
-                Rect imageAnchor = fallbackScreen == null || fallbackScreen.isEmpty()
-                        ? screenAnchor : fallbackScreen;
-                if (!imageAnchor.equals(screenAnchor)) {
-                    recycle(crop);
-                    resolveImage(app, frame, imageAnchor, callback, "ocr_failed_image_exact");
-                } else {
-                    callback.onResolved(new Resolution(Kind.IMAGE, crop, screenAnchor,
-                            "", List.of(), error, "ocr_failed_image_exact"));
-                }
+                DiagnosticLog.i(app, "G_CIRCLE_OCR", "gesture=HIGHLIGHT failed="
+                        + ScreenCaptureBackend.safeMessage(error)
+                        + " fallback=screenshot autoExpand=false");
+                callback.onResolved(new Resolution(Kind.IMAGE, crop, screenAnchor,
+                        "", List.of(), error, "highlight_ocr_failed_screenshot_exact"));
             }
         });
+    }
+
+    private static Rect ocrTextAnchor(GoogleCircleCapture.Frame frame, Rect roi,
+                                      OcrDocument document, Rect fallback) {
+        if (document == null || document.lines().isEmpty()) return new Rect(fallback);
+        Rect union = new Rect();
+        boolean has = false;
+        for (OcrDocument.Line line : document.lines()) {
+            Rect b = line.bounds();
+            if (b == null || b.isEmpty()) continue;
+            Rect bitmapLine = new Rect(
+                    roi.left + b.left,
+                    roi.top + b.top,
+                    roi.left + b.right,
+                    roi.top + b.bottom);
+            if (!has) {
+                union.set(bitmapLine);
+                has = true;
+            } else {
+                union.union(bitmapLine);
+            }
+        }
+        if (!has) return new Rect(fallback);
+        union.intersect(new Rect(0, 0, frame.bitmap.getWidth(), frame.bitmap.getHeight()));
+        return union.isEmpty() ? new Rect(fallback) : frame.bitmapRectToScreen(union);
     }
 
     private static void resolveImage(Context app, GoogleCircleCapture.Frame frame, Rect screenBounds,
@@ -211,35 +230,8 @@ final class GoogleCircleResultCoordinator {
         }
     }
 
-    private static String resolveText(GoogleCircleSelection.Selection selection,
-                                      Rect roi, OcrDocument document) {
-        if (document == null) return "";
-        if (selection.kind != GoogleCircleSelection.Kind.TAP || document.lines().isEmpty()) {
-            return document.fullText();
-        }
-
-        float localX = selection.focus.x - roi.left;
-        float localY = selection.focus.y - roi.top;
-        OcrDocument.Line best = null;
-        float bestDistance = Float.MAX_VALUE;
-        for (OcrDocument.Line line : document.lines()) {
-            Rect bounds = line.bounds();
-            float dx = localX < bounds.left ? bounds.left - localX
-                    : (localX > bounds.right ? localX - bounds.right : 0f);
-            float dy = localY < bounds.top ? bounds.top - localY
-                    : (localY > bounds.bottom ? localY - bounds.bottom : 0f);
-            float distance = (float) Math.hypot(dx, dy);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                best = line;
-            }
-        }
-        float acceptable = Math.max(1f, Math.min(roi.width(), roi.height()) * 0.30f);
-        return best != null && bestDistance <= acceptable ? best.text() : "";
-    }
-
     private static Rect selectionScreenBounds(GoogleCircleCapture.Frame frame,
-                                              GoogleCircleSelection.Selection selection) {
+                                               GoogleCircleSelection.Selection selection) {
         Rect roi = GoogleCircleSelection.exactRectAndClamp(selection.bounds,
                 frame.bitmap.getWidth(), frame.bitmap.getHeight());
         return roi.isEmpty() ? new Rect() : frame.bitmapRectToScreen(roi);
