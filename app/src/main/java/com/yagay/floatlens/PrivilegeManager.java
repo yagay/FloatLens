@@ -46,8 +46,9 @@ public final class PrivilegeManager {
     }
 
     /**
-     * The API-102 module entry is currently deliberately hook-free. A future LSPosed provider must
-     * first add a real cross-process configuration/status channel before this can become true.
+     * The API-102 framework/status channel is connected through LsposedStatusManager, but the
+     * FloatLens module entry still installs no functional hooks. This must remain false until a
+     * concrete, user-gated LSPosed provider exists; framework presence alone is not a capability.
      */
     public static boolean lsposedProviderAvailable() {
         return false;
