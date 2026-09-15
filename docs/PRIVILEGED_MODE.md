@@ -48,9 +48,19 @@ Root 截图真正生效需要同时满足：
 
 设置中保留“使用 LSPosed 功能”作为后续 Provider 的用户选择，但 **当前构建没有活动的 LSPosed Provider**。`PrivilegeManager.lsposedProviderAvailable()` 当前返回 `false`，因此 LSPosed 不会进入生效模式。
 
+LSPosed API 102 推荐作用域现在写在 `META-INF/xposed/scope.list`：
+
+```text
+system
+com.android.systemui
+```
+
+其中 `system` 对应 system_server / 系统框架，`com.android.systemui` 对应 SystemUI。`module.prop` 继续使用 `staticScope=false`，因此这两个目标只是 LSPosed 管理器里的推荐作用域，不会锁死用户作用域。**出现在推荐列表、被用户勾选、模块被加载，都不等于 FloatLens 已经启用了任何具体 Hook。**
+
 保留的 `FloatLensModule` 是 libxposed API 102 模块入口，但当前：
 
 - 不安装 `system_server` Hook；
+- 不安装 SystemUI Hook；
 - 不安装任何第三方应用 Hook；
 - 不绕过 `FLAG_SECURE`；
 - 不修改 `WindowState` / `SurfaceControl`；
