@@ -11,9 +11,8 @@ import io.github.libxposed.api.XposedModule;
 /**
  * Process-local LSPosed provider gate.
  *
- * <p>This class deliberately installs no functional hooks. It only consumes the framework-backed
- * Remote Preferences written by the FloatLens app and keeps a process-local active flag in sync.
- * Future hook providers must check {@link #isActive()} before applying user-visible behavior.</p>
+ * <p>The provider consumes framework-backed Remote Preferences written by the FloatLens app. All
+ * functional hooks must remain behaviorally inert unless the appropriate gate is active.</p>
  */
 final class LsposedRuntimeProvider {
     private static final String TAG = "FloatLens-LSPosed";
@@ -23,6 +22,8 @@ final class LsposedRuntimeProvider {
     private SharedPreferences preferences;
     private SharedPreferences.OnSharedPreferenceChangeListener listener;
     private volatile boolean active;
+    private volatile boolean secureScreenshotEnabled;
+    private volatile long secureCaptureUntilMs;
 
     LsposedRuntimeProvider(XposedModule module, String processName) {
         this.module = module;
@@ -43,14 +44,17 @@ final class LsposedRuntimeProvider {
             listener = (prefs, key) -> {
                 if (LsposedRuntimeConfig.K_SCHEMA_VERSION.equals(key)
                         || LsposedRuntimeConfig.K_ENHANCED_MODE.equals(key)
-                        || LsposedRuntimeConfig.K_LSPOSED_ENABLED.equals(key)) {
+                        || LsposedRuntimeConfig.K_LSPOSED_ENABLED.equals(key)
+                        || LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED.equals(key)
+                        || LsposedRuntimeConfig.K_SECURE_CAPTURE_UNTIL_MS.equals(key)) {
                     refresh();
                 }
             };
             preferences.registerOnSharedPreferenceChangeListener(listener);
             refresh();
             module.log(Log.INFO, TAG,
-                    "Controlled provider ready in " + displayProcess() + "; functional hooks=none");
+                    "Controlled provider ready in " + displayProcess()
+                            + "; secure screenshot hook gate=ready");
         } catch (UnsupportedOperationException unsupported) {
             active = false;
             module.log(Log.WARN, TAG,
@@ -66,10 +70,22 @@ final class LsposedRuntimeProvider {
         return active;
     }
 
+    boolean canBypassSecureNow() {
+        return active && secureScreenshotEnabled && secureCaptureUntilMs > System.currentTimeMillis();
+    }
+
     private void refresh() {
         boolean next;
+        boolean secureFeature = false;
+        long captureUntil = 0L;
         try {
             next = LsposedRuntimeConfig.isEnabled(preferences);
+            if (preferences != null) {
+                secureFeature = preferences.getBoolean(
+                        LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED, false);
+                captureUntil = preferences.getLong(
+                        LsposedRuntimeConfig.K_SECURE_CAPTURE_UNTIL_MS, 0L);
+            }
         } catch (Throwable t) {
             module.log(Log.ERROR, TAG,
                     "Failed to read runtime config in " + displayProcess(), t);
@@ -78,6 +94,8 @@ final class LsposedRuntimeProvider {
 
         boolean previous = active;
         active = next;
+        secureScreenshotEnabled = secureFeature;
+        secureCaptureUntilMs = captureUntil;
         if (previous != next) {
             module.log(Log.INFO, TAG,
                     "Provider state in " + displayProcess() + ": " + (next ? "enabled" : "disabled"));
