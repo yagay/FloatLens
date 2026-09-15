@@ -12,9 +12,10 @@ import java.util.function.Consumer;
 /**
  * Circle Select frame geometry.
  *
- * Keep the interactive workspace inside the app content area instead of covering live system bars.
- * The frozen screenshot is cropped to the same bounds before it reaches the overlay, so screenshot
- * pixels, OCR bounds, touch coordinates and result crops keep the same 1:1 workspace geometry.
+ * Keep the status bar inside the frozen workspace, but leave the live navigation bar outside it.
+ * In three-button navigation this keeps Back/Home/Recents directly usable while Circle Select is
+ * active. The frozen screenshot is cropped to the exact same bounds as the overlay so screenshot
+ * pixels, OCR bounds, touch coordinates and result crops stay in one coordinate space.
  */
 final class CircleSelectFrame {
     static void capture(Context c, Consumer<Bitmap> ok, Consumer<Throwable> fail) {
@@ -30,10 +31,11 @@ final class CircleSelectFrame {
             try {
                 Bitmap frame = ScreenshotGeometry.cropScreenBounds(app, raw, content);
                 if (frame != raw && !raw.isRecycled()) raw.recycle();
-                DiagnosticLog.i(app, "CIRCLE_SELECT", "content frame display=" + display.toShortString()
+                DiagnosticLog.i(app, "CIRCLE_SELECT", "navigation-safe frame display="
+                        + display.toShortString()
                         + " content=" + content.toShortString()
                         + " bitmap=" + frame.getWidth() + "x" + frame.getHeight()
-                        + " systemBarsExcluded=" + !content.equals(display));
+                        + " navigationBarExcluded=" + !content.equals(display));
                 ok.accept(frame);
             } catch (Throwable error) {
                 if (!raw.isRecycled()) raw.recycle();
@@ -43,21 +45,21 @@ final class CircleSelectFrame {
     }
 
     /**
-     * Bounds available to Circle Select while keeping visible status/navigation bars live.
-     * In three-button navigation this leaves Back/Home/Recents outside the overlay so SystemUI can
-     * receive the taps; CircleSelectOverlay/LensAccessibilityService then close the active session.
+     * Full display minus only the currently visible navigation bar. Status-bar pixels remain part of
+     * the Circle Select workspace. With three-button navigation, the live Back/Home/Recents strip is
+     * therefore never covered by the accessibility overlay.
      */
     static Rect contentBounds(Context c) {
         WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
         var metrics = wm.getCurrentWindowMetrics();
         Rect display = new Rect(metrics.getBounds());
         try {
-            Insets bars = metrics.getWindowInsets().getInsets(WindowInsets.Type.systemBars());
+            Insets navigation = metrics.getWindowInsets().getInsets(WindowInsets.Type.navigationBars());
             Rect content = new Rect(
-                    display.left + Math.max(0, bars.left),
-                    display.top + Math.max(0, bars.top),
-                    display.right - Math.max(0, bars.right),
-                    display.bottom - Math.max(0, bars.bottom));
+                    display.left + Math.max(0, navigation.left),
+                    display.top + Math.max(0, navigation.top),
+                    display.right - Math.max(0, navigation.right),
+                    display.bottom - Math.max(0, navigation.bottom));
             if (!content.isEmpty()) return content;
         } catch (Throwable ignored) {
             // Fall back to the full display rather than failing Circle Select on unusual OEM metrics.
