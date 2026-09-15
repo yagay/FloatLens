@@ -9,9 +9,10 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
-/** Immutable absolute-screen image regions exposed by the target app's Accessibility tree. */
+/** Immutable absolute-screen image regions from the normal Accessibility tree only. */
 final class CircleViewImageSnapshot {
     private static final int MAX_NODES = 4200;
     private static final int MAX_IMAGES = 240;
@@ -22,9 +23,7 @@ final class CircleViewImageSnapshot {
         this.images = images == null ? List.of() : List.copyOf(images);
     }
 
-    static CircleViewImageSnapshot empty() {
-        return new CircleViewImageSnapshot(List.of());
-    }
+    static CircleViewImageSnapshot empty() { return new CircleViewImageSnapshot(List.of()); }
 
     static CircleViewImageSnapshot capture(Context context) {
         if (context == null) return empty();
@@ -60,7 +59,7 @@ final class CircleViewImageSnapshot {
         out.sort(Comparator.comparingLong(CircleViewImageSnapshot::area)
                 .thenComparingInt(r -> r.top)
                 .thenComparingInt(r -> r.left));
-        DiagnosticLog.i(service, "CIRCLE_VIEW_IMAGE", "captured images=" + out.size()
+        DiagnosticLog.i(service, "CIRCLE_VIEW_IMAGE", "captured native images=" + out.size()
                 + " visited=" + visited[0] + " coordinateSpace=absolute_screen");
         return new CircleViewImageSnapshot(out);
     }
@@ -93,10 +92,6 @@ final class CircleViewImageSnapshot {
         if (display != null && !display.isEmpty() && !bounds.intersect(display)) return;
 
         if (isImageNode(node)) add(out, seen, bounds);
-        for (Rect enhanced : LsposedViewContentMetadata.imageBounds(node)) {
-            Rect clipped = new Rect(enhanced);
-            if (display == null || display.isEmpty() || clipped.intersect(display)) add(out, seen, clipped);
-        }
 
         int count = Math.min(300, safeChildCount(node));
         for (int i = 0; i < count; i++) {
@@ -108,14 +103,28 @@ final class CircleViewImageSnapshot {
     }
 
     private static boolean isImageNode(AccessibilityNodeInfo node) {
-        try {
-            CharSequence cls = node.getClassName();
-            String name = cls == null ? "" : cls.toString();
-            if (name.endsWith("ImageView") || name.contains("ImageView")) return true;
-        } catch (Throwable ignored) {}
-        int kind = LsposedViewContentMetadata.kind(node);
-        return kind == LsposedViewContentMetadata.KIND_IMAGE
-                || kind == LsposedViewContentMetadata.KIND_TEXT_IMAGE;
+        String cls = "";
+        String id = "";
+        try { if (node.getClassName() != null) cls = node.getClassName().toString(); }
+        catch (Throwable ignored) {}
+        try { if (node.getViewIdResourceName() != null) id = node.getViewIdResourceName(); }
+        catch (Throwable ignored) {}
+        String c = cls.toLowerCase(Locale.ROOT);
+        String v = id.toLowerCase(Locale.ROOT);
+        return c.contains("imageview") || c.contains("imagebutton") || c.contains("iconview")
+                || c.endsWith(".image")
+                || containsToken(v, "icon") || containsToken(v, "image")
+                || containsToken(v, "avatar") || containsToken(v, "thumbnail")
+                || containsToken(v, "photo") || containsToken(v, "picture");
+    }
+
+    private static boolean containsToken(String value, String token) {
+        if (value == null || value.isEmpty()) return false;
+        return value.contains("/" + token)
+                || value.contains("_" + token)
+                || value.contains(token + "_")
+                || value.endsWith(token)
+                || value.contains(token);
     }
 
     private static void add(List<Rect> out, Set<String> seen, Rect rect) {
@@ -128,9 +137,7 @@ final class CircleViewImageSnapshot {
         try {
             CharSequence pkg = node.getPackageName();
             return service != null && pkg != null && service.getPackageName().contentEquals(pkg);
-        } catch (Throwable ignored) {
-            return false;
-        }
+        } catch (Throwable ignored) { return false; }
     }
 
     private static int safeChildCount(AccessibilityNodeInfo node) {
