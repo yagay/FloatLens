@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -12,6 +13,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 import io.github.libxposed.service.HookedTarget;
 import io.github.libxposed.service.XposedService;
@@ -32,11 +34,15 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         public final List<String> runningProcesses;
         public final boolean systemScopeEnabled;
         public final boolean systemUiScopeEnabled;
+        /** True only when the current APK version is UP_TO_DATE in system_server. */
         public final boolean systemLoaded;
+        /** True only when the current APK version is UP_TO_DATE in SystemUI. */
         public final boolean systemUiLoaded;
         public final boolean remoteConfigReady;
         public final boolean remoteEnhancedMode;
         public final boolean remoteLsposedEnabled;
+        public final boolean remoteSecureScreenshotEnabled;
+        public final long remoteSecureCaptureArmedUntil;
         public final long remoteUpdatedAt;
         public final String detail;
 
@@ -53,6 +59,8 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                          boolean remoteConfigReady,
                          boolean remoteEnhancedMode,
                          boolean remoteLsposedEnabled,
+                         boolean remoteSecureScreenshotEnabled,
+                         long remoteSecureCaptureArmedUntil,
                          long remoteUpdatedAt,
                          String detail) {
             this.serviceConnected = serviceConnected;
@@ -68,6 +76,8 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
             this.remoteConfigReady = remoteConfigReady;
             this.remoteEnhancedMode = remoteEnhancedMode;
             this.remoteLsposedEnabled = remoteLsposedEnabled;
+            this.remoteSecureScreenshotEnabled = remoteSecureScreenshotEnabled;
+            this.remoteSecureCaptureArmedUntil = remoteSecureCaptureArmedUntil;
             this.remoteUpdatedAt = remoteUpdatedAt;
             this.detail = safe(detail);
         }
@@ -77,11 +87,20 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                     && LsposedRuntimeConfig.isEnabled(remoteEnhancedMode, remoteLsposedEnabled);
         }
 
+        public boolean remoteSecureCaptureArmed() {
+            return remoteConfigReady && LsposedRuntimeConfig.isSecureCaptureActive(
+                    remoteEnhancedMode,
+                    remoteLsposedEnabled,
+                    remoteSecureScreenshotEnabled,
+                    remoteSecureCaptureArmedUntil,
+                    SystemClock.elapsedRealtime());
+        }
+
         private static Snapshot disconnected(String detail) {
             return new Snapshot(false, "", "", 0,
                     Collections.emptyList(), Collections.emptyList(),
                     false, false, false, false,
-                    false, false, false, 0L, detail);
+                    false, false, false, false, 0L, 0L, detail);
         }
 
         private static String safe(String value) {
@@ -100,14 +119,14 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
 
     private final CopyOnWriteArraySet<Listener> listeners = new CopyOnWriteArraySet<>();
     private volatile XposedService service;
-    private volatile Context appContext;
     private volatile SharedPreferences localPreferences;
     private volatile Snapshot snapshot = Snapshot.disconnected("等待 LSPosed 服务连接");
 
     private final SharedPreferences.OnSharedPreferenceChangeListener localPreferenceListener =
             (preferences, key) -> {
                 if (FloatSettings.K_ENHANCED_MODE.equals(key)
-                        || FloatSettings.K_LSPOSED_ENABLED.equals(key)) {
+                        || FloatSettings.K_LSPOSED_ENABLED.equals(key)
+                        || FloatSettings.K_LSPOSED_SECURE_SCREENSHOT.equals(key)) {
                     syncRuntimeConfigAsync();
                 }
             };
@@ -118,7 +137,6 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
     public static void initialize(Context context) {
         if (context == null) return;
         Context app = context.getApplicationContext();
-        INSTANCE.appContext = app;
         if (INITIALIZED.compareAndSet(false, true)) {
             SharedPreferences preferences = app.getSharedPreferences(FloatSettings.PREF, Context.MODE_PRIVATE);
             INSTANCE.localPreferences = preferences;
@@ -135,11 +153,7 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         return INSTANCE.snapshot.serviceConnected;
     }
 
-    /**
-     * Provider infrastructure is considered available only when the framework service and writable
-     * Remote Preferences work, and at least one recommended target process has actually loaded the
-     * module. This is intentionally stricter than merely detecting LSPosed installation.
-     */
+    /** Generic provider availability requires at least one current, UP_TO_DATE recommended target. */
     public static boolean providerAvailable() {
         Snapshot s = INSTANCE.snapshot;
         return s.serviceConnected && s.remoteConfigReady && (s.systemLoaded || s.systemUiLoaded);
@@ -151,6 +165,16 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
 
     public static void syncRuntimeConfigAsync() {
         INSTANCE.syncRuntimeConfig();
+    }
+
+    /** Arms secure-layer capture for one short FloatLens screenshot lease. Callback runs on main. */
+    public static void armSecureCaptureAsync(Consumer<Boolean> callback) {
+        INSTANCE.armSecureCapture(callback);
+    }
+
+    /** Best-effort early disarm; lease expiry is the final safety net. */
+    public static void disarmSecureCaptureAsync() {
+        INSTANCE.disarmSecureCapture();
     }
 
     public static void addListener(Listener listener, boolean notifyImmediately) {
@@ -190,12 +214,13 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
 
         boolean enhanced = local.getBoolean(FloatSettings.K_ENHANCED_MODE, false);
         boolean lsposed = local.getBoolean(FloatSettings.K_LSPOSED_ENABLED, false);
+        boolean secureScreenshot = local.getBoolean(FloatSettings.K_LSPOSED_SECURE_SCREENSHOT, false);
         long updatedAt = System.currentTimeMillis();
         IO.execute(() -> {
             try {
                 SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
                 if (remote == null) {
-                    publishSnapshot(current, false, false, false, 0L,
+                    publishSnapshot(current, false, false, false, false, 0L, 0L,
                             "框架没有提供可写 Remote Preferences");
                     return;
                 }
@@ -203,26 +228,81 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                         .putInt(LsposedRuntimeConfig.K_SCHEMA_VERSION, LsposedRuntimeConfig.SCHEMA_VERSION)
                         .putBoolean(LsposedRuntimeConfig.K_ENHANCED_MODE, enhanced)
                         .putBoolean(LsposedRuntimeConfig.K_LSPOSED_ENABLED, lsposed)
+                        .putBoolean(LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED, secureScreenshot)
+                        .putLong(LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL, 0L)
                         .putLong(LsposedRuntimeConfig.K_UPDATED_AT, updatedAt)
                         .commit();
                 if (!committed) {
-                    publishSnapshot(current, false, false, false, 0L,
+                    publishSnapshot(current, false, false, false, false, 0L, 0L,
                             "Remote Preferences 写入失败");
                     return;
                 }
-                publishSnapshot(current,
-                        remote.getInt(LsposedRuntimeConfig.K_SCHEMA_VERSION, 0)
-                                >= LsposedRuntimeConfig.SCHEMA_VERSION,
-                        remote.getBoolean(LsposedRuntimeConfig.K_ENHANCED_MODE, false),
-                        remote.getBoolean(LsposedRuntimeConfig.K_LSPOSED_ENABLED, false),
-                        remote.getLong(LsposedRuntimeConfig.K_UPDATED_AT, 0L),
-                        "");
+                publishFromRemote(current, remote, "");
             } catch (UnsupportedOperationException unsupported) {
-                publishSnapshot(current, false, false, false, 0L,
+                publishSnapshot(current, false, false, false, false, 0L, 0L,
                         "当前框架不支持 Remote Preferences");
             } catch (Throwable t) {
-                publishSnapshot(current, false, false, false, 0L,
+                publishSnapshot(current, false, false, false, false, 0L, 0L,
                         "同步 LSPosed 配置失败：" + messageOf(t));
+            }
+        });
+    }
+
+    private void armSecureCapture(Consumer<Boolean> callback) {
+        XposedService current = service;
+        SharedPreferences local = localPreferences;
+        Snapshot currentSnapshot = snapshot;
+        if (current == null || local == null || !currentSnapshot.systemLoaded) {
+            complete(callback, false);
+            return;
+        }
+        boolean enhanced = local.getBoolean(FloatSettings.K_ENHANCED_MODE, false);
+        boolean lsposed = local.getBoolean(FloatSettings.K_LSPOSED_ENABLED, false);
+        boolean secureScreenshot = local.getBoolean(FloatSettings.K_LSPOSED_SECURE_SCREENSHOT, false);
+        if (!LsposedRuntimeConfig.isEnabled(enhanced, lsposed) || !secureScreenshot) {
+            complete(callback, false);
+            return;
+        }
+
+        long armedUntil = SystemClock.elapsedRealtime() + LsposedRuntimeConfig.SECURE_CAPTURE_LEASE_MS;
+        long updatedAt = System.currentTimeMillis();
+        IO.execute(() -> {
+            boolean success = false;
+            try {
+                SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
+                if (remote != null) {
+                    success = remote.edit()
+                            .putInt(LsposedRuntimeConfig.K_SCHEMA_VERSION, LsposedRuntimeConfig.SCHEMA_VERSION)
+                            .putBoolean(LsposedRuntimeConfig.K_ENHANCED_MODE, enhanced)
+                            .putBoolean(LsposedRuntimeConfig.K_LSPOSED_ENABLED, lsposed)
+                            .putBoolean(LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED, secureScreenshot)
+                            .putLong(LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL, armedUntil)
+                            .putLong(LsposedRuntimeConfig.K_UPDATED_AT, updatedAt)
+                            .commit();
+                    publishFromRemote(current, remote, success ? "" : "安全截图短时授权写入失败");
+                }
+            } catch (Throwable t) {
+                publishSnapshot(current, false, false, false, false, 0L, 0L,
+                        "安全截图短时授权失败：" + messageOf(t));
+            }
+            complete(callback, success);
+        });
+    }
+
+    private void disarmSecureCapture() {
+        XposedService current = service;
+        if (current == null) return;
+        IO.execute(() -> {
+            try {
+                SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
+                if (remote == null) return;
+                remote.edit()
+                        .putLong(LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL, 0L)
+                        .putLong(LsposedRuntimeConfig.K_UPDATED_AT, System.currentTimeMillis())
+                        .commit();
+                publishFromRemote(current, remote, "");
+            } catch (Throwable ignored) {
+                // Lease expiry guarantees the bypass cannot remain armed indefinitely.
             }
         });
     }
@@ -237,31 +317,39 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
             try {
                 SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
                 if (remote == null) {
-                    publishSnapshot(current, false, false, false, 0L,
+                    publishSnapshot(current, false, false, false, false, 0L, 0L,
                             "框架没有提供 Remote Preferences");
                     return;
                 }
-                publishSnapshot(current,
-                        remote.getInt(LsposedRuntimeConfig.K_SCHEMA_VERSION, 0)
-                                >= LsposedRuntimeConfig.SCHEMA_VERSION,
-                        remote.getBoolean(LsposedRuntimeConfig.K_ENHANCED_MODE, false),
-                        remote.getBoolean(LsposedRuntimeConfig.K_LSPOSED_ENABLED, false),
-                        remote.getLong(LsposedRuntimeConfig.K_UPDATED_AT, 0L),
-                        "");
+                publishFromRemote(current, remote, "");
             } catch (UnsupportedOperationException unsupported) {
-                publishSnapshot(current, false, false, false, 0L,
+                publishSnapshot(current, false, false, false, false, 0L, 0L,
                         "当前框架不支持 Remote Preferences");
             } catch (Throwable t) {
-                publishSnapshot(current, false, false, false, 0L,
+                publishSnapshot(current, false, false, false, false, 0L, 0L,
                         "读取 LSPosed 状态失败：" + messageOf(t));
             }
         });
+    }
+
+    private void publishFromRemote(XposedService current, SharedPreferences remote, String detail) {
+        publishSnapshot(current,
+                remote.getInt(LsposedRuntimeConfig.K_SCHEMA_VERSION, 0)
+                        >= LsposedRuntimeConfig.SCHEMA_VERSION,
+                remote.getBoolean(LsposedRuntimeConfig.K_ENHANCED_MODE, false),
+                remote.getBoolean(LsposedRuntimeConfig.K_LSPOSED_ENABLED, false),
+                remote.getBoolean(LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED, false),
+                remote.getLong(LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL, 0L),
+                remote.getLong(LsposedRuntimeConfig.K_UPDATED_AT, 0L),
+                detail);
     }
 
     private void publishSnapshot(XposedService current,
                                  boolean remoteConfigReady,
                                  boolean remoteEnhancedMode,
                                  boolean remoteLsposedEnabled,
+                                 boolean remoteSecureScreenshotEnabled,
+                                 long remoteSecureCaptureArmedUntil,
                                  long remoteUpdatedAt,
                                  String detail) {
         try {
@@ -275,9 +363,16 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                     if (target == null) continue;
                     String process = target.getProcessName();
                     if (process == null || process.isBlank()) continue;
-                    running.add(process);
-                    if (isSystemProcess(process)) systemLoaded = true;
-                    if (isSystemUiProcess(process)) systemUiLoaded = true;
+
+                    HookedTarget.State state = target.getState();
+                    long loadedVersion = target.getLoadedVersionCode();
+                    boolean currentVersion = loadedVersion == BuildConfig.VERSION_CODE;
+                    boolean upToDate = state == HookedTarget.State.UP_TO_DATE;
+                    boolean currentTarget = currentVersion && upToDate;
+
+                    running.add(process + "[" + state.name() + " v" + loadedVersion + "]");
+                    if (currentTarget && isSystemProcess(process)) systemLoaded = true;
+                    if (currentTarget && isSystemUiProcess(process)) systemUiLoaded = true;
                 }
             }
             Collections.sort(running);
@@ -294,13 +389,16 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                     remoteConfigReady,
                     remoteEnhancedMode,
                     remoteLsposedEnabled,
+                    remoteSecureScreenshotEnabled,
+                    remoteSecureCaptureArmedUntil,
                     remoteUpdatedAt,
                     detail));
         } catch (Throwable t) {
             publish(new Snapshot(true, "", "", 0,
                     Collections.emptyList(), Collections.emptyList(),
                     false, false, false, false,
-                    remoteConfigReady, remoteEnhancedMode, remoteLsposedEnabled, remoteUpdatedAt,
+                    remoteConfigReady, remoteEnhancedMode, remoteLsposedEnabled,
+                    remoteSecureScreenshotEnabled, remoteSecureCaptureArmedUntil, remoteUpdatedAt,
                     detail.isBlank() ? "读取 LSPosed 目标状态失败：" + messageOf(t) : detail));
         }
     }
@@ -326,6 +424,10 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
     private static String messageOf(Throwable t) {
         String message = t.getMessage();
         return (message == null || message.isBlank()) ? t.getClass().getSimpleName() : message;
+    }
+
+    private static void complete(Consumer<Boolean> callback, boolean value) {
+        if (callback != null) MAIN.post(() -> callback.accept(value));
     }
 
     private void publish(Snapshot next) {

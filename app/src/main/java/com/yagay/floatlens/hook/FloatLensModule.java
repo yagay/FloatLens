@@ -4,16 +4,7 @@ import android.util.Log;
 
 import io.github.libxposed.api.XposedModule;
 
-/**
- * Clean libxposed API 102 entry point for FloatLens.
- *
- * <p>Loading the module never changes Android behavior on its own. The only runtime component
- * created here is a Remote Preferences backed provider gate. It mirrors the app's enhancement /
- * LSPosed switches into each loaded target process and currently installs no functional hooks.</p>
- *
- * <p>Future hook providers must be explicitly user-gated through {@link LsposedRuntimeProvider}
- * and must retain the normal Accessibility / Android fallback path.</p>
- */
+/** libxposed API 102 entry point for FloatLens controlled providers. */
 public final class FloatLensModule extends XposedModule {
     private static final String TAG = "FloatLens-LSPosed";
     private LsposedRuntimeProvider runtimeProvider;
@@ -24,18 +15,27 @@ public final class FloatLensModule extends XposedModule {
         runtimeProvider.start();
         log(Log.INFO, TAG,
                 "Module loaded in " + param.getProcessName()
-                        + "; provider=" + (runtimeProvider.isActive() ? "enabled" : "disabled")
-                        + "; functional hooks=none");
+                        + "; provider=" + (runtimeProvider.isActive() ? "enabled" : "disabled"));
     }
 
     @Override
     public void onSystemServerStarting(SystemServerStartingParam param) {
-        // Provider/config channel only. Never install a device-wide hook merely because the module
-        // is loaded. A concrete system_server capability must be added behind runtimeProvider.
+        LsposedRuntimeProvider provider = runtimeProvider;
+        if (provider == null) {
+            log(Log.ERROR, TAG, "system_server provider missing; secure screenshot hook not installed");
+            return;
+        }
+        try {
+            new SecureScreenshotHook(this, provider, param.getClassLoader()).install();
+        } catch (Throwable t) {
+            // Never let an optional screenshot enhancement destabilize system_server startup.
+            log(Log.ERROR, TAG, "Failed to install controlled secure screenshot hooks", t);
+        }
     }
 
     @Override
     public void onPackageLoaded(PackageLoadedParam param) {
-        // Provider/config channel only. No SystemUI or third-party functional hooks are installed.
+        // SystemUI currently uses the Remote Preferences provider/status channel only.
+        // Secure screenshot capture is implemented in system_server, so no package hook is needed.
     }
 }

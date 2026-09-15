@@ -1,6 +1,7 @@
 package com.yagay.floatlens.hook;
 
 import android.content.SharedPreferences;
+import android.os.SystemClock;
 import android.util.Log;
 
 import com.yagay.floatlens.LsposedRuntimeConfig;
@@ -8,13 +9,7 @@ import com.yagay.floatlens.LsposedRuntimeConfig;
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 
-/**
- * Process-local LSPosed provider gate.
- *
- * <p>This class deliberately installs no functional hooks. It only consumes the framework-backed
- * Remote Preferences written by the FloatLens app and keeps a process-local active flag in sync.
- * Future hook providers must check {@link #isActive()} before applying user-visible behavior.</p>
- */
+/** Process-local LSPosed provider gate backed by framework Remote Preferences. */
 final class LsposedRuntimeProvider {
     private static final String TAG = "FloatLens-LSPosed";
 
@@ -43,14 +38,16 @@ final class LsposedRuntimeProvider {
             listener = (prefs, key) -> {
                 if (LsposedRuntimeConfig.K_SCHEMA_VERSION.equals(key)
                         || LsposedRuntimeConfig.K_ENHANCED_MODE.equals(key)
-                        || LsposedRuntimeConfig.K_LSPOSED_ENABLED.equals(key)) {
+                        || LsposedRuntimeConfig.K_LSPOSED_ENABLED.equals(key)
+                        || LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED.equals(key)
+                        || LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL.equals(key)) {
                     refresh();
                 }
             };
             preferences.registerOnSharedPreferenceChangeListener(listener);
             refresh();
             module.log(Log.INFO, TAG,
-                    "Controlled provider ready in " + displayProcess() + "; functional hooks=none");
+                    "Controlled provider ready in " + displayProcess());
         } catch (UnsupportedOperationException unsupported) {
             active = false;
             module.log(Log.WARN, TAG,
@@ -64,6 +61,19 @@ final class LsposedRuntimeProvider {
 
     boolean isActive() {
         return active;
+    }
+
+    /** Read live Remote Preferences on every capture call so lease expiry never depends on listener timing. */
+    boolean isSecureCaptureArmed() {
+        if (!active || preferences == null) return false;
+        try {
+            return LsposedRuntimeConfig.isSecureCaptureActive(
+                    preferences, SystemClock.elapsedRealtime());
+        } catch (Throwable t) {
+            module.log(Log.ERROR, TAG,
+                    "Failed to read secure capture lease in " + displayProcess(), t);
+            return false;
+        }
     }
 
     private void refresh() {

@@ -55,7 +55,12 @@ selectable result text back into an overlay unless device diagnostics prove equi
 ## 3. Screenshot capture and crop
 
 ### `ScreenCaptureBackend`
-The only Accessibility-vs-Root capture backend selector.
+The only Accessibility-vs-Root-vs-controlled-LSPosed screenshot backend selector.
+
+When `PrivilegeManager.canUseLsposedSecureScreenshot(...)` is true, secure-window capture deliberately
+uses the Accessibility path because that enters the system_server ScreenCapture chain. The backend arms a
+short LSPosed lease immediately before capture and disarms it on both success and failure. Root capture is
+still a separate backend and is never assumed to inherit the system_server secure-layer policy.
 
 ### `ScreenshotCaptureSession`
 Owns hide-icon / settle / capture / restore lifecycle.
@@ -254,21 +259,23 @@ windows no longer use an overlay host.
 Root and LSPosed are optional enhancement providers, never prerequisites for core behavior.
 
 - Root capabilities must pass `PrivilegeManager.canUseRoot(...)` and may fall back to normal providers.
-- `LsposedStatusManager` is the app-side owner of framework state and writable Remote Preferences. It
-  mirrors `增强模式` and `LSPosed Provider` into the `floatlens_runtime` group and separately tracks scope
-  plus actually loaded target processes.
-- `LsposedRuntimeConfig` is the shared key/schema contract only. It contains no framework or UI behavior.
-- `LsposedRuntimeProvider` is the hooked-process owner of the read-only Remote Preferences gate. It keeps
-  an in-process active flag synchronized and currently installs **no functional hooks**.
-- `PrivilegeManager.lsposedProviderAvailable()` requires service connection, working Remote Preferences,
-  and at least one actually loaded recommended target. A stored preference or scope checkbox alone is not
-  proof that the provider exists.
-- Future LSPosed capabilities must pass `PrivilegeManager.canUseLsposed(...)`; the target-process hook
-  implementation must additionally honor `LsposedRuntimeProvider.isActive()`.
-- Never install a device-wide `system_server` behavior change that an in-app switch cannot actually
-  disable through this control path.
+- `LsposedStatusManager` owns app-side XposedService state and writable Remote Preferences. It also checks
+  `HookedTarget.State.UP_TO_DATE` and `loadedVersionCode == BuildConfig.VERSION_CODE`; a stale target from a
+  previously installed APK must never count as a current provider.
+- `LsposedRuntimeConfig` owns the shared schema and the short secure-capture lease policy. The lease uses
+  monotonic elapsed time, expires after about 3 seconds, and rejects implausibly distant future values.
+- `LsposedRuntimeProvider` is the hooked-process read-only gate. Functional hooks must query live provider
+  state rather than assuming that module load means permission.
+- `SecureScreenshotHook` is the first functional LSPosed provider and is installed only in system_server.
+  It alters ScreenCapture secure-layer arguments only while the short FloatLens lease is active. Its
+  `WindowState.isSecureLocked()` compatibility hook preserves original behavior during surface creation,
+  so secure Surface flags remain intact.
+- Never restore the old unconditional `SurfaceControl.Builder.setSecure(false)` behavior and never enable
+  DRM/protected-content capture as part of the secure-window screenshot feature.
+- `PrivilegeManager.canUseLsposedSecureScreenshot(...)` additionally requires the **current** system_server
+  target to be loaded and UP_TO_DATE; SystemUI-only loading is not sufficient.
 
-See `docs/PRIVILEGED_MODE.md` for the current provider state.
+See `docs/PRIVILEGED_MODE.md` and `docs/SECURE_SCREENSHOT.md` for the current provider state and lease flow.
 
 ## 13. Regression gates
 
@@ -279,10 +286,10 @@ See `docs/PRIVILEGED_MODE.md` for the current provider state.
 3. `assembleDebug`;
 4. upload the debug APK artifact.
 
-The JVM suite currently protects gesture-session state, verified gesture classification semantics, crop
-coordinate mapping, OCR early-stop quality, preference refresh routing, Circle state transitions and the
-LSPosed two-switch runtime gate. Structural changes are not complete until this workflow is green on the
-final HEAD.
+The JVM suite protects gesture-session state, verified gesture classification semantics, crop coordinate
+mapping, OCR early-stop quality, preference refresh routing, Circle state transitions, LSPosed provider
+gates and secure-capture lease boundaries. Structural changes are not complete until this workflow is green
+on the final HEAD.
 
 ## 14. Rules for future changes
 
@@ -301,5 +308,5 @@ final HEAD.
 12. Privileged behavior must match the user-visible gate that claims to control it.
 13. Keep settings-page composition out of the Activity lifecycle host.
 14. Run the full CI gate after structural changes, then device-test: icon drag/dwell, View extraction,
-    region screenshot, notification-shade capture, screenshot->OCR update, native selection/magnifier,
-    CircleLive and CircleSelect.
+    region screenshot, notification-shade capture, secure-window capture, screenshot->OCR update, native
+    selection/magnifier, CircleLive and CircleSelect.

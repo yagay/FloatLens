@@ -61,6 +61,7 @@ public final class FloatSettings {
     public static final String K_ENHANCED_MODE = "privilege_enhanced_mode_v1";
     public static final String K_ROOT_ENABLED = "privilege_root_enabled_v1";
     public static final String K_LSPOSED_ENABLED = "privilege_lsposed_enabled_v1";
+    public static final String K_LSPOSED_SECURE_SCREENSHOT = "lsposed_secure_screenshot_v1";
     public static final String K_PRIVILEGE_FALLBACK = "privilege_fallback_normal_v1";
     public static final String K_ROOT_LAST_GRANTED = "privilege_root_last_granted_v1";
     public static final String K_ROOT_LAST_CHECK = "privilege_root_last_check_ms_v1";
@@ -146,10 +147,14 @@ public final class FloatSettings {
     public boolean enhancedMode() { return p.getBoolean(K_ENHANCED_MODE, false); }
     public boolean rootEnabled() { return p.getBoolean(K_ROOT_ENABLED, false); }
     public boolean lsposedEnabled() { return p.getBoolean(K_LSPOSED_ENABLED, false); }
+    public boolean lsposedSecureScreenshot() { return p.getBoolean(K_LSPOSED_SECURE_SCREENSHOT, false); }
     public boolean privilegeFallback() { return p.getBoolean(K_PRIVILEGE_FALLBACK, true); }
     public boolean canUseRoot() { return enhancedMode() && rootEnabled(); }
     public boolean canUseLsposed() { return PrivilegeManager.canUseLsposed(this); }
     public boolean effectiveRootScreenshot() { return canUseRoot() && rootScreenshot(); }
+    public boolean effectiveLsposedSecureScreenshot() {
+        return PrivilegeManager.canUseLsposedSecureScreenshot(this);
+    }
     public long rootLastCheckMs() { return p.getLong(K_ROOT_LAST_CHECK, 0L); }
     public boolean rootLastGranted() { return p.getBoolean(K_ROOT_LAST_GRANTED, false); }
     public String rootLastDetail() { return p.getString(K_ROOT_LAST_DETAIL, ""); }
