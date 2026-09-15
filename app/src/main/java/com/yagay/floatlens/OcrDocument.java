@@ -7,13 +7,14 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Engine-neutral OCR result shared by every FloatLens surface.
+ * Engine-neutral OCR/text geometry shared by FloatLens surfaces.
  *
- * Coordinates are always expressed in the source bitmap coordinate space. Consumers decide
- * whether they need full text, block text, line geometry or character geometry; recognition
- * engines never expose UI-specific result types.
+ * Recognition engines produce BITMAP-space documents. Higher-level coordinators may normalize a
+ * document once into absolute SCREEN space before mixing it with Accessibility/View geometry.
  */
 public final class OcrDocument {
+    public enum CoordinateSpace { BITMAP, SCREEN }
+
     public static final class CharUnit {
         private final String text;
         private final Rect bounds;
@@ -72,10 +73,18 @@ public final class OcrDocument {
     private final double score;
     private final int imageWidth;
     private final int imageHeight;
+    private final CoordinateSpace coordinateSpace;
 
     public OcrDocument(String fullText, List<String> blocks, List<Line> lines,
                        String engine, float confidence, double score,
                        int imageWidth, int imageHeight) {
+        this(fullText, blocks, lines, engine, confidence, score,
+                imageWidth, imageHeight, CoordinateSpace.BITMAP);
+    }
+
+    public OcrDocument(String fullText, List<String> blocks, List<Line> lines,
+                       String engine, float confidence, double score,
+                       int imageWidth, int imageHeight, CoordinateSpace coordinateSpace) {
         this.fullText = fullText == null ? "" : fullText.trim();
         this.blocks = blocks == null ? List.of() : List.copyOf(blocks);
         this.lines = lines == null ? List.of() : List.copyOf(lines);
@@ -84,6 +93,14 @@ public final class OcrDocument {
         this.score = score;
         this.imageWidth = Math.max(1, imageWidth);
         this.imageHeight = Math.max(1, imageHeight);
+        this.coordinateSpace = coordinateSpace == null ? CoordinateSpace.BITMAP : coordinateSpace;
+    }
+
+    public static OcrDocument screenSpace(String fullText, List<String> blocks, List<Line> lines,
+                                          String engine, float confidence, double score,
+                                          int screenWidth, int screenHeight) {
+        return new OcrDocument(fullText, blocks, lines, engine, confidence, score,
+                screenWidth, screenHeight, CoordinateSpace.SCREEN);
     }
 
     public String fullText() { return fullText; }
@@ -94,6 +111,9 @@ public final class OcrDocument {
     public double score() { return score; }
     public int imageWidth() { return imageWidth; }
     public int imageHeight() { return imageHeight; }
+    public CoordinateSpace coordinateSpace() { return coordinateSpace; }
+    public boolean isBitmapSpace() { return coordinateSpace == CoordinateSpace.BITMAP; }
+    public boolean isScreenSpace() { return coordinateSpace == CoordinateSpace.SCREEN; }
     public boolean isEmpty() { return fullText.isBlank() && chars().isEmpty(); }
 
     public List<CharUnit> chars() {
@@ -103,7 +123,7 @@ public final class OcrDocument {
         return Collections.unmodifiableList(out);
     }
 
-    /** Translate a crop-space result back into its parent screenshot coordinate space. */
+    /** Translate within the current coordinate space, preserving its coordinate-space identity. */
     public OcrDocument translated(int dx, int dy, int parentWidth, int parentHeight) {
         ArrayList<Line> outLines = new ArrayList<>();
         int order = 0;
@@ -118,6 +138,6 @@ public final class OcrDocument {
             outLines.add(new Line(line.text(), lineBounds, line.confidence(), outChars));
         }
         return new OcrDocument(fullText, blocks, outLines, engine, confidence, score,
-                parentWidth, parentHeight);
+                parentWidth, parentHeight, coordinateSpace);
     }
 }
