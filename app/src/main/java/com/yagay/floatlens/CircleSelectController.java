@@ -33,6 +33,20 @@ public final class CircleSelectController {
         FloatService service = FloatService.get();
         if (service != null) service.onCircleCaptureStarted();
 
+        FloatSettings settings = new FloatSettings(app);
+        int ocrMode = CircleOcrPolicy.mode(settings);
+        boolean needView = CircleOcrPolicy.viewEnabled(settings);
+        DiagnosticLog.i(app, "CIRCLE_SELECT", "recognition mode=" + ocrMode
+                + " view=" + needView
+                + " mlkit=" + CircleOcrPolicy.mlKitEnabled(settings)
+                + " ppocr=false gen=" + gen);
+
+        if (!needView) {
+            CircleViewTextSnapshot empty = CircleViewTextSnapshot.empty(ScreenGeometry.displayBounds(app));
+            MAIN.post(() -> captureAndShow(app, service, hideLease, shadeState, empty, gen));
+            return;
+        }
+
         DiagnosticLog.i(app, "CIRCLE_SELECT", "view snapshot begin gen=" + gen
                 + " shadeExpanded=" + shadeState.expandedAtCapture());
 
