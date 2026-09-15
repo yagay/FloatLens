@@ -6,10 +6,12 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
-/** View text is authoritative; OCR is retained only in screen-space blind spots. */
+/** View text is authoritative; ML Kit is retained only for geometry assist and screen-space blind spots. */
 final class CircleTextIndex {
-    private final OcrDocument viewDocument;
+    private OcrDocument viewDocument;
     private OcrDocument ocrSupplement;
+    private int lastGeometryRefinedChars;
+    private int lastApproximateViewChars;
 
     CircleTextIndex(OcrDocument viewDocument, int screenWidth, int screenHeight) {
         this.viewDocument = requireScreenOrEmpty(viewDocument, "view-snapshot", screenWidth, screenHeight);
@@ -18,10 +20,16 @@ final class CircleTextIndex {
 
     OcrDocument viewDocument() { return viewDocument; }
     OcrDocument ocrSupplement() { return ocrSupplement; }
+    int lastGeometryRefinedChars() { return lastGeometryRefinedChars; }
+    int lastApproximateViewChars() { return lastApproximateViewChars; }
 
     void setFastOcr(OcrDocument document) {
         ocrSupplement = requireScreenOrEmpty(document, "ocr-supplement",
                 viewDocument.imageWidth(), viewDocument.imageHeight());
+        ViewTextGeometryRefiner.Result refined = ViewTextGeometryRefiner.refine(viewDocument, ocrSupplement);
+        if (refined != null && refined.document() != null) viewDocument = refined.document();
+        lastGeometryRefinedChars = refined == null ? 0 : refined.refinedChars();
+        lastApproximateViewChars = refined == null ? 0 : refined.approximateChars();
     }
 
     void replaceOcrRegion(OcrDocument patch, Rect screenRegion) {
@@ -60,7 +68,7 @@ final class CircleTextIndex {
             keptOcr++;
         }
         return documentFromLines(lines,
-                keptOcr == 0 ? "view-snapshot" : "view-snapshot+ocr-blindspots",
+                keptOcr == 0 ? "view-snapshot" : "view-snapshot+mlkit-blindspots",
                 1f, view.imageWidth(), view.imageHeight());
     }
 
