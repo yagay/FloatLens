@@ -15,7 +15,7 @@ final class ScreenCaptureBackend {
                         Consumer<Bitmap> ok, Consumer<Throwable> fail) {
         Context app = c.getApplicationContext();
         boolean rootAllowed = settings.effectiveRootScreenshot();
-        boolean lsposedSecureAllowed = settings.effectiveLsposedSecureScreenshot();
+        boolean lsposedSecureAllowed = PrivilegeManager.canUseLsposedSecureScreenshot(settings);
         boolean fallbackNormal = settings.privilegeFallback();
 
         DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "mode="
