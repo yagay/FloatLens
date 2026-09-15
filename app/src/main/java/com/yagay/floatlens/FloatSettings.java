@@ -50,6 +50,7 @@ public final class FloatSettings {
     public static final String K_SNAP = "edge_snap_enabled";
     public static final String K_VIBRATE = "vibration_fb";
     public static final String K_ROOT_SCREENSHOT = "use_root_for_screenshots";
+    public static final String K_LSPOSED_SECURE_SCREENSHOT = "use_lsposed_secure_screenshot_v1";
     public static final String K_GESTURE_START_DISTANCE = "gesture_start_distance";
     public static final String K_VERTICAL_BIAS = "gesture_vertical_bias_x100";
     public static final String K_TAP_MAX_MS = "tap_max_duration_ms";
@@ -136,6 +137,7 @@ public final class FloatSettings {
     public boolean keepStatusBarInScreenshot() { return p.getBoolean(K_KEEP_STATUS_BAR, true); }
     public boolean accessibilityScreenshot() { return p.getBoolean(K_ACCESSIBILITY_SCREENSHOT, true); }
     public boolean rootScreenshot() { return p.getBoolean(K_ROOT_SCREENSHOT, false); }
+    public boolean lsposedSecureScreenshot() { return p.getBoolean(K_LSPOSED_SECURE_SCREENSHOT, false); }
     public boolean longPressDragEnabled() { return p.getBoolean(K_LONG_PRESS_DRAG, true); }
     public boolean quickMoveEnabled() { return p.getBoolean(K_QUICK_MOVE, true); }
     public boolean diagnosticLogging() { return p.getBoolean(K_DIAGNOSTIC, false); }
@@ -150,6 +152,7 @@ public final class FloatSettings {
     public boolean canUseRoot() { return enhancedMode() && rootEnabled(); }
     public boolean canUseLsposed() { return PrivilegeManager.canUseLsposed(this); }
     public boolean effectiveRootScreenshot() { return canUseRoot() && rootScreenshot(); }
+    public boolean effectiveLsposedSecureScreenshot() { return canUseLsposed() && lsposedSecureScreenshot(); }
     public long rootLastCheckMs() { return p.getLong(K_ROOT_LAST_CHECK, 0L); }
     public boolean rootLastGranted() { return p.getBoolean(K_ROOT_LAST_GRANTED, false); }
     public String rootLastDetail() { return p.getString(K_ROOT_LAST_DETAIL, ""); }
