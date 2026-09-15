@@ -10,9 +10,9 @@ import java.util.function.Consumer;
 /**
  * Circle Select frame geometry.
  *
- * Circle Select uses the same status/navigation-bar capture policy as normal screenshots. The
- * frozen screenshot is cropped to the exact same bounds as the overlay so screenshot pixels, OCR
- * bounds, touch coordinates and result crops stay in one coordinate space.
+ * Status-bar inclusion follows the shared screenshot setting. The live navigation bar is always
+ * kept outside the interactive Circle Select workspace so Back / Home / Recents remain directly
+ * clickable even when normal screenshots are configured to include navigation-bar pixels.
  */
 final class CircleSelectFrame {
     static void capture(Context c, Consumer<Bitmap> ok, Consumer<Throwable> fail) {
@@ -24,23 +24,27 @@ final class CircleSelectFrame {
             }
 
             Rect display = displayBounds(app);
-            Rect content = contentBounds(app);
+            Rect workspace = contentBounds(app);
+            FloatSettings fs = new FloatSettings(app);
+            boolean keepNavigation = CaptureSystemBarsPolicy.keepNavigationBar(app);
+            Rect configuredCapture = CaptureSystemBarsPolicy.captureBounds(
+                    app, fs.keepStatusBarInScreenshot(), keepNavigation);
             try {
                 Bitmap frame;
-                if (content.equals(display)) {
+                if (workspace.equals(display)) {
                     frame = raw;
                 } else {
-                    frame = ScreenshotGeometry.cropScreenBounds(app, raw, content);
+                    frame = ScreenshotGeometry.cropScreenBounds(app, raw, workspace);
                     if (frame != raw && !raw.isRecycled()) raw.recycle();
                 }
-                FloatSettings fs = new FloatSettings(app);
-                boolean keepNavigation = CaptureSystemBarsPolicy.keepNavigationBar(app);
-                DiagnosticLog.i(app, "CIRCLE_SELECT", "configured frame display="
+                DiagnosticLog.i(app, "CIRCLE_SELECT", "interactive frame display="
                         + display.toShortString()
-                        + " content=" + content.toShortString()
+                        + " configuredCapture=" + configuredCapture.toShortString()
+                        + " workspace=" + workspace.toShortString()
                         + " bitmap=" + frame.getWidth() + "x" + frame.getHeight()
                         + " keepStatusBar=" + fs.keepStatusBarInScreenshot()
-                        + " keepNavigationBar=" + keepNavigation);
+                        + " keepNavigationBar=" + keepNavigation
+                        + " liveNavigationAlwaysInteractive=true");
                 ok.accept(frame);
             } catch (Throwable error) {
                 if (!raw.isRecycled()) raw.recycle();
@@ -49,12 +53,16 @@ final class CircleSelectFrame {
         }, fail);
     }
 
+    /**
+     * Circle Select always excludes only the live navigation bar from its interactive window.
+     * The status-bar choice still follows the user's screenshot-range setting.
+     */
     static Rect contentBounds(Context c) {
         FloatSettings fs = new FloatSettings(c);
         return CaptureSystemBarsPolicy.captureBounds(
                 c,
                 fs.keepStatusBarInScreenshot(),
-                CaptureSystemBarsPolicy.keepNavigationBar(c));
+                false);
     }
 
     static Rect displayBounds(Context c) {
