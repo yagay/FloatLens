@@ -1,7 +1,6 @@
 package com.yagay.floatlens;
 
 import android.app.Activity;
-import android.graphics.Insets;
 import android.view.View;
 
 import androidx.core.view.ViewCompat;
