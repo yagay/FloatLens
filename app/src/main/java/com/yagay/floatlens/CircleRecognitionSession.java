@@ -13,20 +13,18 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 /**
  * Per-Circle-Select recognition session.
  *
- * Accessibility provides an immediate provisional index. One original-frame ML Kit pass then
- * replaces overlapping provisional geometry with real symbol/element boxes. The configured
- * OcrEngine is only used for small on-demand ROI refinement, never as a full-screen background job.
+ * View text is frozen before the overlay is attached and remains authoritative for the whole
+ * session. ML Kit is a full-frame blind-spot supplement only; the configured OCR engine is used
+ * only for tap-sized ROI refinement, and neither OCR layer is allowed to replace View text.
  */
 final class CircleRecognitionSession {
-    enum Stage { ACCESSIBILITY, FAST_MLKIT, ROI_PRECISE }
+    enum Stage { VIEW_SNAPSHOT, FAST_MLKIT, ROI_PRECISE }
 
     interface Callback {
         void onUpdate(OcrDocument document, Stage stage, boolean fastReady);
@@ -35,15 +33,20 @@ final class CircleRecognitionSession {
 
     private final Context app;
     private final Bitmap screenshot;
+    private final CircleViewTextSnapshot viewSnapshot;
     private final Callback callback;
     private long generation;
     private boolean closed;
     private OcrDocument current;
+    private CircleTextIndex index;
     private TextRecognizer fastRecognizer;
 
-    CircleRecognitionSession(Context context, Bitmap screenshot, Callback callback) {
+    CircleRecognitionSession(Context context, Bitmap screenshot,
+                             CircleViewTextSnapshot viewSnapshot, Callback callback) {
         this.app = context.getApplicationContext();
         this.screenshot = screenshot;
+        this.viewSnapshot = viewSnapshot == null
+                ? CircleViewTextSnapshot.empty(new Rect()) : viewSnapshot;
         this.callback = callback;
     }
 
@@ -53,16 +56,23 @@ final class CircleRecognitionSession {
         long started = android.os.SystemClock.uptimeMillis();
 
         try {
-            OcrDocument accessibility = accessibilityDocument();
+            OcrDocument view = viewSnapshot.toDocument(screenshot.getWidth(), screenshot.getHeight());
             if (!isCurrent(run)) return;
-            current = accessibility;
-            DiagnosticLog.i(app, "CIRCLE_INDEX", "accessibility chars=" + accessibility.chars().size()
-                    + " lines=" + accessibility.lines().size()
-                    + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
-            emit(accessibility, Stage.ACCESSIBILITY, false);
+            index = new CircleTextIndex(view, screenshot.getWidth(), screenshot.getHeight());
+            current = index.current();
+            DiagnosticLog.i(app, "CIRCLE_INDEX",
+                    "view snapshot nodes=" + viewSnapshot.nodeCount()
+                            + " exactGeometryNodes=" + viewSnapshot.exactGeometryNodeCount()
+                            + " chars=" + view.chars().size()
+                            + " lines=" + view.lines().size()
+                            + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
+            emit(current, Stage.VIEW_SNAPSHOT, false);
         } catch (Throwable t) {
-            DiagnosticLog.i(app, "CIRCLE_INDEX", "accessibility failed=" + safe(t));
-            emitFailure(Stage.ACCESSIBILITY, t, false);
+            DiagnosticLog.i(app, "CIRCLE_INDEX", "view snapshot failed=" + safe(t));
+            index = new CircleTextIndex(emptyDocument("view-snapshot"),
+                    screenshot.getWidth(), screenshot.getHeight());
+            current = index.current();
+            emitFailure(Stage.VIEW_SNAPSHOT, t, false);
         }
 
         startFastMlKit(run);
@@ -71,7 +81,7 @@ final class CircleRecognitionSession {
     /** Refine only a missed tap-sized ROI with the configured high-accuracy OCR engine. */
     void refine(Rect imageRegion) {
         if (closed || imageRegion == null || imageRegion.isEmpty()
-                || screenshot == null || screenshot.isRecycled()) return;
+                || screenshot == null || screenshot.isRecycled() || index == null) return;
         Rect region = new Rect(imageRegion);
         if (!region.intersect(0, 0, screenshot.getWidth(), screenshot.getHeight()) || region.isEmpty()) return;
 
@@ -89,12 +99,16 @@ final class CircleRecognitionSession {
         OcrEngine.recognizeDocument(app, crop, new OcrEngine.DocumentCallback() {
             @Override public void onSuccess(OcrDocument document) {
                 try {
-                    if (!isCurrent(run)) return;
+                    if (!isCurrent(run) || index == null) return;
                     OcrDocument translated = document.translated(region.left, region.top,
                             screenshot.getWidth(), screenshot.getHeight());
-                    current = replaceRegion(current, translated, region);
+                    index.replaceOcrRegion(translated, region);
+                    current = index.current();
                     DiagnosticLog.i(app, "CIRCLE_INDEX", "roi precise ready engine="
-                            + document.engine() + " chars=" + document.chars().size()
+                            + document.engine()
+                            + " roiChars=" + translated.chars().size()
+                            + " viewChars=" + index.viewDocument().chars().size()
+                            + " mergedChars=" + current.chars().size()
                             + " region=" + region.toShortString());
                     emit(current, Stage.ROI_PRECISE, true);
                 } finally {
@@ -137,22 +151,22 @@ final class CircleRecognitionSession {
                     : TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
             fastRecognizer = recognizer;
             String engine = chinese ? "fast-mlkit-zh" : "fast-mlkit-latin";
-            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast start engine=" + engine
+            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast blind-spot start engine=" + engine
                     + " image=" + screenshot.getWidth() + "x" + screenshot.getHeight()
                     + " languages=" + languages);
 
             recognizer.process(InputImage.fromBitmap(screenshot, 0))
                     .addOnSuccessListener(text -> {
                         try {
-                            if (!isCurrent(run)) return;
+                            if (!isCurrent(run) || index == null) return;
                             OcrDocument fast = mlKitDocument(text, engine,
                                     screenshot.getWidth(), screenshot.getHeight());
-                            OcrDocument fallback = current;
-                            current = mergePreferPrecise(fast, fallback);
-                            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast ready engine=" + engine
-                                    + " preciseChars=" + fast.chars().size()
-                                    + " fallbackChars=" + (fallback == null ? 0 : fallback.chars().size())
-                                    + " merged=" + (current == null ? 0 : current.chars().size())
+                            index.setFastOcr(fast);
+                            current = index.current();
+                            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast blind-spot ready engine=" + engine
+                                    + " viewChars=" + index.viewDocument().chars().size()
+                                    + " ocrChars=" + fast.chars().size()
+                                    + " mergedChars=" + current.chars().size()
                                     + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
                             emit(current, Stage.FAST_MLKIT, true);
                         } finally {
@@ -162,14 +176,14 @@ final class CircleRecognitionSession {
                     .addOnFailureListener(error -> {
                         try {
                             if (!isCurrent(run)) return;
-                            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast failed=" + safe(error));
+                            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast blind-spot failed=" + safe(error));
                             emitFailure(Stage.FAST_MLKIT, error, true);
                         } finally {
                             closeFastRecognizer(recognizer);
                         }
                     });
         } catch (Throwable t) {
-            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast init failed=" + safe(t));
+            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast blind-spot init failed=" + safe(t));
             emitFailure(Stage.FAST_MLKIT, t, true);
         }
     }
@@ -179,72 +193,7 @@ final class CircleRecognitionSession {
         try { recognizer.close(); } catch (Throwable ignored) {}
     }
 
-    /** Build a provisional index from Accessibility. Geometry is intentionally low-confidence. */
-    private OcrDocument accessibilityDocument() {
-        LensAccessibilityService service = LensAccessibilityService.get();
-        if (service == null) return emptyDocument("accessibility");
-        List<ScreenCandidate> candidates = AccessibilityCandidateCollector.collect(service);
-        Rect screen = service.screenBounds();
-        if (screen == null || screen.isEmpty()) {
-            screen = new Rect(0, 0, screenshot.getWidth(), screenshot.getHeight());
-        }
-
-        ArrayList<OcrDocument.Line> lines = new ArrayList<>();
-        HashSet<String> seen = new HashSet<>();
-        int lineId = 0;
-        int group = 0;
-        int order = 0;
-        for (ScreenCandidate candidate : candidates) {
-            if (candidate == null || candidate.type() != ScreenCandidate.Type.TEXT || !candidate.hasText()) continue;
-            Rect mapped = mapScreenRect(candidate.bounds(), screen,
-                    screenshot.getWidth(), screenshot.getHeight());
-            if (mapped.isEmpty()) continue;
-            String text = candidate.text() == null ? "" : candidate.text().trim();
-            if (text.isEmpty()) continue;
-            String key = mapped.flattenToString() + "\u0000" + text;
-            if (!seen.add(key)) continue;
-
-            String[] rows = text.split("\\R", -1);
-            int nonEmptyRows = 0;
-            for (String row : rows) if (!row.trim().isEmpty()) nonEmptyRows++;
-            if (nonEmptyRows == 0) continue;
-            int rowIndex = 0;
-            for (String rawRow : rows) {
-                String row = rawRow.trim();
-                if (row.isEmpty()) continue;
-                int top = mapped.top + mapped.height() * rowIndex / nonEmptyRows;
-                int bottom = mapped.top + mapped.height() * (rowIndex + 1) / nonEmptyRows;
-                Rect lineRect = new Rect(mapped.left, top, mapped.right, Math.max(top + 1, bottom));
-                ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>();
-                int[] cps = row.codePoints().toArray();
-                int visible = 0;
-                for (int cp : cps) if (!Character.isWhitespace(cp)) visible++;
-                int visibleIndex = 0;
-                int localGroup = group++;
-                for (int cp : cps) {
-                    if (Character.isWhitespace(cp)) {
-                        localGroup = group++;
-                        continue;
-                    }
-                    int left = lineRect.left + lineRect.width() * visibleIndex / Math.max(1, visible);
-                    int right = lineRect.left + lineRect.width() * (visibleIndex + 1) / Math.max(1, visible);
-                    chars.add(new OcrDocument.CharUnit(new String(Character.toChars(cp)),
-                            new Rect(left, lineRect.top, Math.max(left + 1, right), lineRect.bottom),
-                            0.18f, lineId, localGroup, order++));
-                    visibleIndex++;
-                }
-                if (!chars.isEmpty()) {
-                    lines.add(new OcrDocument.Line(row, lineRect, 0.18f, chars));
-                    lineId++;
-                }
-                rowIndex++;
-            }
-        }
-        return documentFromLines(lines, "accessibility-provisional", 0.18f,
-                screenshot.getWidth(), screenshot.getHeight());
-    }
-
-    /** Build precise symbol-level geometry from a single original-frame ML Kit pass. */
+    /** Build symbol/element geometry for OCR-only blind spots. */
     private static OcrDocument mlKitDocument(Text text, String engine, int width, int height) {
         ArrayList<OcrDocument.Line> lines = new ArrayList<>();
         int lineId = 0;
@@ -284,7 +233,6 @@ final class CircleRecognitionSession {
                                 && compact(symbolsText.toString()).equals(compact(value))) {
                             chars.addAll(symbolsOut);
                         } else {
-                            // Roll back speculative symbol order if symbol text did not match.
                             order -= symbolsOut.size();
                             appendSplit(chars, value, elementBox, lineId, elementGroup, order);
                             order += countVisible(value);
@@ -306,81 +254,6 @@ final class CircleRecognitionSession {
             }
         }
         return documentFromLines(lines, engine, 0.72f, width, height);
-    }
-
-    /**
-     * ML Kit geometry wins wherever it covers visible text. Accessibility remains only as a fast
-     * fallback for regions ML Kit did not see. This is the inverse of the old merge rule.
-     */
-    private static OcrDocument mergePreferPrecise(OcrDocument precise, OcrDocument fallback) {
-        if (precise == null || precise.lines().isEmpty()) return fallback;
-        if (fallback == null || fallback.lines().isEmpty()) return precise;
-
-        ArrayList<OcrDocument.Line> lines = new ArrayList<>(precise.lines());
-        int keptFallback = 0;
-        int replacedFallback = 0;
-        for (OcrDocument.Line fallbackLine : fallback.lines()) {
-            if (fallbackLine == null || fallbackLine.bounds().isEmpty()) continue;
-            boolean covered = false;
-            for (OcrDocument.Line preciseLine : precise.lines()) {
-                if (preciseLine == null || preciseLine.bounds().isEmpty()) continue;
-                if (sameVisualText(fallbackLine, preciseLine)) {
-                    covered = true;
-                    break;
-                }
-            }
-            if (covered) {
-                replacedFallback++;
-            } else {
-                lines.add(fallbackLine);
-                keptFallback++;
-            }
-        }
-
-        OcrDocument merged = documentFromLines(lines,
-                precise.engine() + "+accessibility-fallback",
-                precise.confidence(), precise.imageWidth(), precise.imageHeight());
-        // This method is static; detailed counts are surfaced by the caller's fast-ready log.
-        return merged;
-    }
-
-    private static boolean sameVisualText(OcrDocument.Line fallback, OcrDocument.Line precise) {
-        Rect fb = fallback.bounds();
-        Rect pb = precise.bounds();
-        Rect overlap = new Rect();
-        if (!overlap.setIntersect(fb, pb)) return false;
-
-        long overlapArea = Math.max(0L, (long) overlap.width() * overlap.height());
-        long fallbackArea = Math.max(1L, (long) fb.width() * fb.height());
-        long preciseArea = Math.max(1L, (long) pb.width() * pb.height());
-        float preciseCoverage = overlapArea / (float) preciseArea;
-        float fallbackCoverage = overlapArea / (float) fallbackArea;
-
-        String ft = compact(fallback.text());
-        String pt = compact(precise.text());
-        boolean textRelated = !ft.isEmpty() && !pt.isEmpty()
-                && (ft.equals(pt) || ft.contains(pt) || pt.contains(ft));
-
-        if (textRelated && preciseCoverage >= 0.32f) return true;
-        // Accessibility bounds are often a large TextView/container. If a precise OCR line sits
-        // almost entirely inside that coarse box, prefer the precise geometry even when OCR text
-        // differs by punctuation or a character.
-        if (preciseCoverage >= 0.78f && fb.contains(pb.centerX(), pb.centerY())) return true;
-        return fallbackCoverage >= 0.58f;
-    }
-
-    private static OcrDocument replaceRegion(OcrDocument base, OcrDocument patch, Rect region) {
-        if (patch == null || patch.lines().isEmpty()) return base == null ? patch : base;
-        ArrayList<OcrDocument.Line> lines = new ArrayList<>();
-        if (base != null) {
-            for (OcrDocument.Line line : base.lines()) {
-                Rect r = line.bounds();
-                if (!Rect.intersects(r, region)) lines.add(line);
-            }
-        }
-        lines.addAll(patch.lines());
-        return documentFromLines(lines, patch.engine() + "+index",
-                patch.confidence(), patch.imageWidth(), patch.imageHeight());
     }
 
     private static OcrDocument documentFromLines(List<OcrDocument.Line> source, String engine,
@@ -442,24 +315,11 @@ final class CircleRecognitionSession {
             if (Character.isWhitespace(cp)) continue;
             out.appendCodePoint(Character.toLowerCase(cp));
         }
-        return out.toString().toLowerCase(Locale.ROOT);
+        return out.toString();
     }
 
     private static OcrDocument emptyDocument(String engine) {
         return new OcrDocument("", List.of(), List.of(), engine, 0f, 0d, 1, 1);
-    }
-
-    private static Rect mapScreenRect(Rect source, Rect screen, int imageWidth, int imageHeight) {
-        if (source == null || source.isEmpty() || screen == null || screen.isEmpty()) return new Rect();
-        Rect clipped = new Rect(source);
-        if (!clipped.intersect(screen)) return new Rect();
-        float sx = imageWidth / (float) Math.max(1, screen.width());
-        float sy = imageHeight / (float) Math.max(1, screen.height());
-        int left = Math.max(0, Math.min(imageWidth - 1, Math.round((clipped.left - screen.left) * sx)));
-        int top = Math.max(0, Math.min(imageHeight - 1, Math.round((clipped.top - screen.top) * sy)));
-        int right = Math.max(left + 1, Math.min(imageWidth, Math.round((clipped.right - screen.left) * sx)));
-        int bottom = Math.max(top + 1, Math.min(imageHeight, Math.round((clipped.bottom - screen.top) * sy)));
-        return new Rect(left, top, right, bottom);
     }
 
     private void emit(OcrDocument document, Stage stage, boolean fastReady) {
