@@ -35,12 +35,15 @@ final class GoogleCircleController {
                 ScreenshotHideCoordinator.acquire(app, "google_circle_" + gen);
         pendingHideLease = hideLease;
         DiagnosticLog.i(app, "G_CIRCLE", "start gen=" + gen
-                + " phase=semantic_snapshot presentation=inline_original_position"
+                + " phase=view_text_snapshot"
+                + " textMode=original_selectable circleMode=editable_screenshot"
                 + " autoExpand=false");
 
+        // Capture native View text before our accessibility overlay is attached. This is the same
+        // screen-space character geometry used by the older selectable-text implementation.
         contentFuture = CONTENT_IO.submit(() -> {
             long started = android.os.SystemClock.uptimeMillis();
-            GoogleCircleContentSnapshot content = GoogleCircleContentSnapshot.capture(app);
+            CircleViewTextSnapshot textSnapshot = CircleViewTextSnapshot.capture(app);
             if (Thread.currentThread().isInterrupted()) return;
             long elapsed = android.os.SystemClock.uptimeMillis() - started;
             MAIN.post(() -> {
@@ -48,11 +51,11 @@ final class GoogleCircleController {
                     if (gen != generation) return;
                     contentFuture = null;
                 }
-                DiagnosticLog.i(app, "G_CIRCLE", "semantic snapshot ready gen=" + gen
-                        + " text=" + content.textCount()
-                        + " images=" + content.imageCount()
+                DiagnosticLog.i(app, "G_CIRCLE", "view text snapshot ready gen=" + gen
+                        + " nodes=" + textSnapshot.nodeCount()
+                        + " exactGeometry=" + textSnapshot.exactGeometryNodeCount()
                         + " elapsedMs=" + elapsed);
-                captureAndShow(app, hideLease, shadeState, content, gen);
+                captureAndShow(app, hideLease, shadeState, textSnapshot, gen);
             });
         });
     }
@@ -60,7 +63,7 @@ final class GoogleCircleController {
     private static void captureAndShow(Context app,
                                        ScreenshotHideCoordinator.Lease hideLease,
                                        FlSystemPanelController.CaptureState shadeState,
-                                       GoogleCircleContentSnapshot content,
+                                       CircleViewTextSnapshot textSnapshot,
                                        long gen) {
         synchronized (GoogleCircleController.class) {
             if (gen != generation) {
@@ -78,7 +81,7 @@ final class GoogleCircleController {
                 }
             }
 
-            boolean shown = GoogleCircleInlineOverlay.show(app, frame, content,
+            boolean shown = GoogleCircleInlineOverlay.show(app, frame, textSnapshot,
                     () -> restore(app, hideLease, gen, "closed"));
             if (!shown) {
                 frame.recycle();
@@ -127,7 +130,7 @@ final class GoogleCircleController {
         contentFuture = null;
         if (future != null && !future.isDone()) {
             boolean cancelled = future.cancel(true);
-            DiagnosticLog.i(app, "G_CIRCLE", "cancel semantic snapshot reason=" + reason
+            DiagnosticLog.i(app, "G_CIRCLE", "cancel view text snapshot reason=" + reason
                     + " success=" + cancelled);
         }
 
