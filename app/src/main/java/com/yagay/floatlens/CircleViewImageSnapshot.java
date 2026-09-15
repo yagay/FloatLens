@@ -58,8 +58,8 @@ final class CircleViewImageSnapshot {
         }
 
         out.sort(Comparator.comparingLong(CircleViewImageSnapshot::area)
-                .thenComparingInt(Rect::top)
-                .thenComparingInt(Rect::left));
+                .thenComparingInt(r -> r.top)
+                .thenComparingInt(r -> r.left));
         DiagnosticLog.i(service, "CIRCLE_VIEW_IMAGE", "captured images=" + out.size()
                 + " visited=" + visited[0] + " coordinateSpace=absolute_screen");
         return new CircleViewImageSnapshot(out);
