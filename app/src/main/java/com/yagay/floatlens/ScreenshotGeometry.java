@@ -3,7 +3,6 @@ package com.yagay.floatlens;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
-import android.view.WindowInsets;
 import android.view.WindowManager;
 
 /** Display-space ↔ screenshot-space mapping shared by screenshot operations. */
@@ -30,25 +29,23 @@ final class ScreenshotGeometry {
         return crop;
     }
 
+    /**
+     * Applies the shared screenshot/Circle Select system-bar policy.
+     * The legacy method name is kept to avoid widening this change through unrelated callers.
+     */
     static Bitmap maybeCropStatusBar(Context c, Bitmap raw, boolean keepStatusBar) {
-        if (raw == null || raw.isRecycled() || keepStatusBar) return raw;
+        if (raw == null || raw.isRecycled()) return raw;
+        boolean keepNavigationBar = CaptureSystemBarsPolicy.keepNavigationBar(c);
+        Rect captureBounds = CaptureSystemBarsPolicy.captureBounds(
+                c, keepStatusBar, keepNavigationBar);
+        WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
+        Rect display = new Rect(wm.getCurrentWindowMetrics().getBounds());
+        if (captureBounds.equals(display)) return raw;
         try {
-            WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
-            var metrics = wm.getCurrentWindowMetrics();
-            var insets = metrics.getWindowInsets().getInsetsIgnoringVisibility(WindowInsets.Type.statusBars());
-            int screenH = metrics.getBounds().height();
-            int topPx = insets.top;
-            if (topPx <= 0 || screenH <= 0) return raw;
-            float sy = raw.getHeight() / (float) screenH;
-            int cropTop = clamp(Math.round(topPx * sy), 0, raw.getHeight() - 1);
-            return Bitmap.createBitmap(raw, 0, cropTop, raw.getWidth(), raw.getHeight() - cropTop);
+            return cropScreenBounds(c, raw, captureBounds);
         } catch (Throwable ignored) {
             return raw;
         }
-    }
-
-    private static int clamp(int v, int min, int max) {
-        return Math.max(min, Math.min(max, v));
     }
 
     private ScreenshotGeometry() {}
