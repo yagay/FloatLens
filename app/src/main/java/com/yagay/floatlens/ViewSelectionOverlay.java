@@ -15,8 +15,9 @@ import android.widget.Toast;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
-/** Explicit full-screen View picker used by ActionId.OCR. */
+/** Explicit full-screen View picker using the same candidate snapshot as Direct selection. */
 public final class ViewSelectionOverlay {
     private static final ExecutorService TREE_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "FloatLens-view-picker-tree");
@@ -43,9 +44,6 @@ public final class ViewSelectionOverlay {
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
-        // FL hosts the interactive selection surface as TYPE_ACCESSIBILITY_OVERLAY whenever the
-        // accessibility service is available. FlOverlayWindowHost falls back to an application
-        // overlay only when that host is unavailable.
         if (!host.add(view, lp, "explicit_view_picker")) {
             Toast.makeText(app, "View 选择层启动失败，改用 OCR", Toast.LENGTH_SHORT).show();
             ScreenshotController.captureForOcr(app);
@@ -67,6 +65,7 @@ public final class ViewSelectionOverlay {
         private float lastRawX = Float.NaN;
         private float lastRawY = Float.NaN;
         private long cacheGeneration;
+        private Future<?> cacheFuture;
 
         PickView(Context c, LensAccessibilityService accessibility, FlOverlayWindowHost host) {
             super(c);
@@ -84,14 +83,18 @@ public final class ViewSelectionOverlay {
         }
 
         void prepareCacheAsync() {
+            cancelCache();
             final long gen = ++cacheGeneration;
             cacheReady = false;
-            TREE_EXECUTOR.execute(() -> {
+            cacheFuture = TREE_EXECUTOR.submit(() -> {
                 List<ScreenCandidate> candidates = AccessibilityCandidateCollector.collect(accessibility);
+                if (Thread.currentThread().isInterrupted()) return;
                 ScreenSelectionModel next = new ScreenSelectionModel();
                 next.setAccessibility(candidates);
+                if (Thread.currentThread().isInterrupted()) return;
                 post(() -> {
                     if (closed || gen != cacheGeneration) return;
+                    cacheFuture = null;
                     model = next;
                     cacheReady = true;
                     updateFromCache(lastRawX, lastRawY);
@@ -114,7 +117,7 @@ public final class ViewSelectionOverlay {
             } else if (!cacheReady) {
                 canvas.drawText("正在建立 View 索引…", dp(18), dp(42), textPaint);
             } else {
-                canvas.drawText("移动手指选择 View · 松手提取文字", dp(18), dp(42), textPaint);
+                canvas.drawText("移动手指选择 View · 松手提取内容", dp(18), dp(42), textPaint);
             }
         }
 
@@ -124,8 +127,6 @@ public final class ViewSelectionOverlay {
             if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
                 lastRawX = e.getRawX();
                 lastRawY = e.getRawY();
-                // Use FL cached-tree behavior: MOVE only performs geometry hit-testing. Never
-                // recursively walk AccessibilityNodeInfo on the touch/UI thread.
                 updateFromCache(lastRawX, lastRawY);
                 invalidate();
                 return true;
@@ -163,22 +164,27 @@ public final class ViewSelectionOverlay {
                 ScreenshotController.captureForOcr(getContext());
                 return;
             }
+            Rect bounds = picked.bounds();
             if (picked.hasText()) {
-                FloatService service = FloatService.get();
-                if (service != null) service.onOcrResults(1);
-                ResultSurfaceRouter.showOcr(getContext(), picked.text(),
-                        java.util.List.of(picked.text()), null, null);
+                // Native Accessibility text is a View-text result, not visual OCR.
+                ResultSurfaceRouter.showViewText(getContext(), picked.text(), null, bounds);
                 return;
             }
-            Rect bounds = picked.bounds();
             if (!bounds.isEmpty()) ScreenshotController.captureBoundsForOcr(getContext(), bounds);
             else ScreenshotController.captureForOcr(getContext());
+        }
+
+        private void cancelCache() {
+            Future<?> future = cacheFuture;
+            cacheFuture = null;
+            if (future != null && !future.isDone()) future.cancel(true);
         }
 
         private void close() {
             if (closed) return;
             closed = true;
             cacheGeneration++;
+            cancelCache();
             current = null;
             model = null;
             host.remove(this, "explicit_view_picker");
