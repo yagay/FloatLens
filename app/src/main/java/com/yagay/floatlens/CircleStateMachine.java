@@ -13,7 +13,14 @@ public final class CircleStateMachine {
     private State state = State.IDLE;
     private long generation;
 
-    public CircleStateMachine(Context c) { context = c.getApplicationContext(); }
+    public CircleStateMachine(Context c) {
+        context = c == null ? null : c.getApplicationContext();
+    }
+
+    /** JVM-test constructor; production callers should provide an Android Context for diagnostics. */
+    CircleStateMachine() {
+        context = null;
+    }
 
     public synchronized State state() { return state; }
     public synchronized long generation() { return generation; }
@@ -47,6 +54,9 @@ public final class CircleStateMachine {
     private void transition(State next, String reason) {
         State old = state;
         state = next;
-        DiagnosticLog.i(context, "CIRCLE_STATE", "gen=" + generation + " " + old + "->" + next + " reason=" + reason);
+        if (context != null) {
+            DiagnosticLog.i(context, "CIRCLE_STATE", "gen=" + generation + " " + old + "->" + next
+                    + " reason=" + reason);
+        }
     }
 }
