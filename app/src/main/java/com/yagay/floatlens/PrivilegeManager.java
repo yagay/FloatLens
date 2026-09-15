@@ -45,13 +45,15 @@ public final class PrivilegeManager {
         return settings != null && settings.enhancedMode() && settings.rootEnabled();
     }
 
-    /**
-     * A controlled API-102 provider now exists. Availability is deliberately stricter than simply
-     * detecting LSPosed: the app must have a writable Remote Preferences channel and at least one
-     * recommended target process must have actually loaded the module.
-     */
+    /** Generic controlled API-102 provider availability. */
     public static boolean lsposedProviderAvailable() {
         return LsposedStatusManager.providerAvailable();
+    }
+
+    /** Secure screenshot is a system_server capability, so SystemUI-only loading is not enough. */
+    public static boolean lsposedSecureScreenshotProviderAvailable() {
+        LsposedStatusManager.Snapshot s = LsposedStatusManager.snapshot();
+        return s.serviceConnected && s.remoteConfigReady && s.systemLoaded;
     }
 
     public static boolean canUseLsposed(Context context) {
@@ -61,6 +63,13 @@ public final class PrivilegeManager {
     public static boolean canUseLsposed(FloatSettings settings) {
         return settings != null && lsposedProviderAvailable()
                 && settings.enhancedMode() && settings.lsposedEnabled();
+    }
+
+    public static boolean canUseLsposedSecureScreenshot(FloatSettings settings) {
+        return settings != null && lsposedSecureScreenshotProviderAvailable()
+                && settings.enhancedMode()
+                && settings.lsposedEnabled()
+                && settings.lsposedSecureScreenshot();
     }
 
     public static Mode mode(FloatSettings settings) {
