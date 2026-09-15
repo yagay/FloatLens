@@ -24,7 +24,6 @@ public final class CircleSelectController {
         long gen = ++generation;
         CircleSelectOverlay.dismissActive("restart");
         CircleActiveBorderOverlay.hide(app, "restart");
-        CircleViewTextSnapshotHandoff.clear();
 
         final FlSystemPanelController.CaptureState shadeState = FlSystemPanelController.beginCapture(
                 app, "circle_select");
@@ -37,9 +36,8 @@ public final class CircleSelectController {
         DiagnosticLog.i(app, "CIRCLE_SELECT", "view snapshot begin gen=" + gen
                 + " shadeExpanded=" + shadeState.expandedAtCapture());
 
-        // Freeze the target app's View text before our AccessibilityOverlay exists. The scan runs
-        // off the main thread, then screenshot capture starts immediately afterwards so geometry
-        // remains close to the frozen frame while avoiding a long UI-thread tree walk.
+        // Freeze the target app's View text before our AccessibilityOverlay exists. The immutable
+        // snapshot is passed explicitly into this generation's workspace; no static pending state.
         VIEW_SNAPSHOT_IO.execute(() -> {
             long started = android.os.SystemClock.uptimeMillis();
             CircleViewTextSnapshot snapshot = CircleViewTextSnapshot.capture(app);
@@ -51,7 +49,6 @@ public final class CircleSelectController {
                         return;
                     }
                 }
-                CircleViewTextSnapshotHandoff.publish(snapshot);
                 DiagnosticLog.i(app, "CIRCLE_SELECT", "view snapshot ready gen=" + gen
                         + " nodes=" + snapshot.nodeCount()
                         + " exactGeometry=" + snapshot.exactGeometryNodeCount()
@@ -79,7 +76,6 @@ public final class CircleSelectController {
                 if (gen != generation) {
                     if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
                     hideLease.release(app);
-                    CircleViewTextSnapshotHandoff.clear();
                     return;
                 }
             }
@@ -88,7 +84,7 @@ public final class CircleSelectController {
                 return;
             }
 
-            boolean shown = CircleSelectOverlay.show(app, bitmap,
+            boolean shown = CircleSelectOverlay.show(app, bitmap, snapshot,
                     () -> restore(app, service, hideLease, gen, "closed"));
             DiagnosticLog.i(app, "CIRCLE_SELECT", "accessibility workspace shown=" + shown
                     + " bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight()
@@ -118,7 +114,6 @@ public final class CircleSelectController {
             synchronized (CircleSelectController.class) {
                 if (gen != generation) {
                     hideLease.release(app);
-                    CircleViewTextSnapshotHandoff.clear();
                     DiagnosticLog.i(app, "CIRCLE_SELECT", "drop stale capture failure gen=" + gen
                             + " current=" + generation + " error=" + safe(error));
                     return;
@@ -134,7 +129,6 @@ public final class CircleSelectController {
                                 ScreenshotHideCoordinator.Lease hideLease,
                                 long gen, String reason) {
         hideLease.release(app);
-        CircleViewTextSnapshotHandoff.clear();
         synchronized (CircleSelectController.class) {
             if (gen != generation) return;
         }
