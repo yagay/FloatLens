@@ -1,6 +1,7 @@
 package com.yagay.floatlens;
 
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -142,27 +143,40 @@ final class CircleActiveBorderOverlay {
     }
 
     private static final class BorderView extends View {
+        private final Context context;
+        private final WindowManager windowManager;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path borderPath = new Path();
         private final RectF borderRect = new RectF();
         private final float stroke;
-        private final float fallbackRadius;
+        private final float minFallbackRadius;
+        private final float maxFallbackRadius;
         private float topLeftRadius;
         private float topRightRadius;
         private float bottomRightRadius;
         private float bottomLeftRadius;
+        private int geometryWidth = -1;
+        private int geometryHeight = -1;
+        private int lastLoggedWidth = -1;
+        private int lastLoggedHeight = -1;
+        private int lastLoggedTl = -1;
+        private int lastLoggedTr = -1;
+        private int lastLoggedBr = -1;
+        private int lastLoggedBl = -1;
 
         BorderView(Context c) {
             super(c);
+            context = c.getApplicationContext();
+            windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
             float density = getResources().getDisplayMetrics().density;
             stroke = Math.max(2f, 3f * density);
-            fallbackRadius = 24f * density;
+            minFallbackRadius = 16f * density;
+            maxFallbackRadius = 32f * density;
             paint.setColor(Color.rgb(66, 133, 244));
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(stroke);
             setOnApplyWindowInsetsListener((v, insets) -> {
-                updateRoundedCorners(insets);
-                invalidate();
+                refreshGeometry(insets, "insets");
                 return insets;
             });
         }
@@ -170,14 +184,34 @@ final class CircleActiveBorderOverlay {
         @Override protected void onAttachedToWindow() {
             super.onAttachedToWindow();
             requestApplyInsets();
+            post(() -> refreshGeometry(getRootWindowInsets(), "attached"));
+        }
+
+        @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+            super.onSizeChanged(w, h, oldw, oldh);
+            if (w != oldw || h != oldh) {
+                refreshGeometry(getRootWindowInsets(), "size");
+                requestApplyInsets();
+            }
+        }
+
+        @Override protected void onConfigurationChanged(Configuration newConfig) {
+            super.onConfigurationChanged(newConfig);
+            post(() -> {
+                requestApplyInsets();
+                refreshGeometry(getRootWindowInsets(), "configuration");
+            });
         }
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             if (getWidth() <= 0 || getHeight() <= 0) return;
 
-            WindowInsets rootInsets = getRootWindowInsets();
-            if (rootInsets != null) updateRoundedCorners(rootInsets);
+            // Root insets normally drive updates. Re-check here as a final OEM safeguard for ROMs
+            // that resize overlay windows without dispatching a fresh inset callback.
+            if (geometryWidth != getWidth() || geometryHeight != getHeight()) {
+                refreshGeometry(getRootWindowInsets(), "draw_guard");
+            }
 
             float inset = stroke / 2f;
             borderRect.set(inset, inset,
@@ -199,21 +233,74 @@ final class CircleActiveBorderOverlay {
             canvas.drawPath(borderPath, paint);
         }
 
-        private void updateRoundedCorners(WindowInsets insets) {
-            if (Build.VERSION.SDK_INT < 31 || insets == null) return;
-            topLeftRadius = radius(insets.getRoundedCorner(RoundedCorner.POSITION_TOP_LEFT));
-            topRightRadius = radius(insets.getRoundedCorner(RoundedCorner.POSITION_TOP_RIGHT));
-            bottomRightRadius = radius(insets.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_RIGHT));
-            bottomLeftRadius = radius(insets.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_LEFT));
+        private void refreshGeometry(WindowInsets rootInsets, String reason) {
+            int width = getWidth();
+            int height = getHeight();
+            if (width <= 0 || height <= 0) {
+                try {
+                    android.graphics.Rect bounds = windowManager.getCurrentWindowMetrics().getBounds();
+                    width = Math.max(0, bounds.width());
+                    height = Math.max(0, bounds.height());
+                } catch (Throwable ignored) { }
+            }
+            geometryWidth = width;
+            geometryHeight = height;
+
+            WindowInsets insets = rootInsets;
+            if (insets == null) {
+                try { insets = windowManager.getCurrentWindowMetrics().getWindowInsets(); }
+                catch (Throwable ignored) { }
+            }
+
+            float fallback = adaptiveFallbackRadius(width, height);
+            if (Build.VERSION.SDK_INT >= 31 && insets != null) {
+                topLeftRadius = radius(insets.getRoundedCorner(RoundedCorner.POSITION_TOP_LEFT), fallback);
+                topRightRadius = radius(insets.getRoundedCorner(RoundedCorner.POSITION_TOP_RIGHT), fallback);
+                bottomRightRadius = radius(insets.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_RIGHT), fallback);
+                bottomLeftRadius = radius(insets.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_LEFT), fallback);
+            } else {
+                topLeftRadius = fallback;
+                topRightRadius = fallback;
+                bottomRightRadius = fallback;
+                bottomLeftRadius = fallback;
+            }
+            logGeometryIfChanged(reason);
+            invalidate();
         }
 
-        private float radius(RoundedCorner corner) {
-            return corner == null || corner.getRadius() <= 0 ? fallbackRadius : corner.getRadius();
+        private float adaptiveFallbackRadius(int width, int height) {
+            int shortEdge = Math.min(width, height);
+            if (shortEdge <= 0) return minFallbackRadius;
+            // Scale with the current physical display shape rather than a model/brand table.
+            float proportional = shortEdge * 0.035f;
+            return Math.max(minFallbackRadius, Math.min(maxFallbackRadius, proportional));
+        }
+
+        private float radius(RoundedCorner corner, float fallback) {
+            return corner == null || corner.getRadius() <= 0 ? fallback : corner.getRadius();
         }
 
         private float adjustedRadius(float radius, float inset) {
-            float source = radius > 0 ? radius : fallbackRadius;
-            return Math.max(0f, source - inset);
+            return Math.max(0f, radius - inset);
+        }
+
+        private void logGeometryIfChanged(String reason) {
+            int tl = Math.round(topLeftRadius);
+            int tr = Math.round(topRightRadius);
+            int br = Math.round(bottomRightRadius);
+            int bl = Math.round(bottomLeftRadius);
+            if (geometryWidth == lastLoggedWidth && geometryHeight == lastLoggedHeight
+                    && tl == lastLoggedTl && tr == lastLoggedTr
+                    && br == lastLoggedBr && bl == lastLoggedBl) return;
+            lastLoggedWidth = geometryWidth;
+            lastLoggedHeight = geometryHeight;
+            lastLoggedTl = tl;
+            lastLoggedTr = tr;
+            lastLoggedBr = br;
+            lastLoggedBl = bl;
+            DiagnosticLog.i(context, "CIRCLE_BORDER", "geometry reason=" + safe(reason)
+                    + " size=" + geometryWidth + "x" + geometryHeight
+                    + " radii=" + tl + "," + tr + "," + br + "," + bl);
         }
     }
 
