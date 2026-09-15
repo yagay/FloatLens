@@ -133,10 +133,14 @@ public final class FloatLensModule extends XposedModule {
 
     private static void setCaptureSecureAllowed(Field field, Object captureArgs) throws IllegalAccessException {
         Class<?> type = field.getType();
-        if (type == boolean.class || type == Boolean.class) {
+        if (type == boolean.class) {
             field.setBoolean(captureArgs, true);
-        } else if (type == int.class || type == Integer.class) {
+        } else if (type == Boolean.class) {
+            field.set(captureArgs, Boolean.TRUE);
+        } else if (type == int.class) {
             field.setInt(captureArgs, 1);
+        } else if (type == Integer.class) {
+            field.set(captureArgs, Integer.valueOf(1));
         } else {
             field.set(captureArgs, true);
         }
