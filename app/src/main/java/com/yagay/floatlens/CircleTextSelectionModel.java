@@ -6,13 +6,13 @@ import android.graphics.RectF;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Pure screen-space text selection state used by CircleSelectOverlay. */
+/** Pure screen-space text selection state used by CircleSelectOverlay/GoogleCircleInlineOverlay. */
 final class CircleTextSelectionModel {
     private final ScreenBitmapTransform transform;
     private List<OcrDocument.CharUnit> chars = List.of();
     private int startIndex = -1;
     private int endIndex = -1;
-    /** Non-contiguous rectangle selection before a handle is dragged. */
+    /** Non-contiguous rectangle selection before a handle is dragged. Always expanded to groups. */
     private List<Integer> explicitSelection = List.of();
 
     CircleTextSelectionModel(ScreenBitmapTransform transform) {
@@ -44,10 +44,17 @@ final class CircleTextSelectionModel {
         explicitSelection = List.of();
     }
 
-    void selectSingle(int index) {
+    /** Select the complete semantic word/continuous-text group containing index. */
+    void selectGroup(int index) {
         if (!validIndex(index)) return;
         explicitSelection = List.of();
-        startIndex = endIndex = index;
+        startIndex = groupStart(index);
+        endIndex = groupEnd(index);
+    }
+
+    /** Legacy name retained for old callers; selection is now Google-style group selection. */
+    void selectSingle(int index) {
+        selectGroup(index);
     }
 
     void selectAll() {
@@ -60,13 +67,15 @@ final class CircleTextSelectionModel {
     void updateStart(int index) {
         if (!validIndex(index)) return;
         collapseExplicitToRange();
-        startIndex = index;
+        boolean forward = !validIndex(endIndex) || startIndex <= endIndex;
+        startIndex = forward ? groupStart(index) : groupEnd(index);
     }
 
     void updateEnd(int index) {
         if (!validIndex(index)) return;
         collapseExplicitToRange();
-        endIndex = index;
+        boolean forward = !validIndex(startIndex) || startIndex <= endIndex;
+        endIndex = forward ? groupEnd(index) : groupStart(index);
     }
 
     boolean hasSelection() {
@@ -96,6 +105,57 @@ final class CircleTextSelectionModel {
     RectF wordViewRect(int index, int viewWidth, int viewHeight) {
         if (!validIndex(index)) return new RectF();
         return transform.screenToView(chars.get(index).bounds(), viewWidth, viewHeight);
+    }
+
+    RectF groupViewRect(int index, int viewWidth, int viewHeight) {
+        Rect screen = groupScreenBounds(index);
+        return screen == null ? new RectF() : transform.screenToView(screen, viewWidth, viewHeight);
+    }
+
+    /** One visual rectangle per selected semantic group, not one rectangle per character. */
+    List<RectF> selectionGroupViewRects(int viewWidth, int viewHeight) {
+        List<Integer> indexes = selectionIndices();
+        if (indexes.isEmpty()) return List.of();
+        ArrayList<RectF> out = new ArrayList<>();
+        Rect current = null;
+        int previousLine = Integer.MIN_VALUE;
+        int previousGroup = Integer.MIN_VALUE;
+        for (int index : indexes) {
+            if (!validIndex(index)) continue;
+            OcrDocument.CharUnit c = chars.get(index);
+            if (current == null || c.line() != previousLine || c.group() != previousGroup) {
+                if (current != null && !current.isEmpty()) {
+                    out.add(transform.screenToView(current, viewWidth, viewHeight));
+                }
+                current = new Rect(c.bounds());
+            } else {
+                current.union(c.bounds());
+            }
+            previousLine = c.line();
+            previousGroup = c.group();
+        }
+        if (current != null && !current.isEmpty()) {
+            out.add(transform.screenToView(current, viewWidth, viewHeight));
+        }
+        return List.copyOf(out);
+    }
+
+    int selectedGroupCount() {
+        List<Integer> indexes = selectionIndices();
+        if (indexes.isEmpty()) return 0;
+        int count = 0;
+        int previousLine = Integer.MIN_VALUE;
+        int previousGroup = Integer.MIN_VALUE;
+        for (int index : indexes) {
+            if (!validIndex(index)) continue;
+            OcrDocument.CharUnit c = chars.get(index);
+            if (c.line() != previousLine || c.group() != previousGroup) {
+                count++;
+                previousLine = c.line();
+                previousGroup = c.group();
+            }
+        }
+        return count;
     }
 
     int findWordAt(float viewX, float viewY, int viewWidth, int viewHeight) {
@@ -140,10 +200,11 @@ final class CircleTextSelectionModel {
         return best;
     }
 
-    /** Select only character boxes materially intersecting the absolute screen rectangle. */
+    /** Select semantic groups materially intersecting the absolute screen rectangle. */
     boolean selectIntersecting(Rect screenRect) {
         if (screenRect == null || screenRect.isEmpty() || chars.isEmpty()) return false;
-        ArrayList<Integer> hit = new ArrayList<>();
+        boolean[] selected = new boolean[chars.size()];
+        boolean found = false;
         for (int i = 0; i < chars.size(); i++) {
             Rect r = chars.get(i).bounds();
             Rect intersection = new Rect();
@@ -152,8 +213,16 @@ final class CircleTextSelectionModel {
             long overlap = (long) intersection.width() * intersection.height();
             long area = Math.max(1L, (long) r.width() * r.height());
             boolean centerInside = screenRect.contains(r.centerX(), r.centerY());
-            if (centerInside || overlap >= area * 0.28f) hit.add(i);
+            if (!centerInside && overlap < area * 0.28f) continue;
+            found = true;
+            int lo = groupStart(i);
+            int hi = groupEnd(i);
+            for (int j = lo; j <= hi; j++) selected[j] = true;
         }
+        if (!found) return false;
+
+        ArrayList<Integer> hit = new ArrayList<>();
+        for (int i = 0; i < selected.length; i++) if (selected[i]) hit.add(i);
         if (hit.isEmpty()) return false;
         explicitSelection = List.copyOf(hit);
         startIndex = hit.get(0);
@@ -216,6 +285,38 @@ final class CircleTextSelectionModel {
         return screen == null ? null : transform.screenToView(screen, viewWidth, viewHeight);
     }
 
+    private Rect groupScreenBounds(int index) {
+        if (!validIndex(index)) return null;
+        int lo = groupStart(index);
+        int hi = groupEnd(index);
+        Rect out = null;
+        for (int i = lo; i <= hi; i++) {
+            Rect r = chars.get(i).bounds();
+            if (out == null) out = new Rect(r); else out.union(r);
+        }
+        return out == null || out.isEmpty() ? null : out;
+    }
+
+    private int groupStart(int index) {
+        if (!validIndex(index)) return index;
+        OcrDocument.CharUnit target = chars.get(index);
+        int i = index;
+        while (i > 0 && sameGroup(chars.get(i - 1), target)) i--;
+        return i;
+    }
+
+    private int groupEnd(int index) {
+        if (!validIndex(index)) return index;
+        OcrDocument.CharUnit target = chars.get(index);
+        int i = index;
+        while (i + 1 < chars.size() && sameGroup(chars.get(i + 1), target)) i++;
+        return i;
+    }
+
+    private static boolean sameGroup(OcrDocument.CharUnit a, OcrDocument.CharUnit b) {
+        return a != null && b != null && a.line() == b.line() && a.group() == b.group();
+    }
+
     private void collapseExplicitToRange() {
         if (explicitSelection.isEmpty()) return;
         startIndex = explicitSelection.get(0);
@@ -226,11 +327,11 @@ final class CircleTextSelectionModel {
     private boolean validIndex(int index) { return index >= 0 && index < chars.size(); }
 
     /**
-     * Normalize mixed View/OCR output into stable line/group/order metadata in screen space.
-     *
-     * Candidates are clipped to the Circle Select workspace here, at the single selection-model
-     * boundary. The source snapshots remain absolute-screen data, but navigation-bar/system-UI
-     * nodes outside the interactive workspace can never become selectable or draw off-screen.
+     * Normalize mixed View/OCR output into stable visual-line metadata while preserving the source
+     * recognizer's semantic group boundaries. View snapshot groups come from actual whitespace in
+     * the source CharSequence; PP-OCR groups come from actual recognized spaces; ML Kit groups map
+     * to its Elements. Geometry is used only to order rows, never to invent a word break inside a
+     * valid source group.
      */
     private List<OcrDocument.CharUnit> normalize(List<OcrDocument.CharUnit> input) {
         if (input == null || input.isEmpty()) return List.of();
@@ -252,9 +353,11 @@ final class CircleTextSelectionModel {
         });
 
         ArrayList<OcrDocument.CharUnit> out = new ArrayList<>();
-        int line = -1, group = 0, order = 0;
+        int line = -1, group = -1, order = 0;
         Rect previous = null;
         int lineCenter = Integer.MIN_VALUE;
+        int previousSourceLine = Integer.MIN_VALUE;
+        int previousSourceGroup = Integer.MIN_VALUE;
         for (OcrDocument.CharUnit c : sorted) {
             Rect r = c.bounds();
             int tolerance = previous == null ? 0
@@ -265,13 +368,14 @@ final class CircleTextSelectionModel {
                 group++;
                 lineCenter = r.centerY();
             } else {
-                int gap = r.left - previous.right;
-                float threshold = Math.max(2f, Math.min(previous.height(), r.height()) * 0.32f);
-                if (gap > threshold) group++;
+                boolean semanticBreak = c.line() != previousSourceLine || c.group() != previousSourceGroup;
+                if (semanticBreak) group++;
                 lineCenter = (lineCenter + r.centerY()) / 2;
             }
             out.add(new OcrDocument.CharUnit(c.text(), r, c.confidence(), line, group, order++));
             previous = r;
+            previousSourceLine = c.line();
+            previousSourceGroup = c.group();
         }
         return List.copyOf(out);
     }
