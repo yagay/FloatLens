@@ -288,7 +288,7 @@ public final class EditableRegionOverlay {
             }
 
             if (action == A_OCR) {
-                close(false);
+                close();
                 FloatService service = FloatService.get();
                 if (service != null) service.onCircleRecognizeStarted();
                 OcrEngine.recognize(context, crop, screenRect);
@@ -303,7 +303,7 @@ public final class EditableRegionOverlay {
                     Toast.makeText(context, "选区内没有可提取的 View 文字", Toast.LENGTH_SHORT).show();
                     return;
                 }
-                close(false);
+                close();
                 showViewText(viewText, crop, screenRect);
                 DiagnosticLog.i(context, "REGION_EDIT", "VIEW_TEXT count=" + viewText.size()
                         + " bounds=" + screenRect);
@@ -312,12 +312,12 @@ public final class EditableRegionOverlay {
 
             // AUTO: prefer native Accessibility text; OCR is the fallback for canvas/image content.
             if (!viewText.isEmpty()) {
-                close(false);
+                close();
                 showViewText(viewText, crop, screenRect);
                 DiagnosticLog.i(context, "REGION_EDIT", "AUTO=view count=" + viewText.size()
                         + " bounds=" + screenRect);
             } else {
-                close(false);
+                close();
                 FloatService service = FloatService.get();
                 if (service != null) service.onCircleRecognizeStarted();
                 OcrEngine.recognize(context, crop, screenRect);
@@ -377,16 +377,14 @@ public final class EditableRegionOverlay {
             }
         }
 
-        void close() { close(true); }
-
-        private void close(boolean recycleScreenshot) {
+        void close() {
             if (closed) return;
             closed = true;
             host.remove(this, "editable_region");
             synchronized (EditableRegionOverlay.class) {
                 if (active == this) active = null;
             }
-            if (recycleScreenshot) recycle(screenshot);
+            recycle(screenshot);
         }
 
         private float dp(float value) {
