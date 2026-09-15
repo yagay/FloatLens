@@ -56,6 +56,11 @@
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:taskAffinity="" />
+        <activity
+            android:name=".SecureCaptureProbeActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity="" />
         <activity android:name=".MenuPickerActivity" android:exported="false" />
         <activity android:name=".MenuLabelEditorActivity" android:exported="false" />
         <activity android:name=".GestureHubActivity" android:exported="false" />
