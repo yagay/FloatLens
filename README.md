@@ -42,13 +42,13 @@ com.android.systemui
 
 `staticScope=false`，所以它们只是推荐项，不会锁死用户作用域。
 
-FloatLens 已建立受控 LSPosed Provider 配置层：模块 App 通过 `libxposed-service 102` 把 `增强模式` 与 `LSPosed Provider` 开关写入框架 Remote Preferences；system_server / SystemUI 中的模块运行时只读并监听这组配置。这样应用开关可以真实控制已加载目标进程中的 Provider active 状态，不依赖普通 SharedPreferences、Root 文件或无条件系统 Hook。
+FloatLens 使用 `libxposed-service 102` + Remote Preferences 建立受控 Provider：应用侧写入增强模式、LSPosed Provider 和功能开关，system_server / SystemUI 中的模块运行时只读并监听同一配置。`PrivilegeManager.lsposedProviderAvailable()` 只有在框架服务、Remote Preferences 与实际加载目标都就绪时才返回可用。
 
-`PrivilegeManager.lsposedProviderAvailable()` 只有在 **框架服务已连接 + Remote Preferences 可用 + 至少一个推荐目标实际加载模块** 时才返回可用。高级权限页会分别显示配置同步、作用域、目标加载和 Provider 开关状态。
+第一个功能性 LSPosed Provider 是 **安全窗口截图增强**。它只作用于 FloatLens 自己发起的截图流程：截图前写入一个约 3 秒的短时 lease，system_server 截图 Hook 每次执行都实时验证该 lease；截图完成后立即 disarm，异常情况下 lease 也会自动过期。Hook 只调整系统截图捕获参数，并在截图策略检查阶段短时放行，不永久移除窗口的 `FLAG_SECURE` / secure Surface 标记，也不启用 DRM protected-content 捕获。
 
-**当前 Provider 只负责配置门，仍不安装任何 system_server、SystemUI 或第三方应用的功能性 Hook，也不会绕过 FLAG_SECURE。** 后续具体 LSPosed 能力必须继续经过这个 Provider 门并保留普通 Android / Accessibility 回退。
+开启条件：`增强模式 + LSPosed Provider + 截图与 OCR → LSPosed 安全窗口截图增强`，并要求 system_server 已实际加载 FloatLens 模块。该功能优先走 Accessibility 截图路径；关闭任意门控后立即恢复普通行为。
 
-之前加入的全局 `FLAG_SECURE` system_server Hook 已移除。原先用于抓取 FV/fooView 运行时行为的固定 FV 作用域、Method Probe、对象快照、Hook 日志回传和 Runtime Inspector ZIP 也不属于正式功能。
+之前曾加入的无条件全局 `FLAG_SECURE` / `SurfaceControl.Builder.setSecure(false)` 实现已经删除，不会恢复。原先用于抓取 FV/fooView 运行时行为的固定 FV 作用域、Method Probe、对象快照、Hook 日志回传和 Runtime Inspector ZIP 也不属于正式功能。
 
 完整权限与回退规则见 [`docs/PRIVILEGED_MODE.md`](docs/PRIVILEGED_MODE.md)。
 
