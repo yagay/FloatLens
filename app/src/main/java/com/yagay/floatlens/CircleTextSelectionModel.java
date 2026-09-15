@@ -6,22 +6,24 @@ import android.graphics.RectF;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Pure OcrDocument selection state used by CircleSelectOverlay. */
+/** Pure screen-space text selection state used by CircleSelectOverlay. */
 final class CircleTextSelectionModel {
-    private final int imageWidth;
-    private final int imageHeight;
+    private final ScreenBitmapTransform transform;
     private List<OcrDocument.CharUnit> chars = List.of();
     private int startIndex = -1;
     private int endIndex = -1;
     /** Non-contiguous rectangle selection before a handle is dragged. */
     private List<Integer> explicitSelection = List.of();
 
-    CircleTextSelectionModel(int imageWidth, int imageHeight) {
-        this.imageWidth = Math.max(1, imageWidth);
-        this.imageHeight = Math.max(1, imageHeight);
+    CircleTextSelectionModel(ScreenBitmapTransform transform) {
+        if (transform == null) throw new IllegalArgumentException("transform required");
+        this.transform = transform;
     }
 
     void setDocument(OcrDocument document) {
+        if (document != null && !document.isScreenSpace()) {
+            throw new IllegalArgumentException("Circle selection requires screen-space text");
+        }
         chars = normalize(document == null ? List.of() : document.chars());
         clear();
     }
@@ -93,29 +95,25 @@ final class CircleTextSelectionModel {
 
     RectF wordViewRect(int index, int viewWidth, int viewHeight) {
         if (!validIndex(index)) return new RectF();
-        return toViewRect(chars.get(index).bounds(), viewWidth, viewHeight);
+        return transform.screenToView(chars.get(index).bounds(), viewWidth, viewHeight);
     }
 
     int findWordAt(float viewX, float viewY, int viewWidth, int viewHeight) {
         if (chars.isEmpty() || viewWidth <= 0 || viewHeight <= 0) return -1;
-        int bx = Math.round(viewX * imageWidth / (float) viewWidth);
-        int by = Math.round(viewY * imageHeight / (float) viewHeight);
+        int sx = transform.viewXToScreen(viewX, viewWidth);
+        int sy = transform.viewYToScreen(viewY, viewHeight);
         int best = -1;
         long bestArea = Long.MAX_VALUE;
         for (int i = 0; i < chars.size(); i++) {
             Rect r = chars.get(i).bounds();
-            if (!r.contains(bx, by)) continue;
+            if (!r.contains(sx, sy)) continue;
             long area = Math.max(1L, (long) r.width() * r.height());
             if (area < bestArea) { bestArea = area; best = i; }
         }
         return best;
     }
 
-    /**
-     * Exact hit first; otherwise snap to the nearest character while strongly preferring the same
-     * visual row. The old score discounted vertical distance (0.72x), which made a large handle
-     * snap radius jump into adjacent lines. Vertical distance is now expensive and locally capped.
-     */
+    /** Exact hit first; otherwise snap to the nearest character while preferring the same row. */
     int findSelectionWord(float viewX, float viewY, int viewWidth, int viewHeight,
                           float maxDistancePx) {
         int exact = findWordAt(viewX, viewY, viewWidth, viewHeight);
@@ -129,12 +127,9 @@ final class CircleTextSelectionModel {
             if (r.isEmpty()) continue;
             float dx = viewX < r.left ? r.left - viewX : viewX > r.right ? viewX - r.right : 0f;
             float dy = viewY < r.top ? r.top - viewY : viewY > r.bottom ? viewY - r.bottom : 0f;
-
-            // Even when the caller supplies a large drag radius, never let it freely cross rows.
             float rowGate = Math.max(r.height() * 1.35f,
                     Math.min(maxDistancePx * 0.48f, r.height() * 2.15f));
             if (dy > rowGate) continue;
-
             float score = dx * dx + dy * dy * 3.25f;
             if (score < bestScore) {
                 bestScore = score;
@@ -145,18 +140,18 @@ final class CircleTextSelectionModel {
         return best;
     }
 
-    /** Select only character boxes materially intersecting the rectangle. */
-    boolean selectIntersecting(Rect imageRect) {
-        if (imageRect == null || imageRect.isEmpty() || chars.isEmpty()) return false;
+    /** Select only character boxes materially intersecting the absolute screen rectangle. */
+    boolean selectIntersecting(Rect screenRect) {
+        if (screenRect == null || screenRect.isEmpty() || chars.isEmpty()) return false;
         ArrayList<Integer> hit = new ArrayList<>();
         for (int i = 0; i < chars.size(); i++) {
             Rect r = chars.get(i).bounds();
             Rect intersection = new Rect();
-            boolean intersects = intersection.setIntersect(r, imageRect);
+            boolean intersects = intersection.setIntersect(r, screenRect);
             if (!intersects) continue;
             long overlap = (long) intersection.width() * intersection.height();
             long area = Math.max(1L, (long) r.width() * r.height());
-            boolean centerInside = imageRect.contains(r.centerX(), r.centerY());
+            boolean centerInside = screenRect.contains(r.centerX(), r.centerY());
             if (centerInside || overlap >= area * 0.28f) hit.add(i);
         }
         if (hit.isEmpty()) return false;
@@ -166,13 +161,14 @@ final class CircleTextSelectionModel {
         return true;
     }
 
-    /** Replace stale characters in a refined region, then restore deterministic reading order. */
-    void mergeRefinement(OcrDocument translatedPatch, Rect imageRect) {
-        if (translatedPatch == null || imageRect == null || imageRect.isEmpty()) return;
+    /** Replace stale characters in a screen-space refined region. */
+    void mergeRefinement(OcrDocument translatedPatch, Rect screenRect) {
+        if (translatedPatch == null || !translatedPatch.isScreenSpace()
+                || screenRect == null || screenRect.isEmpty()) return;
         ArrayList<OcrDocument.CharUnit> merged = new ArrayList<>();
         for (OcrDocument.CharUnit c : chars) {
             Rect r = c.bounds();
-            if (!Rect.intersects(r, imageRect)) merged.add(c);
+            if (!Rect.intersects(r, screenRect)) merged.add(c);
         }
         merged.addAll(translatedPatch.chars());
         chars = normalize(merged);
@@ -203,15 +199,21 @@ final class CircleTextSelectionModel {
         return out.toString().trim();
     }
 
-    RectF selectionViewBounds(int viewWidth, int viewHeight) {
+    Rect selectionScreenBounds() {
         List<Integer> indexes = selectionIndices();
         if (indexes.isEmpty()) return null;
-        RectF union = null;
+        Rect union = null;
         for (int index : indexes) {
-            RectF r = wordViewRect(index, viewWidth, viewHeight);
-            if (union == null) union = new RectF(r); else union.union(r);
+            if (!validIndex(index)) continue;
+            Rect r = chars.get(index).bounds();
+            if (union == null) union = new Rect(r); else union.union(r);
         }
         return union == null || union.isEmpty() ? null : union;
+    }
+
+    RectF selectionViewBounds(int viewWidth, int viewHeight) {
+        Rect screen = selectionScreenBounds();
+        return screen == null ? null : transform.screenToView(screen, viewWidth, viewHeight);
     }
 
     private void collapseExplicitToRange() {
@@ -221,16 +223,9 @@ final class CircleTextSelectionModel {
         explicitSelection = List.of();
     }
 
-    private RectF toViewRect(Rect imageRect, int viewWidth, int viewHeight) {
-        float sx = viewWidth / (float) imageWidth;
-        float sy = viewHeight / (float) imageHeight;
-        return new RectF(imageRect.left * sx, imageRect.top * sy,
-                imageRect.right * sx, imageRect.bottom * sy);
-    }
-
     private boolean validIndex(int index) { return index >= 0 && index < chars.size(); }
 
-    /** Normalize mixed engine/refinement output into stable line/group/order metadata. */
+    /** Normalize mixed View/OCR output into stable line/group/order metadata in screen space. */
     private List<OcrDocument.CharUnit> normalize(List<OcrDocument.CharUnit> input) {
         if (input == null || input.isEmpty()) return List.of();
         ArrayList<OcrDocument.CharUnit> sorted = new ArrayList<>();
