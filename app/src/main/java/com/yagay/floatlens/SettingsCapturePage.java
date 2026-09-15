@@ -8,7 +8,7 @@ final class SettingsCapturePage {
     static LinearLayout build(SettingsActivity activity, FloatSettings fs) {
         SettingsPageUi ui = new SettingsPageUi(activity, fs);
         LinearLayout root = AppUi.pageRoot(activity, "截图与 OCR",
-                "截图 OCR 与圈画 OCR 分开管理。截图可使用 PP-OCR；圈画只使用 View + ML Kit，不再经过 PP-OCR。Root / LSPosed 增强开关统一放在“高级权限”中。" );
+                "截图 OCR 与圈画 OCR 分开管理。截图可使用 PP-OCR；圈画可选 View + ML Kit、仅 View 或仅 ML Kit，并且完全不经过 PP-OCR。Root / LSPosed 增强开关统一放在“高级权限”中。" );
 
         AppUi.Section capture = AppUi.section(activity, "截图",
                 "状态栏与导航栏设置控制截图范围；圈画模式始终保留实时导航按键可点击。" );
