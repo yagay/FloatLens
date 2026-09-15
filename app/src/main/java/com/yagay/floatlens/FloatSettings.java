@@ -148,7 +148,7 @@ public final class FloatSettings {
     public boolean lsposedEnabled() { return p.getBoolean(K_LSPOSED_ENABLED, false); }
     public boolean privilegeFallback() { return p.getBoolean(K_PRIVILEGE_FALLBACK, true); }
     public boolean canUseRoot() { return enhancedMode() && rootEnabled(); }
-    public boolean canUseLsposed() { return enhancedMode() && lsposedEnabled(); }
+    public boolean canUseLsposed() { return PrivilegeManager.canUseLsposed(this); }
     public boolean effectiveRootScreenshot() { return canUseRoot() && rootScreenshot(); }
     public long rootLastCheckMs() { return p.getLong(K_ROOT_LAST_CHECK, 0L); }
     public boolean rootLastGranted() { return p.getBoolean(K_ROOT_LAST_GRANTED, false); }
