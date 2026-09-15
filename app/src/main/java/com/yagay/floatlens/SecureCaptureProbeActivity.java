@@ -3,6 +3,8 @@ package com.yagay.floatlens;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
@@ -14,9 +16,15 @@ import com.google.android.material.button.MaterialButton;
 
 /** End-to-end FLAG_SECURE probe for the controlled LSPosed screenshot provider. */
 public final class SecureCaptureProbeActivity extends AppCompatActivity {
+    private static final long STATUS_REFRESH_TIMEOUT_MS = 1_500L;
+
+    private final Handler main = new Handler(Looper.getMainLooper());
     private TextView status;
     private MaterialButton retry;
     private boolean running;
+    private int refreshGeneration;
+    private LsposedStatusManager.Listener pendingStatusListener;
+    private Runnable pendingStatusTimeout;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -25,6 +33,12 @@ public final class SecureCaptureProbeActivity extends AppCompatActivity {
         ThemeSettings.applySystemBars(this);
         setContentView(buildContent());
         getWindow().getDecorView().postDelayed(this::runProbe, 700L);
+    }
+
+    @Override
+    protected void onDestroy() {
+        cancelPendingStatusRefresh();
+        super.onDestroy();
     }
 
     private LinearLayout buildContent() {
@@ -68,27 +82,74 @@ public final class SecureCaptureProbeActivity extends AppCompatActivity {
 
     private void runProbe() {
         if (running) return;
+        running = true;
+        retry.setEnabled(false);
+        status.setText("正在刷新 LSPosed 框架、Remote Preferences 与 system_server 加载状态…");
+
+        final int generation = ++refreshGeneration;
+        cancelPendingStatusRefresh();
+
+        pendingStatusListener = snapshot -> {
+            if (!running || generation != refreshGeneration) return;
+            cancelPendingStatusRefresh();
+            evaluatePreconditionsAndCapture();
+        };
+        LsposedStatusManager.addListener(pendingStatusListener, false);
+
+        pendingStatusTimeout = () -> {
+            if (!running || generation != refreshGeneration) return;
+            cancelPendingStatusRefresh();
+            evaluatePreconditionsAndCapture();
+        };
+        main.postDelayed(pendingStatusTimeout, STATUS_REFRESH_TIMEOUT_MS);
+        LsposedStatusManager.syncRuntimeConfigAsync();
+    }
+
+    private void evaluatePreconditionsAndCapture() {
         FloatSettings fs = new FloatSettings(this);
+        LsposedStatusManager.Snapshot s = LsposedStatusManager.snapshot();
         if (!PrivilegeManager.canUseLsposedSecureScreenshot(fs)) {
-            showResult(false,
-                    "前置条件未满足。请确认：增强模式、LSPosed Provider、LSPosed 安全窗口截图增强均已开启，system_server 已实际加载 FloatLens 模块。",
-                    null);
+            showResult(false, "前置条件未满足。\n" + gateSummary(fs, s), null);
             return;
         }
         if (LensAccessibilityService.get() == null) {
-            showResult(false, "无障碍服务未连接，无法执行安全截图自检。", null);
+            showResult(false, "无障碍服务未连接，无法执行安全截图自检。\n" + gateSummary(fs, s), null);
             return;
         }
 
-        running = true;
-        retry.setEnabled(false);
-        status.setText("正在建立短时 lease 并调用无障碍截图…");
-        DiagnosticLog.i(this, "SECURE_CAPTURE_PROBE", "start");
+        status.setText("前置条件已满足，正在建立短时 lease 并调用无障碍截图…");
+        DiagnosticLog.i(this, "SECURE_CAPTURE_PROBE", "start " + gateSummary(fs, s));
 
         ScreenCaptureBackend.captureSecureAccessibility(getApplicationContext(), bitmap ->
                 runOnUiThread(() -> evaluate(bitmap)), error ->
                 runOnUiThread(() -> showResult(false,
                         "截图调用失败：" + ScreenCaptureBackend.safeMessage(error), error)));
+    }
+
+    private String gateSummary(FloatSettings fs, LsposedStatusManager.Snapshot s) {
+        String runningTargets = s.runningProcesses.isEmpty()
+                ? "无" : String.join(", ", s.runningProcesses);
+        return "本地：enhanced=" + fs.enhancedMode()
+                + " lsposed=" + fs.lsposedEnabled()
+                + " secureScreenshot=" + fs.lsposedSecureScreenshot()
+                + "\n框架：service=" + s.serviceConnected
+                + " remoteConfig=" + s.remoteConfigReady
+                + " systemScope=" + s.systemScopeEnabled
+                + " systemLoaded=" + s.systemLoaded
+                + "\n远端：enhanced=" + s.remoteEnhancedMode
+                + " lsposed=" + s.remoteLsposedEnabled
+                + " secureScreenshot=" + s.remoteSecureScreenshotEnabled
+                + "\nloadedTargets=" + runningTargets
+                + (s.detail.isBlank() ? "" : "\ndetail=" + s.detail);
+    }
+
+    private void cancelPendingStatusRefresh() {
+        LsposedStatusManager.Listener listener = pendingStatusListener;
+        pendingStatusListener = null;
+        if (listener != null) LsposedStatusManager.removeListener(listener);
+        Runnable timeout = pendingStatusTimeout;
+        pendingStatusTimeout = null;
+        if (timeout != null) main.removeCallbacks(timeout);
     }
 
     private void evaluate(Bitmap bitmap) {
@@ -134,6 +195,7 @@ public final class SecureCaptureProbeActivity extends AppCompatActivity {
     }
 
     private void showResult(boolean success, String message, Throwable error) {
+        cancelPendingStatusRefresh();
         running = false;
         retry.setEnabled(true);
         status.setText((success ? "✅ " : "❌ ") + message);
