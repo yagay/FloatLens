@@ -3,7 +3,6 @@ package com.yagay.floatlens;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
-import android.view.WindowManager;
 
 /** Display-space ↔ screenshot-space mapping shared by screenshot operations. */
 final class ScreenshotGeometry {
@@ -11,8 +10,8 @@ final class ScreenshotGeometry {
         if (raw == null || raw.isRecycled() || screenBounds == null || screenBounds.isEmpty()) {
             throw new IllegalArgumentException("invalid crop");
         }
-        WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
-        Rect display = wm.getCurrentWindowMetrics().getBounds();
+        Rect display = ScreenGeometry.displayBounds(c);
+        if (display.isEmpty()) throw new IllegalStateException("display bounds unavailable");
         CropMath.Bounds bounds = CropMath.screenRectRound(
                 screenBounds.left, screenBounds.top, screenBounds.right, screenBounds.bottom,
                 display.left, display.top, display.width(), display.height(),
@@ -38,8 +37,7 @@ final class ScreenshotGeometry {
         boolean keepNavigationBar = CaptureSystemBarsPolicy.keepNavigationBar(c);
         Rect captureBounds = CaptureSystemBarsPolicy.captureBounds(
                 c, keepStatusBar, keepNavigationBar);
-        WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
-        Rect display = new Rect(wm.getCurrentWindowMetrics().getBounds());
+        Rect display = ScreenGeometry.displayBounds(c);
         if (captureBounds.equals(display)) return raw;
         try {
             return cropScreenBounds(c, raw, captureBounds);
