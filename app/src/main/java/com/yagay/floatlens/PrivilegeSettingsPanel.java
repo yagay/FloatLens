@@ -17,7 +17,7 @@ public final class PrivilegeSettingsPanel {
 
     public static LinearLayout build(AppCompatActivity activity, FloatSettings fs) {
         LinearLayout root = AppUi.pageRoot(activity, "高级权限",
-                "Root 是功能增强层；LSPosed 已接入受控 Provider 配置通道，但当前仍不安装功能性 Hook。" );
+                "Root 和 LSPosed 都是可选增强层；关闭增强模式后只使用普通 Android / 无障碍路径。" );
 
         TextView modeStatus = AppUi.caption(activity, "", 13);
         TextView rootStatus = AppUi.caption(activity, "", 13);
@@ -70,7 +70,7 @@ public final class PrivilegeSettingsPanel {
                 "API 102 Remote Preferences 把应用开关同步到 system_server / SystemUI；目标进程只读并监听配置变化。" );
         SwitchMaterial lsposedSwitch = preferenceSwitch(activity, fs,
                 "启用 LSPosed Provider",
-                "只启用受控 Provider 配置门；当前版本仍不会绕过 FLAG_SECURE，也不会安装功能性 Hook。",
+                "允许受控 LSPosed 功能参与运行；具体功能仍需在对应页面单独开启。",
                 FloatSettings.K_LSPOSED_ENABLED, fs.lsposedEnabled(),
                 () -> {
                     LsposedStatusManager.syncRuntimeConfigAsync();
@@ -90,7 +90,7 @@ public final class PrivilegeSettingsPanel {
         AppUi.addRow(lsposedSection.body, lsposedButtons);
 
         TextView lsposedNote = AppUi.caption(activity,
-                "推荐作用域是 system + com.android.systemui。只有框架服务、Remote Preferences、至少一个实际加载目标都就绪时，Provider 才会被判定可用；当前仍没有任何功能性 Hook。",
+                "推荐作用域是 system + com.android.systemui。当前已接入的第一个受控功能是“截图与 OCR → LSPosed 安全截图增强”；它只在 FloatLens 截图的短时授权窗内生效。",
                 12);
         AppUi.addRow(lsposedSection.body, simpleBlock(activity, lsposedNote));
 
