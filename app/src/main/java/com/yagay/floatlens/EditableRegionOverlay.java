@@ -13,6 +13,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Toast;
+
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -21,9 +22,8 @@ import java.util.List;
 /**
  * Adjustable rectangular selection workspace launched from the floating-icon long press.
  *
- * First drag creates a rectangle. Once released, the rectangle is retained and can be moved from
- * its interior or resized from any edge/corner. Recognition only happens when the user presses one
- * of the explicit action buttons, so releasing a resize/move never accidentally starts OCR.
+ * Window hosting, screenshot coordinate mapping and result delivery are delegated to the shared
+ * FloatLens owners. This class owns only region-editor interaction and the AUTO/View/OCR decision.
  */
 public final class EditableRegionOverlay {
     private static EditorView active;
@@ -32,8 +32,8 @@ public final class EditableRegionOverlay {
         if (screenshot == null || screenshot.isRecycled()) return;
         if (active != null) active.close();
         Context app = c.getApplicationContext();
-        WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
-        EditorView v = new EditorView(app, wm, screenshot);
+        FlOverlayWindowHost host = new FlOverlayWindowHost(app);
+        EditorView view = new EditorView(app, host, screenshot);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -42,13 +42,12 @@ public final class EditableRegionOverlay {
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
-        try {
-            wm.addView(v, lp);
-            active = v;
-        } catch (Throwable t) {
-            Toast.makeText(app, "区域选择器启动失败: " + safe(t), Toast.LENGTH_LONG).show();
-            try { screenshot.recycle(); } catch (Throwable ignored) {}
+        if (host.add(view, lp, "editable_region")) {
+            active = view;
+            return;
         }
+        Toast.makeText(app, "区域选择器启动失败", Toast.LENGTH_LONG).show();
+        try { screenshot.recycle(); } catch (Throwable ignored) {}
     }
 
     private static final class EditorView extends View {
@@ -57,7 +56,7 @@ public final class EditableRegionOverlay {
         private static final int A_NONE = 0, A_AUTO = 1, A_OCR = 2, A_VIEW = 3, A_CANCEL = 4;
 
         private final Context context;
-        private final WindowManager wm;
+        private final FlOverlayWindowHost host;
         private final Bitmap screenshot;
         private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private final Paint shadePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -76,10 +75,10 @@ public final class EditableRegionOverlay {
         private float downX, downY;
         private boolean closed;
 
-        EditorView(Context c, WindowManager wm, Bitmap screenshot) {
+        EditorView(Context c, FlOverlayWindowHost host, Bitmap screenshot) {
             super(c);
             this.context = c;
-            this.wm = wm;
+            this.host = host;
             this.screenshot = screenshot;
             setFocusable(true);
             setClickable(true);
@@ -270,10 +269,12 @@ public final class EditableRegionOverlay {
         }
 
         private void normalizeAndClamp() {
-            float l = Math.min(selection.left, selection.right), r = Math.max(selection.left, selection.right);
-            float t = Math.min(selection.top, selection.bottom), b = Math.max(selection.top, selection.bottom);
-            selection.set(clamp(l, 0, getWidth()), clamp(t, 0, getHeight()),
-                    clamp(r, 0, getWidth()), clamp(b, 0, getHeight()));
+            float left = Math.min(selection.left, selection.right);
+            float right = Math.max(selection.left, selection.right);
+            float top = Math.min(selection.top, selection.bottom);
+            float bottom = Math.max(selection.top, selection.bottom);
+            selection.set(clamp(left, 0, getWidth()), clamp(top, 0, getHeight()),
+                    clamp(right, 0, getWidth()), clamp(bottom, 0, getHeight()));
         }
 
         private void performAction(int action) {
@@ -288,9 +289,9 @@ public final class EditableRegionOverlay {
 
             if (action == A_OCR) {
                 close(false);
-                FloatService f = FloatService.get();
-                if (f != null) f.onCircleRecognizeStarted();
-                OcrEngine.recognize(context, crop);
+                FloatService service = FloatService.get();
+                if (service != null) service.onCircleRecognizeStarted();
+                OcrEngine.recognize(context, crop, screenRect);
                 DiagnosticLog.i(context, "REGION_EDIT", "OCR bounds=" + screenRect);
                 return;
             }
@@ -298,34 +299,36 @@ public final class EditableRegionOverlay {
             List<String> viewText = collectViewText(screenRect);
             if (action == A_VIEW) {
                 if (viewText.isEmpty()) {
+                    recycle(crop);
                     Toast.makeText(context, "选区内没有可提取的 View 文字", Toast.LENGTH_SHORT).show();
                     return;
                 }
                 close(false);
-                showViewText(viewText, crop);
-                DiagnosticLog.i(context, "REGION_EDIT", "VIEW_TEXT count=" + viewText.size() + " bounds=" + screenRect);
+                showViewText(viewText, crop, screenRect);
+                DiagnosticLog.i(context, "REGION_EDIT", "VIEW_TEXT count=" + viewText.size()
+                        + " bounds=" + screenRect);
                 return;
             }
 
             // AUTO: prefer native Accessibility text; OCR is the fallback for canvas/image content.
             if (!viewText.isEmpty()) {
                 close(false);
-                showViewText(viewText, crop);
-                DiagnosticLog.i(context, "REGION_EDIT", "AUTO=view count=" + viewText.size() + " bounds=" + screenRect);
+                showViewText(viewText, crop, screenRect);
+                DiagnosticLog.i(context, "REGION_EDIT", "AUTO=view count=" + viewText.size()
+                        + " bounds=" + screenRect);
             } else {
                 close(false);
-                FloatService f = FloatService.get();
-                if (f != null) f.onCircleRecognizeStarted();
-                OcrEngine.recognize(context, crop);
+                FloatService service = FloatService.get();
+                if (service != null) service.onCircleRecognizeStarted();
+                OcrEngine.recognize(context, crop, screenRect);
                 DiagnosticLog.i(context, "REGION_EDIT", "AUTO=ocr bounds=" + screenRect);
             }
         }
 
-        private void showViewText(List<String> blocks, Bitmap crop) {
+        private void showViewText(List<String> blocks, Bitmap crop, Rect anchor) {
             String joined = String.join("\n", blocks);
-            FloatService f = FloatService.get();
-            if (f != null) f.onOcrResults(blocks.size());
-            ResultOverlay.show(context, joined, blocks, crop);
+            boolean shown = ResultSurfaceRouter.showViewText(context, joined, crop, anchor);
+            if (!shown) recycle(crop);
         }
 
         private List<String> collectViewText(Rect screenRect) {
@@ -333,24 +336,25 @@ public final class EditableRegionOverlay {
             if (service == null) return List.of();
             List<ScreenCandidate> all = AccessibilityCandidateCollector.collect(service);
             ArrayList<ScreenCandidate> hits = new ArrayList<>();
-            for (ScreenCandidate c : all) {
-                if (c == null || c.type() != ScreenCandidate.Type.TEXT || !c.hasText()) continue;
-                Rect r = c.bounds();
-                if (r.isEmpty() || !Rect.intersects(screenRect, r)) continue;
-                Rect inter = new Rect();
-                if (!inter.setIntersect(screenRect, r)) continue;
-                long ia = (long) inter.width() * inter.height();
-                long ca = Math.max(1L, (long) r.width() * r.height());
-                boolean centerInside = screenRect.contains(r.centerX(), r.centerY());
-                if (centerInside || ia * 100L >= ca * 45L) hits.add(c);
+            for (ScreenCandidate candidate : all) {
+                if (candidate == null || candidate.type() != ScreenCandidate.Type.TEXT
+                        || !candidate.hasText()) continue;
+                Rect bounds = candidate.bounds();
+                if (bounds.isEmpty() || !Rect.intersects(screenRect, bounds)) continue;
+                Rect intersection = new Rect();
+                if (!intersection.setIntersect(screenRect, bounds)) continue;
+                long intersectionArea = (long) intersection.width() * intersection.height();
+                long candidateArea = Math.max(1L, (long) bounds.width() * bounds.height());
+                boolean centerInside = screenRect.contains(bounds.centerX(), bounds.centerY());
+                if (centerInside || intersectionArea * 100L >= candidateArea * 45L) hits.add(candidate);
             }
-            hits.sort(Comparator.comparingInt((ScreenCandidate c) -> c.bounds().top)
-                    .thenComparingInt(c -> c.bounds().left)
+            hits.sort(Comparator.comparingInt((ScreenCandidate candidate) -> candidate.bounds().top)
+                    .thenComparingInt(candidate -> candidate.bounds().left)
                     .thenComparingInt(ScreenCandidate::depth));
             LinkedHashSet<String> unique = new LinkedHashSet<>();
-            for (ScreenCandidate c : hits) {
-                String s = c.text() == null ? "" : c.text().trim();
-                if (!s.isEmpty()) unique.add(s);
+            for (ScreenCandidate candidate : hits) {
+                String value = candidate.text() == null ? "" : candidate.text().trim();
+                if (!value.isEmpty()) unique.add(value);
             }
             return new ArrayList<>(unique);
         }
@@ -366,38 +370,43 @@ public final class EditableRegionOverlay {
 
         private Bitmap cropToSelection(Rect screenRect) {
             try {
-                Rect display = wm.getCurrentWindowMetrics().getBounds();
-                float sx = screenshot.getWidth() / (float) Math.max(1, display.width());
-                float sy = screenshot.getHeight() / (float) Math.max(1, display.height());
-                int l = clamp(Math.round((screenRect.left - display.left) * sx), 0, screenshot.getWidth() - 1);
-                int t = clamp(Math.round((screenRect.top - display.top) * sy), 0, screenshot.getHeight() - 1);
-                int r = clamp(Math.round((screenRect.right - display.left) * sx), l + 1, screenshot.getWidth());
-                int b = clamp(Math.round((screenRect.bottom - display.top) * sy), t + 1, screenshot.getHeight());
-                return Bitmap.createBitmap(screenshot, l, t, r - l, b - t);
-            } catch (Throwable t) {
-                DiagnosticLog.i(context, "REGION_EDIT", "crop failed=" + safe(t));
+                return ScreenshotGeometry.cropScreenBounds(context, screenshot, screenRect);
+            } catch (Throwable error) {
+                DiagnosticLog.i(context, "REGION_EDIT", "crop failed=" + safe(error));
                 return null;
             }
         }
 
         void close() { close(true); }
+
         private void close(boolean recycleScreenshot) {
             if (closed) return;
             closed = true;
-            try { wm.removeView(this); } catch (Throwable ignored) {}
-            synchronized (EditableRegionOverlay.class) { if (active == this) active = null; }
-            if (recycleScreenshot) try { if (!screenshot.isRecycled()) screenshot.recycle(); } catch (Throwable ignored) {}
+            host.remove(this, "editable_region");
+            synchronized (EditableRegionOverlay.class) {
+                if (active == this) active = null;
+            }
+            if (recycleScreenshot) recycle(screenshot);
         }
 
-        private float dp(float v) { return v * getResources().getDisplayMetrics().density; }
-        private float clamp(float v, float min, float max) { return Math.max(min, Math.min(max, v)); }
-        private int clamp(int v, int min, int max) { return Math.max(min, Math.min(max, v)); }
+        private float dp(float value) {
+            return value * getResources().getDisplayMetrics().density;
+        }
+
+        private float clamp(float value, float min, float max) {
+            return Math.max(min, Math.min(max, value));
+        }
     }
 
-    private static String safe(Throwable t) {
-        if (t == null) return "unknown";
-        String m = t.getMessage();
-        return m == null || m.isBlank() ? t.getClass().getSimpleName() : m;
+    private static void recycle(Bitmap bitmap) {
+        if (bitmap == null || bitmap.isRecycled()) return;
+        try { bitmap.recycle(); } catch (Throwable ignored) {}
+    }
+
+    private static String safe(Throwable error) {
+        if (error == null) return "unknown";
+        String message = error.getMessage();
+        return message == null || message.isBlank() ? error.getClass().getSimpleName() : message;
     }
 
     private EditableRegionOverlay() {}
