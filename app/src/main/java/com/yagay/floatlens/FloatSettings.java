@@ -152,7 +152,9 @@ public final class FloatSettings {
     public boolean canUseRoot() { return enhancedMode() && rootEnabled(); }
     public boolean canUseLsposed() { return PrivilegeManager.canUseLsposed(this); }
     public boolean effectiveRootScreenshot() { return canUseRoot() && rootScreenshot(); }
-    public boolean effectiveLsposedSecureScreenshot() { return canUseLsposed() && lsposedSecureScreenshot(); }
+    public boolean effectiveLsposedSecureScreenshot() {
+        return PrivilegeManager.canUseLsposedSecureScreenshot(this);
+    }
     public long rootLastCheckMs() { return p.getLong(K_ROOT_LAST_CHECK, 0L); }
     public boolean rootLastGranted() { return p.getBoolean(K_ROOT_LAST_GRANTED, false); }
     public String rootLastDetail() { return p.getString(K_ROOT_LAST_DETAIL, ""); }
