@@ -15,6 +15,7 @@ public final class CircleSelectController {
         Context app = c.getApplicationContext();
         long gen = ++generation;
         CircleSelectOverlay.dismissActive("restart");
+        CircleActiveBorderOverlay.hide(app, "restart");
 
         final FlSystemPanelController.CaptureState shadeState = FlSystemPanelController.beginCapture(
                 app, "circle_select");
@@ -50,6 +51,10 @@ public final class CircleSelectController {
                 return;
             }
 
+            // The frozen bitmap already exists at this point, so the active-state border can never
+            // become part of Circle Select's own screenshot/crop result.
+            CircleActiveBorderOverlay.show(app);
+
             OverlayShadeCoordinator.cleanup(app, shadeState.expandedAtCapture(), "circle_select",
                     collapsed -> {
                         synchronized (CircleSelectController.class) {
@@ -82,6 +87,7 @@ public final class CircleSelectController {
         synchronized (CircleSelectController.class) {
             if (gen != generation) return;
         }
+        CircleActiveBorderOverlay.hide(app, "circle_select_" + reason);
         if (service != null) service.onCircleFinished("circle_select_" + reason);
     }
 
