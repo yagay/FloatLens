@@ -3,17 +3,10 @@ package com.yagay.floatlens;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
-import android.view.WindowManager;
 
 import java.util.function.Consumer;
 
-/**
- * Circle Select frame geometry.
- *
- * Status-bar inclusion follows the shared screenshot setting. The live navigation bar is always
- * kept outside the interactive Circle Select workspace so Back / Home / Recents remain directly
- * clickable even when normal screenshots are configured to include navigation-bar pixels.
- */
+/** Circle Select frame geometry on top of the shared display/system-bar policy. */
 final class CircleSelectFrame {
     static void capture(Context c, Consumer<Bitmap> ok, Consumer<Throwable> fail) {
         Context app = c.getApplicationContext();
@@ -23,12 +16,12 @@ final class CircleSelectFrame {
                 return;
             }
 
-            Rect display = displayBounds(app);
+            Rect display = ScreenGeometry.displayBounds(app);
             Rect workspace = contentBounds(app);
-            FloatSettings fs = new FloatSettings(app);
-            boolean keepNavigation = CaptureSystemBarsPolicy.keepNavigationBar(app);
+            FloatSettings settings = new FloatSettings(app);
+            boolean keepNavigation = settings.keepNavigationBarInScreenshot();
             Rect configuredCapture = CaptureSystemBarsPolicy.captureBounds(
-                    app, fs.keepStatusBarInScreenshot(), keepNavigation);
+                    app, settings.keepStatusBarInScreenshot(), keepNavigation);
             try {
                 Bitmap frame;
                 if (workspace.equals(display)) {
@@ -42,7 +35,7 @@ final class CircleSelectFrame {
                         + " configuredCapture=" + configuredCapture.toShortString()
                         + " workspace=" + workspace.toShortString()
                         + " bitmap=" + frame.getWidth() + "x" + frame.getHeight()
-                        + " keepStatusBar=" + fs.keepStatusBarInScreenshot()
+                        + " keepStatusBar=" + settings.keepStatusBarInScreenshot()
                         + " keepNavigationBar=" + keepNavigation
                         + " liveNavigationAlwaysInteractive=true");
                 ok.accept(frame);
@@ -53,22 +46,15 @@ final class CircleSelectFrame {
         }, fail);
     }
 
-    /**
-     * Circle Select always excludes only the live navigation bar from its interactive window.
-     * The status-bar choice still follows the user's screenshot-range setting.
-     */
+    /** Circle always leaves live navigation controls outside its interactive window. */
     static Rect contentBounds(Context c) {
-        FloatSettings fs = new FloatSettings(c);
+        FloatSettings settings = new FloatSettings(c);
         return CaptureSystemBarsPolicy.captureBounds(
-                c,
-                fs.keepStatusBarInScreenshot(),
-                false);
+                c, settings.keepStatusBarInScreenshot(), false);
     }
 
-    static Rect displayBounds(Context c) {
-        WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
-        return new Rect(wm.getCurrentWindowMetrics().getBounds());
-    }
+    /** Compatibility alias; physical display ownership lives in ScreenGeometry. */
+    static Rect displayBounds(Context c) { return ScreenGeometry.displayBounds(c); }
 
     private CircleSelectFrame() {}
 }
