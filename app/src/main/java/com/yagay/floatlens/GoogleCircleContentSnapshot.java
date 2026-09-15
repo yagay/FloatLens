@@ -3,6 +3,7 @@ package com.yagay.floatlens;
 import android.content.Context;
 import android.graphics.Point;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 
@@ -14,10 +15,7 @@ import java.util.Set;
 
 /**
  * Frozen semantic snapshot captured before the Google-style overlay is installed.
- *
- * The gesture is only a selector. This index decides whether the selected screen content is native
- * text or an image region, so tap/circle/highlight/scribble do not all collapse into a screenshot.
- * Coordinates in this class are absolute SCREEN coordinates.
+ * Gestures select content; this snapshot resolves native text/image targets in SCREEN coordinates.
  */
 final class GoogleCircleContentSnapshot {
     private static final int MAX_NODES = 4200;
@@ -31,13 +29,13 @@ final class GoogleCircleContentSnapshot {
         final Rect screenBounds;
         final String text;
 
-        private Target(Kind kind, Rect screenBounds, String text) {
+        private Target(Kind kind, Rect bounds, String text) {
             this.kind = kind == null ? Kind.NONE : kind;
-            this.screenBounds = screenBounds == null ? new Rect() : new Rect(screenBounds);
+            this.screenBounds = bounds == null ? new Rect() : new Rect(bounds);
             this.text = text == null ? "" : text.trim();
         }
 
-        static Target none(Rect fallback) { return new Target(Kind.NONE, fallback, ""); }
+        static Target none(Rect bounds) { return new Target(Kind.NONE, bounds, ""); }
         static Target text(Rect bounds, String text) { return new Target(Kind.TEXT, bounds, text); }
         static Target image(Rect bounds) { return new Target(Kind.IMAGE, bounds, ""); }
         boolean hasText() { return kind == Kind.TEXT && !text.isBlank(); }
@@ -55,18 +53,16 @@ final class GoogleCircleContentSnapshot {
         }
     }
 
-    private final Rect displayBounds;
     private final List<TextNode> texts;
     private final List<Rect> images;
 
-    private GoogleCircleContentSnapshot(Rect displayBounds, List<TextNode> texts, List<Rect> images) {
-        this.displayBounds = displayBounds == null ? new Rect() : new Rect(displayBounds);
+    private GoogleCircleContentSnapshot(List<TextNode> texts, List<Rect> images) {
         this.texts = texts == null ? List.of() : List.copyOf(texts);
         this.images = copyRects(images);
     }
 
-    static GoogleCircleContentSnapshot empty(Rect displayBounds) {
-        return new GoogleCircleContentSnapshot(displayBounds, List.of(), List.of());
+    static GoogleCircleContentSnapshot empty(Rect ignoredDisplayBounds) {
+        return new GoogleCircleContentSnapshot(List.of(), List.of());
     }
 
     static GoogleCircleContentSnapshot capture(Context context) {
@@ -74,9 +70,7 @@ final class GoogleCircleContentSnapshot {
         Context app = context.getApplicationContext();
         LensAccessibilityService service = LensAccessibilityService.get();
         Rect display = ScreenGeometry.displayBounds(app);
-        if (service == null || display.isEmpty() || Thread.currentThread().isInterrupted()) {
-            return empty(display);
-        }
+        if (service == null || display.isEmpty() || interrupted()) return empty(display);
 
         ArrayList<TextNode> textOut = new ArrayList<>();
         ArrayList<Rect> imageOut = new ArrayList<>();
@@ -88,15 +82,14 @@ final class GoogleCircleContentSnapshot {
             List<AccessibilityWindowInfo> windows = service.getWindows();
             if (windows != null && !windows.isEmpty()) {
                 for (AccessibilityWindowInfo window : windows) {
-                    if (Thread.currentThread().isInterrupted() || window == null
-                            || visited[0] >= MAX_NODES) break;
+                    if (interrupted() || window == null || visited[0] >= MAX_NODES) break;
                     AccessibilityNodeInfo root = null;
                     try { root = window.getRoot(); } catch (Throwable ignored) {}
                     if (root == null || ownPackage(service, root)) continue;
                     collect(service, root, display, textOut, imageOut,
                             textSeen, imageSeen, visited, 0);
                 }
-            } else if (!Thread.currentThread().isInterrupted()) {
+            } else if (!interrupted()) {
                 AccessibilityNodeInfo root = null;
                 try { root = service.getRootInActiveWindow(); } catch (Throwable ignored) {}
                 if (root != null && !ownPackage(service, root)) {
@@ -108,14 +101,14 @@ final class GoogleCircleContentSnapshot {
             DiagnosticLog.i(app, "G_CIRCLE_CONTENT", "snapshot failed=" + safe(t));
         }
 
-        if (Thread.currentThread().isInterrupted()) return empty(display);
-        List<TextNode> texts = pruneTextContainers(textOut);
+        if (interrupted()) return empty(display);
+        List<TextNode> pruned = pruneTextContainers(textOut);
         imageOut.sort(Comparator.comparingLong(GoogleCircleContentSnapshot::area)
                 .thenComparingInt(r -> r.top).thenComparingInt(r -> r.left));
-        DiagnosticLog.i(app, "G_CIRCLE_CONTENT", "snapshot text=" + texts.size()
+        DiagnosticLog.i(app, "G_CIRCLE_CONTENT", "snapshot text=" + pruned.size()
                 + " images=" + imageOut.size() + " visited=" + visited[0]
                 + " coordinateSpace=absolute_screen");
-        return new GoogleCircleContentSnapshot(display, texts, imageOut);
+        return new GoogleCircleContentSnapshot(pruned, imageOut);
     }
 
     int textCount() { return texts.size(); }
@@ -126,83 +119,76 @@ final class GoogleCircleContentSnapshot {
         Rect selected = frame.bitmapRectToScreen(toBitmapRect(selection.bounds,
                 frame.bitmap.getWidth(), frame.bitmap.getHeight()));
         Point focus = bitmapPointToScreen(frame, selection.focus.x, selection.focus.y);
-        if (selected.isEmpty()) selected = new Rect(focus.x, focus.y, focus.x + 1, focus.y + 1);
+        if (selected.isEmpty()) selected.set(focus.x, focus.y, focus.x + 1, focus.y + 1);
 
         if (selection.kind == GoogleCircleSelection.Kind.TAP) {
-            TextNode textAt = smallestTextAt(focus.x, focus.y);
-            if (textAt != null) return Target.text(textAt.bounds, textAt.text);
-            Rect imageAt = smallestImageAt(focus.x, focus.y);
-            if (imageAt != null) return Target.image(imageAt);
-
-            Target nearbyText = selectText(selected, true);
-            if (nearbyText.hasText()) return nearbyText;
-            Rect image = bestImage(selected, focus, 0.16f);
+            TextNode exactText = smallestTextAt(focus.x, focus.y);
+            if (exactText != null) return Target.text(exactText.bounds, exactText.text);
+            Rect exactImage = smallestImageAt(focus.x, focus.y);
+            if (exactImage != null) return Target.image(exactImage);
+            Target nearby = selectText(selected, true);
+            if (nearby.hasText()) return nearby;
+            Rect image = bestImage(selected, focus, 0.16d);
             return image == null ? Target.none(selected) : Target.image(image);
         }
 
         if (selection.kind == GoogleCircleSelection.Kind.HIGHLIGHT) {
-            Target highlighted = selectText(selected, false);
-            if (highlighted.hasText()) return highlighted;
-            Rect image = bestImage(selected, focus, 0.18f);
+            Target text = selectText(selected, false);
+            if (text.hasText()) return text;
+            Rect image = bestImage(selected, focus, 0.18d);
             return image == null ? Target.none(selected) : Target.image(image);
         }
 
         Target text = selectText(selected, false);
-        Rect image = bestImage(selected, focus, 0.24f);
+        Rect image = bestImage(selected, focus, 0.24d);
         if (text.hasText() && image == null) return text;
         if (!text.hasText() && image != null) return Target.image(image);
-        if (text.hasText() && image != null) {
-            // Native text under the user's focus is stronger evidence than a parent ImageView.
-            TextNode focusedText = smallestTextAt(focus.x, focus.y);
-            if (focusedText != null && materiallyInside(focusedText.bounds, selected, 0.20f)) {
-                return text;
-            }
-            double imageCoverage = overlapArea(image, selected) / (double) Math.max(1L, area(selected));
-            double textCoverage = overlapArea(text.screenBounds, selected)
-                    / (double) Math.max(1L, area(selected));
-            return imageCoverage > Math.max(0.42d, textCoverage * 1.35d)
-                    ? Target.image(image) : text;
-        }
-        return Target.none(selected);
+        if (!text.hasText()) return Target.none(selected);
+
+        TextNode focusedText = smallestTextAt(focus.x, focus.y);
+        if (focusedText != null && coverage(focusedText.bounds, selected) >= 0.20d) return text;
+        double imageCoverage = overlapArea(image, selected) / (double) Math.max(1L, area(selected));
+        double textCoverage = overlapArea(text.screenBounds, selected)
+                / (double) Math.max(1L, area(selected));
+        return imageCoverage > Math.max(0.42d, textCoverage * 1.35d)
+                ? Target.image(image) : text;
     }
 
-    private Target selectText(Rect selected, boolean allowLoose) {
+    private Target selectText(Rect selected, boolean loose) {
         ArrayList<TextNode> hits = new ArrayList<>();
         for (TextNode node : texts) {
-            if (node == null || node.bounds.isEmpty() || node.text.isBlank()) continue;
             long overlap = overlapArea(node.bounds, selected);
             if (overlap <= 0) continue;
             boolean centerInside = selected.contains(node.bounds.centerX(), node.bounds.centerY());
             double nodeRatio = overlap / (double) Math.max(1L, area(node.bounds));
-            double selectionRatio = overlap / (double) Math.max(1L, area(selected));
-            if (centerInside || nodeRatio >= (allowLoose ? 0.12d : 0.26d)
-                    || selectionRatio >= (allowLoose ? 0.10d : 0.20d)) {
-                hits.add(node);
-            }
+            double selectedRatio = overlap / (double) Math.max(1L, area(selected));
+            if (centerInside || nodeRatio >= (loose ? 0.12d : 0.26d)
+                    || selectedRatio >= (loose ? 0.10d : 0.20d)) hits.add(node);
         }
         if (hits.isEmpty()) return Target.none(selected);
         hits.sort(Comparator.comparingInt((TextNode n) -> n.bounds.centerY())
                 .thenComparingInt(n -> n.bounds.left));
-        StringBuilder text = new StringBuilder();
+
+        StringBuilder value = new StringBuilder();
         Rect union = null;
         HashSet<String> emitted = new HashSet<>();
         for (TextNode hit : hits) {
-            String compact = compact(hit.text);
-            if (compact.isEmpty() || !emitted.add(compact)) continue;
-            if (text.length() > 0) text.append('\n');
-            text.append(hit.text);
+            String key = compact(hit.text);
+            if (key.isEmpty() || !emitted.add(key)) continue;
+            if (value.length() > 0) value.append('\n');
+            value.append(hit.text);
             if (union == null) union = new Rect(hit.bounds); else union.union(hit.bounds);
         }
-        return text.length() == 0 ? Target.none(selected) : Target.text(union, text.toString());
+        return value.length() == 0 ? Target.none(selected) : Target.text(union, value.toString());
     }
 
     private TextNode smallestTextAt(int x, int y) {
         TextNode best = null;
         long bestArea = Long.MAX_VALUE;
         for (TextNode node : texts) {
-            if (node == null || node.bounds.isEmpty() || !node.bounds.contains(x, y)) continue;
-            long a = area(node.bounds);
-            if (a < bestArea) { best = node; bestArea = a; }
+            if (!node.bounds.contains(x, y)) continue;
+            long candidateArea = area(node.bounds);
+            if (candidateArea < bestArea) { bestArea = candidateArea; best = node; }
         }
         return best;
     }
@@ -211,28 +197,24 @@ final class GoogleCircleContentSnapshot {
         Rect best = null;
         long bestArea = Long.MAX_VALUE;
         for (Rect image : images) {
-            if (image == null || image.isEmpty() || !image.contains(x, y)) continue;
-            long a = area(image);
-            if (a < bestArea) { best = image; bestArea = a; }
+            if (!image.contains(x, y)) continue;
+            long candidateArea = area(image);
+            if (candidateArea < bestArea) { bestArea = candidateArea; best = image; }
         }
         return best == null ? null : new Rect(best);
     }
 
-    private Rect bestImage(Rect selected, Point focus, float minScore) {
+    private Rect bestImage(Rect selected, Point focus, double minimumScore) {
         Rect best = null;
-        double bestScore = minScore;
+        double bestScore = minimumScore;
         for (Rect image : images) {
-            if (image == null || image.isEmpty()) continue;
             long overlap = overlapArea(image, selected);
             if (overlap <= 0) continue;
             double selectedRatio = overlap / (double) Math.max(1L, area(selected));
             double imageRatio = overlap / (double) Math.max(1L, area(image));
             double score = Math.max(selectedRatio, imageRatio * 0.78d);
             if (focus != null && image.contains(focus.x, focus.y)) score += 0.18d;
-            if (score > bestScore) {
-                bestScore = score;
-                best = image;
-            }
+            if (score > bestScore) { bestScore = score; best = image; }
         }
         return best == null ? null : new Rect(best);
     }
@@ -241,8 +223,7 @@ final class GoogleCircleContentSnapshot {
                                 Rect display, List<TextNode> texts, List<Rect> images,
                                 Set<String> textSeen, Set<String> imageSeen,
                                 int[] visited, int depth) {
-        if (node == null || depth > 80 || Thread.currentThread().isInterrupted()
-                || visited[0]++ >= MAX_NODES) return;
+        if (node == null || depth > 80 || interrupted() || visited[0]++ >= MAX_NODES) return;
         try { if (!node.isVisibleToUser()) return; } catch (Throwable ignored) {}
         Rect bounds = AccessibilityNodeSemantics.clippedBounds(node, display);
         if (bounds.isEmpty()) return;
@@ -261,7 +242,7 @@ final class GoogleCircleContentSnapshot {
 
         int count = Math.min(300, AccessibilityNodeSemantics.childCount(node));
         for (int i = 0; i < count; i++) {
-            if (Thread.currentThread().isInterrupted() || visited[0] >= MAX_NODES) return;
+            if (interrupted() || visited[0] >= MAX_NODES) return;
             AccessibilityNodeInfo child = null;
             try { child = node.getChild(i); } catch (Throwable ignored) {}
             if (child != null) collect(service, child, display, texts, images,
@@ -276,11 +257,11 @@ final class GoogleCircleContentSnapshot {
                 .thenComparing((TextNode n) -> -n.depth));
         ArrayList<TextNode> kept = new ArrayList<>();
         for (TextNode candidate : sorted) {
-            String c = compact(candidate.text);
-            if (c.isEmpty()) continue;
+            String candidateText = compact(candidate.text);
+            if (candidateText.isEmpty()) continue;
             boolean duplicate = false;
             for (TextNode existing : kept) {
-                if (!c.equals(compact(existing.text))) continue;
+                if (!candidateText.equals(compact(existing.text))) continue;
                 if (containsWithTolerance(candidate.bounds, existing.bounds)
                         || containsWithTolerance(existing.bounds, candidate.bounds)) {
                     duplicate = true;
@@ -294,7 +275,7 @@ final class GoogleCircleContentSnapshot {
         return List.copyOf(kept);
     }
 
-    private static Rect toBitmapRect(android.graphics.RectF r, int width, int height) {
+    private static Rect toBitmapRect(RectF r, int width, int height) {
         int left = Math.max(0, Math.min(width - 1, (int) Math.floor(r.left)));
         int top = Math.max(0, Math.min(height - 1, (int) Math.floor(r.top)));
         int right = Math.max(left + 1, Math.min(width, (int) Math.ceil(r.right)));
@@ -305,21 +286,19 @@ final class GoogleCircleContentSnapshot {
     private static Point bitmapPointToScreen(GoogleCircleCapture.Frame frame, float x, float y) {
         float sx = frame.screenBounds.width() / (float) Math.max(1, frame.bitmap.getWidth());
         float sy = frame.screenBounds.height() / (float) Math.max(1, frame.bitmap.getHeight());
-        int px = frame.screenBounds.left + Math.round(x * sx);
-        int py = frame.screenBounds.top + Math.round(y * sy);
-        return new Point(px, py);
+        return new Point(frame.screenBounds.left + Math.round(x * sx),
+                frame.screenBounds.top + Math.round(y * sy));
     }
 
-    private static boolean materiallyInside(Rect value, Rect selected, float minimum) {
-        long overlap = overlapArea(value, selected);
-        return overlap > 0 && overlap / (double) Math.max(1L, area(value)) >= minimum;
+    private static double coverage(Rect value, Rect selected) {
+        return overlapArea(value, selected) / (double) Math.max(1L, area(value));
     }
 
     private static boolean containsWithTolerance(Rect outer, Rect inner) {
         if (outer == null || inner == null || outer.isEmpty() || inner.isEmpty()) return false;
-        int t = 3;
-        return outer.left <= inner.left + t && outer.top <= inner.top + t
-                && outer.right >= inner.right - t && outer.bottom >= inner.bottom - t;
+        int tolerance = 3;
+        return outer.left <= inner.left + tolerance && outer.top <= inner.top + tolerance
+                && outer.right >= inner.right - tolerance && outer.bottom >= inner.bottom - tolerance;
     }
 
     private static long overlapArea(Rect a, Rect b) {
@@ -335,9 +314,8 @@ final class GoogleCircleContentSnapshot {
         return r == null || r.isEmpty() ? 0L : Math.max(1L, (long) r.width() * r.height());
     }
 
-    private static String compact(String s) {
-        if (s == null) return "";
-        return s.replaceAll("\\s+", " ").trim();
+    private static String compact(String value) {
+        return value == null ? "" : value.replaceAll("\\s+", " ").trim();
     }
 
     private static boolean ownPackage(LensAccessibilityService service, AccessibilityNodeInfo node) {
@@ -348,15 +326,15 @@ final class GoogleCircleContentSnapshot {
     private static List<Rect> copyRects(List<Rect> source) {
         if (source == null || source.isEmpty()) return List.of();
         ArrayList<Rect> out = new ArrayList<>();
-        for (Rect r : source) if (r != null && !r.isEmpty()) out.add(new Rect(r));
+        for (Rect rect : source) if (rect != null && !rect.isEmpty()) out.add(new Rect(rect));
         return List.copyOf(out);
     }
+
+    private static boolean interrupted() { return Thread.currentThread().isInterrupted(); }
 
     private static String safe(Throwable t) {
         if (t == null) return "unknown";
         String message = t.getMessage();
         return message == null || message.isBlank() ? t.getClass().getSimpleName() : message;
     }
-
-    private GoogleCircleContentSnapshot() {}
 }
