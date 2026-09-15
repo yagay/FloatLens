@@ -1,6 +1,6 @@
 # FloatLens Architecture
 
-FloatLens ordinary mode follows a **single-owner rule**: different interaction surfaces may have different UI/lifetimes, but they must not reimplement the same semantics, capture, OCR parsing, overlay hosting, workflow state, or result routing.
+FloatLens ordinary mode follows a **single-owner rule**: interaction surfaces may have different UI and lifetimes, but they must not reimplement the same semantics, capture, OCR parsing, overlay hosting, workflow state, system-panel handling, coordinate mapping, or result routing.
 
 The ordinary pipeline is:
 
@@ -16,7 +16,7 @@ ResultSession
 One ResultActivity / UnifiedResultDialogFragment
 ```
 
-Root and LSPosed are optional providers. They may improve a backend later, but they must not create an alternate application flow.
+Root and LSPosed are optional providers. They may enhance a backend, but they must not create an alternate application flow.
 
 ## 1. Floating input
 
@@ -67,11 +67,7 @@ This class also owns normal image/View/fullscreen classification helpers.
 ### `AccessibilityCandidateCollector`
 Single normal-mode Accessibility tree walker. It is interruption-aware and produces cached `ScreenCandidate` objects.
 
-Consumers:
-
-- Direct selection;
-- explicit View picker;
-- compatibility point-picker APIs in `LensAccessibilityService`.
+Consumers include Direct selection, the explicit View picker, region View-text extraction, Circle snapshots, and compatibility point-picker APIs in `LensAccessibilityService`.
 
 `LensAccessibilityService.collectCandidatesAt/findViewAt` are compatibility delegates only. They must not regain their own recursive collector.
 
@@ -107,7 +103,9 @@ Native Accessibility text is a `VIEW_TEXT` result, not fake OCR.
 ### `FlOverlayWindowHost`
 Single owner of ordinary overlay add/update/remove/migration behavior.
 
-Normal feature overlays must not call `WindowManager.addView/removeView` directly unless an Android component has a documented token/window reason. Floating icon helpers, View picker, region selector and Circle surfaces use this shared host.
+Normal feature overlays must not call `WindowManager.addView/removeView` directly unless an Android component has a documented token/window reason. Floating icon helpers, View picker, region selectors and Circle surfaces use this shared host.
+
+`LensAccessibilityService` may directly add/remove `TYPE_ACCESSIBILITY_OVERLAY` because it is one of the host implementations used by `FlOverlayWindowHost`; feature controllers must not copy that code.
 
 ## 6. Screenshot lifecycle
 
@@ -131,7 +129,9 @@ restore leases
 Reference-counted floating-icon hiding. Never replace this with a plain boolean; overlapping capture flows must not reveal FloatLens early.
 
 ### `ScreenshotGeometry` / `CropMath` / `SelectionCropper`
-`CropMath` owns pure coordinate mapping. `ScreenshotGeometry` is the display wrapper. `SelectionCropper` owns rectangle/freehand bitmap crop/masking and independent result-bitmap ownership.
+`CropMath` owns pure coordinate mapping. `ScreenshotGeometry` delegates display bounds to `ScreenGeometry` and owns screen-rectangle screenshot cropping. `SelectionCropper` owns rectangle/freehand bitmap crop/masking and independent result-bitmap ownership.
+
+A successful bounds crop is independently owned. Once a feature has produced that crop and closes its source workspace, it must release the original full-screen bitmap.
 
 ### `ScreenshotController`
 Business routing only: full save, region editor, View capture, OCR capture and result delivery. It must not duplicate backend selection or result-window implementation.
@@ -143,7 +143,6 @@ Circle’s initial frozen frame can use the raw backend only because `CircleSele
 ### `MlKitTextCore`
 Single ML Kit foundation:
 
-- normal recognizer preference helpers;
 - Text block/line/element/symbol -> `OcrDocument` geometry;
 - shared character fallback splitting.
 
@@ -170,21 +169,23 @@ It uses `MlKitTextCore`; it does not own a separate ML Kit parser. Circle may in
 ### `CircleTextIndex`
 Circle merge policy only. Full-frame merge may prefer native View text, but an explicit user ROI refinement is authoritative inside that requested region so stale approximate View geometry cannot suppress the refinement.
 
-## 8. Circle snapshots
+## 8. Circle snapshots and UI
 
 ### `CircleViewTextSnapshot`
-Captures visible native View text before the Circle overlay exists. It uses `AccessibilityNodeSemantics.visibleText()` and is interruption-aware so superseded scans stop promptly.
+Captures visible native View text before the Circle overlay exists. It uses shared Accessibility semantics and is interruption-aware so superseded scans stop promptly.
 
 When Android exposes exact character-location extra data, it is retained. Otherwise View character geometry is approximate and may be refined by ML Kit.
 
 ### `CircleViewImageSnapshot`
-Uses only ordinary `AccessibilityNodeSemantics.isImage()` in normal mode. It must not read LSPosed metadata when privileged mode is not in use.
+Uses ordinary `AccessibilityNodeSemantics.isImage()` in normal mode. It must not redefine image semantics or silently depend on LSPosed metadata.
 
 ### `CircleSelectController`
-Owns one Circle generation, one cancellable View snapshot task and one screenshot-hide lease. A newer generation cancels/releases the older one.
+The only ordinary Circle controller. It owns one generation, one cancellable View snapshot task and one screenshot-hide lease. A newer generation cancels/releases the older one.
+
+The old same-touch `CircleLiveController` path has been removed. Do not recreate a second Circle capture/controller pipeline.
 
 ### `CircleSelectOverlay`
-Owns Circle UI/input only. It must not grow another Accessibility collector, OCR parser, capture backend or result system.
+Owns Circle UI/input only. It must not grow another Accessibility collector, OCR parser, capture backend, system-panel algorithm or result system.
 
 ## 9. Recognition workflow state
 
@@ -197,8 +198,8 @@ IDLE -> CAPTURING -> RECOGNIZING -> RESULTS -> IDLE
 
 Starting recognition/results directly from IDLE creates a generation; phase changes inside one workflow keep the generation.
 
-### Compatibility
-`CircleStateMachine` is deprecated and delegates to `RecognitionWorkflowState`. It must not gain new logic. Remove the facade once old call sites have been migrated.
+### Temporary compatibility
+`CircleStateMachine` is deprecated and delegates to `RecognitionWorkflowState`. It contains no independent state or policy. Remove the facade after remaining service-facing call sites can be migrated safely; do not add behavior to it.
 
 ## 10. Results
 
@@ -222,31 +223,50 @@ Single business-state/bitmap-ownership object for screenshot, View text, View im
 ### `ResultController`
 Single pending-token/Activity launch boundary.
 
+### `ResultSurfaceRouter`
+Thin result-construction facade only. It may create the proper `ResultSession` and delegate to `ResultController`; it must not host another result UI.
+
 ### `UnifiedResultDialogFragment`
 Single visible result lifecycle. Close button, outside-tap cancellation, dismiss and destruction all converge on one workflow teardown path.
 
-Do not create another result Activity/overlay for a new capture/OCR feature.
+The old `ResultOverlay` compatibility class has been removed. Do not add another result Activity/overlay for a new capture/OCR feature.
 
 ### `OcrResultDispatcher`
 One OCR output boundary: active inline sink when appropriate, otherwise the normal result pipeline.
 
-## 11. Notification shade / system panel
+## 11. Region selection
+
+### `RegionOverlay`
+Simple region-selection interaction only. Capture, crop and result delivery stay in shared owners.
+
+### `EditableRegionOverlay`
+Editable rectangle interaction and AUTO/View/OCR choice only. It uses:
+
+- `FlOverlayWindowHost` for hosting;
+- `AccessibilityCandidateCollector` for View text;
+- `ScreenshotGeometry` for screen-to-bitmap crop;
+- `OcrEngine` for OCR;
+- `ResultSurfaceRouter` for View results.
+
+It must release the source full-screen bitmap after a successful independent crop is handed off.
+
+## 12. Notification shade / system panel
 
 ### `FlSystemPanelController`
-Single owner of SystemUI notification-shade detection/dismiss fallback.
+Single owner of SystemUI notification-shade detection, dismissal, fallback, and overlay-ready completion/recheck timing.
+
+`CircleSelectController`, result flows and capture flows call this owner directly. The old `OverlayShadeCoordinator` compatibility class has been removed; do not recreate feature-local shade retry timers.
 
 `ResultReadyCoordinator` only determines when a captured ResultActivity is visibly ready.
 
-`OverlayShadeCoordinator` is a thin compatibility adapter for frozen overlay timing; it delegates the actual system-panel behavior to `FlSystemPanelController` and must not implement a second dismissal algorithm.
-
-## 12. Ordinary mode vs privileged providers
+## 13. Ordinary mode vs privileged providers
 
 Ordinary mode must remain complete using Accessibility + normal overlay permission.
 
 Privileged providers are optional adapters:
 
 - Root may provide an alternate capture backend when explicitly enabled.
-- LSPosed may later provide extra metadata/secure-capture capability when explicitly enabled.
+- LSPosed may provide secure-capture or other explicitly gated capabilities.
 
 Rules:
 
@@ -257,25 +277,26 @@ Rules:
 
 Privileged-specific details live in `docs/PRIVILEGED_MODE.md` and `docs/SECURE_SCREENSHOT.md`.
 
-## 13. Compatibility facades allowed temporarily
+## 14. Compatibility facades allowed temporarily
 
 Compatibility APIs may remain while callers migrate, but they must only delegate:
 
 - `CircleStateMachine` -> `RecognitionWorkflowState`;
 - `LensAccessibilityService.collectCandidatesAt/findViewAt` -> `AccessibilityCandidateCollector`;
-- `OverlayShadeCoordinator` -> `FlSystemPanelController`;
 - `ResultSurfaceRouter` -> `ResultController`.
+
+Deleted compatibility layers such as `CircleLiveController`, `OverlayShadeCoordinator` and `ResultOverlay` must not be reintroduced.
 
 If a compatibility class starts accumulating business logic again, move that logic to the listed single owner instead.
 
-## 14. Regression gates
+## 15. Regression gates
 
 `.github/workflows/debug.yml` is required after structural changes:
 
 1. `testDebugUnitTest`;
 2. `lintDebug`;
 3. `assembleDebug`;
-4. upload debug APK.
+4. upload the debug APK.
 
 Prefer pure Java policy/geometry tests over JVM tests that directly invoke Android framework methods.
 
@@ -288,12 +309,13 @@ Device validation after a large refactor should cover:
 - text/View/image Direct release;
 - explicit View picker;
 - full/region screenshot and system-bar options;
+- editable region AUTO/View/OCR and repeated open/close ownership;
 - OCR and screenshot -> inline OCR;
 - notification-shade capture;
 - Circle open/close/navigation, View text, image hit, fast OCR and ROI refinement;
 - rapid repeated Direct/View/Circle starts to verify stale async scans are cancelled.
 
-## 15. Rule for future changes
+## 16. Rule for future changes
 
 **Extend the owner; do not clone the implementation.**
 
