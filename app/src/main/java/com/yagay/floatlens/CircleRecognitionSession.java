@@ -19,9 +19,8 @@ import java.util.Set;
 /**
  * Per-Circle-Select recognition session.
  *
- * View text is frozen before the overlay is attached and remains authoritative for the whole
- * session. ML Kit is a full-frame blind-spot supplement only; the configured OCR engine is used
- * only for tap-sized ROI refinement, and neither OCR layer is allowed to replace View text.
+ * View text and every OCR supplement are normalized into absolute screen coordinates before they
+ * enter the text index. Screenshot/crop geometry therefore cannot move already indexed text.
  */
 final class CircleRecognitionSession {
     enum Stage { VIEW_SNAPSHOT, FAST_MLKIT, ROI_PRECISE }
@@ -34,6 +33,7 @@ final class CircleRecognitionSession {
     private final Context app;
     private final Bitmap screenshot;
     private final CircleViewTextSnapshot viewSnapshot;
+    private final ScreenBitmapTransform transform;
     private final Callback callback;
     private long generation;
     private boolean closed;
@@ -41,16 +41,21 @@ final class CircleRecognitionSession {
     private CircleTextIndex index;
     private TextRecognizer fastRecognizer;
 
-    CircleRecognitionSession(Context context, Bitmap screenshot, Callback callback) {
-        this(context, screenshot, CircleViewTextSnapshotHandoff.consume(), callback);
-    }
-
     CircleRecognitionSession(Context context, Bitmap screenshot,
-                             CircleViewTextSnapshot viewSnapshot, Callback callback) {
+                             CircleViewTextSnapshot viewSnapshot,
+                             ScreenBitmapTransform transform,
+                             Callback callback) {
         this.app = context.getApplicationContext();
         this.screenshot = screenshot;
+        Rect fallbackDisplay = ScreenGeometry.displayBounds(app);
         this.viewSnapshot = viewSnapshot == null
-                ? CircleViewTextSnapshot.empty(new Rect()) : viewSnapshot;
+                ? CircleViewTextSnapshot.empty(fallbackDisplay) : viewSnapshot;
+        Rect frame = transform == null ? CircleSelectFrame.contentBounds(app) : transform.screenFrame();
+        this.transform = transform == null
+                ? new ScreenBitmapTransform(frame,
+                        screenshot == null ? 1 : screenshot.getWidth(),
+                        screenshot == null ? 1 : screenshot.getHeight())
+                : transform;
         this.callback = callback;
     }
 
@@ -60,21 +65,26 @@ final class CircleRecognitionSession {
         long started = android.os.SystemClock.uptimeMillis();
 
         try {
-            OcrDocument view = viewSnapshot.toDocument(screenshot.getWidth(), screenshot.getHeight());
+            OcrDocument view = viewSnapshot.toScreenDocument();
             if (!isCurrent(run)) return;
-            index = new CircleTextIndex(view, screenshot.getWidth(), screenshot.getHeight());
+            Rect frame = transform.screenFrame();
+            index = new CircleTextIndex(view,
+                    Math.max(1, frame.width()), Math.max(1, frame.height()));
             current = index.current();
             DiagnosticLog.i(app, "CIRCLE_INDEX",
                     "view snapshot nodes=" + viewSnapshot.nodeCount()
                             + " exactGeometryNodes=" + viewSnapshot.exactGeometryNodeCount()
                             + " chars=" + view.chars().size()
                             + " lines=" + view.lines().size()
+                            + " frame=" + frame.toShortString()
+                            + " coordinateSpace=" + view.coordinateSpace()
                             + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
             emit(current, Stage.VIEW_SNAPSHOT, false);
         } catch (Throwable t) {
             DiagnosticLog.i(app, "CIRCLE_INDEX", "view snapshot failed=" + safe(t));
-            index = new CircleTextIndex(emptyDocument("view-snapshot"),
-                    screenshot.getWidth(), screenshot.getHeight());
+            Rect frame = transform.screenFrame();
+            index = new CircleTextIndex(emptyScreenDocument("view-snapshot", frame),
+                    Math.max(1, frame.width()), Math.max(1, frame.height()));
             current = index.current();
             emitFailure(Stage.VIEW_SNAPSHOT, t, false);
         }
@@ -82,38 +92,46 @@ final class CircleRecognitionSession {
         startFastMlKit(run);
     }
 
-    /** Refine only a missed tap-sized ROI with the configured high-accuracy OCR engine. */
-    void refine(Rect imageRegion) {
-        if (closed || imageRegion == null || imageRegion.isEmpty()
+    /** Refine one missed screen-space region with the configured high-accuracy OCR engine. */
+    void refine(Rect screenRegion) {
+        if (closed || screenRegion == null || screenRegion.isEmpty()
                 || screenshot == null || screenshot.isRecycled() || index == null) return;
-        Rect region = new Rect(imageRegion);
-        if (!region.intersect(0, 0, screenshot.getWidth(), screenshot.getHeight()) || region.isEmpty()) return;
+        Rect region = new Rect(screenRegion);
+        if (!region.intersect(transform.screenFrame()) || region.isEmpty()) return;
+        Rect bitmapRegion = transform.screenToBitmap(region);
+        if (bitmapRegion.isEmpty()) return;
 
         Bitmap crop;
         try {
-            crop = Bitmap.createBitmap(screenshot, region.left, region.top, region.width(), region.height());
+            crop = Bitmap.createBitmap(screenshot,
+                    bitmapRegion.left, bitmapRegion.top,
+                    bitmapRegion.width(), bitmapRegion.height());
         } catch (Throwable t) {
             emitFailure(Stage.ROI_PRECISE, t, true);
             return;
         }
 
         final long run = generation;
-        DiagnosticLog.i(app, "CIRCLE_INDEX", "roi precise start=" + region.toShortString()
+        DiagnosticLog.i(app, "CIRCLE_INDEX", "roi precise start screen=" + region.toShortString()
+                + " bitmap=" + bitmapRegion.toShortString()
                 + " crop=" + crop.getWidth() + "x" + crop.getHeight());
         OcrEngine.recognizeDocument(app, crop, new OcrEngine.DocumentCallback() {
             @Override public void onSuccess(OcrDocument document) {
                 try {
                     if (!isCurrent(run) || index == null) return;
-                    OcrDocument translated = document.translated(region.left, region.top,
+                    OcrDocument parentBitmap = document.translated(
+                            bitmapRegion.left, bitmapRegion.top,
                             screenshot.getWidth(), screenshot.getHeight());
-                    index.replaceOcrRegion(translated, region);
+                    OcrDocument screenPatch = transform.documentBitmapToScreen(parentBitmap);
+                    index.replaceOcrRegion(screenPatch, region);
                     current = index.current();
                     DiagnosticLog.i(app, "CIRCLE_INDEX", "roi precise ready engine="
                             + document.engine()
-                            + " roiChars=" + translated.chars().size()
+                            + " roiChars=" + screenPatch.chars().size()
                             + " viewChars=" + index.viewDocument().chars().size()
                             + " mergedChars=" + current.chars().size()
-                            + " region=" + region.toShortString());
+                            + " screen=" + region.toShortString()
+                            + " coordinateSpace=" + screenPatch.coordinateSpace());
                     emit(current, Stage.ROI_PRECISE, true);
                 } finally {
                     if (!crop.isRecycled()) crop.recycle();
@@ -157,20 +175,23 @@ final class CircleRecognitionSession {
             String engine = chinese ? "fast-mlkit-zh" : "fast-mlkit-latin";
             DiagnosticLog.i(app, "CIRCLE_INDEX", "fast blind-spot start engine=" + engine
                     + " image=" + screenshot.getWidth() + "x" + screenshot.getHeight()
+                    + " frame=" + transform.screenFrame().toShortString()
                     + " languages=" + languages);
 
             recognizer.process(InputImage.fromBitmap(screenshot, 0))
                     .addOnSuccessListener(text -> {
                         try {
                             if (!isCurrent(run) || index == null) return;
-                            OcrDocument fast = mlKitDocument(text, engine,
+                            OcrDocument bitmapFast = mlKitDocument(text, engine,
                                     screenshot.getWidth(), screenshot.getHeight());
-                            index.setFastOcr(fast);
+                            OcrDocument screenFast = transform.documentBitmapToScreen(bitmapFast);
+                            index.setFastOcr(screenFast);
                             current = index.current();
                             DiagnosticLog.i(app, "CIRCLE_INDEX", "fast blind-spot ready engine=" + engine
                                     + " viewChars=" + index.viewDocument().chars().size()
-                                    + " ocrChars=" + fast.chars().size()
+                                    + " ocrChars=" + screenFast.chars().size()
                                     + " mergedChars=" + current.chars().size()
+                                    + " coordinateSpace=" + screenFast.coordinateSpace()
                                     + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
                             emit(current, Stage.FAST_MLKIT, true);
                         } finally {
@@ -197,7 +218,7 @@ final class CircleRecognitionSession {
         try { recognizer.close(); } catch (Throwable ignored) {}
     }
 
-    /** Build symbol/element geometry for OCR-only blind spots. */
+    /** Build symbol/element geometry in bitmap space before one-time screen normalization. */
     private static OcrDocument mlKitDocument(Text text, String engine, int width, int height) {
         ArrayList<OcrDocument.Line> lines = new ArrayList<>();
         int lineId = 0;
@@ -322,14 +343,18 @@ final class CircleRecognitionSession {
         return out.toString();
     }
 
-    private static OcrDocument emptyDocument(String engine) {
-        return new OcrDocument("", List.of(), List.of(), engine, 0f, 0d, 1, 1);
+    private static OcrDocument emptyScreenDocument(String engine, Rect frame) {
+        return OcrDocument.screenSpace("", List.of(), List.of(), engine, 0f, 0d,
+                Math.max(1, frame == null ? 1 : frame.width()),
+                Math.max(1, frame == null ? 1 : frame.height()));
     }
 
     private void emit(OcrDocument document, Stage stage, boolean fastReady) {
         if (closed || callback == null) return;
         try {
-            callback.onUpdate(document == null ? emptyDocument("none") : document, stage, fastReady);
+            callback.onUpdate(document == null
+                    ? emptyScreenDocument("none", transform.screenFrame()) : document,
+                    stage, fastReady);
         } catch (Throwable t) {
             DiagnosticLog.i(app, "CIRCLE_INDEX", "callback failed=" + safe(t));
         }
