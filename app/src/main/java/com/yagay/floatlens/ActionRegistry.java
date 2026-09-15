@@ -5,7 +5,6 @@ import android.content.Context;
 import android.widget.Toast;
 
 import java.util.LinkedHashMap;
-import java.util.Map;
 
 /** Single catalog for configurable action labels, defaults and execution. */
 final class ActionRegistry {
@@ -67,9 +66,10 @@ final class ActionRegistry {
                 ViewSelectionOverlay.show(c);
             }
             case ActionId.AI_SCREEN -> {
-                OcrEngine.invalidatePending(c, "action_circle_select");
-                DiagnosticLog.i(c, "AI_SCREEN", "enter Circle Select workspace");
-                CircleSelectController.show(c);
+                OcrEngine.invalidatePending(c, "action_google_circle");
+                DiagnosticLog.i(c, "AI_SCREEN", "enter fresh Google-style circle workspace");
+                // Legacy CircleSelectController is intentionally isolated and no longer routed here.
+                GoogleCircleController.show(c);
             }
             case ActionId.MOVE_ICON -> {
                 FloatService f = FloatService.get();
