@@ -27,15 +27,27 @@ public final class RegionOverlay {
             if (f != null) f.onCircleCaptureStarted();
         }
         WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
+        FloatSettings fs = new FloatSettings(c);
+        Rect display = new Rect(wm.getCurrentWindowMetrics().getBounds());
+        Rect content = CaptureSystemBarsPolicy.captureBounds(
+                c,
+                fs.keepStatusBarInScreenshot(),
+                CaptureSystemBarsPolicy.keepNavigationBar(c));
+
         SelectView v = new SelectView(c, screen, ocr, wm);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                -1, -1,
+                Math.max(1, content.width()), Math.max(1, content.height()),
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
+        lp.x = content.left - display.left;
+        lp.y = content.top - display.top;
         wm.addView(v, lp);
+        DiagnosticLog.i(c, "REGION_SCREENSHOT", "overlay bounds=" + content.toShortString()
+                + " keepStatusBar=" + fs.keepStatusBarInScreenshot()
+                + " keepNavigationBar=" + CaptureSystemBarsPolicy.keepNavigationBar(c));
     }
 
     static class SelectView extends View {
