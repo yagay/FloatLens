@@ -33,13 +33,15 @@ object OpenCVUtils {
             if (initialized) return true
 
             try {
-                val ok = OpenCVLoader.initDebug()
+                // OpenCV 4.12 marks initDebug() deprecated. initLocal() loads the packaged
+                // opencv_java4 native library directly and is the supported local-runtime path.
+                val ok = OpenCVLoader.initLocal()
                 if (ok) {
                     initialized = true
                     initError = null
                     Log.i("OpenCVUtils", "OpenCV initialized successfully")
                 } else {
-                    initError = "OpenCVLoader.initDebug() returned false"
+                    initError = "OpenCVLoader.initLocal() returned false"
                     Log.e("OpenCVUtils", initError ?: "OpenCV initialization failed")
                 }
             } catch (t: Throwable) {
