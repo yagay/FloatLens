@@ -8,14 +8,19 @@ final class SettingsCapturePage {
     static LinearLayout build(SettingsActivity activity, FloatSettings fs) {
         SettingsPageUi ui = new SettingsPageUi(activity, fs);
         LinearLayout root = AppUi.pageRoot(activity, "截图与 OCR",
-                "截图来源、结果显示和 OCR 模型分开管理。Root / LSPosed 增强开关统一放在“高级权限”中。" );
+                "截图来源、截图范围、结果显示和 OCR 模型分开管理。Root / LSPosed 增强开关统一放在“高级权限”中。" );
 
         AppUi.Section capture = AppUi.section(activity, "截图",
-                "悬浮拖选采用已验证的 FV 时序：移动时红色探针，稳定约 400 ms 后进入黄色 Direct 状态；不会对每个 View 再重复等待。" );
+                "状态栏与导航栏范围同时作用于普通截图、OCR 区域截图和圈画模式。" );
         ui.check(capture.body, "截图保留悬浮图标", null,
                 FloatSettings.K_KEEP_IN_SCREENSHOT, fs.keepInScreenshot());
-        ui.check(capture.body, "截图保留状态栏", null,
+        ui.check(capture.body, "截取状态栏",
+                "关闭后普通截图和圈画都会排除当前可见的状态栏区域",
                 FloatSettings.K_KEEP_STATUS_BAR, fs.keepStatusBarInScreenshot());
+        ui.check(capture.body, "截取按键导航栏",
+                "关闭后普通截图和圈画都会排除导航栏；三键导航下返回 / Home / 最近任务保持可直接点击",
+                CaptureSystemBarsPolicy.K_KEEP_NAVIGATION_BAR,
+                CaptureSystemBarsPolicy.keepNavigationBar(activity));
         ui.check(capture.body, "优先无障碍截图",
                 "普通截图后端；Root / LSPosed 增强截图在“高级权限”中单独配置",
                 FloatSettings.K_ACCESSIBILITY_SCREENSHOT, fs.accessibilityScreenshot());
