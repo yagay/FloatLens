@@ -38,28 +38,32 @@ public final class FloatLensApp extends Application implements Application.Activ
     private void installRecursive(Activity activity, View view) {
         if (view == null) return;
         if (view instanceof TextView tv && tv.isTextSelectable()) {
-            final TextSelectionController[] ref = new TextSelectionController[1];
-            TextSelectionController controller = new TextSelectionController(activity, tv, 0L,
-                    new TextSelectionController.Observer() {
-                        @Override public void onStarted() {
-                            FloatActionMenu.dismiss();
-                            FloatMenuAnchor.clear();
-                        }
+            Object existing = tv.getTag(R.id.floatlens_text_selection_controller);
+            if (!(existing instanceof TextSelectionController)) {
+                final TextSelectionController[] ref = new TextSelectionController[1];
+                TextSelectionController controller = new TextSelectionController(activity, tv, 0L,
+                        new TextSelectionController.Observer() {
+                            @Override public void onStarted() {
+                                FloatActionMenu.dismiss();
+                                FloatMenuAnchor.clear();
+                            }
 
-                        @Override public void onChanging() {
-                            FloatActionMenu.dismiss();
-                            FloatMenuAnchor.clear();
-                        }
+                            @Override public void onChanging() {
+                                FloatActionMenu.dismiss();
+                                FloatMenuAnchor.clear();
+                            }
 
-                        @Override public void onStable(String selectedText, Rect anchorOnScreen) {
-                            if (selectedText == null || selectedText.isBlank()) return;
-                            TextSelectionController current = ref[0];
-                            FloatActionMenu.showTextAt(activity, selectedText.trim(),
-                                    current == null ? null : current::selectAll, anchorOnScreen);
-                        }
-                    });
-            ref[0] = controller;
-            controller.install();
+                            @Override public void onStable(String selectedText, Rect anchorOnScreen) {
+                                if (selectedText == null || selectedText.isBlank()) return;
+                                TextSelectionController current = ref[0];
+                                FloatActionMenu.showTextAt(activity, selectedText.trim(),
+                                        current == null ? null : current::selectAll, anchorOnScreen);
+                            }
+                        });
+                ref[0] = controller;
+                controller.install();
+                tv.setTag(R.id.floatlens_text_selection_controller, controller);
+            }
         }
         if (view instanceof ViewGroup group) {
             for (int i = 0; i < group.getChildCount(); i++) {
