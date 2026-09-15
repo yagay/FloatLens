@@ -6,10 +6,10 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PixelFormat;
 import android.graphics.PointF;
 import android.graphics.Rect;
 import android.graphics.RectF;
-import android.graphics.PixelFormat;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -20,10 +20,11 @@ import android.widget.Toast;
 import java.util.ArrayList;
 
 /**
- * Google-style frozen-screen selector with exact user geometry.
+ * Frozen-screen Google-style selector.
  *
- * No gesture padding, minimum ROI enlargement, tap rectangle, or resize minimum is allowed. The
- * user's stroke bounds are the bounds used for matching, OCR and image selection.
+ * The frozen screenshot remains the visual source of truth. Text results are never redrawn into a
+ * translucent result box: the original text stays exactly where it was and only a thin marker is
+ * drawn around the resolved text position. Only CIRCLE may own a screenshot crop.
  */
 final class GoogleCircleInlineOverlay {
     private static WorkspaceView active;
@@ -65,7 +66,7 @@ final class GoogleCircleInlineOverlay {
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
                 + " semanticText=" + safeContent.textCount()
                 + " semanticImages=" + safeContent.imageCount()
-                + " presentation=original_position autoExpand=false");
+                + " presentation=original_pixels textRedraw=false autoExpand=false");
         return true;
     }
 
@@ -106,15 +107,14 @@ final class GoogleCircleInlineOverlay {
         private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint selectionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint handlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint textMarkerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint imageMarkerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint closePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint closeGlyphPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint hintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint hintTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint resultFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint resultBorderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint resultTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint resultTagPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint resultTagTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint badgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint badgeTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
         private final ArrayList<PointF> stroke = new ArrayList<>();
         private final RectF closeRect = new RectF();
@@ -133,6 +133,7 @@ final class GoogleCircleInlineOverlay {
         private Rect inlineAnchor = new Rect();
         private String inlineText = "";
         private String inlineSource = "";
+        private Bitmap inlineCrop;
 
         WorkspaceView(Context c, FlOverlayWindowHost host,
                       WindowManager.LayoutParams windowLayout,
@@ -173,6 +174,14 @@ final class GoogleCircleInlineOverlay {
             handlePaint.setColor(0xFF4285F4);
             handlePaint.setStyle(Paint.Style.FILL);
 
+            textMarkerPaint.setColor(0xFF4285F4);
+            textMarkerPaint.setStyle(Paint.Style.STROKE);
+            textMarkerPaint.setStrokeWidth(dp(2.5f));
+
+            imageMarkerPaint.setColor(0xFF8AB4F8);
+            imageMarkerPaint.setStyle(Paint.Style.STROKE);
+            imageMarkerPaint.setStrokeWidth(dp(3));
+
             closePaint.setColor(0xD9222222);
             closeGlyphPaint.setColor(Color.WHITE);
             closeGlyphPaint.setStyle(Paint.Style.STROKE);
@@ -184,17 +193,11 @@ final class GoogleCircleInlineOverlay {
             hintTextPaint.setTextSize(dp(14));
             hintTextPaint.setTextAlign(Paint.Align.CENTER);
 
-            resultFillPaint.setColor(0x554285F4);
-            resultFillPaint.setStyle(Paint.Style.FILL);
-            resultBorderPaint.setColor(0xFF8AB4F8);
-            resultBorderPaint.setStyle(Paint.Style.STROKE);
-            resultBorderPaint.setStrokeWidth(dp(2.5f));
-            resultTextPaint.setColor(Color.WHITE);
-            resultTextPaint.setTextSize(dp(14));
-            resultTagPaint.setColor(0xE02B2B2B);
-            resultTagPaint.setStyle(Paint.Style.FILL);
-            resultTagTextPaint.setColor(Color.WHITE);
-            resultTagTextPaint.setTextSize(dp(12));
+            badgePaint.setColor(0xE02B2B2B);
+            badgePaint.setStyle(Paint.Style.FILL);
+            badgeTextPaint.setColor(Color.WHITE);
+            badgeTextPaint.setTextSize(dp(12));
+            badgeTextPaint.setTextAlign(Paint.Align.CENTER);
         }
 
         void promoteKeyFocus(String reason) {
@@ -265,92 +268,36 @@ final class GoogleCircleInlineOverlay {
             canvas.drawPath(path, strokePaint);
         }
 
+        /**
+         * Never repaint recognized text. The underlying frozen screenshot already contains the
+         * original glyphs at their exact location. We only mark that location with a thin outline.
+         */
         private void drawInlineResult(Canvas canvas) {
             if (inlineKind == null || inlineAnchor == null || inlineAnchor.isEmpty()) return;
             RectF target = screenToView(inlineAnchor);
             if (target.isEmpty()) return;
 
-            canvas.drawRoundRect(target, dp(6), dp(6), resultFillPaint);
-            canvas.drawRoundRect(target, dp(6), dp(6), resultBorderPaint);
-
             if (inlineKind == GoogleCircleResultCoordinator.Kind.IMAGE) {
-                drawTag(canvas, target, "图片");
+                canvas.drawRoundRect(target, dp(7), dp(7), imageMarkerPaint);
+                drawBadgeOutside(canvas, target, "截图");
                 return;
             }
 
-            if (inlineText == null || inlineText.isBlank()) {
-                drawTag(canvas, target, "文字");
-                return;
-            }
-            drawTextAtOriginalPosition(canvas, target, inlineText);
+            // Text: no fill and no drawText(). Original pixels remain visible and untouched.
+            canvas.drawRoundRect(target, dp(3), dp(3), textMarkerPaint);
         }
 
-        private void drawTextAtOriginalPosition(Canvas canvas, RectF target, String text) {
-            float padding = dp(5);
-            float availableWidth = target.width() - padding * 2f;
-            float availableHeight = target.height() - padding * 2f;
-            if (availableWidth < dp(20) || availableHeight < dp(14)) {
-                drawTag(canvas, target, "文字");
-                return;
-            }
-
-            float size = Math.min(dp(16), Math.max(dp(10), target.height() * 0.24f));
-            resultTextPaint.setTextSize(size);
-            Paint.FontMetrics fm = resultTextPaint.getFontMetrics();
-            float lineHeight = Math.max(dp(12), (fm.descent - fm.ascent) * 1.06f);
-            int maxLines = Math.max(1, (int) Math.floor(availableHeight / lineHeight));
-            float baseline = target.top + padding - fm.ascent;
-            float left = target.left + padding;
-            int lines = 0;
-
-            canvas.save();
-            canvas.clipRect(target);
-            String normalized = text.replace('\r', '\n').replace('\t', ' ').trim();
-            String[] paragraphs = normalized.split("\\n", -1);
-            outer:
-            for (String paragraph : paragraphs) {
-                String value = paragraph.trim();
-                if (value.isEmpty()) continue;
-                int offset = 0;
-                while (offset < value.length()) {
-                    int count = resultTextPaint.breakText(value, offset, value.length(),
-                            true, availableWidth, null);
-                    if (count <= 0) break;
-                    String line = value.substring(offset, offset + count).trim();
-                    if (!line.isEmpty()) {
-                        canvas.drawText(line, left, baseline + lines * lineHeight, resultTextPaint);
-                        lines++;
-                        if (lines >= maxLines) break outer;
-                    }
-                    offset += count;
-                    while (offset < value.length()
-                            && Character.isWhitespace(value.charAt(offset))) {
-                        offset++;
-                    }
-                }
-            }
-            canvas.restore();
-
-            if (lines == 0) drawTag(canvas, target, "文字");
-        }
-
-        private void drawTag(Canvas canvas, RectF target, String label) {
-            float padX = dp(7);
-            float padY = dp(4);
-            float textWidth = resultTagTextPaint.measureText(label);
-            Paint.FontMetrics fm = resultTagTextPaint.getFontMetrics();
-            float height = fm.descent - fm.ascent + padY * 2f;
-            float width = textWidth + padX * 2f;
-            float left = target.left + dp(4);
-            float top = target.top + dp(4);
-
-            if (left + width > getWidth()) left = Math.max(0, getWidth() - width - dp(4));
-            if (top + height > getHeight()) top = Math.max(0, getHeight() - height - dp(4));
-
-            RectF tag = new RectF(left, top, left + width, top + height);
-            canvas.drawRoundRect(tag, height / 2f, height / 2f, resultTagPaint);
-            float baseline = tag.centerY() - (fm.ascent + fm.descent) / 2f;
-            canvas.drawText(label, tag.left + padX, baseline, resultTagTextPaint);
+        private void drawBadgeOutside(Canvas canvas, RectF target, String label) {
+            float width = Math.max(dp(46), badgeTextPaint.measureText(label) + dp(18));
+            float height = dp(28);
+            float left = Math.max(dp(4), Math.min(getWidth() - width - dp(4), target.left));
+            float top = target.top - height - dp(6);
+            if (top < dp(4)) top = Math.min(getHeight() - height - dp(4), target.bottom + dp(6));
+            RectF badge = new RectF(left, top, left + width, top + height);
+            canvas.drawRoundRect(badge, height / 2f, height / 2f, badgePaint);
+            Paint.FontMetrics fm = badgeTextPaint.getFontMetrics();
+            float baseline = badge.centerY() - (fm.ascent + fm.descent) / 2f;
+            canvas.drawText(label, badge.centerX(), baseline, badgeTextPaint);
         }
 
         private RectF screenToView(Rect screen) {
@@ -384,13 +331,14 @@ final class GoogleCircleInlineOverlay {
         private void drawHint(Canvas canvas) {
             String text;
             if (recognizing) {
-                text = "正在识别所选内容…";
+                text = selection != null && selection.kind == GoogleCircleSelection.Kind.CIRCLE
+                        ? "正在生成圈画截图…" : "正在定位 View 文字…";
             } else if (inlineKind == GoogleCircleResultCoordinator.Kind.IMAGE) {
-                text = "已按原选区识别图片 · 可继续调整";
-            } else if (inlineKind != null) {
-                text = "已按原选区显示文字 · 可继续调整";
+                text = "圈画截图已就绪 · 原选区不扩大";
+            } else if (inlineKind != null && inlineText != null && !inlineText.isBlank()) {
+                text = "View 文字已在原位置标记 · 不重绘文字";
             } else if (selection == null) {
-                text = "圈画 · 涂抹 · 高亮 · 点击";
+                text = "点击/涂抹/高亮选文字 · 圈画截图";
             } else {
                 text = kindLabel(selection.kind) + " · 精确选区 · 可继续调整";
             }
@@ -509,7 +457,9 @@ final class GoogleCircleInlineOverlay {
 
             DiagnosticLog.i(context, "G_CIRCLE_GESTURE", "kind=" + selection.kind
                     + " bounds=" + selection.bounds.toShortString()
-                    + " presentation=inline autoExpand=false");
+                    + " routing=" + (selection.kind == GoogleCircleSelection.Kind.CIRCLE
+                    ? "screenshot" : "view_text")
+                    + " autoExpand=false");
             scheduleRecognition(180L);
         }
 
@@ -575,34 +525,49 @@ final class GoogleCircleInlineOverlay {
             }
 
             recognizing = false;
+            clearInlineResult();
             inlineKind = resolution.kind;
             inlineAnchor = resolution.screenAnchor == null
                     ? new Rect() : new Rect(resolution.screenAnchor);
             inlineText = resolution.text == null ? "" : resolution.text.trim();
             inlineSource = resolution.source == null ? "" : resolution.source;
-            recycle(resolution.crop);
 
-            boolean shown = inlineKind != null && !inlineAnchor.isEmpty()
-                    && (inlineKind == GoogleCircleResultCoordinator.Kind.IMAGE
-                    || !inlineText.isBlank());
+            if (inlineKind == GoogleCircleResultCoordinator.Kind.IMAGE) {
+                // CIRCLE screenshot owns this crop until a new selection or workspace close.
+                inlineCrop = resolution.crop;
+            } else {
+                recycle(resolution.crop);
+            }
+
+            boolean shown = inlineKind == GoogleCircleResultCoordinator.Kind.IMAGE
+                    ? inlineCrop != null && !inlineCrop.isRecycled() && !inlineAnchor.isEmpty()
+                    : !inlineText.isBlank() && !inlineAnchor.isEmpty();
 
             DiagnosticLog.i(context, "G_CIRCLE_RESULT", "gesture=" + requestSelection.kind
                     + " content=" + resolution.kind
                     + " source=" + inlineSource
                     + " textChars=" + inlineText.length()
+                    + " crop=" + (inlineCrop == null ? "none"
+                    : inlineCrop.getWidth() + "x" + inlineCrop.getHeight())
                     + " shown=" + shown
-                    + " presentation=inline_original_position autoExpand=false"
+                    + " textRedraw=false screenshotOnlyForCircle=true autoExpand=false"
                     + " error=" + (resolution.error == null ? "none"
                     : ScreenCaptureBackend.safeMessage(resolution.error)));
 
             if (!shown) {
                 clearInlineResult();
-                Toast.makeText(context, "未识别到可显示的内容", Toast.LENGTH_SHORT).show();
+                Toast.makeText(context,
+                        requestSelection.kind == GoogleCircleSelection.Kind.CIRCLE
+                                ? "圈画截图失败" : "未找到 View 文字",
+                        Toast.LENGTH_SHORT).show();
             }
             invalidate();
         }
 
         private void clearInlineResult() {
+            Bitmap crop = inlineCrop;
+            inlineCrop = null;
+            recycle(crop);
             inlineKind = null;
             inlineAnchor = new Rect();
             inlineText = "";
@@ -622,6 +587,7 @@ final class GoogleCircleInlineOverlay {
             closed = true;
             recognitionGeneration++;
             OcrEngine.invalidateDocumentPending(context, "google_circle_inline_close");
+            clearInlineResult();
             host.remove(this, "google_circle_inline");
             frame.recycle();
             GoogleCircleInlineOverlay.onClosed(this);
@@ -642,10 +608,10 @@ final class GoogleCircleInlineOverlay {
 
         private static String kindLabel(GoogleCircleSelection.Kind kind) {
             return switch (kind) {
-                case TAP -> "点击选择";
-                case CIRCLE -> "圈选";
-                case HIGHLIGHT -> "高亮选择";
-                case SCRIBBLE -> "涂抹选择";
+                case TAP -> "点击选 View 文字";
+                case CIRCLE -> "圈画截图";
+                case HIGHLIGHT -> "高亮选 View 文字";
+                case SCRIBBLE -> "涂抹选 View 文字";
             };
         }
 
