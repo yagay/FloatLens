@@ -1,8 +1,7 @@
 # FloatLens Architecture
 
-This document defines the single-owner boundaries used by FloatLens. The goal is to keep FL
-interaction semantics while making each capability easy to add, remove and maintain without parallel
-implementations.
+This document defines the single-owner boundaries used by FloatLens. The goal is to preserve verified
+FV interaction semantics while keeping each capability independently maintainable and testable.
 
 ## 1. Floating icon input
 
@@ -26,19 +25,15 @@ Owns icon size, display bounds, clamping, snap/edge-hide, mirror placement and o
 position persistence.
 
 ### `FloatVisibilityController`
-Owns every reason the icon may be hidden:
+Owns every reason the icon may be hidden: manual, screenshot, per-app, lock-screen and fullscreen state,
+plus the environment state needed to derive visibility. `FloatService` applies the decision to Views,
+wake edges and notification text.
 
-- manual hide;
-- screenshot hide;
-- per-app hide;
-- lock-screen hide;
-- fullscreen hide;
-- current top package;
-- IME state;
-- notification/status-bar state.
-
-`FloatService` applies the resulting decision to Views, wake edges and notification text. New hide rules
-belong in this controller instead of adding another boolean to the service.
+### `FloatPreferenceImpact`
+Pure routing policy for preference changes. Appearance keys may relayout windows, visibility keys only
+recompute visibility, gesture keys refresh the icon touch settings, and unrelated service settings update
+the `FloatSettings` snapshot without unnecessary `WindowManager` work. Position persistence keys are
+ignored to prevent a save from recursively refreshing the windows.
 
 ## 2. Window hosting
 
@@ -46,16 +41,16 @@ belong in this controller instead of adding another boolean to the service.
 Shared owner of ordinary overlay add/update/remove/migration logic. It supports Accessibility overlay
 (2032) and application overlay windows.
 
-The verified FV helper/highlight behavior prefers the accessibility overlay layer when that host is
-available. Passive `NOT_TOUCHABLE` helper layers such as the CircleLive frozen frame may therefore use
-`FlOverlayWindowHost` without changing the floating icon that owns the active MotionEvent stream.
+When accessibility is available, the main icon/helper stack may use the accessibility host. Passive
+`NOT_TOUCHABLE` layers such as CircleLive and the gesture trail can share the host without stealing the
+floating icon's active MotionEvent stream. Edge wake windows use the same host.
 
 Specialized windows may keep direct `WindowManager` code only when their lifetime, token or touch-owner
-semantics genuinely require it. Never migrate or replace the actual touch-owner window in the middle of
-one pointer stream merely to share hosting code.
+semantics genuinely require it. Never migrate/replace the active touch-owner window in the middle of a
+pointer stream merely to share hosting code.
 
-Native Android Editor selection is Activity-only on the target OxygenOS/Android build. Do not place
-selectable result text back into an overlay unless device diagnostics prove equivalent framework behavior.
+Native Android Editor selection is Activity-only on the target OxygenOS/Android build. Do not move
+selectable result text back into an overlay unless device diagnostics prove equivalent behavior.
 
 ## 3. Screenshot capture and crop
 
@@ -63,23 +58,29 @@ selectable result text back into an overlay unless device diagnostics prove equi
 The only Accessibility-vs-Root capture backend selector.
 
 ### `ScreenshotCaptureSession`
-Normal hide-icon / settle / capture / restore lifecycle.
+Owns hide-icon / settle / capture / restore lifecycle.
+
+### `RootCapture`
+Root backend only. `screencap -p` is decoded directly from stdout; do not reintroduce shared temporary PNG
+files.
+
+### `CropMath`
+Pure Java coordinate mapping shared by screenshot and selection crop paths. This is the regression-testable
+owner of view/display-space -> bitmap-space rounding and clamping rules.
 
 ### `ScreenshotGeometry`
-Display-space to bitmap-space mapping and status-bar policy for ordinary screenshots.
+Android/display wrapper around `CropMath`, plus status-bar policy for ordinary screenshots.
 
 ### `SelectionCropper`
-Shared pure bitmap crop implementation for selection UIs:
-
-- rectangular view-space -> bitmap-space crop;
-- freehand white-background masked crop.
+Android bitmap crop/mask implementation. It delegates coordinate mapping to `CropMath` and owns the
+independent-bitmap rule for results/OCR.
 
 ### `ScreenshotController`
 Business routing only: full screenshot, region screenshot, View capture and save. It must not duplicate
 capture backend selection or result UI.
 
 ### `CircleCropGeometry`
-Circle-specific freehand-to-rectangle snap/padding policy only. Bitmap cropping delegates to
+Circle-specific freehand-to-rectangle snap/padding policy only. Actual bitmap cropping delegates to
 `SelectionCropper`.
 
 ## 4. One result system
@@ -103,49 +104,23 @@ TextSelectionSurface
 There is no official floating-result overlay host.
 
 ### `ResultSession`
-The only business state for a result:
-
-- origin mode and current mode;
-- source bitmap;
-- anchor;
-- text and OCR blocks;
-- View metadata;
-- derived capabilities such as canOCR/canCopy/canSave.
-
-A successfully delivered `ResultSession` owns its source bitmap. Pending sessions must close when they
-expire or are discarded, and the visible result host must close a session when it is replaced/destroyed.
-Do not retain several abandoned full-resolution result bitmaps until a later GC cycle.
+The only business state for a result. A successfully delivered session owns its source bitmap. Pending
+sessions close when they expire/discard, and the visible host closes a replaced/destroyed session. Do not
+retain abandoned full-resolution result bitmaps until a later GC cycle.
 
 Screenshot -> OCR mutates the same session with `applyOcr()`; it must not create another result window.
 
 ### `ResultController`
-The only launch/update boundary for results. It stores pending sessions, launches the singleTop
-`ResultActivity`, and integrates captured results with `ResultReadyCoordinator`.
-
-If Activity launch fails, ownership is returned to the caller so a screenshot caller can still save the
-same bitmap as its fallback. If a pending token expires/is discarded, `ResultController` closes it.
+The only launch/update boundary for results. If Activity launch fails, bitmap ownership returns to the
+caller for fallback save/reuse. Expired/discarded pending tokens are closed.
 
 ### `ResultSurfaceRouter`
-Compatibility/business facade only. It creates the proper `ResultSession` and delegates to
-`ResultController`; it must not choose between multiple result hosts.
+Compatibility/business facade only; it creates the appropriate `ResultSession` and delegates to
+`ResultController`.
 
-### `ResultActivity`
-The one official result Window. `onNewIntent()` reuses the existing Activity and panel instead of opening
-a second popup. It owns only Activity lifecycle and OCR request lifetime.
-
-### `UnifiedResultPanel`
-The only visible result UI. Its hierarchy is fixed for every mode:
-
-- title;
-- image slot;
-- selectable text slot;
-- fixed OCR / Copy / Save / Close row.
-
-Buttons are never added/removed by mode; only text/enabled state changes. `render(ResultSession)` is the
-only way result content changes.
-
-### `ResultUi`
-Low-level result geometry/widget primitives only.
+### `ResultActivity` / `UnifiedResultPanel`
+`ResultActivity` is the one official result Window and is `singleTop`. `UnifiedResultPanel` is the only
+visible result UI and renders every mode through one stable hierarchy.
 
 ### `ResultReadyCoordinator`
 Bridges the first real ResultActivity draw to notification-shade cleanup for captured results.
@@ -153,22 +128,17 @@ Bridges the first real ResultActivity draw to notification-shade cleanup for cap
 ## 5. Native text selection
 
 ### `TextSelectionController`
-The single owner of native Android ActionMode selection behavior:
-
-- clear framework contextual menu;
-- selection-range tracking;
-- selected-text extraction;
-- anchor calculation;
-- select-all;
-- stable-selection callback timing.
+The single owner of native Android ActionMode selection behavior: framework-menu suppression, range
+tracking, selected text, anchor, select-all and stable-selection timing.
 
 ### `TextSelectionSurface`
-Result-panel UI wrapper around ScrollView/EditText. It delegates all selection lifecycle behavior to
+Result-panel wrapper around ScrollView/EditText. It delegates selection lifecycle to
 `TextSelectionController` with a 220 ms stable delay.
 
 ### `FloatLensApp`
-For other selectable app TextViews, installs the same `TextSelectionController` with immediate stable
-callbacks. It must not contain another independent ActionMode implementation.
+Other selectable app TextViews use the same controller with immediate stable callbacks. Installation is
+idempotent per TextView via a keyed tag; Activity resume/post passes must not create duplicate controller
+instances or callbacks.
 
 ## 6. OCR
 
@@ -177,43 +147,43 @@ Recognition strategy only:
 
 - PP-OCRv6 Small/Medium selection and escalation;
 - ML Kit serial preprocessing passes;
+- conservative completed-tier early stop;
 - fallback recognition;
 - stale-request suppression.
 
-It must not decide which window/UI displays results.
+When multiple languages are enabled, early-stop is evaluated only after every enabled recognizer in the
+current image tier has completed. Do not stop after only the first language returns text.
+
+### `OcrModelManager`
+Owns downloaded model files and their local SHA-256 integrity manifest. A cold PP-OCR load must verify a
+model before opening it. Verification during a successful download must not be blocked by the download's
+own in-progress marker.
 
 ### `OcrResultDispatcher`
-The only recognition-result delivery boundary:
-
-- deliver to an active inline sink when the current result session is waiting;
-- otherwise delegate to `ResultSurfaceRouter`.
-
-Do not add another static "next OCR result" mechanism.
+The only recognition-result delivery boundary: deliver to an active inline sink when appropriate,
+otherwise delegate to `ResultSurfaceRouter`.
 
 `ppocr-sdk` owns native/model inference details and remains separate from app-level OCR policy.
 
-## 7. Configurable actions
+## 7. Configurable actions and settings
 
-### `ActionId`
-Stable persisted action IDs only.
+### `ActionId` / `ActionRegistry` / `GestureActionMapper`
+`ActionId` contains stable persisted IDs, `ActionRegistry` is the single action catalog/default/execution
+owner, and `GestureActionMapper` maps gesture codes to preference keys.
 
-### `ActionRegistry`
-The single action catalog:
+### Settings pages
+`SettingsActivity` is only the navigation/lifecycle host. Page declarations are separated into:
 
-- display labels;
-- available action order;
-- preference defaults;
-- execution behavior.
+- `SettingsIconPage`;
+- `SettingsGesturePage`;
+- `SettingsCapturePage`;
+- `SettingsEnvironmentPage`;
+- `SettingsActionsPage`;
+- `PrivilegeSettingsPanel`.
 
-### `ActionExecutor`
-Compatibility facade only; delegates execution to `ActionRegistry`.
-
-### `GestureActionMapper`
-Maps gesture codes to preference keys and asks `ActionRegistry` for defaults.
-
-### `SettingsActivity`
-Builds action pickers from `ActionId.availableIds()` / `ActionRegistry`. Adding an action should not
-require another hard-coded settings list.
+`SettingsPageUi` owns common switch/slider/spinner/OCR-model widgets and their persistence wiring. Do not
+copy those helpers back into individual pages. Adding an action should still come from
+`ActionId.availableIds()` / `ActionRegistry`, not another hard-coded catalog.
 
 ## 8. View selection
 
@@ -235,75 +205,49 @@ cached TEXT / IMAGE / VIEW selection
 5 ms delayed operation
 ```
 
-Changing from one cached candidate to another while already in DIRECT does **not** start another 400 ms
-candidate-specific timer. Do not reintroduce a second red -> yellow confirmation phase.
+Changing cached candidates while already in DIRECT does **not** start another candidate-specific timer.
+The obsolete `view_capture_dwell_ms` setting has been removed; do not reintroduce a second dwell preference.
 
 ### `ViewSelectionEngine`
-Owns the state after `FloatIconView` has entered DIRECT: transformed probe position, direct-region state,
-async candidate preparation, cached candidate operation choice and the verified FV 5 ms release delay.
+Owns state after the icon enters DIRECT: transformed probe position, direct-region state, cancellable async
+candidate preparation, cached operation choice and the verified FV 5 ms release delay. A superseded
+Accessibility scan must be interrupted/cancelled rather than merely ignored after completing.
 
 ### `ViewHoverOverlay`
-Candidate cache/hit-test/highlight layer only. It preserves the current pointer visual state supplied by
-the engine; candidate changes must not independently reset READY back to TRACKING. It must not own
-another direct-region gesture state or dwell timer.
+Candidate cache/hit-test/highlight layer only. Candidate changes preserve the supplied pointer visual state
+and must not reset READY to TRACKING.
 
 ### `ViewSelectionOverlay`
-Explicit full-screen picker launched by the OCR action. This intentionally remains separate from
-`ViewSelectionEngine` because it is a different user entry point/lifetime; it must reuse shared hosting,
-screenshot and result services.
+Explicit full-screen picker launched by the OCR action. This intentionally remains separate because its
+entry point and lifetime differ from the same-pointer Direct flow.
 
 ## 9. Circle selection
 
+### `CircleStateMachine`
+Explicit state owner for IDLE -> ACTIVE/CAPTURE/OCR/RESULTS transitions and generation tracking. The state
+core is JVM-testable; Android Context is used only for diagnostics.
+
 ### `CircleLiveController`
-Same-pointer-session Circle flow. Its frozen layer remains `NOT_TOUCHABLE` so the floating icon retains
-the active MotionEvent stream. The passive frozen layer may use `FlOverlayWindowHost` to prefer an
-Accessibility overlay host without stealing pointer ownership. It reuses `ScreenCaptureBackend` and
-`SelectionCropper`.
+Same-pointer-session Circle flow. Its frozen helper layer stays `NOT_TOUCHABLE`, uses shared overlay hosting
+where safe, and reuses screenshot/crop services.
 
 ### `CircleSelectController` / `CircleSelectOverlay`
-Frozen workspace flow. This intentionally remains separate from CircleLive because the lifecycle and
-input ownership are different.
-
-### `CircleTextSelectionModel`
-Pure spatial OCR text-selection model.
-
-### `CircleCropGeometry`
-Circle rectangle policy; delegates actual bitmap crop to `SelectionCropper`.
-
-### `CircleSelectFrame`
-Full-display frozen-frame coordinate policy.
+Frozen workspace flow. This intentionally remains separate from CircleLive because lifecycle and input
+ownership differ.
 
 Do not merge CircleLive and CircleSelect merely because both draw circles.
 
 ## 10. Menus
 
-### `FloatActionMenu`
-Owns text-selection business actions and target/custom-action navigation.
-
-### `ImageActionMenu`
-Owns image-specific actions.
-
-Their business models remain separate. Shared visual/window chrome may be extracted, but do not merge
-text and image action semantics into one switch.
-
-### `TargetMenuStore`
-Share/process target ordering and hide rules.
-
-### `CustomMenuActionStore`
-User-created text actions and Intent construction.
-
-These stores are intentionally separate because their persisted data semantics differ.
+`FloatActionMenu` owns text-selection actions. `ImageActionMenu` owns image actions. Their business models
+remain separate. `TargetMenuStore` owns share/process ordering/hide rules; `CustomMenuActionStore` owns
+user-created text actions and Intent construction.
 
 ## 11. Notification shade
 
-### `FlSystemPanelController`
-Live SystemUI shade detection and Activity-result FL compatibility sequence.
-
-### `OverlayShadeCoordinator`
-Compatibility utility for specialized overlay flows only. Official result windows no longer use an
-overlay host.
-
-The scoped BACK fallback is a FloatLens/OxygenOS adaptation.
+`FlSystemPanelController` owns live SystemUI shade detection and Activity-result FL compatibility flow.
+`OverlayShadeCoordinator` is a compatibility utility for specialized overlay flows only. Official result
+windows no longer use an overlay host.
 
 ## 12. Privileged providers
 
@@ -311,7 +255,7 @@ Root and LSPosed are optional enhancement providers, never prerequisites for cor
 
 - Root capabilities must pass `PrivilegeManager.canUseRoot(...)` and may fall back to normal providers.
 - LSPosed capabilities must pass `PrivilegeManager.canUseLsposed(...)` **and** report a real provider as
-  available. A user preference alone is not proof that a Hook exists or is controllable.
+  available. A preference alone is not proof that a hook exists or is controllable.
 - The current libxposed API 102 entry is intentionally hook-free until a cross-process control/status
   channel exists.
 - Never install a device-wide `system_server` behavior change that an in-app switch cannot actually
@@ -319,22 +263,35 @@ Root and LSPosed are optional enhancement providers, never prerequisites for cor
 
 See `docs/PRIVILEGED_MODE.md` for the current provider state.
 
-## 13. Rules for future changes
+## 13. Regression gates
 
-1. Every capability has one owner; add a method/state to that owner instead of cloning an implementation.
+`.github/workflows/debug.yml` is the source-side gate for every push/PR:
+
+1. `testDebugUnitTest`;
+2. `lintDebug`;
+3. `assembleDebug`;
+4. upload the debug APK artifact.
+
+The JVM suite currently protects gesture-session state, verified gesture classification semantics, crop
+coordinate mapping, OCR early-stop quality, preference refresh routing and Circle state transitions.
+Structural changes are not complete until this workflow is green on the final HEAD.
+
+## 14. Rules for future changes
+
+1. Every capability has one owner; extend that owner instead of cloning an implementation.
 2. Controllers coordinate; pure models/backends/geometry do reusable work.
 3. OCR engines never decide result UI.
 4. Screenshot UIs never select capture backends.
 5. Result UI changes only in `UnifiedResultPanel`; result state changes only in `ResultSession`.
-6. Result windows are Activity-hosted to preserve native handles/magnifier on the target device.
-7. Configurable actions are registered in `ActionRegistry`; do not duplicate IDs/labels/defaults lists.
-8. Selection crop math belongs in `SelectionCropper`/`ScreenshotGeometry`, not feature Views.
+6. Result windows remain Activity-hosted to preserve native handles/magnifier on the target device.
+7. Configurable actions are registered in `ActionRegistry`; do not duplicate IDs/labels/default lists.
+8. Coordinate mapping belongs in `CropMath`; Android bitmap/display wrappers must delegate to it.
 9. Visibility reasons belong in `FloatVisibilityController`, not new `FloatService` booleans.
 10. Keep different pointer/lifecycle models separate even when their visuals are similar.
-11. Preserve verified FV touch timing and pointer order unless diagnostics prove a mismatch; never add an
-    unverified second dwell merely because two visuals look similar.
+11. Preserve verified FV timing/pointer order unless diagnostics prove a mismatch; never add an unverified
+    second dwell because two visuals look similar.
 12. Privileged behavior must match the user-visible gate that claims to control it.
-13. Document modern Android/OxygenOS adaptations explicitly.
-14. Run Debug Build after structural changes and test: icon drag/dwell, View extraction, region screenshot,
-    notification-shade capture, screenshot->OCR in-place update, native text selection/magnifier,
+13. Keep settings-page composition out of the Activity lifecycle host.
+14. Run the full CI gate after structural changes, then device-test: icon drag/dwell, View extraction,
+    region screenshot, notification-shade capture, screenshot->OCR update, native selection/magnifier,
     CircleLive and CircleSelect.
