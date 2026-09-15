@@ -23,6 +23,7 @@ public final class FloatSettings {
     public static final String K_SHOW_ON_LOCK = "icon_show_lock_screen";
     public static final String K_KEEP_IN_SCREENSHOT = "screen_capture_keep_icon";
     public static final String K_KEEP_STATUS_BAR = "screen_capture_keep_noti_bar";
+    public static final String K_KEEP_NAVIGATION_BAR = "screen_capture_keep_navigation_bar_v1";
     public static final String K_ACCESSIBILITY_SCREENSHOT = "screen_capture_accessibility";
     public static final String K_CIRCLE_BORDER_ENABLED = "circle_active_border_enabled_v1";
     public static final String K_CIRCLE_BORDER_COLOR = "circle_active_border_color_v1";
@@ -139,6 +140,7 @@ public final class FloatSettings {
     public boolean showOnLock() { return p.getBoolean(K_SHOW_ON_LOCK, true); }
     public boolean keepInScreenshot() { return p.getBoolean(K_KEEP_IN_SCREENSHOT, false); }
     public boolean keepStatusBarInScreenshot() { return p.getBoolean(K_KEEP_STATUS_BAR, true); }
+    public boolean keepNavigationBarInScreenshot() { return p.getBoolean(K_KEEP_NAVIGATION_BAR, false); }
     public boolean accessibilityScreenshot() { return p.getBoolean(K_ACCESSIBILITY_SCREENSHOT, true); }
     public boolean circleBorderEnabled() { return p.getBoolean(K_CIRCLE_BORDER_ENABLED, true); }
     public int circleBorderColor() { return p.getInt(K_CIRCLE_BORDER_COLOR, DEFAULT_CIRCLE_BORDER_COLOR); }
