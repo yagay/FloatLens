@@ -8,7 +8,7 @@ final class SettingsCapturePage {
     static LinearLayout build(SettingsActivity activity, FloatSettings fs) {
         SettingsPageUi ui = new SettingsPageUi(activity, fs);
         LinearLayout root = AppUi.pageRoot(activity, "截图与 OCR",
-                "截图来源、结果显示和 OCR 模型分开管理。" );
+                "截图来源、结果显示和 OCR 模型分开管理。Root / LSPosed 增强开关统一放在“高级权限”中。" );
 
         AppUi.Section capture = AppUi.section(activity, "截图",
                 "悬浮拖选采用已验证的 FV 时序：移动时红色探针，稳定约 400 ms 后进入黄色 Direct 状态；不会对每个 View 再重复等待。" );
@@ -16,13 +16,9 @@ final class SettingsCapturePage {
                 FloatSettings.K_KEEP_IN_SCREENSHOT, fs.keepInScreenshot());
         ui.check(capture.body, "截图保留状态栏", null,
                 FloatSettings.K_KEEP_STATUS_BAR, fs.keepStatusBarInScreenshot());
-        ui.check(capture.body, "优先无障碍截图", "普通截图后端；关闭后只有满足增强条件时才优先尝试 Root",
+        ui.check(capture.body, "优先无障碍截图",
+                "普通截图后端；Root / LSPosed 增强截图在“高级权限”中单独配置",
                 FloatSettings.K_ACCESSIBILITY_SCREENSHOT, fs.accessibilityScreenshot());
-        ui.check(capture.body, "Root 截图增强", "还需要在“高级权限”同时开启“增强模式”和“使用 Root 功能”",
-                FloatSettings.K_ROOT_SCREENSHOT, fs.rootScreenshot());
-        ui.check(capture.body, "LSPosed 安全窗口截图增强",
-                "仅 FloatLens 截图时短时放开 FLAG_SECURE 捕获；需要高级权限中的增强模式和 LSPosed Provider，并要求系统框架已加载模块。不会永久移除安全窗口标记。",
-                FloatSettings.K_LSPOSED_SECURE_SCREENSHOT, fs.lsposedSecureScreenshot());
         AppUi.addSection(root, capture);
 
         AppUi.Section result = AppUi.section(activity, "OCR 结果", null);
