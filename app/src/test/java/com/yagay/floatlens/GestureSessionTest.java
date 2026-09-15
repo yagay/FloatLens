@@ -58,7 +58,7 @@ public class GestureSessionTest {
     public void resetClearsTransientGestureState() {
         GestureSession session = new GestureSession();
         session.begin(1f, 2f, 10L);
-        session.phase = GestureSession.Phase.CIRCLE;
+        session.phase = GestureSession.Phase.GESTURE;
         session.longPressReady = true;
         session.moved = true;
         session.multiTouch = true;
