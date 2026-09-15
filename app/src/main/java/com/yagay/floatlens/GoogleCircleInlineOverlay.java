@@ -18,23 +18,22 @@ import android.view.WindowManager;
 import android.widget.Toast;
 
 import java.util.ArrayList;
+import java.util.List;
 
 /**
- * Frozen-screen Circle workflow with two intentionally separate interaction modes.
+ * Frozen-screen Circle workflow with two separate modes.
  *
- * TAP/SCRIBBLE/HIGHLIGHT use the old screen-space selectable View-text model: original glyphs stay
- * in place, selected characters are highlighted individually, selection handles adjust the range,
- * and the existing FloatActionMenu is anchored to the selected text.
+ * Text is resolved only after TAP/SCRIBBLE/HIGHLIGHT ends. The resolver first checks fresh native
+ * View text; only a View miss triggers OCR on a small ROI around that gesture. Both sources are
+ * normalized into absolute screen-space characters and rendered with the old selectable-text model.
  *
- * Only a closed CIRCLE owns an editable screenshot rectangle. The circle bounds become the initial
- * screenshot window exactly as drawn, with no padding/minimum expansion. The user may move/resize
- * it and explicitly press 完成 before the image action menu is shown.
+ * A closed CIRCLE never runs text recognition. It creates an exact editable screenshot rectangle;
+ * the user adjusts it and presses 完成 before the image action menu is shown.
  */
 final class GoogleCircleInlineOverlay {
     private static WorkspaceView active;
 
-    static synchronized boolean show(Context c, GoogleCircleCapture.Frame frame,
-                                     CircleViewTextSnapshot textSnapshot, Runnable onClosed) {
+    static synchronized boolean show(Context c, GoogleCircleCapture.Frame frame, Runnable onClosed) {
         if (c == null || frame == null || frame.bitmap == null || frame.bitmap.isRecycled()) {
             return false;
         }
@@ -58,9 +57,7 @@ final class GoogleCircleInlineOverlay {
         lp.x = bounds.left - display.left;
         lp.y = bounds.top - display.top;
 
-        CircleViewTextSnapshot safeText = textSnapshot == null
-                ? CircleViewTextSnapshot.empty(display) : textSnapshot;
-        WorkspaceView view = new WorkspaceView(app, host, lp, frame, safeText,
+        WorkspaceView view = new WorkspaceView(app, host, lp, frame,
                 onClosed, !shadeExpanded);
         if (!host.add(view, lp, "google_circle_inline")) return false;
 
@@ -68,10 +65,9 @@ final class GoogleCircleInlineOverlay {
         if (!shadeExpanded) view.promoteKeyFocus("initial");
         DiagnosticLog.i(app, "G_CIRCLE_INLINE", "overlay shown frame=" + bounds.toShortString()
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
-                + " viewTextNodes=" + safeText.nodeCount()
-                + " exactTextGeometry=" + safeText.exactGeometryNodeCount()
-                + " textMode=old_selectable screenshotMode=circle_edit_confirm"
-                + " autoExpand=false");
+                + " textRecognition=deferred"
+                + " classifier=view_then_local_ocr"
+                + " screenshotMode=circle_edit_confirm autoExpand=false");
         return true;
     }
 
@@ -101,9 +97,11 @@ final class GoogleCircleInlineOverlay {
         private static final int MODE_TEXT_START = 7;
         private static final int MODE_TEXT_END = 8;
 
-        private static final float TEXT_TAP_SNAP_DP = 18f;
+        private static final float VIEW_TEXT_TAP_SNAP_DP = 10f;
+        private static final float OCR_TEXT_TAP_SNAP_DP = 44f;
         private static final float TEXT_HANDLE_HIT_DP = 28f;
         private static final float TEXT_HANDLE_SNAP_DP = 96f;
+        private static final float RANGE_TOLERANCE_DP = 6f;
 
         private final Context context;
         private final FlOverlayWindowHost host;
@@ -138,15 +136,17 @@ final class GoogleCircleInlineOverlay {
         private RectF editOrigin;
         private PointF editStart;
         private int editMode = MODE_NONE;
+        private int textResolutionGeneration;
+        private boolean resolvingText;
         private boolean closed;
         private boolean closePressed;
         private boolean confirmPressed;
         private boolean keyFocusEnabled;
+        private String selectedTextSource = "";
 
         WorkspaceView(Context c, FlOverlayWindowHost host,
                       WindowManager.LayoutParams windowLayout,
                       GoogleCircleCapture.Frame frame,
-                      CircleViewTextSnapshot textSnapshot,
                       Runnable onClosed, boolean keyFocusEnabled) {
             super(c);
             context = c;
@@ -159,7 +159,7 @@ final class GoogleCircleInlineOverlay {
             textTransform = new ScreenBitmapTransform(frame.screenBounds,
                     frame.bitmap.getWidth(), frame.bitmap.getHeight());
             textSelection = new CircleTextSelectionModel(textTransform);
-            textSelection.setDocument(textSnapshot.toScreenDocument());
+            textSelection.setChars(List.of());
 
             setClickable(true);
             setFocusable(true);
@@ -210,8 +210,8 @@ final class GoogleCircleInlineOverlay {
             confirmTextPaint.setTextSize(dp(14));
             confirmTextPaint.setTextAlign(Paint.Align.CENTER);
 
-            DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT", "ready chars=" + textSelection.size()
-                    + " source=view_snapshot coordinateSpace=absolute_screen");
+            DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT",
+                    "ready chars=0 recognition=deferred_until_gesture");
         }
 
         void promoteKeyFocus(String reason) {
@@ -242,8 +242,6 @@ final class GoogleCircleInlineOverlay {
                 drawScreenshotHandles(canvas, selected);
                 drawScreenshotConfirm(canvas, selected);
             } else {
-                // Text selection keeps the frozen original image visible. Only individual selected
-                // characters are highlighted; there is never a screenshot resize rectangle here.
                 canvas.drawRect(0, 0, getWidth(), getHeight(), lightShadePaint);
                 drawTextSelection(canvas);
                 confirmRect.setEmpty();
@@ -341,10 +339,14 @@ final class GoogleCircleInlineOverlay {
             String text;
             if (screenshotSelection != null) {
                 text = "调整截图窗口 · 调好后点完成";
+            } else if (resolvingText) {
+                text = "正在识别当前位置 · View → 图片文字";
             } else if (textSelection.hasSelection()) {
-                text = "原位置可选文字 · 拖动两端手柄调整";
+                text = "IMAGE_OCR".equals(selectedTextSource)
+                        ? "图片文字已在原位置可选 · 拖动手柄调整"
+                        : "View 文字已在原位置可选 · 拖动手柄调整";
             } else {
-                text = "点击/涂抹/高亮选文字 · 圈画截图";
+                text = "点击/涂抹时即时识别文字 · 圈画截图";
             }
 
             float width = Math.min(getWidth() - dp(32), hintTextPaint.measureText(text) + dp(30));
@@ -397,9 +399,10 @@ final class GoogleCircleInlineOverlay {
                         }
                     }
 
-                    // A new gesture replaces whichever previous mode was active.
+                    cancelTextResolution("new_gesture");
                     screenshotSelection = null;
                     textSelection.clear();
+                    selectedTextSource = "";
                     confirmRect.setEmpty();
                     stroke.clear();
                     stroke.add(bitmapPoint);
@@ -443,8 +446,7 @@ final class GoogleCircleInlineOverlay {
                         updateTextEndpoint(x, y);
                         showTextSelectionMenu();
                     }
-                    // Screenshot frame editing deliberately does not open the menu here. The user
-                    // explicitly confirms after the size/position is correct.
+                    // Screenshot edits deliberately wait for the explicit 完成 button.
                     editMode = MODE_NONE;
                     editOrigin = null;
                     editStart = null;
@@ -492,11 +494,13 @@ final class GoogleCircleInlineOverlay {
             DiagnosticLog.i(context, "G_CIRCLE_GESTURE", "kind=" + gesture.kind
                     + " bounds=" + gesture.bounds.toShortString()
                     + " routing=" + (gesture.kind == GoogleCircleSelection.Kind.CIRCLE
-                    ? "editable_screenshot" : "old_selectable_view_text")
+                    ? "editable_screenshot" : "deferred_view_then_local_ocr")
                     + " autoExpand=false");
 
             if (gesture.kind == GoogleCircleSelection.Kind.CIRCLE) {
+                cancelTextResolution("circle_gesture");
                 textSelection.clear();
+                selectedTextSource = "";
                 FloatActionMenu.dismiss();
                 screenshotSelection = gesture;
                 DiagnosticLog.i(context, "G_CIRCLE_SCREENSHOT_FRAME", "created exact="
@@ -506,45 +510,96 @@ final class GoogleCircleInlineOverlay {
             }
 
             screenshotSelection = null;
-            selectViewText(gesture);
+            beginTextResolution(gesture);
         }
 
-        private void selectViewText(GoogleCircleSelection.Selection gesture) {
+        private void beginTextResolution(GoogleCircleSelection.Selection gesture) {
+            final int generation = ++textResolutionGeneration;
+            resolvingText = true;
+            selectedTextSource = "";
             textSelection.clear();
-            boolean selected = false;
+            invalidate();
 
-            if (gesture.kind == GoogleCircleSelection.Kind.TAP) {
-                PointF viewPoint = frame.bitmapToView(gesture.focus.x, gesture.focus.y,
-                        getWidth(), getHeight());
-                int hit = textSelection.findSelectionWord(viewPoint.x, viewPoint.y,
-                        getWidth(), getHeight(), dp(TEXT_TAP_SNAP_DP));
-                if (hit >= 0) {
-                    textSelection.selectSingle(hit);
-                    selected = true;
-                }
-            } else {
-                Rect bitmapRect = GoogleCircleSelection.exactRectAndClamp(gesture.bounds,
-                        frame.bitmap.getWidth(), frame.bitmap.getHeight());
-                Rect screenRect = bitmapRect.isEmpty() ? new Rect()
-                        : frame.bitmapRectToScreen(bitmapRect);
-                selected = textSelection.selectIntersecting(screenRect);
-            }
+            GoogleCircleTextResolver.resolve(context, frame, gesture,
+                    result -> post(() -> applyResolvedText(generation, gesture, result)));
+        }
 
-            DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT", "gesture=" + gesture.kind
-                    + " selected=" + selected
-                    + " chars=" + textSelection.selectionIndices().size()
-                    + " textChars=" + textSelection.selectedText().length()
-                    + " originalPosition=true screenshotFrame=false");
+        private void applyResolvedText(int generation,
+                                       GoogleCircleSelection.Selection gesture,
+                                       GoogleCircleTextResolver.Result result) {
+            if (closed || generation != textResolutionGeneration) return;
+            resolvingText = false;
 
-            if (!selected || !textSelection.hasSelection()) {
+            if (result == null || result.source == GoogleCircleTextResolver.Source.NONE
+                    || result.document == null || result.document.chars().isEmpty()) {
                 textSelection.clear();
-                Toast.makeText(context, "未找到 View 文字", Toast.LENGTH_SHORT).show();
+                selectedTextSource = "";
+                DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT", "resolved=false gesture="
+                        + gesture.kind + " source=" + (result == null ? "null" : result.source)
+                        + " error=" + (result == null || result.error == null ? "none"
+                        : ScreenCaptureBackend.safeMessage(result.error)));
+                Toast.makeText(context, "当前位置未识别到文字", Toast.LENGTH_SHORT).show();
                 invalidate();
                 return;
             }
 
+            textSelection.setDocument(result.document);
+            boolean selected = selectFromResolvedDocument(gesture, result.source);
+            if (!selected) {
+                textSelection.clear();
+                selectedTextSource = "";
+                Toast.makeText(context, "当前位置未识别到可选文字", Toast.LENGTH_SHORT).show();
+                invalidate();
+                return;
+            }
+
+            selectedTextSource = result.source.name();
+            DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT", "resolved=true gesture="
+                    + gesture.kind + " source=" + result.source
+                    + " chars=" + textSelection.selectionIndices().size()
+                    + " textChars=" + textSelection.selectedText().length()
+                    + " originalPosition=true coordinateSpace=SCREEN");
             invalidate();
             post(this::showTextSelectionMenu);
+        }
+
+        private boolean selectFromResolvedDocument(GoogleCircleSelection.Selection gesture,
+                                                   GoogleCircleTextResolver.Source source) {
+            if (gesture.kind == GoogleCircleSelection.Kind.TAP) {
+                PointF viewPoint = frame.bitmapToView(gesture.focus.x, gesture.focus.y,
+                        getWidth(), getHeight());
+                float snap = source == GoogleCircleTextResolver.Source.IMAGE_OCR
+                        ? dp(OCR_TEXT_TAP_SNAP_DP) : dp(VIEW_TEXT_TAP_SNAP_DP);
+                int hit = textSelection.findSelectionWord(viewPoint.x, viewPoint.y,
+                        getWidth(), getHeight(), snap);
+                if (hit < 0) return false;
+                textSelection.selectSingle(hit);
+                return true;
+            }
+
+            Rect bitmapRect = GoogleCircleSelection.exactRectAndClamp(gesture.bounds,
+                    frame.bitmap.getWidth(), frame.bitmap.getHeight());
+            Rect screenRect = bitmapRect.isEmpty() ? new Rect()
+                    : frame.bitmapRectToScreen(bitmapRect);
+            if (screenRect.isEmpty()) return false;
+            if (textSelection.selectIntersecting(screenRect)) return true;
+
+            int tolerance = Math.max(1, Math.round(dp(RANGE_TOLERANCE_DP)));
+            Rect tolerant = new Rect(screenRect);
+            tolerant.inset(-tolerance, -tolerance);
+            tolerant.intersect(frame.screenBounds);
+            return textSelection.selectIntersecting(tolerant);
+        }
+
+        private void cancelTextResolution(String reason) {
+            if (!resolvingText) {
+                textResolutionGeneration++;
+                return;
+            }
+            textResolutionGeneration++;
+            resolvingText = false;
+            DiagnosticLog.i(context, "G_CIRCLE_TEXT_RESOLVE", "ui generation cancelled reason="
+                    + reason + " generation=" + textResolutionGeneration);
         }
 
         private int hitTextHandle(float x, float y) {
@@ -664,8 +719,6 @@ final class GoogleCircleInlineOverlay {
                     + " anchor=" + anchor.toShortString()
                     + " autoExpand=false menu=image_action");
 
-            // Remove the frozen workspace first, then show the existing screenshot/image action
-            // menu over the real app. The independent crop survives frame recycling.
             close("circle_screenshot_confirmed");
             ImageActionMenu.show(context, crop, anchor);
         }
@@ -685,6 +738,8 @@ final class GoogleCircleInlineOverlay {
         void close(String reason) {
             if (closed) return;
             closed = true;
+            textResolutionGeneration++;
+            resolvingText = false;
             FloatActionMenu.dismiss();
             ImageActionMenu.dismiss();
             FloatMenuAnchor.clear();
