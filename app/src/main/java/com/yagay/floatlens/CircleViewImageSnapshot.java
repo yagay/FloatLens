@@ -9,7 +9,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 /** Immutable absolute-screen image regions from the normal Accessibility tree only. */
@@ -43,13 +42,13 @@ final class CircleViewImageSnapshot {
                     AccessibilityNodeInfo root = null;
                     try { root = window.getRoot(); } catch (Throwable ignored) {}
                     if (root == null || ownPackage(service, root)) continue;
-                    collect(root, display, out, seen, visited, 0);
+                    collect(service, root, display, out, seen, visited, 0);
                 }
             } else {
                 AccessibilityNodeInfo root = null;
                 try { root = service.getRootInActiveWindow(); } catch (Throwable ignored) {}
                 if (root != null && !ownPackage(service, root)) {
-                    collect(root, display, out, seen, visited, 0);
+                    collect(service, root, display, out, seen, visited, 0);
                 }
             }
         } catch (Throwable t) {
@@ -72,59 +71,28 @@ final class CircleViewImageSnapshot {
         for (Rect r : images) {
             if (r == null || r.isEmpty() || !r.contains(screenX, screenY)) continue;
             long area = area(r);
-            if (area < bestArea) {
-                bestArea = area;
-                best = r;
-            }
+            if (area < bestArea) { bestArea = area; best = r; }
         }
         return best == null ? null : new Rect(best);
     }
 
-    private static void collect(AccessibilityNodeInfo node, Rect display,
+    private static void collect(LensAccessibilityService service,
+                                AccessibilityNodeInfo node, Rect display,
                                 List<Rect> out, Set<String> seen,
                                 int[] visited, int depth) {
         if (node == null || depth > 80 || visited[0]++ >= MAX_NODES || out.size() >= MAX_IMAGES) return;
         try { if (!node.isVisibleToUser()) return; } catch (Throwable ignored) {}
-
-        Rect bounds = new Rect();
-        try { node.getBoundsInScreen(bounds); } catch (Throwable ignored) { return; }
+        Rect bounds = AccessibilityNodeSemantics.clippedBounds(node, display);
         if (bounds.isEmpty()) return;
-        if (display != null && !display.isEmpty() && !bounds.intersect(display)) return;
+        if (AccessibilityNodeSemantics.isImage(service, node, bounds)) add(out, seen, bounds);
 
-        if (isImageNode(node)) add(out, seen, bounds);
-
-        int count = Math.min(300, safeChildCount(node));
+        int count = Math.min(300, AccessibilityNodeSemantics.childCount(node));
         for (int i = 0; i < count; i++) {
             if (visited[0] >= MAX_NODES || out.size() >= MAX_IMAGES) return;
             AccessibilityNodeInfo child = null;
             try { child = node.getChild(i); } catch (Throwable ignored) {}
-            if (child != null) collect(child, display, out, seen, visited, depth + 1);
+            if (child != null) collect(service, child, display, out, seen, visited, depth + 1);
         }
-    }
-
-    private static boolean isImageNode(AccessibilityNodeInfo node) {
-        String cls = "";
-        String id = "";
-        try { if (node.getClassName() != null) cls = node.getClassName().toString(); }
-        catch (Throwable ignored) {}
-        try { if (node.getViewIdResourceName() != null) id = node.getViewIdResourceName(); }
-        catch (Throwable ignored) {}
-        String c = cls.toLowerCase(Locale.ROOT);
-        String v = id.toLowerCase(Locale.ROOT);
-        return c.contains("imageview") || c.contains("imagebutton") || c.contains("iconview")
-                || c.endsWith(".image")
-                || containsToken(v, "icon") || containsToken(v, "image")
-                || containsToken(v, "avatar") || containsToken(v, "thumbnail")
-                || containsToken(v, "photo") || containsToken(v, "picture");
-    }
-
-    private static boolean containsToken(String value, String token) {
-        if (value == null || value.isEmpty()) return false;
-        return value.contains("/" + token)
-                || value.contains("_" + token)
-                || value.contains(token + "_")
-                || value.endsWith(token)
-                || value.contains(token);
     }
 
     private static void add(List<Rect> out, Set<String> seen, Rect rect) {
@@ -134,14 +102,8 @@ final class CircleViewImageSnapshot {
     }
 
     private static boolean ownPackage(LensAccessibilityService service, AccessibilityNodeInfo node) {
-        try {
-            CharSequence pkg = node.getPackageName();
-            return service != null && pkg != null && service.getPackageName().contentEquals(pkg);
-        } catch (Throwable ignored) { return false; }
-    }
-
-    private static int safeChildCount(AccessibilityNodeInfo node) {
-        try { return node.getChildCount(); } catch (Throwable ignored) { return 0; }
+        return service != null && service.getPackageName().equals(
+                AccessibilityNodeSemantics.packageName(node));
     }
 
     private static long area(Rect r) {
