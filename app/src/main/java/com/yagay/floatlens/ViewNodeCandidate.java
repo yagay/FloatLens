@@ -6,6 +6,7 @@ import android.graphics.Rect;
 public final class ViewNodeCandidate {
     private final Rect bounds;
     private final String text;
+    private final String semanticLabel;
     private final String className;
     private final String viewId;
     private final boolean clickable;
@@ -15,10 +16,17 @@ public final class ViewNodeCandidate {
 
     public ViewNodeCandidate(Rect bounds, String text, String className, String viewId,
                              boolean clickable, boolean editable, boolean focusable, boolean iconLike) {
+        this(bounds, text, "", className, viewId, clickable, editable, focusable, iconLike);
+    }
+
+    public ViewNodeCandidate(Rect bounds, String text, String semanticLabel,
+                             String className, String viewId,
+                             boolean clickable, boolean editable, boolean focusable, boolean iconLike) {
         this.bounds = bounds == null ? new Rect() : new Rect(bounds);
-        this.text = text == null ? "" : text;
-        this.className = className == null ? "" : className;
-        this.viewId = viewId == null ? "" : viewId;
+        this.text = safe(text);
+        this.semanticLabel = safe(semanticLabel);
+        this.className = safe(className);
+        this.viewId = safe(viewId);
         this.clickable = clickable;
         this.editable = editable;
         this.focusable = focusable;
@@ -27,6 +35,7 @@ public final class ViewNodeCandidate {
 
     public Rect bounds() { return new Rect(bounds); }
     public String text() { return text; }
+    public String semanticLabel() { return semanticLabel; }
     public String className() { return className; }
     public String viewId() { return viewId; }
     public boolean clickable() { return clickable; }
@@ -45,7 +54,8 @@ public final class ViewNodeCandidate {
     }
 
     public String label() {
-        if (!text.isBlank()) return text.length() > 80 ? text.substring(0, 80) + "…" : text;
+        if (!text.isBlank()) return ellipsize(text);
+        if (!semanticLabel.isBlank()) return ellipsize(semanticLabel);
         if (iconLike) {
             String idName = shortId();
             if (!idName.isBlank()) return "图标 · " + idName;
@@ -65,7 +75,12 @@ public final class ViewNodeCandidate {
 
     private String shortId() {
         if (viewId.isBlank()) return "";
-        int slash=viewId.lastIndexOf('/');
-        return slash>=0&&slash<viewId.length()-1?viewId.substring(slash+1):viewId;
+        int slash = viewId.lastIndexOf('/');
+        return slash >= 0 && slash < viewId.length() - 1 ? viewId.substring(slash + 1) : viewId;
+    }
+
+    private static String safe(String value) { return value == null ? "" : value; }
+    private static String ellipsize(String value) {
+        return value.length() > 80 ? value.substring(0, 80) + "…" : value;
     }
 }
