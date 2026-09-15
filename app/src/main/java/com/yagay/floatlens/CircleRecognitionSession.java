@@ -41,6 +41,10 @@ final class CircleRecognitionSession {
     private CircleTextIndex index;
     private TextRecognizer fastRecognizer;
 
+    CircleRecognitionSession(Context context, Bitmap screenshot, Callback callback) {
+        this(context, screenshot, CircleViewTextSnapshotHandoff.consume(), callback);
+    }
+
     CircleRecognitionSession(Context context, Bitmap screenshot,
                              CircleViewTextSnapshot viewSnapshot, Callback callback) {
         this.app = context.getApplicationContext();
