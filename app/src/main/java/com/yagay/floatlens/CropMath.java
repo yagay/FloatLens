@@ -1,6 +1,6 @@
 package com.yagay.floatlens;
 
-/** Pure coordinate mapping used by screenshot and selection crop paths. */
+/** Pure coordinate mapping used by screenshot, OCR and selection paths. */
 final class CropMath {
     static final class Bounds {
         final int left;
@@ -45,6 +45,7 @@ final class CropMath {
         return new Bounds(l, t, r, b);
     }
 
+    /** Absolute screen coordinates -> bitmap coordinates. */
     static Bounds screenRectRound(int left, int top, int right, int bottom,
                                   int displayLeft, int displayTop,
                                   int displayWidth, int displayHeight,
@@ -57,6 +58,28 @@ final class CropMath {
         int r = clamp(Math.round((right - displayLeft) * sx), l + 1, bitmapWidth);
         int b = clamp(Math.round((bottom - displayTop) * sy), t + 1, bitmapHeight);
         return new Bounds(l, t, r, b);
+    }
+
+    /** Bitmap coordinates -> absolute screen coordinates. */
+    static Bounds bitmapRectRound(int left, int top, int right, int bottom,
+                                  int bitmapWidth, int bitmapHeight,
+                                  int displayLeft, int displayTop,
+                                  int displayWidth, int displayHeight) {
+        requireDimensions(bitmapWidth, bitmapHeight, displayWidth, displayHeight);
+        float sx = displayWidth / (float) bitmapWidth;
+        float sy = displayHeight / (float) bitmapHeight;
+        int l = displayLeft + clamp(Math.round(left * sx), 0, displayWidth - 1);
+        int t = displayTop + clamp(Math.round(top * sy), 0, displayHeight - 1);
+        int r = displayLeft + clamp(Math.round(right * sx),
+                Math.max(1, l - displayLeft + 1), displayWidth);
+        int b = displayTop + clamp(Math.round(bottom * sy),
+                Math.max(1, t - displayTop + 1), displayHeight);
+        return new Bounds(l, t, r, b);
+    }
+
+    static int viewPointToScreen(float value, int viewSize, int screenStart, int screenSize) {
+        if (viewSize <= 0 || screenSize <= 0) throw new IllegalArgumentException("dimensions must be positive");
+        return screenStart + clamp(Math.round(value * screenSize / (float) viewSize), 0, screenSize);
     }
 
     private static void requireDimensions(int sourceWidth, int sourceHeight,
