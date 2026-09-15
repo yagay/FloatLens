@@ -33,11 +33,20 @@ Root 截图需要同时打开：
 
 ### LSPosed
 
-当前构建保留 libxposed API 102 模块入口和设置项，但 **没有活动的 LSPosed Provider，也不会安装 system_server 或第三方应用 Hook**。
+当前构建使用 libxposed API 102，并推荐作用域：
 
-之前加入的全局 `FLAG_SECURE` system_server Hook 已移除，因为应用自己的 SharedPreferences 开关不能可靠控制一个已经安装在 system_server 中的全局 Hook。后续只有在建立真正的跨进程配置/状态通道后，LSPosed 能力才会重新接入 `PrivilegeManager`，并继续遵守“关闭增强模式即只走普通实现”的规则。
+```text
+system
+com.android.systemui
+```
 
-原先用于抓取 FV/fooView 运行时行为的固定 FV 作用域、Method Probe、对象快照、Hook 日志回传和 Runtime Inspector ZIP 也不属于正式功能。
+`staticScope=false`，所以它们只是推荐项，不会锁死用户作用域。
+
+FloatLens 已通过 `libxposed-service 102` 接入框架状态检测。高级权限页可以区分：LSPosed 服务是否连接、两个推荐作用域是否已经启用，以及 system_server / SystemUI 是否真的已经加载 FloatLens 模块。
+
+**当前仍没有活动的 LSPosed 功能 Provider，也不会安装 system_server、SystemUI 或第三方应用的功能性 Hook。** 框架已连接或模块已加载不等于某个增强功能已经启用；只有未来具体 Provider 真正接入后，`PrivilegeManager` 才会允许业务代码进入 LSPosed 路径。
+
+之前加入的全局 `FLAG_SECURE` system_server Hook 已移除，因为应用自己的 SharedPreferences 开关不能可靠控制一个已经安装在 system_server 中的全局 Hook。原先用于抓取 FV/fooView 运行时行为的固定 FV 作用域、Method Probe、对象快照、Hook 日志回传和 Runtime Inspector ZIP 也不属于正式功能。
 
 完整权限与回退规则见 [`docs/PRIVILEGED_MODE.md`](docs/PRIVILEGED_MODE.md)。
 
@@ -54,6 +63,7 @@ PP-OCRv6 Small / Medium 模型与 APK 分离。成功下载后 FloatLens 会生�
 - targetSdk 37
 - Java 17
 - libxposed API 102（compileOnly）
+- libxposed service 102（implementation，用于模块 App ↔ 框架状态通信）
 
 GitHub Actions 的 Debug Build 使用 Gradle 9.4.1 + JDK 17，依次执行：
 
