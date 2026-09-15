@@ -12,6 +12,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 import io.github.libxposed.service.HookedTarget;
 import io.github.libxposed.service.XposedService;
@@ -107,7 +108,8 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
     private final SharedPreferences.OnSharedPreferenceChangeListener localPreferenceListener =
             (preferences, key) -> {
                 if (FloatSettings.K_ENHANCED_MODE.equals(key)
-                        || FloatSettings.K_LSPOSED_ENABLED.equals(key)) {
+                        || FloatSettings.K_LSPOSED_ENABLED.equals(key)
+                        || FloatSettings.K_LSPOSED_SECURE_SCREENSHOT.equals(key)) {
                     syncRuntimeConfigAsync();
                 }
             };
@@ -153,6 +155,16 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         INSTANCE.syncRuntimeConfig();
     }
 
+    /** Opens a fail-closed, automatically expiring secure-capture request window. */
+    public static void beginSecureCaptureWindow(long ttlMs, Consumer<Boolean> callback) {
+        INSTANCE.setSecureCaptureWindow(Math.max(250L, Math.min(ttlMs, 2500L)), callback);
+    }
+
+    /** Clears the secure-capture request immediately; expiry remains a second fail-safe. */
+    public static void endSecureCaptureWindow() {
+        INSTANCE.clearSecureCaptureWindow();
+    }
+
     public static void addListener(Listener listener, boolean notifyImmediately) {
         if (listener == null) return;
         INSTANCE.listeners.add(listener);
@@ -190,6 +202,7 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
 
         boolean enhanced = local.getBoolean(FloatSettings.K_ENHANCED_MODE, false);
         boolean lsposed = local.getBoolean(FloatSettings.K_LSPOSED_ENABLED, false);
+        boolean secureScreenshot = local.getBoolean(FloatSettings.K_LSPOSED_SECURE_SCREENSHOT, false);
         long updatedAt = System.currentTimeMillis();
         IO.execute(() -> {
             try {
@@ -203,6 +216,8 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                         .putInt(LsposedRuntimeConfig.K_SCHEMA_VERSION, LsposedRuntimeConfig.SCHEMA_VERSION)
                         .putBoolean(LsposedRuntimeConfig.K_ENHANCED_MODE, enhanced)
                         .putBoolean(LsposedRuntimeConfig.K_LSPOSED_ENABLED, lsposed)
+                        .putBoolean(LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED, secureScreenshot)
+                        .putLong(LsposedRuntimeConfig.K_SECURE_CAPTURE_UNTIL_MS, 0L)
                         .putLong(LsposedRuntimeConfig.K_UPDATED_AT, updatedAt)
                         .commit();
                 if (!committed) {
@@ -225,6 +240,71 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                         "同步 LSPosed 配置失败：" + messageOf(t));
             }
         });
+    }
+
+    private void setSecureCaptureWindow(long ttlMs, Consumer<Boolean> callback) {
+        XposedService current = service;
+        SharedPreferences local = localPreferences;
+        Context app = appContext;
+        if (current == null || local == null || app == null || !providerAvailable()) {
+            postResult(app, callback, false);
+            return;
+        }
+        boolean enhanced = local.getBoolean(FloatSettings.K_ENHANCED_MODE, false);
+        boolean lsposed = local.getBoolean(FloatSettings.K_LSPOSED_ENABLED, false);
+        boolean feature = local.getBoolean(FloatSettings.K_LSPOSED_SECURE_SCREENSHOT, false);
+        if (!LsposedRuntimeConfig.isSecureCaptureActive(
+                enhanced, lsposed, feature, System.currentTimeMillis() + ttlMs,
+                System.currentTimeMillis())) {
+            postResult(app, callback, false);
+            return;
+        }
+        long until = System.currentTimeMillis() + ttlMs;
+        IO.execute(() -> {
+            boolean ok = false;
+            try {
+                SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
+                ok = remote != null && remote.edit()
+                        .putInt(LsposedRuntimeConfig.K_SCHEMA_VERSION, LsposedRuntimeConfig.SCHEMA_VERSION)
+                        .putBoolean(LsposedRuntimeConfig.K_ENHANCED_MODE, enhanced)
+                        .putBoolean(LsposedRuntimeConfig.K_LSPOSED_ENABLED, lsposed)
+                        .putBoolean(LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED, feature)
+                        .putLong(LsposedRuntimeConfig.K_SECURE_CAPTURE_UNTIL_MS, until)
+                        .putLong(LsposedRuntimeConfig.K_UPDATED_AT, System.currentTimeMillis())
+                        .commit();
+            } catch (Throwable t) {
+                DiagnosticLog.i(app, "LSPOSED_SECURE_CAPTURE", "open failed=" + messageOf(t));
+            }
+            boolean result = ok;
+            postResult(app, callback, result);
+        });
+    }
+
+    private void clearSecureCaptureWindow() {
+        XposedService current = service;
+        Context app = appContext;
+        if (current == null) return;
+        IO.execute(() -> {
+            try {
+                SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
+                if (remote != null) {
+                    remote.edit()
+                            .putLong(LsposedRuntimeConfig.K_SECURE_CAPTURE_UNTIL_MS, 0L)
+                            .putLong(LsposedRuntimeConfig.K_UPDATED_AT, System.currentTimeMillis())
+                            .commit();
+                }
+            } catch (Throwable t) {
+                if (app != null) {
+                    DiagnosticLog.i(app, "LSPOSED_SECURE_CAPTURE", "clear failed=" + messageOf(t));
+                }
+            }
+        });
+    }
+
+    private static void postResult(Context app, Consumer<Boolean> callback, boolean result) {
+        if (callback == null) return;
+        if (app != null) app.getMainExecutor().execute(() -> callback.accept(result));
+        else MAIN.post(() -> callback.accept(result));
     }
 
     private void refreshFromService() {
