@@ -19,6 +19,10 @@ import java.util.Set;
  *
  * All geometry is kept in absolute screen coordinates. Screenshot bounds and bitmap resolution are
  * deliberately not part of this class, so changing screenshot policy can never move View text.
+ *
+ * Circle Select only indexes native node text. Accessibility semantic descriptions/hints/state are
+ * useful metadata, but they often describe an entire card or compound control and therefore do not
+ * provide trustworthy visible-text geometry. Those pixels are left to ML Kit in hybrid mode.
  */
 final class CircleViewTextSnapshot {
     private static final int MAX_NODES = 4200;
@@ -80,6 +84,7 @@ final class CircleViewTextSnapshot {
                         + " exactGeometry=" + keptExact
                         + " exactRaw=" + exact[0]
                         + " visited=" + visited[0]
+                        + " source=native_text_only"
                         + " display=" + display.toShortString()
                         + " coordinateSpace=absolute_screen");
         return new CircleViewTextSnapshot(display, pruned, keptExact);
@@ -206,15 +211,12 @@ final class CircleViewTextSnapshot {
         if (display != null && !display.isEmpty() && !clipped.intersect(display)) return;
 
         CharSequence nativeText = safeText(node);
-        CharSequence semanticText = firstNonBlank(nativeText,
-                safeContentDescription(node), safeHint(node), safeStateDescription(node));
-        if (semanticText != null) {
-            String text = semanticText.toString().trim();
+        if (nativeText != null) {
+            String text = nativeText.toString().trim();
             if (!text.isEmpty()) {
                 String key = clipped.flattenToString() + "\u0000" + text;
                 if (seen.add(key)) {
-                    List<CharacterBox> characters = nativeText == null || nativeText.toString().isBlank()
-                            ? List.of() : requestCharacterBoxes(node, nativeText.toString(), display);
+                    List<CharacterBox> characters = requestCharacterBoxes(node, nativeText.toString(), display);
                     if (!characters.isEmpty()) exact[0]++;
                     out.add(new TextNode(clipped, text, characters, depth));
                 }
@@ -356,21 +358,24 @@ final class CircleViewTextSnapshot {
         return service != null && service.getPackageName().equals(safePackage(node));
     }
 
-    private static CharSequence firstNonBlank(CharSequence... values) {
-        if (values == null) return null;
-        for (CharSequence value : values) {
-            if (value != null && !value.toString().trim().isEmpty()) return value;
-        }
-        return null;
+    private static CharSequence safeText(AccessibilityNodeInfo n) {
+        try { return n.getText(); } catch (Throwable t) { return null; }
     }
 
-    private static CharSequence safeText(AccessibilityNodeInfo n) { try { return n.getText(); } catch (Throwable t) { return null; } }
-    private static CharSequence safeContentDescription(AccessibilityNodeInfo n) { try { return n.getContentDescription(); } catch (Throwable t) { return null; } }
-    private static CharSequence safeHint(AccessibilityNodeInfo n) { try { return n.getHintText(); } catch (Throwable t) { return null; } }
-    private static CharSequence safeStateDescription(AccessibilityNodeInfo n) { try { return n.getStateDescription(); } catch (Throwable t) { return null; } }
-    private static String safePackage(AccessibilityNodeInfo n) { try { return n.getPackageName() == null ? "" : n.getPackageName().toString(); } catch (Throwable t) { return ""; } }
-    private static int safeChildCount(AccessibilityNodeInfo n) { try { return n.getChildCount(); } catch (Throwable t) { return 0; } }
-    private static String safe(Throwable t) { if (t == null) return "unknown"; String m = t.getMessage(); return m == null || m.isBlank() ? t.getClass().getSimpleName() : m; }
+    private static String safePackage(AccessibilityNodeInfo n) {
+        try { return n.getPackageName() == null ? "" : n.getPackageName().toString(); }
+        catch (Throwable t) { return ""; }
+    }
+
+    private static int safeChildCount(AccessibilityNodeInfo n) {
+        try { return n.getChildCount(); } catch (Throwable ignored) { return 0; }
+    }
+
+    private static String safe(Throwable t) {
+        if (t == null) return "unknown";
+        String m = t.getMessage();
+        return m == null || m.isBlank() ? t.getClass().getSimpleName() : m;
+    }
 
     private static final class TextNode {
         final Rect bounds;
