@@ -254,12 +254,19 @@ windows no longer use an overlay host.
 Root and LSPosed are optional enhancement providers, never prerequisites for core behavior.
 
 - Root capabilities must pass `PrivilegeManager.canUseRoot(...)` and may fall back to normal providers.
-- LSPosed capabilities must pass `PrivilegeManager.canUseLsposed(...)` **and** report a real provider as
-  available. A preference alone is not proof that a hook exists or is controllable.
-- The current libxposed API 102 entry is intentionally hook-free until a cross-process control/status
-  channel exists.
+- `LsposedStatusManager` is the app-side owner of framework state and writable Remote Preferences. It
+  mirrors `增强模式` and `LSPosed Provider` into the `floatlens_runtime` group and separately tracks scope
+  plus actually loaded target processes.
+- `LsposedRuntimeConfig` is the shared key/schema contract only. It contains no framework or UI behavior.
+- `LsposedRuntimeProvider` is the hooked-process owner of the read-only Remote Preferences gate. It keeps
+  an in-process active flag synchronized and currently installs **no functional hooks**.
+- `PrivilegeManager.lsposedProviderAvailable()` requires service connection, working Remote Preferences,
+  and at least one actually loaded recommended target. A stored preference or scope checkbox alone is not
+  proof that the provider exists.
+- Future LSPosed capabilities must pass `PrivilegeManager.canUseLsposed(...)`; the target-process hook
+  implementation must additionally honor `LsposedRuntimeProvider.isActive()`.
 - Never install a device-wide `system_server` behavior change that an in-app switch cannot actually
-  disable.
+  disable through this control path.
 
 See `docs/PRIVILEGED_MODE.md` for the current provider state.
 
@@ -273,8 +280,9 @@ See `docs/PRIVILEGED_MODE.md` for the current provider state.
 4. upload the debug APK artifact.
 
 The JVM suite currently protects gesture-session state, verified gesture classification semantics, crop
-coordinate mapping, OCR early-stop quality, preference refresh routing and Circle state transitions.
-Structural changes are not complete until this workflow is green on the final HEAD.
+coordinate mapping, OCR early-stop quality, preference refresh routing, Circle state transitions and the
+LSPosed two-switch runtime gate. Structural changes are not complete until this workflow is green on the
+final HEAD.
 
 ## 14. Rules for future changes
 

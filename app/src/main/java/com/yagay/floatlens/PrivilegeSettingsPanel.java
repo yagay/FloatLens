@@ -17,7 +17,7 @@ public final class PrivilegeSettingsPanel {
 
     public static LinearLayout build(AppCompatActivity activity, FloatSettings fs) {
         LinearLayout root = AppUi.pageRoot(activity, "高级权限",
-                "Root 是当前可用增强层；LSPosed 已接入框架状态检测，但当前版本不会安装功能性 Hook。" );
+                "Root 是功能增强层；LSPosed 已接入受控 Provider 配置通道，但当前仍不安装功能性 Hook。" );
 
         TextView modeStatus = AppUi.caption(activity, "", 13);
         TextView rootStatus = AppUi.caption(activity, "", 13);
@@ -67,12 +67,15 @@ public final class PrivilegeSettingsPanel {
 
         TextView lsposedStatus = AppUi.caption(activity, "", 13);
         AppUi.Section lsposedSection = AppUi.section(activity, "LSPosed",
-                "API 102 状态通道会读取当前作用域和实际已加载进程；模块入口仍保持无功能性 Hook。" );
+                "API 102 Remote Preferences 把应用开关同步到 system_server / SystemUI；目标进程只读并监听配置变化。" );
         SwitchMaterial lsposedSwitch = preferenceSwitch(activity, fs,
-                "使用 LSPosed 功能（预留）",
-                "当前版本没有活动的 LSPosed Provider；不会绕过 FLAG_SECURE，也不会修改其他应用。",
+                "启用 LSPosed Provider",
+                "只启用受控 Provider 配置门；当前版本仍不会绕过 FLAG_SECURE，也不会安装功能性 Hook。",
                 FloatSettings.K_LSPOSED_ENABLED, fs.lsposedEnabled(),
-                () -> refresh(activity, fs, modeStatus, rootStatus));
+                () -> {
+                    LsposedStatusManager.syncRuntimeConfigAsync();
+                    refresh(activity, fs, modeStatus, rootStatus);
+                });
         lsposedSwitch.setEnabled(PrivilegeManager.lsposedProviderAvailable());
         AppUi.addRow(lsposedSection.body, AppUi.switchContainer(lsposedSwitch));
         AppUi.addRow(lsposedSection.body, statusBlock(activity, "LSPosed 实际状态", lsposedStatus));
@@ -80,22 +83,26 @@ public final class PrivilegeSettingsPanel {
         LinearLayout lsposedButtons = AppUi.buttonRow(activity);
         MaterialButton refreshLsposed = AppUi.secondaryButton(activity, "刷新 LSPosed 状态");
         refreshLsposed.setOnClickListener(v -> {
-            lsposedStatus.setText("正在读取 LSPosed 框架状态…");
-            LsposedStatusManager.refreshAsync();
+            lsposedStatus.setText("正在读取 LSPosed 框架与 Provider 状态…");
+            LsposedStatusManager.syncRuntimeConfigAsync();
         });
         lsposedButtons.addView(refreshLsposed, new LinearLayout.LayoutParams(0, -2, 1f));
         AppUi.addRow(lsposedSection.body, lsposedButtons);
 
         TextView lsposedNote = AppUi.caption(activity,
-                "推荐作用域是 system + com.android.systemui。状态页可以区分“已在作用域”与“目标进程实际已加载模块”；这仍不代表任何具体 Hook 已启用。",
+                "推荐作用域是 system + com.android.systemui。只有框架服务、Remote Preferences、至少一个实际加载目标都就绪时，Provider 才会被判定可用；当前仍没有任何功能性 Hook。",
                 12);
         AppUi.addRow(lsposedSection.body, simpleBlock(activity, lsposedNote));
 
-        LsposedStatusManager.Listener lsposedListener = snapshot -> refreshLsposed(activity, lsposedStatus);
+        LsposedStatusManager.Listener lsposedListener = snapshot -> {
+            lsposedSwitch.setEnabled(PrivilegeManager.lsposedProviderAvailable());
+            refresh(activity, fs, modeStatus, rootStatus);
+            refreshLsposed(activity, lsposedStatus);
+        };
         lsposedSection.body.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
             @Override public void onViewAttachedToWindow(View v) {
                 LsposedStatusManager.addListener(lsposedListener, true);
-                LsposedStatusManager.refreshAsync();
+                LsposedStatusManager.syncRuntimeConfigAsync();
             }
 
             @Override public void onViewDetachedFromWindow(View v) {
@@ -147,7 +154,7 @@ public final class PrivilegeSettingsPanel {
     private static void refresh(AppCompatActivity activity, FloatSettings fs,
                                 TextView modeStatus, TextView rootStatus) {
         String providerNote = !PrivilegeManager.lsposedProviderAvailable() && fs.lsposedEnabled()
-                ? " · LSPosed 选择已保留但 Provider 未接入" : "";
+                ? " · LSPosed 已选择但 Provider 未就绪" : "";
         modeStatus.setText(PrivilegeManager.modeLabel(fs)
                 + (fs.enhancedMode() ? " · 增强总开关已开启" : " · 增强总开关已关闭")
                 + providerNote);
@@ -170,6 +177,7 @@ public final class PrivilegeSettingsPanel {
         LsposedStatusManager.Snapshot s = LsposedStatusManager.snapshot();
         if (!s.serviceConnected) {
             status.setText("框架服务：未连接\n"
+                    + "配置通道：不可用\n"
                     + "系统框架：未知 · SystemUI：未知\n"
                     + (s.detail.isBlank() ? "如果刚启用模块，请重启目标进程或设备后再刷新。" : s.detail));
             status.setTextColor(AppUi.textPrimary(activity));
@@ -182,16 +190,21 @@ public final class PrivilegeSettingsPanel {
                 + " · SystemUI " + yesNo(s.systemUiScopeEnabled);
         String loadedLine = "实际加载：系统框架 " + loaded(s.systemLoaded)
                 + " · SystemUI " + loaded(s.systemUiLoaded);
+        String remoteLine = "配置通道：" + (s.remoteConfigReady ? "已同步" : "不可用")
+                + " · Provider " + (s.remoteProviderEnabled() ? "已开启" : "已关闭");
+        String updatedLine = s.remoteUpdatedAt <= 0L ? ""
+                : " · " + DateFormat.format("HH:mm:ss", s.remoteUpdatedAt);
         String processLine = s.runningProcesses.isEmpty()
                 ? "已加载进程：无"
                 : "已加载进程：" + String.join(", ", s.runningProcesses);
         String detailLine = s.detail.isBlank() ? "" : "\n" + s.detail;
         status.setText("框架服务：已连接 " + framework + version + " · API " + s.apiVersion
+                + "\n" + remoteLine + updatedLine
                 + "\n" + scopeLine
                 + "\n" + loadedLine
                 + "\n" + processLine
                 + detailLine);
-        status.setTextColor((s.systemLoaded || s.systemUiLoaded)
+        status.setTextColor(PrivilegeManager.lsposedProviderAvailable()
                 ? AppUi.success(activity) : AppUi.textPrimary(activity));
     }
 

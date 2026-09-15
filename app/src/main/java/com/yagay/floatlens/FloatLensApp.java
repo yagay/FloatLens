@@ -18,8 +18,8 @@ public final class FloatLensApp extends Application implements Application.Activ
         } catch (Throwable t) {
             DiagnosticLog.i(this, "APP_MIGRATION", "AI/dictionary cleanup failed=" + t);
         }
-        // App-side framework/status bridge only; this does not install any Xposed hooks.
-        LsposedStatusManager.initialize();
+        // App-side framework/status/config bridge only; this does not install Xposed hooks.
+        LsposedStatusManager.initialize(this);
         registerActivityLifecycleCallbacks(this);
     }
 
