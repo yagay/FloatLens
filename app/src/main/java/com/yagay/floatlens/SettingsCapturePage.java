@@ -20,6 +20,9 @@ final class SettingsCapturePage {
                 FloatSettings.K_ACCESSIBILITY_SCREENSHOT, fs.accessibilityScreenshot());
         ui.check(capture.body, "Root 截图增强", "还需要在“高级权限”同时开启“增强模式”和“使用 Root 功能”",
                 FloatSettings.K_ROOT_SCREENSHOT, fs.rootScreenshot());
+        ui.check(capture.body, "LSPosed 安全截图增强",
+                "仅 FloatLens 发起截图时短暂允许捕获 FLAG_SECURE 内容；还需要开启增强模式和 LSPosed Provider",
+                FloatSettings.K_LSPOSED_SECURE_SCREENSHOT, fs.lsposedSecureScreenshot());
         AppUi.addSection(root, capture);
 
         AppUi.Section result = AppUi.section(activity, "OCR 结果", null);
