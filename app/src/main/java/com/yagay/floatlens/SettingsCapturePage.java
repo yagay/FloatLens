@@ -8,7 +8,7 @@ final class SettingsCapturePage {
     static LinearLayout build(SettingsActivity activity, FloatSettings fs) {
         SettingsPageUi ui = new SettingsPageUi(activity, fs);
         LinearLayout root = AppUi.pageRoot(activity, "截图与 OCR",
-                "截图来源、截图范围、结果显示和 OCR 模型分开管理。Root / LSPosed 增强开关统一放在“高级权限”中。" );
+                "截图 OCR 与圈画 OCR 分开管理。截图可使用 PP-OCR；圈画只使用 View + ML Kit，不再经过 PP-OCR。Root / LSPosed 增强开关统一放在“高级权限”中。" );
 
         AppUi.Section capture = AppUi.section(activity, "截图",
                 "状态栏与导航栏设置控制截图范围；圈画模式始终保留实时导航按键可点击。" );
@@ -31,7 +31,13 @@ final class SettingsCapturePage {
         CircleBorderSettingsUi.add(activity, fs, circleBorder.body);
         AppUi.addSection(root, circleBorder);
 
-        AppUi.Section result = AppUi.section(activity, "OCR 结果", null);
+        AppUi.Section circleOcr = AppUi.section(activity, "圈画 OCR",
+                "圈画文字来源与截图 OCR 完全分离。PP-OCR 不参与圈画，避免局部裁剪和预处理带来的坐标偏差。" );
+        CircleOcrSettingsUi.add(activity, fs, circleOcr.body);
+        AppUi.addSection(root, circleOcr);
+
+        AppUi.Section result = AppUi.section(activity, "截图 OCR / OCR 结果",
+                "这里的 OCR 引擎只影响普通截图、区域截图等 OCR 操作，不影响圈画。" );
         ui.check(result.body, "显示原选区图片", null,
                 FloatSettings.K_OCR_SHOW_IMAGE, fs.ocrShowImage());
         ui.check(result.body, "显示文字", null,
@@ -41,8 +47,8 @@ final class SettingsCapturePage {
         ui.ocrEngineSpinner(result.body);
         AppUi.addSection(root, result);
 
-        AppUi.Section models = AppUi.section(activity, "本地 PP-OCRv6 模型",
-                "模型与 APK 分离。Small 约 32 MB；Medium 约 139 MB。" );
+        AppUi.Section models = AppUi.section(activity, "截图 OCR · 本地 PP-OCRv6 模型",
+                "仅供截图 OCR 使用，不参与圈画。模型与 APK 分离。Small 约 32 MB；Medium 约 139 MB。" );
         try {
             ui.addOcrModelRow(models.body, OcrModelManager.SMALL);
             ui.addOcrModelRow(models.body, OcrModelManager.MEDIUM);
@@ -58,7 +64,7 @@ final class SettingsCapturePage {
         AppUi.addSection(root, models);
 
         AppUi.Section languages = AppUi.section(activity, "识别语言",
-                "可多选；简体和繁體共用中文识别器，至少保留一种语言。" );
+                "截图 OCR 与圈画 ML Kit 共用语言选择；简体和繁體共用中文识别器，至少保留一种语言。" );
         ui.addOcrLanguageChecks(languages.body);
         AppUi.addSection(root, languages);
         return root;
