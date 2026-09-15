@@ -34,7 +34,9 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         public final List<String> runningProcesses;
         public final boolean systemScopeEnabled;
         public final boolean systemUiScopeEnabled;
+        /** True only when the current APK version is UP_TO_DATE in system_server. */
         public final boolean systemLoaded;
+        /** True only when the current APK version is UP_TO_DATE in SystemUI. */
         public final boolean systemUiLoaded;
         public final boolean remoteConfigReady;
         public final boolean remoteEnhancedMode;
@@ -151,11 +153,7 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         return INSTANCE.snapshot.serviceConnected;
     }
 
-    /**
-     * Provider infrastructure is considered available only when the framework service and writable
-     * Remote Preferences work, and at least one recommended target process has actually loaded the
-     * module. This is intentionally stricter than merely detecting LSPosed installation.
-     */
+    /** Generic provider availability requires at least one current, UP_TO_DATE recommended target. */
     public static boolean providerAvailable() {
         Snapshot s = INSTANCE.snapshot;
         return s.serviceConnected && s.remoteConfigReady && (s.systemLoaded || s.systemUiLoaded);
@@ -253,7 +251,8 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
     private void armSecureCapture(Consumer<Boolean> callback) {
         XposedService current = service;
         SharedPreferences local = localPreferences;
-        if (current == null || local == null) {
+        Snapshot currentSnapshot = snapshot;
+        if (current == null || local == null || !currentSnapshot.systemLoaded) {
             complete(callback, false);
             return;
         }
@@ -364,9 +363,16 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                     if (target == null) continue;
                     String process = target.getProcessName();
                     if (process == null || process.isBlank()) continue;
-                    running.add(process);
-                    if (isSystemProcess(process)) systemLoaded = true;
-                    if (isSystemUiProcess(process)) systemUiLoaded = true;
+
+                    HookedTarget.State state = target.getState();
+                    long loadedVersion = target.getLoadedVersionCode();
+                    boolean currentVersion = loadedVersion == BuildConfig.VERSION_CODE;
+                    boolean upToDate = state == HookedTarget.State.UP_TO_DATE;
+                    boolean currentTarget = currentVersion && upToDate;
+
+                    running.add(process + "[" + state.name() + " v" + loadedVersion + "]");
+                    if (currentTarget && isSystemProcess(process)) systemLoaded = true;
+                    if (currentTarget && isSystemUiProcess(process)) systemUiLoaded = true;
                 }
             }
             Collections.sort(running);
