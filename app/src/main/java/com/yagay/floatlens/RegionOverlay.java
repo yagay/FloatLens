@@ -23,9 +23,12 @@ import java.util.List;
 public final class RegionOverlay {
     public static void show(Context c, Bitmap screen, boolean ocr) {
         Context app = c.getApplicationContext();
-        WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
         FloatSettings fs = new FloatSettings(app);
-        Rect display = new Rect(wm.getCurrentWindowMetrics().getBounds());
+        Rect display = ScreenGeometry.displayBounds(app);
+        if (display.isEmpty()) {
+            if (screen != null && !screen.isRecycled()) screen.recycle();
+            throw new IllegalStateException("display bounds unavailable");
+        }
         Rect content = CaptureSystemBarsPolicy.captureBounds(
                 app,
                 fs.keepStatusBarInScreenshot(),
