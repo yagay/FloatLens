@@ -147,6 +147,4 @@ final class CircleViewImageSnapshot {
         String m = t.getMessage();
         return m == null || m.isBlank() ? t.getClass().getSimpleName() : m;
     }
-
-    private CircleViewImageSnapshot() {}
 }
