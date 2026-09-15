@@ -1,5 +1,6 @@
 package com.yagay.floatlens;
 
+import android.content.Intent;
 import android.text.format.DateFormat;
 import android.view.View;
 import android.widget.LinearLayout;
@@ -81,16 +82,21 @@ public final class PrivilegeSettingsPanel {
         AppUi.addRow(lsposedSection.body, statusBlock(activity, "LSPosed 实际状态", lsposedStatus));
 
         LinearLayout lsposedButtons = AppUi.buttonRow(activity);
-        MaterialButton refreshLsposed = AppUi.secondaryButton(activity, "刷新 LSPosed 状态");
+        MaterialButton refreshLsposed = AppUi.secondaryButton(activity, "刷新状态");
         refreshLsposed.setOnClickListener(v -> {
             lsposedStatus.setText("正在读取 LSPosed 框架与 Provider 状态…");
             LsposedStatusManager.syncRuntimeConfigAsync();
         });
         lsposedButtons.addView(refreshLsposed, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        MaterialButton probeSecure = AppUi.secondaryButton(activity, "测试安全截图");
+        probeSecure.setOnClickListener(v -> activity.startActivity(
+                new Intent(activity, SecureCaptureProbeActivity.class)));
+        lsposedButtons.addView(probeSecure, new LinearLayout.LayoutParams(0, -2, 1f));
         AppUi.addRow(lsposedSection.body, lsposedButtons);
 
         TextView lsposedNote = AppUi.caption(activity,
-                "推荐作用域是 system + com.android.systemui。安全窗口截图 Hook 只安装在 system_server，并且每次调用都实时检查短时授权；不会永久取消窗口的 FLAG_SECURE / secure Surface 标记，也不会开启 DRM protected content 捕获。",
+                "推荐作用域是 system + com.android.systemui。安全窗口截图 Hook 只安装在 system_server，并且每次调用都实时检查短时授权；不会永久取消窗口的 FLAG_SECURE / secure Surface 标记，也不会开启 DRM protected content 捕获。‘测试安全截图’会打开 FloatLens 自己的 FLAG_SECURE 页面并实际验证返回 Bitmap。",
                 12);
         AppUi.addRow(lsposedSection.body, simpleBlock(activity, lsposedNote));
 
