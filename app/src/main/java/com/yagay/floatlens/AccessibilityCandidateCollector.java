@@ -3,26 +3,20 @@ package com.yagay.floatlens;
 import android.graphics.Rect;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
 /**
- * FL accessibility candidate collector.
+ * Single normal-mode Accessibility candidate collector.
  *
- * Candidate classes:
- *  1) TEXT: node with visible text/contentDescription/hint/stateDescription;
- *  2) NON_TEXT: explicit image/icon-like node;
- *  3) VIEW: ordinary View rectangle exposed by accessibility, especially nodes with a resource id,
- *     WebView/SurfaceView/TextureView/android.view.View, and whole-page Views;
- *  4) ROOT: last-resort near-fullscreen fallback when no better View identity is exposed.
+ * <p>Visible text means {@link AccessibilityNodeInfo#getText()} only. contentDescription, hint and
+ * stateDescription remain semantic labels for non-text Views and never become selectable screen
+ * text. Direct selection and the explicit View picker both consume this collector.</p>
  *
- * FL extends the old text/image-only collector: an ordinary View does not
- * need text or image semantics to be selectable.
- *
- * The collector is intentionally interruption-aware. ViewSelectionEngine cancels stale scans when
- * the pointer leaves Direct mode or a newer session replaces the old one; recursion and window loops
- * must stop promptly so the single worker does not accumulate obsolete full-tree traversals.
+ * <p>The collector is interruption-aware because the Direct engine cancels stale tree snapshots.
+ * MOVE never traverses the live Accessibility tree; it only hit-tests a prepared snapshot.</p>
  */
 public final class AccessibilityCandidateCollector {
     private AccessibilityCandidateCollector() {}
@@ -36,15 +30,12 @@ public final class AccessibilityCandidateCollector {
         try {
             List<AccessibilityWindowInfo> windows = service.getWindows();
             if (windows != null) {
-                for (int wi = 0; wi < windows.size(); wi++) {
+                for (AccessibilityWindowInfo window : windows) {
                     if (cancelled()) break;
-                    AccessibilityWindowInfo w = windows.get(wi);
-                    if (w == null) continue;
+                    if (window == null) continue;
                     AccessibilityNodeInfo root = null;
-                    try { root = w.getRoot(); } catch (Throwable ignored) {}
-                    if (root == null) continue;
-                    String pkg = nodePackage(root);
-                    if (service.getPackageName().equals(pkg)) continue;
+                    try { root = window.getRoot(); } catch (Throwable ignored) {}
+                    if (root == null || service.getPackageName().equals(nodePackage(root))) continue;
                     collectNode(service, root, screen, 0, count, out);
                     if (count[0] > 6000 || cancelled()) break;
                 }
@@ -67,12 +58,13 @@ public final class AccessibilityCandidateCollector {
             return new ArrayList<>();
         }
         List<ScreenCandidate> filtered = CandidateGeometryFilter.filter(out, screen);
-        DiagnosticLog.i(service, "FL_TREE", "text/image/view/root raw=" + out.size()
+        DiagnosticLog.i(service, "FL_TREE", "visibleText/image/view/root raw=" + out.size()
                 + " filtered=" + filtered.size());
         return filtered;
     }
 
-    public static List<ScreenCandidate> collectAtPoint(LensAccessibilityService service, float x, float y) {
+    public static List<ScreenCandidate> collectAtPoint(LensAccessibilityService service,
+                                                        float x, float y) {
         ArrayList<ScreenCandidate> out = new ArrayList<>();
         if (service == null || cancelled()) return out;
         Rect screen = service.screenBounds();
@@ -81,15 +73,14 @@ public final class AccessibilityCandidateCollector {
         try {
             List<AccessibilityWindowInfo> windows = service.getWindows();
             if (windows != null) {
-                for (int wi = 0; wi < windows.size(); wi++) {
+                for (AccessibilityWindowInfo window : windows) {
                     if (cancelled()) break;
-                    AccessibilityWindowInfo w = windows.get(wi);
-                    if (w == null) continue;
+                    if (window == null) continue;
                     Rect wr = new Rect();
-                    try { w.getBoundsInScreen(wr); } catch (Throwable ignored) {}
+                    try { window.getBoundsInScreen(wr); } catch (Throwable ignored) {}
                     if (!wr.isEmpty() && !wr.contains(px, py)) continue;
                     AccessibilityNodeInfo root = null;
-                    try { root = w.getRoot(); } catch (Throwable ignored) {}
+                    try { root = window.getRoot(); } catch (Throwable ignored) {}
                     if (root == null || service.getPackageName().equals(nodePackage(root))) continue;
                     collectNodeAtPoint(service, root, screen, px, py, 0, count, out);
                     if (count[0] > 2200 || cancelled()) break;
@@ -109,118 +100,89 @@ public final class AccessibilityCandidateCollector {
         return CandidateGeometryFilter.filter(out, screen);
     }
 
-    private static void collectNodeAtPoint(LensAccessibilityService service, AccessibilityNodeInfo n,
+    private static void collectNodeAtPoint(LensAccessibilityService service, AccessibilityNodeInfo node,
                                            Rect screen, int px, int py, int depth, int[] count,
                                            List<ScreenCandidate> out) {
-        if (cancelled() || n == null || depth > 80 || count[0]++ > 2200) return;
-        try { if (!n.isVisibleToUser()) return; } catch (Throwable ignored) {}
-        Rect r = new Rect();
-        try { n.getBoundsInScreen(r); } catch (Throwable t) { return; }
-        if (r.isEmpty()) return;
-        Rect clipped = new Rect(r);
-        if (screen != null && !screen.isEmpty() && !clipped.intersect(screen)) return;
-        if (!clipped.contains(px, py)) return;
+        if (cancelled() || node == null || depth > 80 || count[0]++ > 2200) return;
+        try { if (!node.isVisibleToUser()) return; } catch (Throwable ignored) {}
+        Rect bounds = clippedBounds(node, screen);
+        if (bounds.isEmpty() || !bounds.contains(px, py)) return;
+        addCandidate(service, node, bounds, screen, depth, out);
 
-        String cls = safeClass(n);
-        String id = safeId(n);
-        String pkg = nodePackage(n);
-        CharSequence ownText = firstNonBlank(
-                safeText(n), safeContentDescription(n), safeHint(n), safeStateDescription(n));
-        boolean image = isImageCandidate(service, n, clipped, cls, id);
-        boolean fullscreen = isFullscreenLike(clipped, screen);
-        boolean genericView = isGenericViewCandidate(service, clipped, cls, id, fullscreen);
-
-        if (image) {
-            out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.NON_TEXT,
-                    ScreenCandidate.Source.ACCESSIBILITY,
-                    ownText == null ? "" : ownText.toString().trim(), cls, id, pkg, depth, false,
-                    safeClickable(n), safeEditable(n), safeFocusable(n), true));
-        } else if (ownText != null) {
-            out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.TEXT,
-                    ScreenCandidate.Source.ACCESSIBILITY, ownText.toString().trim(), cls, id, pkg,
-                    depth, false, safeClickable(n), safeEditable(n), safeFocusable(n), false));
-        } else if (genericView) {
-            out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.VIEW,
-                    ScreenCandidate.Source.ACCESSIBILITY, "", cls, id, pkg, depth, fullscreen,
-                    safeClickable(n), safeEditable(n), safeFocusable(n), false));
-        } else if (fullscreen) {
-            out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.ROOT,
-                    ScreenCandidate.Source.ACCESSIBILITY, "", cls, id, pkg, depth, true,
-                    safeClickable(n), safeEditable(n), safeFocusable(n), false));
-        }
-
-        int children = Math.min(300, safeChildCount(n));
+        int children = Math.min(300, safeChildCount(node));
         for (int i = 0; i < children; i++) {
             if (cancelled()) return;
             AccessibilityNodeInfo child = null;
-            try { child = n.getChild(i); } catch (Throwable ignored) {}
+            try { child = node.getChild(i); } catch (Throwable ignored) {}
             if (child != null) collectNodeAtPoint(service, child, screen, px, py,
                     depth + 1, count, out);
         }
     }
 
-    private static void collectNode(LensAccessibilityService service, AccessibilityNodeInfo n,
+    private static void collectNode(LensAccessibilityService service, AccessibilityNodeInfo node,
                                     Rect screen, int depth, int[] count, List<ScreenCandidate> out) {
-        if (cancelled() || n == null || depth > 80 || count[0]++ > 6500) return;
-        try { if (!n.isVisibleToUser()) return; } catch (Throwable ignored) {}
+        if (cancelled() || node == null || depth > 80 || count[0]++ > 6500) return;
+        try { if (!node.isVisibleToUser()) return; } catch (Throwable ignored) {}
+        Rect bounds = clippedBounds(node, screen);
+        if (bounds.isEmpty()) return;
+        addCandidate(service, node, bounds, screen, depth, out);
 
-        Rect r = new Rect();
-        try { n.getBoundsInScreen(r); } catch (Throwable t) { return; }
-        if (r.isEmpty()) return;
-        Rect clipped = new Rect(r);
-        if (screen != null && !screen.isEmpty() && !clipped.intersect(screen)) return;
-
-        String cls = safeClass(n);
-        String id = safeId(n);
-        String pkg = nodePackage(n);
-        CharSequence ownText = firstNonBlank(
-                safeText(n), safeContentDescription(n), safeHint(n), safeStateDescription(n));
-
-        boolean image = isImageCandidate(service, n, clipped, cls, id);
-        boolean fullscreen = isFullscreenLike(clipped, screen);
-        boolean genericView = isGenericViewCandidate(service, clipped, cls, id, fullscreen);
-
-        if (image) {
-            out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.NON_TEXT,
-                    ScreenCandidate.Source.ACCESSIBILITY,
-                    ownText == null ? "" : ownText.toString().trim(),
-                    cls, id, pkg, depth, false,
-                    safeClickable(n), safeEditable(n), safeFocusable(n), true));
-        } else if (ownText != null) {
-            out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.TEXT,
-                    ScreenCandidate.Source.ACCESSIBILITY,
-                    ownText.toString().trim(), cls, id, pkg, depth, false,
-                    safeClickable(n), safeEditable(n), safeFocusable(n), false));
-        } else if (genericView) {
-            out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.VIEW,
-                    ScreenCandidate.Source.ACCESSIBILITY,
-                    "", cls, id, pkg, depth, fullscreen,
-                    safeClickable(n), safeEditable(n), safeFocusable(n), false));
-        } else if (fullscreen) {
-            out.add(new ScreenCandidate(clipped, ScreenCandidate.Type.ROOT,
-                    ScreenCandidate.Source.ACCESSIBILITY,
-                    "", cls, id, pkg, depth, true,
-                    safeClickable(n), safeEditable(n), safeFocusable(n), false));
-        }
-
-        int children = Math.min(300, safeChildCount(n));
+        int children = Math.min(300, safeChildCount(node));
         for (int i = 0; i < children; i++) {
             if (cancelled()) return;
             AccessibilityNodeInfo child = null;
-            try { child = n.getChild(i); } catch (Throwable ignored) {}
+            try { child = node.getChild(i); } catch (Throwable ignored) {}
             if (child != null) collectNode(service, child, screen, depth + 1, count, out);
         }
     }
 
-    private static boolean cancelled() {
-        return Thread.currentThread().isInterrupted();
+    private static void addCandidate(LensAccessibilityService service, AccessibilityNodeInfo node,
+                                     Rect bounds, Rect screen, int depth,
+                                     List<ScreenCandidate> out) {
+        String cls = safeClass(node);
+        String id = safeId(node);
+        String pkg = nodePackage(node);
+        CharSequence visible = nonBlank(safeText(node));
+        CharSequence semantic = firstNonBlank(
+                safeContentDescription(node), safeHint(node), safeStateDescription(node));
+        String visibleText = visible == null ? "" : visible.toString().trim();
+        String semanticLabel = semantic == null ? "" : semantic.toString().trim();
+        boolean image = isImageCandidate(service, bounds, cls, id);
+        boolean fullscreen = isFullscreenLike(bounds, screen);
+        boolean genericView = isGenericViewCandidate(service, bounds, cls, id, fullscreen);
+
+        ScreenCandidate.Type type;
+        boolean iconLike = false;
+        if (!visibleText.isEmpty()) {
+            type = ScreenCandidate.Type.TEXT;
+        } else if (image) {
+            type = ScreenCandidate.Type.NON_TEXT;
+            iconLike = true;
+        } else if (genericView) {
+            type = ScreenCandidate.Type.VIEW;
+        } else if (fullscreen) {
+            type = ScreenCandidate.Type.ROOT;
+        } else {
+            return;
+        }
+
+        out.add(new ScreenCandidate(bounds, type, ScreenCandidate.Source.ACCESSIBILITY,
+                visibleText, semanticLabel, cls, id, pkg, depth, fullscreen,
+                safeClickable(node), safeEditable(node), safeFocusable(node), iconLike));
     }
 
+    private static Rect clippedBounds(AccessibilityNodeInfo node, Rect screen) {
+        Rect bounds = new Rect();
+        try { node.getBoundsInScreen(bounds); } catch (Throwable t) { return new Rect(); }
+        if (bounds.isEmpty()) return new Rect();
+        if (screen != null && !screen.isEmpty() && !bounds.intersect(screen)) return new Rect();
+        return bounds;
+    }
+
+    private static boolean cancelled() { return Thread.currentThread().isInterrupted(); }
+
     private static boolean isImageCandidate(LensAccessibilityService service,
-                                            AccessibilityNodeInfo n,
-                                            Rect r,
-                                            String cls,
-                                            String id) {
+                                            Rect r, String cls, String id) {
         if (r == null || r.isEmpty()) return false;
         float density = service.getResources().getDisplayMetrics().density;
         int min = Math.round(12f * density);
@@ -228,14 +190,12 @@ public final class AccessibilityCandidateCollector {
 
         String c = cls == null ? "" : cls.toLowerCase(Locale.ROOT);
         String v = id == null ? "" : id.toLowerCase(Locale.ROOT);
-
         boolean imageClass = c.equals("android.widget.imageview")
                 || c.equals("android.widget.image")
                 || c.contains("imageview")
                 || c.contains("imagebutton")
                 || c.contains("iconview")
                 || c.endsWith(".image");
-
         boolean imageId = containsToken(v, "icon")
                 || containsToken(v, "image")
                 || containsToken(v, "avatar")
@@ -243,11 +203,9 @@ public final class AccessibilityCandidateCollector {
                 || containsToken(v, "thumb")
                 || containsToken(v, "photo")
                 || containsToken(v, "picture");
-
         return imageClass || imageId;
     }
 
-    /** FL keeps ordinary View rectangles instead of requiring text/image semantics. */
     private static boolean isGenericViewCandidate(LensAccessibilityService service,
                                                    Rect r, String cls, String id,
                                                    boolean fullscreen) {
@@ -255,10 +213,8 @@ public final class AccessibilityCandidateCollector {
         float density = service.getResources().getDisplayMetrics().density;
         int min = Math.max(1, Math.round(20f * density));
         if (r.width() < min || r.height() < min) return false;
-
         if (id != null && !id.isBlank()) return true;
         if (fullscreen) return true;
-
         String c = cls == null ? "" : cls.toLowerCase(Locale.ROOT);
         return c.equals("android.view.view")
                 || c.contains("webview")
@@ -290,10 +246,15 @@ public final class AccessibilityCandidateCollector {
         catch (Throwable t) { return ""; }
     }
 
+    private static CharSequence nonBlank(CharSequence value) {
+        return value == null || value.toString().trim().isEmpty() ? null : value;
+    }
+
     private static CharSequence firstNonBlank(CharSequence... values) {
         if (values == null) return null;
         for (CharSequence value : values) {
-            if (value != null && !value.toString().trim().isEmpty()) return value;
+            CharSequence present = nonBlank(value);
+            if (present != null) return present;
         }
         return null;
     }
