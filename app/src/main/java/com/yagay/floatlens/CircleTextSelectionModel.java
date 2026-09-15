@@ -84,12 +84,16 @@ final class CircleTextSelectionModel {
 
     int low() {
         List<Integer> indexes = selectionIndices();
-        return indexes.isEmpty() ? -1 : indexes.get(0);
+        return indexes.isEmpty() ? -1 : groupStart(indexes.get(0));
     }
 
+    /**
+     * Return the first character of the last selected group. wordViewRect() exposes one rectangle
+     * only at group starts, so old overlay callers still receive the full last-group rectangle.
+     */
     int high() {
         List<Integer> indexes = selectionIndices();
-        return indexes.isEmpty() ? -1 : indexes.get(indexes.size() - 1);
+        return indexes.isEmpty() ? -1 : groupStart(indexes.get(indexes.size() - 1));
     }
 
     List<Integer> selectionIndices() {
@@ -102,9 +106,14 @@ final class CircleTextSelectionModel {
         return out;
     }
 
+    /**
+     * Compatibility surface for existing overlays: one drawable rectangle per semantic group.
+     * Group starts return the union of all character boxes; the remaining group members return an
+     * empty rectangle. Hit testing still works anywhere inside the word because the union covers it.
+     */
     RectF wordViewRect(int index, int viewWidth, int viewHeight) {
-        if (!validIndex(index)) return new RectF();
-        return transform.screenToView(chars.get(index).bounds(), viewWidth, viewHeight);
+        if (!validIndex(index) || index != groupStart(index)) return new RectF();
+        return groupViewRect(index, viewWidth, viewHeight);
     }
 
     RectF groupViewRect(int index, int viewWidth, int viewHeight) {
@@ -117,25 +126,14 @@ final class CircleTextSelectionModel {
         List<Integer> indexes = selectionIndices();
         if (indexes.isEmpty()) return List.of();
         ArrayList<RectF> out = new ArrayList<>();
-        Rect current = null;
-        int previousLine = Integer.MIN_VALUE;
-        int previousGroup = Integer.MIN_VALUE;
+        int previousStart = -1;
         for (int index : indexes) {
             if (!validIndex(index)) continue;
-            OcrDocument.CharUnit c = chars.get(index);
-            if (current == null || c.line() != previousLine || c.group() != previousGroup) {
-                if (current != null && !current.isEmpty()) {
-                    out.add(transform.screenToView(current, viewWidth, viewHeight));
-                }
-                current = new Rect(c.bounds());
-            } else {
-                current.union(c.bounds());
-            }
-            previousLine = c.line();
-            previousGroup = c.group();
-        }
-        if (current != null && !current.isEmpty()) {
-            out.add(transform.screenToView(current, viewWidth, viewHeight));
+            int start = groupStart(index);
+            if (start == previousStart) continue;
+            RectF box = groupViewRect(start, viewWidth, viewHeight);
+            if (!box.isEmpty()) out.add(box);
+            previousStart = start;
         }
         return List.copyOf(out);
     }
@@ -144,15 +142,13 @@ final class CircleTextSelectionModel {
         List<Integer> indexes = selectionIndices();
         if (indexes.isEmpty()) return 0;
         int count = 0;
-        int previousLine = Integer.MIN_VALUE;
-        int previousGroup = Integer.MIN_VALUE;
+        int previousStart = -1;
         for (int index : indexes) {
             if (!validIndex(index)) continue;
-            OcrDocument.CharUnit c = chars.get(index);
-            if (c.line() != previousLine || c.group() != previousGroup) {
+            int start = groupStart(index);
+            if (start != previousStart) {
                 count++;
-                previousLine = c.line();
-                previousGroup = c.group();
+                previousStart = start;
             }
         }
         return count;
@@ -173,17 +169,21 @@ final class CircleTextSelectionModel {
         return best;
     }
 
-    /** Exact hit first; otherwise snap to the nearest character while preferring the same row. */
+    /** Exact character hit first; otherwise snap to the nearest semantic group on the same row. */
     int findSelectionWord(float viewX, float viewY, int viewWidth, int viewHeight,
                           float maxDistancePx) {
         int exact = findWordAt(viewX, viewY, viewWidth, viewHeight);
-        if (exact >= 0) return exact;
+        if (exact >= 0) return groupStart(exact);
         if (chars.isEmpty() || viewWidth <= 0 || viewHeight <= 0) return -1;
 
         float bestScore = Float.MAX_VALUE;
         int best = -1;
+        int previousStart = -1;
         for (int i = 0; i < chars.size(); i++) {
-            RectF r = wordViewRect(i, viewWidth, viewHeight);
+            int start = groupStart(i);
+            if (start == previousStart) continue;
+            previousStart = start;
+            RectF r = groupViewRect(start, viewWidth, viewHeight);
             if (r.isEmpty()) continue;
             float dx = viewX < r.left ? r.left - viewX : viewX > r.right ? viewX - r.right : 0f;
             float dy = viewY < r.top ? r.top - viewY : viewY > r.bottom ? viewY - r.bottom : 0f;
@@ -193,7 +193,7 @@ final class CircleTextSelectionModel {
             float score = dx * dx + dy * dy * 3.25f;
             if (score < bestScore) {
                 bestScore = score;
-                best = i;
+                best = start;
             }
         }
         if (best < 0 || bestScore > maxDistancePx * maxDistancePx) return -1;
