@@ -8,8 +8,10 @@ public final class LsposedRuntimeConfig {
     public static final String K_SCHEMA_VERSION = "schema_version";
     public static final String K_ENHANCED_MODE = "enhanced_mode";
     public static final String K_LSPOSED_ENABLED = "lsposed_enabled";
+    public static final String K_SECURE_SCREENSHOT_ENABLED = "secure_screenshot_enabled";
+    public static final String K_SECURE_CAPTURE_UNTIL_MS = "secure_capture_until_ms";
     public static final String K_UPDATED_AT = "updated_at";
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
 
     private LsposedRuntimeConfig() {}
 
@@ -23,5 +25,26 @@ public final class LsposedRuntimeConfig {
         return isEnabled(
                 preferences.getBoolean(K_ENHANCED_MODE, false),
                 preferences.getBoolean(K_LSPOSED_ENABLED, false));
+    }
+
+    public static boolean isSecureCaptureActive(boolean enhancedMode,
+                                                boolean lsposedEnabled,
+                                                boolean secureScreenshotEnabled,
+                                                long secureCaptureUntilMs,
+                                                long nowMs) {
+        return isEnabled(enhancedMode, lsposedEnabled)
+                && secureScreenshotEnabled
+                && secureCaptureUntilMs > nowMs;
+    }
+
+    public static boolean isSecureCaptureActive(SharedPreferences preferences, long nowMs) {
+        if (preferences == null) return false;
+        if (preferences.getInt(K_SCHEMA_VERSION, 0) < SCHEMA_VERSION) return false;
+        return isSecureCaptureActive(
+                preferences.getBoolean(K_ENHANCED_MODE, false),
+                preferences.getBoolean(K_LSPOSED_ENABLED, false),
+                preferences.getBoolean(K_SECURE_SCREENSHOT_ENABLED, false),
+                preferences.getLong(K_SECURE_CAPTURE_UNTIL_MS, 0L),
+                nowMs);
     }
 }
