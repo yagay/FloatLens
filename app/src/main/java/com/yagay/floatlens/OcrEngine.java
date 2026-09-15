@@ -16,14 +16,18 @@ import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions;
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** Single recognition owner for normal OCR, Circle Select, View OCR and local refinements. */
+/**
+ * Normal OCR execution strategy.
+ *
+ * PP-OCR escalation, ML Kit multi-pass planning and UI/document generations live here. The actual
+ * ML Kit Text -> OcrDocument geometry conversion is shared with Circle through MlKitTextCore.
+ */
 public final class OcrEngine {
     public interface DocumentCallback {
         void onSuccess(OcrDocument document);
@@ -40,13 +44,9 @@ public final class OcrEngine {
     private static final int ML_TIER_ENHANCED = 1;
     private static final int ML_TIER_MONO = 2;
 
-    // Visible-result OCR and internal document/ROI OCR are independent workloads. The previous
-    // single generation meant starting a small Circle ROI refinement could silently cancel an
-    // unrelated screenshot OCR (and vice versa). Keep each lane latest-wins without cross-cancelling.
     private static final AtomicLong UI_GENERATION = new AtomicLong(0L);
     private static final AtomicLong DOCUMENT_GENERATION = new AtomicLong(0L);
 
-    /** Cancel only pending OCR that is supposed to produce/update the visible result surface. */
     public static void invalidatePending(Context c, String reason) {
         long generation = UI_GENERATION.incrementAndGet();
         if (c != null) {
@@ -55,7 +55,6 @@ public final class OcrEngine {
         }
     }
 
-    /** Cancel pending internal document/ROI OCR without disturbing a visible result OCR. */
     public static void invalidateDocumentPending(Context c, String reason) {
         long generation = DOCUMENT_GENERATION.incrementAndGet();
         if (c != null) {
@@ -70,7 +69,6 @@ public final class OcrEngine {
         start(c, b, anchor == null ? null : new Rect(anchor), null, true);
     }
 
-    /** Return the exact same final OCR result without opening a result surface. */
     public static void recognizeDocument(Context c, Bitmap b, DocumentCallback callback) {
         start(c, b, null, callback, false);
     }
@@ -340,9 +338,6 @@ public final class OcrEngine {
 
         private boolean shouldStopAfter(PassSpec completed) {
             if (completed == null || completed.tier >= ML_TIER_MONO || results.isEmpty()) return false;
-            // When both Chinese and English are enabled, finish both recognizers for the same image
-            // tier before deciding. This avoids a fast Chinese pass suppressing a better Latin pass
-            // (or vice versa) on mixed-language screens.
             if (index < plan.size() && plan.get(index).tier == completed.tier) return false;
             OcrDocument best = bestResult();
             if (best == null || !OcrQualityPolicy.strongMlKitResult(best.fullText(), best.score())) {
@@ -387,100 +382,12 @@ public final class OcrEngine {
     private static OcrDocument mlDocument(String passName, Text text,
                                           OcrImagePreprocessor.Prepared prepared,
                                           int imageWidth, int imageHeight) {
-        String full = text == null || text.getText() == null ? "" : text.getText().trim();
-        ArrayList<String> blocks = new ArrayList<>();
-        ArrayList<DraftLine> drafts = new ArrayList<>();
-        int elementCount = 0;
-        if (text != null) {
-            for (Text.TextBlock block : text.getTextBlocks()) {
-                if (block.getText() != null && !block.getText().isBlank()) blocks.add(block.getText());
-                for (Text.Line line : block.getLines()) {
-                    Rect lineBox = prepared.toSourceRect(line.getBoundingBox());
-                    String lineText = line.getText() == null ? "" : line.getText().trim();
-                    if (lineText.isBlank() || lineBox.isEmpty()) continue;
-                    ArrayList<DraftChar> chars = new ArrayList<>();
-                    int group = 0;
-                    for (Text.Element element : line.getElements()) {
-                        elementCount++;
-                        String value = element.getText() == null ? "" : element.getText();
-                        Rect elementBox = prepared.toSourceRect(element.getBoundingBox());
-                        if (value.isBlank() || elementBox.isEmpty()) continue;
-                        List<Text.Symbol> symbols;
-                        try { symbols = element.getSymbols(); } catch (Throwable ignored) { symbols = List.of(); }
-                        StringBuilder combined = new StringBuilder();
-                        ArrayList<DraftChar> symbolChars = new ArrayList<>();
-                        if (symbols != null) {
-                            for (Text.Symbol symbol : symbols) {
-                                if (symbol == null || symbol.getText() == null) continue;
-                                String sv = symbol.getText();
-                                Rect sr = prepared.toSourceRect(symbol.getBoundingBox());
-                                if (sv.isBlank() || sr.isEmpty()) continue;
-                                combined.append(sv);
-                                symbolChars.add(new DraftChar(sv, sr, group));
-                            }
-                        }
-                        if (!symbolChars.isEmpty()
-                                && combined.toString().replace(" ", "").equals(value.replace(" ", ""))) {
-                            chars.addAll(symbolChars);
-                        } else {
-                            splitElement(chars, value, elementBox, group);
-                        }
-                        group++;
-                    }
-                    if (chars.isEmpty()) splitElement(chars, lineText, lineBox, 0);
-                    drafts.add(new DraftLine(lineText, lineBox, chars));
-                }
-            }
-        }
-
-        drafts.sort(Comparator
-                .comparingInt((DraftLine l) -> l.bounds.centerY())
-                .thenComparingInt(l -> l.bounds.left));
-        ArrayList<OcrDocument.Line> lines = new ArrayList<>();
-        int order = 0;
-        for (int li = 0; li < drafts.size(); li++) {
-            DraftLine d = drafts.get(li);
-            d.chars.sort(Comparator.comparingInt((DraftChar c) -> c.bounds.left)
-                    .thenComparingInt(c -> c.bounds.top));
-            ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>();
-            for (DraftChar c : d.chars) {
-                if (c.text.isBlank()) continue;
-                chars.add(new OcrDocument.CharUnit(c.text, c.bounds, 0f, li, c.group, order++));
-            }
-            lines.add(new OcrDocument.Line(d.text, d.bounds, 0f, chars));
-        }
-        double score = textScore(full, blocks.size(), lines.size(), elementCount);
-        return new OcrDocument(full, blocks, lines, passName, 0f, score, imageWidth, imageHeight);
-    }
-
-    private static void splitElement(List<DraftChar> out, String text, Rect box, int group) {
-        if (text == null || text.isEmpty() || box == null || box.isEmpty()) return;
-        int[] cps = text.codePoints().toArray();
-        int visible = 0;
-        for (int cp : cps) if (!Character.isWhitespace(cp)) visible++;
-        if (visible == 0) return;
-        int index = 0;
-        for (int cp : cps) {
-            if (Character.isWhitespace(cp)) continue;
-            int left = box.left + box.width() * index / visible;
-            int right = box.left + box.width() * (index + 1) / visible;
-            out.add(new DraftChar(new String(Character.toChars(cp)),
-                    new Rect(left, box.top, Math.max(left + 1, right), box.bottom), group));
-            index++;
-        }
-    }
-
-    private static final class DraftLine {
-        final String text; final Rect bounds; final ArrayList<DraftChar> chars;
-        DraftLine(String text, Rect bounds, ArrayList<DraftChar> chars) {
-            this.text = text; this.bounds = new Rect(bounds); this.chars = chars;
-        }
-    }
-    private static final class DraftChar {
-        final String text; final Rect bounds; final int group;
-        DraftChar(String text, Rect bounds, int group) {
-            this.text = text; this.bounds = new Rect(bounds); this.group = group;
-        }
+        OcrDocument parsed = MlKitTextCore.toDocument(
+                text, passName, imageWidth, imageHeight, 0f, prepared::toSourceRect);
+        double score = textScore(parsed.fullText(), parsed.blocks().size(),
+                parsed.lines().size(), parsed.chars().size());
+        return new OcrDocument(parsed.fullText(), parsed.blocks(), parsed.lines(),
+                parsed.engine(), parsed.confidence(), score, imageWidth, imageHeight);
     }
 
     private static void deliver(Context app, FloatService service, Bitmap source, Rect anchor,
@@ -577,6 +484,7 @@ public final class OcrEngine {
         if (b.isRecycled()) return "recycled";
         return b.getWidth() + "x" + b.getHeight();
     }
+
     private static String safe(Throwable t) {
         if (t == null) return "unknown";
         String m = t.getMessage();
