@@ -17,7 +17,7 @@ public final class PrivilegeSettingsPanel {
 
     public static LinearLayout build(AppCompatActivity activity, FloatSettings fs) {
         LinearLayout root = AppUi.pageRoot(activity, "高级权限",
-                "Root 是功能增强层；LSPosed 已接入受控 Provider 配置通道，但当前仍不安装功能性 Hook。" );
+                "Root 与 LSPosed 都是可选增强层；关闭增强模式后普通 Android / 无障碍路径保持可用。" );
 
         TextView modeStatus = AppUi.caption(activity, "", 13);
         TextView rootStatus = AppUi.caption(activity, "", 13);
@@ -67,10 +67,10 @@ public final class PrivilegeSettingsPanel {
 
         TextView lsposedStatus = AppUi.caption(activity, "", 13);
         AppUi.Section lsposedSection = AppUi.section(activity, "LSPosed",
-                "API 102 Remote Preferences 把应用开关同步到 system_server / SystemUI；目标进程只读并监听配置变化。" );
+                "API 102 Remote Preferences 把应用开关同步到 system_server / SystemUI。安全窗口截图只在 FloatLens 截图的短时 lease 内改变系统捕获行为。" );
         SwitchMaterial lsposedSwitch = preferenceSwitch(activity, fs,
                 "启用 LSPosed Provider",
-                "只启用受控 Provider 配置门；当前版本仍不会绕过 FLAG_SECURE，也不会安装功能性 Hook。",
+                "允许已经接入的受控 LSPosed 功能使用跨进程配置；具体功能仍需各自开关。",
                 FloatSettings.K_LSPOSED_ENABLED, fs.lsposedEnabled(),
                 () -> {
                     LsposedStatusManager.syncRuntimeConfigAsync();
@@ -90,7 +90,7 @@ public final class PrivilegeSettingsPanel {
         AppUi.addRow(lsposedSection.body, lsposedButtons);
 
         TextView lsposedNote = AppUi.caption(activity,
-                "推荐作用域是 system + com.android.systemui。只有框架服务、Remote Preferences、至少一个实际加载目标都就绪时，Provider 才会被判定可用；当前仍没有任何功能性 Hook。",
+                "推荐作用域是 system + com.android.systemui。安全窗口截图 Hook 只安装在 system_server，并且每次调用都实时检查短时授权；不会永久取消窗口的 FLAG_SECURE / secure Surface 标记，也不会开启 DRM protected content 捕获。",
                 12);
         AppUi.addRow(lsposedSection.body, simpleBlock(activity, lsposedNote));
 
@@ -115,7 +115,7 @@ public final class PrivilegeSettingsPanel {
                 "增强后端失败时回到普通方法，避免 Root / Hook 失败影响基础功能。" );
         SwitchMaterial fallbackSwitch = preferenceSwitch(activity, fs,
                 "增强方法失败时回退普通方法",
-                "例如 Root 截图失败后重新尝试无障碍截图。",
+                "例如 Root 截图失败后重新尝试无障碍截图，或 LSPosed lease 建立失败时走普通截图。",
                 FloatSettings.K_PRIVILEGE_FALLBACK, fs.privilegeFallback(),
                 () -> refresh(activity, fs, modeStatus, rootStatus));
         AppUi.addRow(fallback.body, AppUi.switchContainer(fallbackSwitch));
@@ -192,6 +192,8 @@ public final class PrivilegeSettingsPanel {
                 + " · SystemUI " + loaded(s.systemUiLoaded);
         String remoteLine = "配置通道：" + (s.remoteConfigReady ? "已同步" : "不可用")
                 + " · Provider " + (s.remoteProviderEnabled() ? "已开启" : "已关闭");
+        String secureLine = "安全窗口截图：" + (s.remoteSecureScreenshotEnabled ? "已启用" : "未启用")
+                + " · 短时授权 " + (s.remoteSecureCaptureArmed() ? "进行中" : "空闲");
         String updatedLine = s.remoteUpdatedAt <= 0L ? ""
                 : " · " + DateFormat.format("HH:mm:ss", s.remoteUpdatedAt);
         String processLine = s.runningProcesses.isEmpty()
@@ -200,6 +202,7 @@ public final class PrivilegeSettingsPanel {
         String detailLine = s.detail.isBlank() ? "" : "\n" + s.detail;
         status.setText("框架服务：已连接 " + framework + version + " · API " + s.apiVersion
                 + "\n" + remoteLine + updatedLine
+                + "\n" + secureLine
                 + "\n" + scopeLine
                 + "\n" + loadedLine
                 + "\n" + processLine
