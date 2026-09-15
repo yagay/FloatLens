@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Normal OCR execution strategy.
  *
- * PP-OCR escalation, ML Kit multi-pass planning and UI/document generations live here. The actual
+ * PP-OCR escalation, ML Kit multi-script fusion and UI/document generations live here. The actual
  * ML Kit Text -> OcrDocument geometry conversion is shared with Circle through MlKitTextCore.
  */
 public final class OcrEngine {
@@ -222,6 +222,10 @@ public final class OcrEngine {
         return confidence * 1000.0 + Math.min(300, length) + Math.min(12, blocks) * 5.0;
     }
 
+    /**
+     * Fast ML Kit mode: run the Chinese (Hans/Hant) and Latin recognizers on the original bitmap in
+     * parallel, then fuse their character geometry. No enhanced/mono preprocessing passes are used.
+     */
     private static void startMlKitPipeline(Context app, FloatService service, Bitmap source, Rect anchor,
                                            DocumentCallback callback, boolean deliverUi,
                                            String reason, AtomicLong generation, long requestId) {
@@ -232,143 +236,365 @@ public final class OcrEngine {
             boolean english = OcrLanguages.englishEnabled(languages);
             if (!chinese && !english) { chinese = true; english = true; }
 
-            ArrayList<PassSpec> plan = new ArrayList<>();
-            if (chinese) plan.add(new PassSpec("zh-original", OcrImagePreprocessor.MODE_ORIGINAL, true, ML_TIER_ORIGINAL));
-            if (english) plan.add(new PassSpec("latin-original", OcrImagePreprocessor.MODE_ORIGINAL, false, ML_TIER_ORIGINAL));
-            if (chinese) plan.add(new PassSpec("zh-enhanced", OcrImagePreprocessor.MODE_ENHANCED, true, ML_TIER_ENHANCED));
-            if (english) plan.add(new PassSpec("latin-enhanced", OcrImagePreprocessor.MODE_ENHANCED, false, ML_TIER_ENHANCED));
-            if (chinese) plan.add(new PassSpec("zh-mono", OcrImagePreprocessor.MODE_MONO, true, ML_TIER_MONO));
-            if (english) plan.add(new PassSpec("latin-mono", OcrImagePreprocessor.MODE_MONO, false, ML_TIER_MONO));
-
             DiagnosticLog.i(app, "OCR_PIPELINE", "start request=" + requestId
                     + " lane=" + laneName(generation)
-                    + " passes=" + plan.size() + " reason=" + reason);
-            new MlRunState(app, service, source, anchor, callback, deliverUi,
-                    plan, generation, requestId).next();
+                    + " strategy=parallel_original_fusion"
+                    + " chinese=" + chinese + " latin=" + english
+                    + " passes=" + ((chinese ? 1 : 0) + (english ? 1 : 0))
+                    + " reason=" + reason);
+            new MlFusionState(app, service, source, anchor, callback, deliverUi,
+                    chinese, english, generation, requestId).start();
         } catch (Throwable t) {
             fail(app, service, callback, deliverUi, generation, requestId, "mlkit_init_failure",
                     "OCR失败: " + safe(t), t);
         }
     }
 
-    private static final class PassSpec {
-        final String name;
-        final int mode;
-        final boolean chinese;
-        final int tier;
-        PassSpec(String name, int mode, boolean chinese, int tier) {
-            this.name = name;
-            this.mode = mode;
-            this.chinese = chinese;
-            this.tier = tier;
-        }
+    /** App-lifetime recognizers avoid model/client setup on every gesture. */
+    private static final class MlChineseHolder {
+        static final TextRecognizer INSTANCE = TextRecognition.getClient(
+                new ChineseTextRecognizerOptions.Builder().build());
     }
 
-    private static final class MlRunState {
-        final Context app; final FloatService service; final Bitmap source; final Rect anchor;
-        final DocumentCallback callback; final boolean deliverUi; final List<PassSpec> plan;
-        final AtomicLong generation; final long requestId;
-        final List<OcrDocument> results = new ArrayList<>();
-        int index;
+    private static final class MlLatinHolder {
+        static final TextRecognizer INSTANCE = TextRecognition.getClient(
+                TextRecognizerOptions.DEFAULT_OPTIONS);
+    }
 
-        MlRunState(Context app, FloatService service, Bitmap source, Rect anchor,
-                   DocumentCallback callback, boolean deliverUi, List<PassSpec> plan,
-                   AtomicLong generation, long requestId) {
-            this.app = app; this.service = service; this.source = source; this.anchor = anchor;
-            this.callback = callback; this.deliverUi = deliverUi; this.plan = plan;
-            this.generation = generation; this.requestId = requestId;
+    private static TextRecognizer cachedMlRecognizer(boolean chinese) {
+        return chinese ? MlChineseHolder.INSTANCE : MlLatinHolder.INSTANCE;
+    }
+
+    private static final class MlFusionState {
+        final Context app;
+        final FloatService service;
+        final Bitmap source;
+        final Rect anchor;
+        final DocumentCallback callback;
+        final boolean deliverUi;
+        final boolean runChinese;
+        final boolean runLatin;
+        final AtomicLong generation;
+        final long requestId;
+        final int expected;
+        final long startedMs = android.os.SystemClock.uptimeMillis();
+
+        int completed;
+        boolean finished;
+        OcrDocument chineseDocument;
+        OcrDocument latinDocument;
+        Throwable lastError;
+
+        MlFusionState(Context app, FloatService service, Bitmap source, Rect anchor,
+                      DocumentCallback callback, boolean deliverUi,
+                      boolean runChinese, boolean runLatin,
+                      AtomicLong generation, long requestId) {
+            this.app = app;
+            this.service = service;
+            this.source = source;
+            this.anchor = anchor;
+            this.callback = callback;
+            this.deliverUi = deliverUi;
+            this.runChinese = runChinese;
+            this.runLatin = runLatin;
+            this.generation = generation;
+            this.requestId = requestId;
+            this.expected = (runChinese ? 1 : 0) + (runLatin ? 1 : 0);
         }
 
-        void next() {
-            if (stale(app, generation, requestId, "mlkit_next")) return;
-            if (index >= plan.size()) { MAIN.post(this::finishOnMain); return; }
-            PassSpec spec = plan.get(index++);
-            try { PREP_EXECUTOR.execute(() -> prepareAndRun(spec)); }
-            catch (Throwable t) { DiagnosticLog.i(app, "OCR_EXECUTOR_FAIL", safe(t)); next(); }
-        }
-
-        private void prepareAndRun(PassSpec spec) {
-            if (stale(app, generation, requestId, "mlkit_prepare_" + spec.name) || source.isRecycled()) return;
-            OcrImagePreprocessor.Prepared prepared;
-            try { prepared = OcrImagePreprocessor.prepare(source, spec.mode); }
-            catch (Throwable t) { next(); return; }
-            if (prepared == null || prepared.bitmap == null || prepared.bitmap.isRecycled()) { next(); return; }
-            if (stale(app, generation, requestId, "mlkit_prepared_" + spec.name)) {
-                OcrImagePreprocessor.recycle(prepared); return;
+        void start() {
+            if (expected <= 0) {
+                fail(app, service, callback, deliverUi, generation, requestId,
+                        "mlkit_no_script", "未启用 OCR 语言",
+                        new IllegalStateException("no ML Kit script enabled"));
+                return;
             }
+            if (runChinese) runPass(true);
+            if (runLatin) runPass(false);
+        }
 
-            TextRecognizer client = null;
+        private void runPass(boolean chinese) {
+            if (stale(app, generation, requestId, "mlkit_parallel_start")) return;
+            final String name = chinese ? "mlkit-zh-hans-hant" : "mlkit-latin-en";
+            final long passStarted = android.os.SystemClock.uptimeMillis();
             try {
-                client = spec.chinese
-                        ? TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build())
-                        : TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
-                TextRecognizer finalClient = client;
-                client.process(InputImage.fromBitmap(prepared.bitmap, 0))
+                TextRecognizer recognizer = cachedMlRecognizer(chinese);
+                recognizer.process(InputImage.fromBitmap(source, 0))
                         .addOnSuccessListener(text -> {
-                            boolean finishEarly = false;
+                            OcrDocument doc = null;
+                            Throwable error = null;
                             try {
-                                if (!stale(app, generation, requestId, "mlkit_success_" + spec.name)) {
-                                    OcrDocument doc = mlDocument(spec.name, text, prepared,
+                                if (!stale(app, generation, requestId,
+                                        "mlkit_parallel_success_" + name)) {
+                                    doc = mlOriginalDocument(name, text,
                                             source.getWidth(), source.getHeight());
-                                    if (!doc.fullText().isBlank()) results.add(doc);
-                                    DiagnosticLog.i(app, "OCR_PASS", spec.name + " chars=" + doc.chars().size()
-                                            + " score=" + Math.round(doc.score()));
-                                    finishEarly = shouldStopAfter(spec);
                                 }
-                            } finally {
-                                try { finalClient.close(); } catch (Throwable ignored) {}
-                                OcrImagePreprocessor.recycle(prepared);
+                            } catch (Throwable t) {
+                                error = t;
                             }
-                            if (finishEarly) MAIN.post(this::finishOnMain); else next();
+                            complete(chinese, doc, error,
+                                    android.os.SystemClock.uptimeMillis() - passStarted);
                         })
-                        .addOnFailureListener(error -> {
-                            try { DiagnosticLog.i(app, "OCR_PASS", spec.name + " failure=" + safe(error)); }
-                            finally {
-                                try { finalClient.close(); } catch (Throwable ignored) {}
-                                OcrImagePreprocessor.recycle(prepared);
-                            }
-                            next();
-                        });
+                        .addOnFailureListener(error -> complete(chinese, null, error,
+                                android.os.SystemClock.uptimeMillis() - passStarted));
             } catch (Throwable t) {
-                if (client != null) try { client.close(); } catch (Throwable ignored) {}
-                OcrImagePreprocessor.recycle(prepared);
-                next();
+                complete(chinese, null, t,
+                        android.os.SystemClock.uptimeMillis() - passStarted);
             }
         }
 
-        private boolean shouldStopAfter(PassSpec completed) {
-            if (completed == null || completed.tier >= ML_TIER_MONO || results.isEmpty()) return false;
-            if (index < plan.size() && plan.get(index).tier == completed.tier) return false;
-            OcrDocument best = bestResult();
-            if (best == null || !OcrQualityPolicy.strongMlKitResult(best.fullText(), best.score())) {
-                return false;
-            }
-            DiagnosticLog.i(app, "OCR_PIPELINE", "early_stop request=" + requestId
-                    + " tier=" + tierName(completed.tier)
-                    + " engine=" + best.engine()
-                    + " score=" + Math.round(best.score())
-                    + " skipped=" + Math.max(0, plan.size() - index));
-            index = plan.size();
-            return true;
-        }
-
-        private OcrDocument bestResult() {
-            OcrDocument best = null;
-            for (OcrDocument d : results) if (best == null || d.score() > best.score()) best = d;
-            return best;
+        private synchronized void complete(boolean chinese, OcrDocument document,
+                                           Throwable error, long elapsedMs) {
+            if (finished || stale(app, generation, requestId, "mlkit_parallel_complete")) return;
+            if (chinese) chineseDocument = document; else latinDocument = document;
+            if (error != null) lastError = error;
+            completed++;
+            DiagnosticLog.i(app, "OCR_PASS", (chinese ? "zh-original" : "latin-original")
+                    + " chars=" + (document == null ? 0 : document.chars().size())
+                    + " elapsedMs=" + elapsedMs
+                    + (error == null ? "" : " failure=" + safe(error)));
+            if (completed < expected) return;
+            finished = true;
+            MAIN.post(this::finishOnMain);
         }
 
         private void finishOnMain() {
-            if (stale(app, generation, requestId, "mlkit_finish")) return;
-            OcrDocument best = bestResult();
-            if (best == null || best.fullText().isBlank()) {
+            if (stale(app, generation, requestId, "mlkit_parallel_finish")) return;
+            OcrDocument result = fuseMlKitDocuments(chineseDocument, latinDocument,
+                    source.getWidth(), source.getHeight());
+            if (result == null || result.fullText().isBlank()) {
                 fail(app, service, callback, deliverUi, generation, requestId, "ocr_empty",
-                        "未识别到文字", new IllegalStateException("ML Kit empty"));
+                        "未识别到文字", lastError == null
+                                ? new IllegalStateException("ML Kit empty") : lastError);
                 return;
             }
+            DiagnosticLog.i(app, "OCR_MLKIT_FUSION", "request=" + requestId
+                    + " zhChars=" + (chineseDocument == null ? 0 : chineseDocument.chars().size())
+                    + " latinChars=" + (latinDocument == null ? 0 : latinDocument.chars().size())
+                    + " fusedChars=" + result.chars().size()
+                    + " lines=" + result.lines().size()
+                    + " totalMs=" + (android.os.SystemClock.uptimeMillis() - startedMs));
             deliver(app, service, source, anchor, callback, deliverUi,
-                    best, generation, requestId);
+                    result, generation, requestId);
         }
+    }
+
+    private static OcrDocument mlOriginalDocument(String engine, Text text,
+                                                  int imageWidth, int imageHeight) {
+        OcrDocument parsed = MlKitTextCore.toDocument(
+                text, engine, imageWidth, imageHeight, 0f, null);
+        double score = textScore(parsed.fullText(), parsed.blocks().size(),
+                parsed.lines().size(), parsed.chars().size());
+        return new OcrDocument(parsed.fullText(), parsed.blocks(), parsed.lines(),
+                parsed.engine(), parsed.confidence(), score, imageWidth, imageHeight);
+    }
+
+    private static final class FusionChar {
+        final OcrDocument.CharUnit unit;
+        final boolean chineseSource;
+
+        FusionChar(OcrDocument.CharUnit unit, boolean chineseSource) {
+            this.unit = unit;
+            this.chineseSource = chineseSource;
+        }
+    }
+
+    private static final class FusionRow {
+        final ArrayList<FusionChar> chars = new ArrayList<>();
+        int centerY;
+        int averageHeight;
+
+        FusionRow(FusionChar first) {
+            Rect r = first.unit.bounds();
+            centerY = r.centerY();
+            averageHeight = Math.max(1, r.height());
+            chars.add(first);
+        }
+
+        boolean accepts(FusionChar candidate) {
+            Rect r = candidate.unit.bounds();
+            int gate = Math.max(4, Math.round(Math.min(averageHeight,
+                    Math.max(1, r.height())) * 0.62f));
+            return Math.abs(r.centerY() - centerY) <= gate;
+        }
+
+        void add(FusionChar candidate) {
+            int n = chars.size();
+            Rect r = candidate.unit.bounds();
+            centerY = (centerY * n + r.centerY()) / (n + 1);
+            averageHeight = Math.max(1, (averageHeight * n + Math.max(1, r.height())) / (n + 1));
+            chars.add(candidate);
+        }
+    }
+
+    /**
+     * Fuse the two recognizers at character geometry level. Chinese-script glyphs prefer the
+     * Chinese recognizer; Latin letters/digits prefer the Latin recognizer. Overlapping duplicates
+     * are removed before rebuilding stable line/group metadata for Circle selection.
+     */
+    private static OcrDocument fuseMlKitDocuments(OcrDocument chinese, OcrDocument latin,
+                                                  int imageWidth, int imageHeight) {
+        boolean zhEmpty = chinese == null || chinese.chars().isEmpty();
+        boolean latinEmpty = latin == null || latin.chars().isEmpty();
+        if (zhEmpty && latinEmpty) return chooseBetter(chinese, latin);
+        if (latinEmpty) return chinese;
+        if (zhEmpty) return latin;
+
+        ArrayList<FusionChar> merged = new ArrayList<>();
+        for (OcrDocument.CharUnit c : chinese.chars()) addFusionChar(merged, new FusionChar(c, true));
+        for (OcrDocument.CharUnit c : latin.chars()) addFusionChar(merged, new FusionChar(c, false));
+        if (merged.isEmpty()) return chooseBetter(chinese, latin);
+
+        merged.sort((a, b) -> {
+            Rect ar = a.unit.bounds(), br = b.unit.bounds();
+            int dy = Integer.compare(ar.centerY(), br.centerY());
+            return dy != 0 ? dy : Integer.compare(ar.left, br.left);
+        });
+
+        ArrayList<FusionRow> rows = new ArrayList<>();
+        for (FusionChar c : merged) {
+            FusionRow best = null;
+            int bestDy = Integer.MAX_VALUE;
+            for (FusionRow row : rows) {
+                if (!row.accepts(c)) continue;
+                int dy = Math.abs(c.unit.bounds().centerY() - row.centerY);
+                if (dy < bestDy) { bestDy = dy; best = row; }
+            }
+            if (best == null) rows.add(new FusionRow(c)); else best.add(c);
+        }
+        rows.sort((a, b) -> Integer.compare(a.centerY, b.centerY));
+
+        ArrayList<OcrDocument.Line> outLines = new ArrayList<>();
+        ArrayList<String> blocks = new ArrayList<>();
+        StringBuilder full = new StringBuilder();
+        int lineId = 0;
+        int nextGroup = 0;
+        int order = 0;
+
+        for (FusionRow row : rows) {
+            row.chars.sort((a, b) -> Integer.compare(a.unit.bounds().left, b.unit.bounds().left));
+            ArrayList<OcrDocument.CharUnit> outChars = new ArrayList<>();
+            Rect lineBounds = null;
+            StringBuilder lineText = new StringBuilder();
+            String previousGroupKey = null;
+            String previousText = "";
+
+            for (FusionChar fc : row.chars) {
+                OcrDocument.CharUnit c = fc.unit;
+                String value = c.text();
+                if (value == null || value.isBlank() || c.bounds().isEmpty()) continue;
+                String groupKey = (fc.chineseSource ? "z:" : "l:")
+                        + c.line() + ':' + c.group();
+                boolean sameGroup = groupKey.equals(previousGroupKey);
+                if (!sameGroup) {
+                    nextGroup++;
+                    if (lineText.length() > 0 && !noSpaceBetweenFusion(previousText, value)) {
+                        lineText.append(' ');
+                    }
+                }
+                Rect bounds = c.bounds();
+                if (lineBounds == null) lineBounds = new Rect(bounds); else lineBounds.union(bounds);
+                outChars.add(new OcrDocument.CharUnit(value, bounds, c.confidence(),
+                        lineId, nextGroup, order++));
+                lineText.append(value);
+                previousGroupKey = groupKey;
+                previousText = value;
+            }
+
+            String rowText = lineText.toString().trim();
+            if (outChars.isEmpty() || lineBounds == null || lineBounds.isEmpty() || rowText.isEmpty()) {
+                continue;
+            }
+            OcrDocument.Line line = new OcrDocument.Line(rowText, lineBounds, 0f, outChars);
+            outLines.add(line);
+            blocks.add(rowText);
+            if (full.length() > 0) full.append('\n');
+            full.append(rowText);
+            lineId++;
+        }
+
+        if (outLines.isEmpty()) return chooseBetter(chinese, latin);
+        double score = textScore(full.toString(), blocks.size(), outLines.size(), order);
+        return new OcrDocument(full.toString(), blocks, outLines,
+                "mlkit-fused-zh-hans-hant+latin-en", 0f, score,
+                imageWidth, imageHeight);
+    }
+
+    private static void addFusionChar(List<FusionChar> merged, FusionChar candidate) {
+        Rect candidateBounds = candidate.unit.bounds();
+        if (candidateBounds.isEmpty() || candidate.unit.text().isBlank()) return;
+        for (int i = 0; i < merged.size(); i++) {
+            FusionChar existing = merged.get(i);
+            if (!sameCharRegion(existing.unit.bounds(), candidateBounds)) continue;
+            if (preferFusionCandidate(existing, candidate) == candidate) merged.set(i, candidate);
+            return;
+        }
+        merged.add(candidate);
+    }
+
+    private static boolean sameCharRegion(Rect a, Rect b) {
+        if (a == null || b == null || a.isEmpty() || b.isEmpty()) return false;
+        Rect intersection = new Rect();
+        if (!intersection.setIntersect(a, b)) return false;
+        long overlap = Math.max(0L, (long) intersection.width() * intersection.height());
+        long areaA = Math.max(1L, (long) a.width() * a.height());
+        long areaB = Math.max(1L, (long) b.width() * b.height());
+        return overlap >= Math.min(areaA, areaB) * 0.34f;
+    }
+
+    private static FusionChar preferFusionCandidate(FusionChar a, FusionChar b) {
+        boolean aCjk = containsCjk(a.unit.text());
+        boolean bCjk = containsCjk(b.unit.text());
+        if (aCjk != bCjk) return bCjk ? b : a;
+        if (aCjk) {
+            if (a.chineseSource != b.chineseSource) return b.chineseSource ? b : a;
+            return a;
+        }
+
+        boolean aLatin = containsLatinOrDigit(a.unit.text());
+        boolean bLatin = containsLatinOrDigit(b.unit.text());
+        if (aLatin && bLatin && a.chineseSource != b.chineseSource) {
+            return b.chineseSource ? a : b;
+        }
+        if (aLatin != bLatin) return bLatin ? b : a;
+        return a;
+    }
+
+    private static boolean containsCjk(String value) {
+        if (value == null || value.isEmpty()) return false;
+        for (int cp : value.codePoints().toArray()) if (isCjk(cp)) return true;
+        return false;
+    }
+
+    private static boolean containsLatinOrDigit(String value) {
+        if (value == null || value.isEmpty()) return false;
+        for (int cp : value.codePoints().toArray()) {
+            if (Character.isDigit(cp)) return true;
+            if (Character.isLetter(cp) && !isCjk(cp)) return true;
+        }
+        return false;
+    }
+
+    private static boolean noSpaceBetweenFusion(String previous, String current) {
+        if (previous == null || previous.isEmpty() || current == null || current.isEmpty()) return true;
+        if (containsCjk(previous) || containsCjk(current)) return true;
+        int first = current.codePointAt(0);
+        int last = previous.codePointBefore(previous.length());
+        if (isClosingPunctuation(first)) return true;
+        return isOpeningPunctuation(last);
+    }
+
+    private static boolean isClosingPunctuation(int cp) {
+        return cp == '.' || cp == ',' || cp == ':' || cp == ';' || cp == '!' || cp == '?'
+                || cp == ')' || cp == ']' || cp == '}' || cp == '%' || cp == 0x3002
+                || cp == 0xFF0C || cp == 0xFF01 || cp == 0xFF1F || cp == 0xFF1A
+                || cp == 0xFF1B || cp == 0x3001 || cp == 0x3009 || cp == 0x300B
+                || cp == 0x300D || cp == 0x300F || cp == 0x3011;
+    }
+
+    private static boolean isOpeningPunctuation(int cp) {
+        return cp == '(' || cp == '[' || cp == '{' || cp == 0x3008 || cp == 0x300A
+                || cp == 0x300C || cp == 0x300E || cp == 0x3010;
     }
 
     private static String tierName(int tier) {
