@@ -14,6 +14,11 @@ final class CircleTextSelectionModel {
     private int endIndex = -1;
     /** Non-contiguous rectangle selection before a handle is dragged. Always expanded to groups. */
     private List<Integer> explicitSelection = List.of();
+    /**
+     * Initial tap/scribble selection is semantic-group based. Once either selection handle is moved,
+     * the endpoints become character-precise so a user can select only part of a word.
+     */
+    private boolean characterAdjustment;
 
     CircleTextSelectionModel(ScreenBitmapTransform transform) {
         if (transform == null) throw new IllegalArgumentException("transform required");
@@ -38,21 +43,24 @@ final class CircleTextSelectionModel {
     boolean isEmpty() { return chars.isEmpty(); }
     int startIndex() { return startIndex; }
     int endIndex() { return endIndex; }
+    boolean isCharacterAdjustment() { return characterAdjustment; }
 
     void clear() {
         startIndex = endIndex = -1;
         explicitSelection = List.of();
+        characterAdjustment = false;
     }
 
     /** Select the complete semantic word/continuous-text group containing index. */
     void selectGroup(int index) {
         if (!validIndex(index)) return;
         explicitSelection = List.of();
+        characterAdjustment = false;
         startIndex = groupStart(index);
         endIndex = groupEnd(index);
     }
 
-    /** Legacy name retained for old callers; selection is now Google-style group selection. */
+    /** Legacy name retained for old callers; first selection is Google-style whole-group selection. */
     void selectSingle(int index) {
         selectGroup(index);
     }
@@ -60,40 +68,53 @@ final class CircleTextSelectionModel {
     void selectAll() {
         if (chars.isEmpty()) return;
         explicitSelection = List.of();
+        characterAdjustment = false;
         startIndex = 0;
         endIndex = chars.size() - 1;
     }
 
+    /** Handle adjustment is deliberately character-precise, even inside the initially selected word. */
     void updateStart(int index) {
         if (!validIndex(index)) return;
         collapseExplicitToRange();
-        boolean forward = !validIndex(endIndex) || startIndex <= endIndex;
-        startIndex = forward ? groupStart(index) : groupEnd(index);
+        characterAdjustment = true;
+        startIndex = index;
     }
 
+    /** Handle adjustment is deliberately character-precise, even inside the initially selected word. */
     void updateEnd(int index) {
         if (!validIndex(index)) return;
         collapseExplicitToRange();
-        boolean forward = !validIndex(startIndex) || startIndex <= endIndex;
-        endIndex = forward ? groupEnd(index) : groupStart(index);
+        characterAdjustment = true;
+        endIndex = index;
     }
 
     boolean hasSelection() {
         return !selectionIndices().isEmpty();
     }
 
+    /** First selected character. It is also the first drawable segment start. */
     int low() {
         List<Integer> indexes = selectionIndices();
-        return indexes.isEmpty() ? -1 : groupStart(indexes.get(0));
+        return indexes.isEmpty() ? -1 : indexes.get(0);
     }
 
     /**
-     * Return the first character of the last selected group. wordViewRect() exposes one rectangle
-     * only at group starts, so old overlay callers still receive the full last-group rectangle.
+     * First character of the last selected visual segment. This lets the old overlay place the
+     * right handle on the union box even when a word is only partially selected.
      */
     int high() {
         List<Integer> indexes = selectionIndices();
-        return indexes.isEmpty() ? -1 : groupStart(indexes.get(indexes.size() - 1));
+        if (indexes.isEmpty()) return -1;
+        int position = indexes.size() - 1;
+        int last = indexes.get(position);
+        while (position > 0) {
+            int previous = indexes.get(position - 1);
+            int current = indexes.get(position);
+            if (previous + 1 != current || !sameGroup(chars.get(previous), chars.get(last))) break;
+            position--;
+        }
+        return indexes.get(position);
     }
 
     List<Integer> selectionIndices() {
@@ -107,13 +128,36 @@ final class CircleTextSelectionModel {
     }
 
     /**
-     * Compatibility surface for existing overlays: one drawable rectangle per semantic group.
-     * Group starts return the union of all character boxes; the remaining group members return an
-     * empty rectangle. Hit testing still works anywhere inside the word because the union covers it.
+     * Compatibility surface for existing overlays: one drawable rectangle per selected semantic
+     * segment. Before a handle is moved, a segment is the whole word/group. After a handle is moved,
+     * the first/last segment can be only the selected letters inside that word.
      */
     RectF wordViewRect(int index, int viewWidth, int viewHeight) {
-        if (!validIndex(index) || index != groupStart(index)) return new RectF();
-        return groupViewRect(index, viewWidth, viewHeight);
+        if (!validIndex(index)) return new RectF();
+        if (!characterAdjustment) {
+            if (index != groupStart(index)) return new RectF();
+            return groupViewRect(index, viewWidth, viewHeight);
+        }
+
+        List<Integer> selected = selectionIndices();
+        int position = selected.indexOf(index);
+        if (position < 0) return new RectF();
+        if (position > 0) {
+            int previous = selected.get(position - 1);
+            if (previous + 1 == index && sameGroup(chars.get(previous), chars.get(index))) {
+                return new RectF();
+            }
+        }
+
+        Rect union = new Rect(chars.get(index).bounds());
+        int previous = index;
+        for (int i = position + 1; i < selected.size(); i++) {
+            int next = selected.get(i);
+            if (previous + 1 != next || !sameGroup(chars.get(index), chars.get(next))) break;
+            union.union(chars.get(next).bounds());
+            previous = next;
+        }
+        return transform.screenToView(union, viewWidth, viewHeight);
     }
 
     RectF groupViewRect(int index, int viewWidth, int viewHeight) {
@@ -121,37 +165,36 @@ final class CircleTextSelectionModel {
         return screen == null ? new RectF() : transform.screenToView(screen, viewWidth, viewHeight);
     }
 
-    /** One visual rectangle per selected semantic group, not one rectangle per character. */
+    /** One visual rectangle per selected semantic segment, not one rectangle per character. */
     List<RectF> selectionGroupViewRects(int viewWidth, int viewHeight) {
         List<Integer> indexes = selectionIndices();
         if (indexes.isEmpty()) return List.of();
         ArrayList<RectF> out = new ArrayList<>();
-        int previousStart = -1;
-        for (int index : indexes) {
-            if (!validIndex(index)) continue;
-            int start = groupStart(index);
-            if (start == previousStart) continue;
-            RectF box = groupViewRect(start, viewWidth, viewHeight);
-            if (!box.isEmpty()) out.add(box);
-            previousStart = start;
+        for (int position = 0; position < indexes.size();) {
+            int first = indexes.get(position);
+            if (!validIndex(first)) {
+                position++;
+                continue;
+            }
+            Rect union = new Rect(chars.get(first).bounds());
+            int previous = first;
+            int nextPosition = position + 1;
+            while (nextPosition < indexes.size()) {
+                int next = indexes.get(nextPosition);
+                if (!validIndex(next) || previous + 1 != next
+                        || !sameGroup(chars.get(first), chars.get(next))) break;
+                union.union(chars.get(next).bounds());
+                previous = next;
+                nextPosition++;
+            }
+            out.add(transform.screenToView(union, viewWidth, viewHeight));
+            position = nextPosition;
         }
         return List.copyOf(out);
     }
 
     int selectedGroupCount() {
-        List<Integer> indexes = selectionIndices();
-        if (indexes.isEmpty()) return 0;
-        int count = 0;
-        int previousStart = -1;
-        for (int index : indexes) {
-            if (!validIndex(index)) continue;
-            int start = groupStart(index);
-            if (start != previousStart) {
-                count++;
-                previousStart = start;
-            }
-        }
-        return count;
+        return selectionGroupViewRects(1, 1).size();
     }
 
     int findWordAt(float viewX, float viewY, int viewWidth, int viewHeight) {
@@ -169,21 +212,21 @@ final class CircleTextSelectionModel {
         return best;
     }
 
-    /** Exact character hit first; otherwise snap to the nearest semantic group on the same row. */
+    /**
+     * Exact character hit first; otherwise snap to the nearest character on the same row. Callers
+     * decide whether that character should expand to its whole group (initial tap) or remain exact
+     * (selection-handle adjustment).
+     */
     int findSelectionWord(float viewX, float viewY, int viewWidth, int viewHeight,
                           float maxDistancePx) {
         int exact = findWordAt(viewX, viewY, viewWidth, viewHeight);
-        if (exact >= 0) return groupStart(exact);
+        if (exact >= 0) return exact;
         if (chars.isEmpty() || viewWidth <= 0 || viewHeight <= 0) return -1;
 
         float bestScore = Float.MAX_VALUE;
         int best = -1;
-        int previousStart = -1;
         for (int i = 0; i < chars.size(); i++) {
-            int start = groupStart(i);
-            if (start == previousStart) continue;
-            previousStart = start;
-            RectF r = groupViewRect(start, viewWidth, viewHeight);
+            RectF r = transform.screenToView(chars.get(i).bounds(), viewWidth, viewHeight);
             if (r.isEmpty()) continue;
             float dx = viewX < r.left ? r.left - viewX : viewX > r.right ? viewX - r.right : 0f;
             float dy = viewY < r.top ? r.top - viewY : viewY > r.bottom ? viewY - r.bottom : 0f;
@@ -193,7 +236,7 @@ final class CircleTextSelectionModel {
             float score = dx * dx + dy * dy * 3.25f;
             if (score < bestScore) {
                 bestScore = score;
-                best = start;
+                best = i;
             }
         }
         if (best < 0 || bestScore > maxDistancePx * maxDistancePx) return -1;
@@ -225,6 +268,7 @@ final class CircleTextSelectionModel {
         for (int i = 0; i < selected.length; i++) if (selected[i]) hit.add(i);
         if (hit.isEmpty()) return false;
         explicitSelection = List.copyOf(hit);
+        characterAdjustment = false;
         startIndex = hit.get(0);
         endIndex = hit.get(hit.size() - 1);
         return true;
