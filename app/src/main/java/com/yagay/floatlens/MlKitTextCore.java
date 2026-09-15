@@ -1,21 +1,47 @@
 package com.yagay.floatlens;
 
+import android.content.Context;
 import android.graphics.Rect;
 
 import com.google.mlkit.vision.text.Text;
+import com.google.mlkit.vision.text.TextRecognition;
+import com.google.mlkit.vision.text.TextRecognizer;
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions;
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 
 /**
- * Shared ML Kit -> OcrDocument geometry parser.
+ * Shared ML Kit foundation.
  *
- * Callers own recognizer selection and execution policy. This class only normalizes Text blocks,
- * lines, elements and symbols into one engine-neutral bitmap-space document.
+ * Callers still decide when/how many passes to run. Recognizer language choice and Text ->
+ * OcrDocument parsing live here so normal OCR and Circle do not maintain different geometry rules.
  */
 final class MlKitTextCore {
     interface RectMapper { Rect map(Rect source); }
+
+    static TextRecognizer createPreferredRecognizer(Context context) {
+        boolean chinese = preferChinese(context);
+        return chinese
+                ? TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build())
+                : TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+    }
+
+    static String preferredEngine(String prefix, Context context) {
+        return (prefix == null ? "mlkit" : prefix) + (preferChinese(context) ? "-zh" : "-latin");
+    }
+
+    private static boolean preferChinese(Context context) {
+        if (context == null) return true;
+        Set<String> languages = OcrLanguages.get(context.getApplicationContext());
+        boolean chinese = OcrLanguages.chineseEnabled(languages);
+        boolean english = OcrLanguages.englishEnabled(languages);
+        if (!chinese && !english) return true;
+        return chinese;
+    }
 
     static OcrDocument toDocument(Text text, String engine,
                                   int imageWidth, int imageHeight,
