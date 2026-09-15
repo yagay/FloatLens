@@ -9,7 +9,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
-/** Entry point for the new Google-style content-selection workflow. Legacy CircleSelect is isolated. */
+/** Entry point for the Google-style exact content-selection workflow. */
 final class GoogleCircleController {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final ExecutorService CONTENT_IO = Executors.newSingleThreadExecutor(r -> {
@@ -26,9 +26,6 @@ final class GoogleCircleController {
         Context app = c.getApplicationContext();
         long gen = ++generation;
 
-        // The former GoogleCircleOverlay routed resolved content into ResultActivity popups.
-        // Keep it isolated and always clear it before entering the inline/original-position surface.
-        GoogleCircleOverlay.dismissActive("route_inline");
         GoogleCircleInlineOverlay.dismissActive("restart");
         cancelPendingLocked(app, "restart");
 
@@ -38,7 +35,8 @@ final class GoogleCircleController {
                 ScreenshotHideCoordinator.acquire(app, "google_circle_" + gen);
         pendingHideLease = hideLease;
         DiagnosticLog.i(app, "G_CIRCLE", "start gen=" + gen
-                + " phase=semantic_snapshot presentation=inline_original_position");
+                + " phase=semantic_snapshot presentation=inline_original_position"
+                + " autoExpand=false");
 
         contentFuture = CONTENT_IO.submit(() -> {
             long started = android.os.SystemClock.uptimeMillis();
@@ -70,6 +68,7 @@ final class GoogleCircleController {
                 return;
             }
         }
+
         GoogleCircleCapture.capture(app, frame -> {
             synchronized (GoogleCircleController.class) {
                 if (gen != generation) {
@@ -78,6 +77,7 @@ final class GoogleCircleController {
                     return;
                 }
             }
+
             boolean shown = GoogleCircleInlineOverlay.show(app, frame, content,
                     () -> restore(app, hideLease, gen, "closed"));
             if (!shown) {
@@ -130,6 +130,7 @@ final class GoogleCircleController {
             DiagnosticLog.i(app, "G_CIRCLE", "cancel semantic snapshot reason=" + reason
                     + " success=" + cancelled);
         }
+
         ScreenshotHideCoordinator.Lease lease = pendingHideLease;
         pendingHideLease = null;
         if (lease != null) lease.release(app);
