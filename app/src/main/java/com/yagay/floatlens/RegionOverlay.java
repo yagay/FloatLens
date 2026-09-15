@@ -22,19 +22,17 @@ import java.util.List;
 /** Region screenshot selector; OCR mode uses a free-form lasso path. */
 public final class RegionOverlay {
     public static void show(Context c, Bitmap screen, boolean ocr) {
-        if (ocr) {
-            FloatService f = FloatService.get();
-            if (f != null) f.onCircleCaptureStarted();
-        }
-        WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
-        FloatSettings fs = new FloatSettings(c);
+        Context app = c.getApplicationContext();
+        WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
+        FloatSettings fs = new FloatSettings(app);
         Rect display = new Rect(wm.getCurrentWindowMetrics().getBounds());
         Rect content = CaptureSystemBarsPolicy.captureBounds(
-                c,
+                app,
                 fs.keepStatusBarInScreenshot(),
-                CaptureSystemBarsPolicy.keepNavigationBar(c));
+                CaptureSystemBarsPolicy.keepNavigationBar(app));
 
-        SelectView v = new SelectView(c, screen, ocr, wm);
+        FlOverlayWindowHost host = new FlOverlayWindowHost(app);
+        SelectView view = new SelectView(app, screen, ocr, host);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 Math.max(1, content.width()), Math.max(1, content.height()),
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -44,16 +42,20 @@ public final class RegionOverlay {
         lp.gravity = Gravity.TOP | Gravity.START;
         lp.x = content.left - display.left;
         lp.y = content.top - display.top;
-        wm.addView(v, lp);
-        DiagnosticLog.i(c, "REGION_SCREENSHOT", "overlay bounds=" + content.toShortString()
+        if (!host.add(view, lp, "region_selector")) {
+            if (screen != null && !screen.isRecycled()) screen.recycle();
+            throw new IllegalStateException("unable to attach region selector");
+        }
+        DiagnosticLog.i(app, "REGION_SCREENSHOT", "overlay bounds=" + content.toShortString()
                 + " keepStatusBar=" + fs.keepStatusBarInScreenshot()
-                + " keepNavigationBar=" + CaptureSystemBarsPolicy.keepNavigationBar(c));
+                + " keepNavigationBar=" + CaptureSystemBarsPolicy.keepNavigationBar(app)
+                + " accessibilityHost=" + host.isAccessibilityHosted());
     }
 
     static class SelectView extends View {
         final Bitmap source;
         final boolean ocr;
-        final WindowManager wm;
+        final FlOverlayWindowHost host;
         float sx, sy, ex, ey;
         final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -62,11 +64,11 @@ public final class RegionOverlay {
         final Path lasso = new Path();
         final List<PointF> points = new ArrayList<>();
 
-        SelectView(Context c, Bitmap source, boolean ocr, WindowManager wm) {
+        SelectView(Context c, Bitmap source, boolean ocr, FlOverlayWindowHost host) {
             super(c);
             this.source = source;
             this.ocr = ocr;
-            this.wm = wm;
+            this.host = host;
             paint.setStrokeWidth(dp(2));
             textPaint.setColor(Color.WHITE);
             textPaint.setTextSize(dp(16));
@@ -128,8 +130,8 @@ public final class RegionOverlay {
                 }
                 case MotionEvent.ACTION_CANCEL -> {
                     if (ocr) {
-                        FloatService f = FloatService.get();
-                        if (f != null) f.onCircleFinished("selection_cancel");
+                        FloatService service = FloatService.get();
+                        if (service != null) service.onCircleFinished("selection_cancel");
                     }
                     close(true);
                     return true;
@@ -163,8 +165,8 @@ public final class RegionOverlay {
             if (selected.width() < dp(8) || selected.height() < dp(8)) {
                 close(true);
                 if (ocr) {
-                    FloatService f = FloatService.get();
-                    if (f != null) f.onCircleFinished("selection_too_small");
+                    FloatService service = FloatService.get();
+                    if (service != null) service.onCircleFinished("selection_too_small");
                 }
                 return;
             }
@@ -175,12 +177,10 @@ public final class RegionOverlay {
                         ? SelectionCropper.maskedCrop(source, points, viewWidth, viewHeight, dp(8))
                         : SelectionCropper.cropRect(source, selected, viewWidth, viewHeight);
                 if (crop == null) throw new IllegalStateException("empty selection crop");
-                // SelectionCropper guarantees the crop does not alias source, so the frozen
-                // full-screen frame can be released before OCR/result UI takes ownership of crop.
                 close(true);
                 if (ocr) {
-                    FloatService f = FloatService.get();
-                    if (f != null) f.onCircleRecognizeStarted();
+                    FloatService service = FloatService.get();
+                    if (service != null) service.onCircleRecognizeStarted();
                     OcrEngine.recognize(getContext(), crop, anchor);
                 } else {
                     boolean shown = ResultSurfaceRouter.showScreenshot(getContext(), crop, anchor);
@@ -195,11 +195,11 @@ public final class RegionOverlay {
             } catch (Throwable t) {
                 close(true);
                 if (crop != null && !crop.isRecycled()) {
-                    try { crop.recycle(); } catch (Throwable ignored) { }
+                    try { crop.recycle(); } catch (Throwable ignored) {}
                 }
                 if (ocr) {
-                    FloatService f = FloatService.get();
-                    if (f != null) f.onCircleFinished("selection_error");
+                    FloatService service = FloatService.get();
+                    if (service != null) service.onCircleFinished("selection_error");
                 }
                 Toast.makeText(getContext(), "区域处理失败: " + t.getMessage(), Toast.LENGTH_LONG).show();
             }
@@ -208,9 +208,9 @@ public final class RegionOverlay {
         private void close(boolean recycleSource) {
             if (closed) return;
             closed = true;
-            try { wm.removeView(this); } catch (Throwable ignored) { }
+            host.remove(this, "region_selector");
             if (recycleSource && !source.isRecycled()) {
-                try { source.recycle(); } catch (Throwable ignored) { }
+                try { source.recycle(); } catch (Throwable ignored) {}
             }
         }
 
