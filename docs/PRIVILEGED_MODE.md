@@ -46,16 +46,41 @@ Root 截图真正生效需要同时满足：
 
 ## LSPosed
 
-设置中保留“使用 LSPosed 功能”作为后续 Provider 的用户选择，但 **当前构建没有活动的 LSPosed Provider**。`PrivilegeManager.lsposedProviderAvailable()` 当前返回 `false`，因此 LSPosed 不会进入生效模式。
+设置中保留“使用 LSPosed 功能”作为后续 Provider 的用户选择，但 **当前构建没有活动的 LSPosed Provider**。`PrivilegeManager.lsposedProviderAvailable()` 当前仍返回 `false`，因此 LSPosed 不会进入生效模式。
 
-LSPosed API 102 推荐作用域现在写在 `META-INF/xposed/scope.list`：
+### 推荐作用域
+
+LSPosed API 102 推荐作用域写在 `META-INF/xposed/scope.list`：
 
 ```text
 system
 com.android.systemui
 ```
 
-其中 `system` 对应 system_server / 系统框架，`com.android.systemui` 对应 SystemUI。`module.prop` 继续使用 `staticScope=false`，因此这两个目标只是 LSPosed 管理器里的推荐作用域，不会锁死用户作用域。**出现在推荐列表、被用户勾选、模块被加载，都不等于 FloatLens 已经启用了任何具体 Hook。**
+其中 `system` 对应 system_server / 系统框架，`com.android.systemui` 对应 SystemUI。`module.prop` 继续使用 `staticScope=false`，因此这两个目标只是 LSPosed 管理器里的推荐作用域，不会锁死用户作用域。
+
+### 框架状态通道
+
+FloatLens 已通过 `io.github.libxposed:service:102.0.0` 接入模块 App ↔ LSPosed 框架的状态通道。`LsposedStatusManager` 只读取框架状态，不安装 Hook。
+
+高级权限页现在可以显示：
+
+- LSPosed 服务是否连接；
+- 框架名称、版本与 API；
+- `system` 是否在当前作用域；
+- `com.android.systemui` 是否在当前作用域；
+- system_server 是否实际已经加载 FloatLens 模块；
+- SystemUI 是否实际已经加载 FloatLens 模块；
+- 当前其他已加载模块进程。
+
+状态来自 `XposedService.getScope()` 和 `XposedService.getRunningTargets()`。因此 FloatLens 可以明确区分：
+
+1. 推荐列表里出现目标；
+2. 用户把目标加入作用域；
+3. 目标进程实际已经加载模块；
+4. 具体 LSPosed 功能 Provider 已经实现并启用。
+
+这四件事不再被混为同一个“LSPosed 已启用”状态。
 
 保留的 `FloatLensModule` 是 libxposed API 102 模块入口，但当前：
 
@@ -68,11 +93,11 @@ com.android.systemui
 
 曾经加入过无条件的 system_server `FLAG_SECURE` 绕过，但该实现已经移除。原因是应用进程里的普通 SharedPreferences 开关不能可靠地控制一个已经安装在 system_server 中的全局 Hook；这会造成“UI 显示关闭、系统 Hook 实际仍生效”的错误权限语义。
 
-后续如果重新加入 LSPosed 能力，必须先建立明确的跨进程配置/状态通道，使以下规则成立：
+后续如果重新加入 LSPosed 能力，仍必须满足：
 
 1. `增强模式` 关闭时 LSPosed Provider 不产生功能效果；
 2. `使用 LSPosed 功能` 关闭时具体 Hook/Provider 不生效；
-3. 应用可以显示 Provider 是否真正可用，而不是只显示用户偏好；
+3. 框架连接 / 作用域 / 实际加载 / Provider 可用状态分开显示；
 4. 增强失败可以按设置回退 Accessibility / OCR / 普通 Android 路径；
 5. 不把设备级全局修改伪装成 FloatLens 单功能开关。
 
@@ -117,4 +142,4 @@ if (PrivilegeManager.canUseLsposed(context)) {
 }
 ```
 
-业务代码不要直接根据设备是否安装 Root/LSPosed 决定行为，也不要重新加入无法被应用开关真实控制的全局 Hook。
+业务代码不要直接根据“XposedService 已连接”或“目标进程已加载模块”就启用功能。只有 `PrivilegeManager.lsposedProviderAvailable()` 对应的具体 Provider 真正存在后，才允许业务代码进入 LSPosed 功能路径。
