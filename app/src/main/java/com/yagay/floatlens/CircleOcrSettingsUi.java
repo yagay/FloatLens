@@ -9,7 +9,8 @@ final class CircleOcrSettingsUi {
     static void add(SettingsActivity activity, FloatSettings fs, LinearLayout parent) {
         String[] labels = {
                 "View + ML Kit（推荐）",
-                "仅 View（关闭视觉 OCR）"
+                "仅 View",
+                "仅 ML Kit"
         };
         int selected = CircleOcrPolicy.mode(fs);
 
@@ -20,8 +21,11 @@ final class CircleOcrSettingsUi {
         spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> p, android.view.View v,
                                                  int pos, long id) {
-                int mode = pos == CircleOcrPolicy.MODE_VIEW_ONLY
-                        ? CircleOcrPolicy.MODE_VIEW_ONLY : CircleOcrPolicy.MODE_VIEW_PLUS_MLKIT;
+                int mode = switch (pos) {
+                    case CircleOcrPolicy.MODE_VIEW_ONLY -> CircleOcrPolicy.MODE_VIEW_ONLY;
+                    case CircleOcrPolicy.MODE_MLKIT_ONLY -> CircleOcrPolicy.MODE_MLKIT_ONLY;
+                    default -> CircleOcrPolicy.MODE_VIEW_PLUS_MLKIT;
+                };
                 fs.prefs().edit().putInt(CircleOcrPolicy.K_MODE, mode).apply();
             }
 
@@ -32,7 +36,7 @@ final class CircleOcrSettingsUi {
         ui.addSpinnerRow(parent, "圈画文字识别", spinner, true);
         LinearLayout note = AppUi.baseRow(activity);
         note.addView(AppUi.caption(activity,
-                "圈画不会调用 PP-OCR。View 文字始终优先；ML Kit 只用于 View 无法覆盖的区域和几何辅助。",
+                "View + ML Kit：View 文字优先、ML Kit 补盲/辅助几何；仅 View：完全不跑视觉 OCR；仅 ML Kit：适合不暴露 Accessibility 文字的应用。三种模式都不会调用 PP-OCR。",
                 13), new LinearLayout.LayoutParams(-1, -2));
         AppUi.addRow(parent, note);
     }
