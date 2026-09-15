@@ -2,21 +2,20 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.os.Handler;
+import android.os.Looper;
 
 import java.util.function.Consumer;
 
-/**
- * Selects the screenshot backend while respecting the optional privilege layer.
- *
- * <p>Normal mode never calls RootCapture. Root is considered only when all three conditions are
- * true: enhanced mode, Root provider, and the per-feature Root screenshot switch. Enhanced
- * failures can fall back to Accessibility when the user keeps fallback enabled.</p>
- */
+/** Selects screenshot backends while respecting optional Root / LSPosed enhancement gates. */
 final class ScreenCaptureBackend {
+    private static final long SECURE_LEASE_PROPAGATION_MS = 40L;
+
     static void capture(Context c, FloatSettings settings,
                         Consumer<Bitmap> ok, Consumer<Throwable> fail) {
         Context app = c.getApplicationContext();
         boolean rootAllowed = settings.effectiveRootScreenshot();
+        boolean lsposedSecureAllowed = settings.effectiveLsposedSecureScreenshot();
         boolean fallbackNormal = settings.privilegeFallback();
 
         DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "mode="
@@ -24,7 +23,42 @@ final class ScreenCaptureBackend {
                 + " accessibilityPreferred=" + settings.accessibilityScreenshot()
                 + " rootFeature=" + settings.rootScreenshot()
                 + " rootAllowed=" + rootAllowed
+                + " lsposedSecureFeature=" + settings.lsposedSecureScreenshot()
+                + " lsposedSecureAllowed=" + lsposedSecureAllowed
                 + " fallbackNormal=" + fallbackNormal);
+
+        // Secure-window enhancement is implemented in system_server's Accessibility screenshot path,
+        // so it takes precedence over a Root-primary preference whenever its full gate is satisfied.
+        if (lsposedSecureAllowed) {
+            DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "try LSPosed secure accessibility primary");
+            captureSecureAccessibility(app, b -> {
+                DiagnosticLog.i(app, "SCREENSHOT_BACKEND",
+                        "LSPosed secure accessibility success bitmap=" + size(b));
+                ok.accept(b);
+            }, secureError -> {
+                DiagnosticLog.i(app, "SCREENSHOT_BACKEND",
+                        "LSPosed secure accessibility failed=" + safeMessage(secureError));
+                if (rootAllowed) {
+                    DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "fallback enhanced root");
+                    RootCapture.captureAsync(app, b -> {
+                        DiagnosticLog.i(app, "SCREENSHOT_BACKEND",
+                                "root fallback success bitmap=" + size(b));
+                        ok.accept(b);
+                    }, rootError -> {
+                        DiagnosticLog.i(app, "SCREENSHOT_BACKEND",
+                                "root fallback failed=" + safeMessage(rootError));
+                        fail.accept(combined(secureError, rootError));
+                    });
+                } else if (fallbackNormal && isLeaseFailure(secureError)) {
+                    DiagnosticLog.i(app, "SCREENSHOT_BACKEND",
+                            "secure lease unavailable; fallback normal accessibility");
+                    captureAccessibility(app, ok, fail);
+                } else {
+                    fail.accept(secureError);
+                }
+            });
+            return;
+        }
 
         if (settings.accessibilityScreenshot()) {
             DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "try accessibility primary");
@@ -72,7 +106,6 @@ final class ScreenCaptureBackend {
             return;
         }
 
-        // Enhanced mode is off, Root is off, or Root screenshot is off: ordinary path only.
         DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "try accessibility normal path");
         captureAccessibility(app, b -> {
             DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "accessibility normal success bitmap=" + size(b));
@@ -80,6 +113,34 @@ final class ScreenCaptureBackend {
         }, error -> {
             DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "accessibility normal failed=" + safeMessage(error));
             fail.accept(error);
+        });
+    }
+
+    private static void captureSecureAccessibility(Context app,
+                                                   Consumer<Bitmap> ok,
+                                                   Consumer<Throwable> fail) {
+        LensAccessibilityService service = LensAccessibilityService.get();
+        if (service == null) {
+            fail.accept(new IllegalStateException("需要开启 FloatLens 无障碍服务才能使用安全窗口截图增强"));
+            return;
+        }
+
+        LsposedStatusManager.armSecureCaptureAsync(armed -> {
+            if (!armed) {
+                fail.accept(new SecureLeaseException("LSPosed 安全截图短时授权失败"));
+                return;
+            }
+
+            // Remote Preferences are framework-backed but target-process delivery is asynchronous.
+            // A tiny settle delay keeps the 3s lease narrow while avoiding a race with system_server.
+            new Handler(Looper.getMainLooper()).postDelayed(() ->
+                    service.capture(bitmap -> {
+                        LsposedStatusManager.disarmSecureCaptureAsync();
+                        ok.accept(bitmap);
+                    }, error -> {
+                        LsposedStatusManager.disarmSecureCaptureAsync();
+                        fail.accept(error);
+                    }), SECURE_LEASE_PROPAGATION_MS);
         });
     }
 
@@ -92,6 +153,10 @@ final class ScreenCaptureBackend {
             return;
         }
         service.capture(ok, fail);
+    }
+
+    private static boolean isLeaseFailure(Throwable t) {
+        return t instanceof SecureLeaseException;
     }
 
     private static IllegalStateException combined(Throwable a, Throwable b) {
@@ -109,6 +174,12 @@ final class ScreenCaptureBackend {
         if (b == null) return "null";
         if (b.isRecycled()) return "recycled";
         return b.getWidth() + "x" + b.getHeight();
+    }
+
+    private static final class SecureLeaseException extends IllegalStateException {
+        SecureLeaseException(String message) {
+            super(message);
+        }
     }
 
     private ScreenCaptureBackend() {}
