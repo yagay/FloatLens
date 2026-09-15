@@ -26,7 +26,10 @@ final class GoogleCircleController {
         Context app = c.getApplicationContext();
         long gen = ++generation;
 
-        GoogleCircleOverlay.dismissActive("restart");
+        // The former GoogleCircleOverlay routed resolved content into ResultActivity popups.
+        // Keep it isolated and always clear it before entering the inline/original-position surface.
+        GoogleCircleOverlay.dismissActive("route_inline");
+        GoogleCircleInlineOverlay.dismissActive("restart");
         cancelPendingLocked(app, "restart");
 
         FlSystemPanelController.CaptureState shadeState =
@@ -35,7 +38,7 @@ final class GoogleCircleController {
                 ScreenshotHideCoordinator.acquire(app, "google_circle_" + gen);
         pendingHideLease = hideLease;
         DiagnosticLog.i(app, "G_CIRCLE", "start gen=" + gen
-                + " phase=semantic_snapshot");
+                + " phase=semantic_snapshot presentation=inline_original_position");
 
         contentFuture = CONTENT_IO.submit(() -> {
             long started = android.os.SystemClock.uptimeMillis();
@@ -75,7 +78,7 @@ final class GoogleCircleController {
                     return;
                 }
             }
-            boolean shown = GoogleCircleOverlay.show(app, frame, content,
+            boolean shown = GoogleCircleInlineOverlay.show(app, frame, content,
                     () -> restore(app, hideLease, gen, "closed"));
             if (!shown) {
                 frame.recycle();
@@ -91,7 +94,7 @@ final class GoogleCircleController {
                         }
                         DiagnosticLog.i(app, "G_CIRCLE", "shade cleanup collapsed="
                                 + collapsed + " gen=" + gen);
-                        GoogleCircleOverlay.promoteActiveFocus(
+                        GoogleCircleInlineOverlay.promoteActiveFocus(
                                 collapsed ? "shade_collapsed" : "shade_cleanup_finished");
                     });
         }, error -> {
