@@ -107,6 +107,4 @@ final class CircleTextIndex {
         return new OcrDocument("", List.of(), List.of(), engine, 0f, 0d,
                 Math.max(1, width), Math.max(1, height));
     }
-
-    private CircleTextIndex() { throw new AssertionError(); }
 }
