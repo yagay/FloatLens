@@ -17,40 +17,33 @@ import java.util.Set;
 /**
  * Immutable View-text snapshot captured before Circle Select installs its overlay.
  *
- * Coordinates are clipped to the exact screen region represented by the frozen Circle Select
- * bitmap. Native Accessibility text is authoritative. Android per-character screen coordinates are
- * preserved when exposed; node bounds are only a fallback.
+ * All geometry is kept in absolute screen coordinates. Screenshot bounds and bitmap resolution are
+ * deliberately not part of this class, so changing screenshot policy can never move View text.
  */
 final class CircleViewTextSnapshot {
     private static final int MAX_NODES = 4200;
     private static final int MAX_TEXT_NODES = 480;
     private static final int MAX_CHARACTER_REQUEST = 20000;
 
-    private final Rect captureBounds;
+    private final Rect displayBounds;
     private final List<TextNode> nodes;
     private final int exactGeometryNodes;
 
-    private CircleViewTextSnapshot(Rect captureBounds, List<TextNode> nodes, int exactGeometryNodes) {
-        this.captureBounds = captureBounds == null ? new Rect() : new Rect(captureBounds);
+    private CircleViewTextSnapshot(Rect displayBounds, List<TextNode> nodes, int exactGeometryNodes) {
+        this.displayBounds = displayBounds == null ? new Rect() : new Rect(displayBounds);
         this.nodes = nodes == null ? List.of() : List.copyOf(nodes);
         this.exactGeometryNodes = Math.max(0, exactGeometryNodes);
     }
 
-    static CircleViewTextSnapshot empty(Rect captureBounds) {
-        return new CircleViewTextSnapshot(captureBounds, List.of(), 0);
+    static CircleViewTextSnapshot empty(Rect displayBounds) {
+        return new CircleViewTextSnapshot(displayBounds, List.of(), 0);
     }
 
     static CircleViewTextSnapshot capture(Context context) {
         Context app = context.getApplicationContext();
         LensAccessibilityService service = LensAccessibilityService.get();
-        Rect fullScreen = service == null ? new Rect() : service.screenBounds();
-        if (service == null) return empty(safeCaptureBounds(app, fullScreen));
-        if (fullScreen == null || fullScreen.isEmpty()) {
-            fullScreen = new Rect(0, 0,
-                    service.getResources().getDisplayMetrics().widthPixels,
-                    service.getResources().getDisplayMetrics().heightPixels);
-        }
-        Rect frame = safeCaptureBounds(app, fullScreen);
+        Rect display = safeDisplayBounds(app, service);
+        if (service == null) return empty(display);
 
         ArrayList<TextNode> out = new ArrayList<>();
         HashSet<String> seen = new HashSet<>();
@@ -65,13 +58,13 @@ final class CircleViewTextSnapshot {
                     AccessibilityNodeInfo root = null;
                     try { root = window.getRoot(); } catch (Throwable ignored) {}
                     if (root == null || ownPackage(service, root)) continue;
-                    collect(root, frame, out, seen, visited, exact, 0);
+                    collect(root, display, out, seen, visited, exact, 0);
                 }
             } else {
                 AccessibilityNodeInfo active = null;
                 try { active = service.getRootInActiveWindow(); } catch (Throwable ignored) {}
                 if (active != null && !ownPackage(service, active)) {
-                    collect(active, frame, out, seen, visited, exact, 0);
+                    collect(active, display, out, seen, visited, exact, 0);
                 }
             }
         } catch (Throwable t) {
@@ -87,19 +80,20 @@ final class CircleViewTextSnapshot {
                         + " exactGeometry=" + keptExact
                         + " exactRaw=" + exact[0]
                         + " visited=" + visited[0]
-                        + " frame=" + frame.toShortString()
-                        + " display=" + fullScreen.toShortString());
-        return new CircleViewTextSnapshot(frame, pruned, keptExact);
+                        + " display=" + display.toShortString()
+                        + " coordinateSpace=absolute_screen");
+        return new CircleViewTextSnapshot(display, pruned, keptExact);
     }
 
     boolean isEmpty() { return nodes.isEmpty(); }
     int nodeCount() { return nodes.size(); }
     int exactGeometryNodeCount() { return exactGeometryNodes; }
+    Rect displayBounds() { return new Rect(displayBounds); }
 
-    OcrDocument toDocument(int imageWidth, int imageHeight) {
-        int width = Math.max(1, imageWidth);
-        int height = Math.max(1, imageHeight);
-        if (nodes.isEmpty() || captureBounds.isEmpty()) {
+    OcrDocument toScreenDocument() {
+        int width = Math.max(1, displayBounds.width());
+        int height = Math.max(1, displayBounds.height());
+        if (nodes.isEmpty() || displayBounds.isEmpty()) {
             return new OcrDocument("", List.of(), List.of(), "view-snapshot", 1f, 0d, width, height);
         }
 
@@ -107,42 +101,33 @@ final class CircleViewTextSnapshot {
         int lineId = 0;
         int group = 0;
         int order = 0;
-
         for (TextNode node : nodes) {
             if (node == null || node.text.isBlank() || node.bounds.isEmpty()) continue;
 
             if (!node.characters.isEmpty()) {
-                ArrayList<MappedChar> mapped = new ArrayList<>();
-                for (CharacterBox c : node.characters) {
-                    Rect r = mapScreenRect(c.bounds, captureBounds, width, height);
-                    if (!r.isEmpty() && !c.text.isBlank()) mapped.add(new MappedChar(c.text, r));
-                }
-                if (!mapped.isEmpty()) {
-                    mapped.sort(Comparator.comparingInt((MappedChar c) -> c.bounds.centerY())
-                            .thenComparingInt(c -> c.bounds.left));
-                    for (ArrayList<MappedChar> row : splitRows(mapped)) {
-                        if (row.isEmpty()) continue;
-                        Rect rowBounds = null;
-                        StringBuilder rowText = new StringBuilder();
-                        ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>();
-                        int rowGroup = group++;
-                        for (MappedChar c : row) {
-                            if (rowBounds == null) rowBounds = new Rect(c.bounds); else rowBounds.union(c.bounds);
-                            rowText.append(c.text);
-                            chars.add(new OcrDocument.CharUnit(c.text, c.bounds, 1f,
-                                    lineId, rowGroup, order++));
-                        }
-                        if (rowBounds != null && !rowBounds.isEmpty() && !chars.isEmpty()) {
-                            lines.add(new OcrDocument.Line(rowText.toString(), rowBounds, 1f, chars));
-                            lineId++;
-                        }
+                ArrayList<CharacterBox> charsInNode = new ArrayList<>(node.characters);
+                charsInNode.sort(Comparator.comparingInt((CharacterBox c) -> c.bounds.centerY())
+                        .thenComparingInt(c -> c.bounds.left));
+                for (ArrayList<CharacterBox> row : splitRows(charsInNode)) {
+                    if (row.isEmpty()) continue;
+                    Rect rowBounds = null;
+                    StringBuilder rowText = new StringBuilder();
+                    ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>();
+                    int rowGroup = group++;
+                    for (CharacterBox c : row) {
+                        if (rowBounds == null) rowBounds = new Rect(c.bounds); else rowBounds.union(c.bounds);
+                        rowText.append(c.text);
+                        chars.add(new OcrDocument.CharUnit(c.text, c.bounds, 1f,
+                                lineId, rowGroup, order++));
                     }
-                    continue;
+                    if (rowBounds != null && !rowBounds.isEmpty() && !chars.isEmpty()) {
+                        lines.add(new OcrDocument.Line(rowText.toString(), rowBounds, 1f, chars));
+                        lineId++;
+                    }
                 }
+                continue;
             }
 
-            Rect mappedNode = mapScreenRect(node.bounds, captureBounds, width, height);
-            if (mappedNode.isEmpty()) continue;
             String[] rows = node.text.split("\\R", -1);
             int nonEmpty = 0;
             for (String row : rows) if (!row.trim().isEmpty()) nonEmpty++;
@@ -151,9 +136,9 @@ final class CircleViewTextSnapshot {
             for (String raw : rows) {
                 String row = raw.trim();
                 if (row.isEmpty()) continue;
-                int top = mappedNode.top + mappedNode.height() * rowIndex / nonEmpty;
-                int bottom = mappedNode.top + mappedNode.height() * (rowIndex + 1) / nonEmpty;
-                Rect lineBounds = new Rect(mappedNode.left, top, mappedNode.right,
+                int top = node.bounds.top + node.bounds.height() * rowIndex / nonEmpty;
+                int bottom = node.bounds.top + node.bounds.height() * (rowIndex + 1) / nonEmpty;
+                Rect lineBounds = new Rect(node.bounds.left, top, node.bounds.right,
                         Math.max(top + 1, bottom));
                 ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>();
                 int visible = countVisible(row);
@@ -193,21 +178,20 @@ final class CircleViewTextSnapshot {
                 1f, score, width, height);
     }
 
-    private static Rect safeCaptureBounds(Context app, Rect fullScreen) {
+    private static Rect safeDisplayBounds(Context app, LensAccessibilityService service) {
         try {
-            Rect frame = CircleSelectFrame.contentBounds(app);
-            if (frame != null && !frame.isEmpty()) {
-                Rect clipped = new Rect(frame);
-                if (fullScreen == null || fullScreen.isEmpty() || clipped.intersect(fullScreen)) {
-                    if (!clipped.isEmpty()) return clipped;
-                }
-            }
+            Rect display = CircleSelectFrame.displayBounds(app);
+            if (display != null && !display.isEmpty()) return display;
         } catch (Throwable ignored) {}
-        return fullScreen == null ? new Rect() : new Rect(fullScreen);
+        try {
+            Rect display = service == null ? null : service.screenBounds();
+            if (display != null && !display.isEmpty()) return new Rect(display);
+        } catch (Throwable ignored) {}
+        return new Rect();
     }
 
     private static void collect(AccessibilityNodeInfo node,
-                                Rect captureBounds,
+                                Rect display,
                                 List<TextNode> out,
                                 Set<String> seen,
                                 int[] visited,
@@ -220,7 +204,7 @@ final class CircleViewTextSnapshot {
         try { node.getBoundsInScreen(bounds); } catch (Throwable ignored) { return; }
         if (bounds.isEmpty()) return;
         Rect clipped = new Rect(bounds);
-        if (captureBounds != null && !captureBounds.isEmpty() && !clipped.intersect(captureBounds)) return;
+        if (display != null && !display.isEmpty() && !clipped.intersect(display)) return;
 
         CharSequence nativeText = safeText(node);
         CharSequence semanticText = firstNonBlank(nativeText,
@@ -231,7 +215,7 @@ final class CircleViewTextSnapshot {
                 String key = clipped.flattenToString() + "\u0000" + text;
                 if (seen.add(key)) {
                     List<CharacterBox> characters = nativeText == null || nativeText.toString().isBlank()
-                            ? List.of() : requestCharacterBoxes(node, nativeText.toString(), captureBounds);
+                            ? List.of() : requestCharacterBoxes(node, nativeText.toString(), display);
                     if (!characters.isEmpty()) exact[0]++;
                     out.add(new TextNode(clipped, text, characters, depth));
                 }
@@ -243,13 +227,13 @@ final class CircleViewTextSnapshot {
             if (visited[0] >= MAX_NODES || out.size() >= MAX_TEXT_NODES) return;
             AccessibilityNodeInfo child = null;
             try { child = node.getChild(i); } catch (Throwable ignored) {}
-            if (child != null) collect(child, captureBounds, out, seen, visited, exact, depth + 1);
+            if (child != null) collect(child, display, out, seen, visited, exact, depth + 1);
         }
     }
 
     private static List<CharacterBox> requestCharacterBoxes(AccessibilityNodeInfo node,
                                                              String text,
-                                                             Rect captureBounds) {
+                                                             Rect display) {
         if (node == null || text == null || text.isEmpty()) return List.of();
         try {
             List<String> available = node.getAvailableExtraData();
@@ -282,9 +266,8 @@ final class CircleViewTextSnapshot {
                 if (!Character.isWhitespace(cp) && union != null && !union.isEmpty()) {
                     Rect r = new Rect((int) Math.floor(union.left), (int) Math.floor(union.top),
                             (int) Math.ceil(union.right), (int) Math.ceil(union.bottom));
-                    if (captureBounds == null || captureBounds.isEmpty() || r.intersect(captureBounds)) {
-                        if (!r.isEmpty()) out.add(new CharacterBox(
-                                new String(Character.toChars(cp)), r));
+                    if (display == null || display.isEmpty() || r.intersect(display)) {
+                        if (!r.isEmpty()) out.add(new CharacterBox(new String(Character.toChars(cp)), r));
                     }
                 }
                 offset += cpLength;
@@ -319,11 +302,11 @@ final class CircleViewTextSnapshot {
         return List.copyOf(kept);
     }
 
-    private static ArrayList<ArrayList<MappedChar>> splitRows(List<MappedChar> chars) {
-        ArrayList<ArrayList<MappedChar>> rows = new ArrayList<>();
-        for (MappedChar c : chars) {
-            ArrayList<MappedChar> target = null;
-            for (ArrayList<MappedChar> row : rows) {
+    private static ArrayList<ArrayList<CharacterBox>> splitRows(List<CharacterBox> chars) {
+        ArrayList<ArrayList<CharacterBox>> rows = new ArrayList<>();
+        for (CharacterBox c : chars) {
+            ArrayList<CharacterBox> target = null;
+            for (ArrayList<CharacterBox> row : rows) {
                 if (row.isEmpty()) continue;
                 Rect sample = row.get(0).bounds;
                 int tolerance = Math.max(3, Math.min(sample.height(), c.bounds.height()) / 2);
@@ -339,25 +322,8 @@ final class CircleViewTextSnapshot {
             target.add(c);
         }
         rows.sort(Comparator.comparingInt(row -> row.get(0).bounds.centerY()));
-        for (ArrayList<MappedChar> row : rows) row.sort(Comparator.comparingInt(c -> c.bounds.left));
+        for (ArrayList<CharacterBox> row : rows) row.sort(Comparator.comparingInt(c -> c.bounds.left));
         return rows;
-    }
-
-    private static Rect mapScreenRect(Rect source, Rect frame, int imageWidth, int imageHeight) {
-        if (source == null || source.isEmpty() || frame == null || frame.isEmpty()) return new Rect();
-        Rect clipped = new Rect(source);
-        if (!clipped.intersect(frame)) return new Rect();
-        float sx = imageWidth / (float) Math.max(1, frame.width());
-        float sy = imageHeight / (float) Math.max(1, frame.height());
-        int left = Math.max(0, Math.min(imageWidth - 1,
-                Math.round((clipped.left - frame.left) * sx)));
-        int top = Math.max(0, Math.min(imageHeight - 1,
-                Math.round((clipped.top - frame.top) * sy)));
-        int right = Math.max(left + 1, Math.min(imageWidth,
-                Math.round((clipped.right - frame.left) * sx)));
-        int bottom = Math.max(top + 1, Math.min(imageHeight,
-                Math.round((clipped.bottom - frame.top) * sy)));
-        return new Rect(left, top, right, bottom);
     }
 
     private static long area(TextNode n) {
@@ -381,7 +347,9 @@ final class CircleViewTextSnapshot {
 
     private static int countVisible(String value) {
         int count = 0;
-        if (value != null) for (int cp : value.codePoints().toArray()) if (!Character.isWhitespace(cp)) count++;
+        if (value != null) {
+            for (int cp : value.codePoints().toArray()) if (!Character.isWhitespace(cp)) count++;
+        }
         return count;
     }
 
@@ -412,7 +380,7 @@ final class CircleViewTextSnapshot {
         final int depth;
 
         TextNode(Rect bounds, String text, List<CharacterBox> characters, int depth) {
-            this.bounds = new Rect(bounds);
+            this.bounds = bounds == null ? new Rect() : new Rect(bounds);
             this.text = text == null ? "" : text;
             this.characters = characters == null ? List.of() : List.copyOf(characters);
             this.depth = depth;
@@ -421,13 +389,6 @@ final class CircleViewTextSnapshot {
 
     private record CharacterBox(String text, Rect bounds) {
         CharacterBox {
-            text = text == null ? "" : text;
-            bounds = bounds == null ? new Rect() : new Rect(bounds);
-        }
-    }
-
-    private record MappedChar(String text, Rect bounds) {
-        MappedChar {
             text = text == null ? "" : text;
             bounds = bounds == null ? new Rect() : new Rect(bounds);
         }
