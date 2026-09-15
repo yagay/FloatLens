@@ -1,16 +1,16 @@
 package com.yagay.floatlens;
 
-import android.accessibilityservice.AccessibilityService;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 
-/** Background notification-shade cleanup shared by frozen accessibility-overlay surfaces. */
+/**
+ * Thin frozen-overlay adapter over the single {@link FlSystemPanelController} implementation.
+ * Circle Select no longer owns a second notification-shade dismissal algorithm.
+ */
 final class OverlayShadeCoordinator {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
-    private static final long DISMISS_RECHECK_MS = 90L;
-    private static final long BACK_RECHECK_MS = 140L;
-    private static final int MAX_BACK_ATTEMPTS = 2;
+    private static final long RESULT_RECHECK_MS = 700L;
 
     interface Callback { void onComplete(boolean collapsed); }
 
@@ -27,40 +27,18 @@ final class OverlayShadeCoordinator {
             return;
         }
 
-        LensAccessibilityService service = LensAccessibilityService.get();
-        if (service == null) {
-            DiagnosticLog.i(app, "OVERLAY_SHADE", "no accessibility service owner=" + tag);
-            done.onComplete(false);
-            return;
-        }
-
-        boolean dismiss15 = false;
-        try { dismiss15 = service.global(AccessibilityService.GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE); }
-        catch (Throwable t) { DiagnosticLog.i(app, "OVERLAY_SHADE", "global15 failed owner=" + tag + " error=" + t); }
-        DiagnosticLog.i(app, "OVERLAY_SHADE", "begin owner=" + tag
+        DiagnosticLog.i(app, "OVERLAY_SHADE", "delegate owner=" + tag
                 + " captureExpanded=" + expandedAtCapture
-                + " liveExpanded=" + liveExpanded + " global15=" + dismiss15);
-        MAIN.postDelayed(() -> checkThenBack(app, service, tag, done, 0), DISMISS_RECHECK_MS);
-    }
+                + " liveExpanded=" + liveExpanded);
+        FlSystemPanelController.dismissAfterCapture(
+                app, expandedAtCapture || liveExpanded, "overlay_" + tag);
 
-    private static void checkThenBack(Context app, LensAccessibilityService service, String owner,
-                                      Callback callback, int completedBackAttempts) {
-        boolean expanded = FlSystemPanelController.notificationShadeExpanded();
-        DiagnosticLog.i(app, "OVERLAY_SHADE", "recheck owner=" + owner
-                + " expanded=" + expanded + " completedBackAttempts=" + completedBackAttempts);
-        if (!expanded) { callback.onComplete(true); return; }
-        if (completedBackAttempts >= MAX_BACK_ATTEMPTS) {
-            DiagnosticLog.i(app, "OVERLAY_SHADE", "exhausted owner=" + owner + " shade still expanded");
-            callback.onComplete(false);
-            return;
-        }
-
-        boolean back = false;
-        try { back = service.global(AccessibilityService.GLOBAL_ACTION_BACK); }
-        catch (Throwable t) { DiagnosticLog.i(app, "OVERLAY_SHADE", "global back failed owner=" + owner + " error=" + t); }
-        int attempt = completedBackAttempts + 1;
-        DiagnosticLog.i(app, "OVERLAY_SHADE", "BACK owner=" + owner + " attempt=" + attempt + " issued=" + back);
-        MAIN.postDelayed(() -> checkThenBack(app, service, owner, callback, attempt), BACK_RECHECK_MS);
+        MAIN.postDelayed(() -> {
+            boolean collapsed = !FlSystemPanelController.notificationShadeExpanded();
+            DiagnosticLog.i(app, "OVERLAY_SHADE", "delegated recheck owner=" + tag
+                    + " collapsed=" + collapsed + " delayMs=" + RESULT_RECHECK_MS);
+            done.onComplete(collapsed);
+        }, RESULT_RECHECK_MS);
     }
 
     private OverlayShadeCoordinator() {}
