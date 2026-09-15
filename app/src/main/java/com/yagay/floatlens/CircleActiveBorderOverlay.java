@@ -3,7 +3,6 @@ package com.yagay.floatlens;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
@@ -32,13 +31,22 @@ final class CircleActiveBorderOverlay {
     private static FlOverlayWindowHost activeHost;
     private static int captureHideLeases;
     private static long nextLeaseId;
+    private static boolean circleActive;
 
     static synchronized void show(Context c) {
         Context app = c.getApplicationContext();
+        circleActive = true;
         removeLocked("replace");
 
+        FloatSettings settings = new FloatSettings(app);
+        if (!settings.circleBorderEnabled()) {
+            DiagnosticLog.i(app, "CIRCLE_BORDER", "disabled by preference");
+            return;
+        }
+
         FlOverlayWindowHost host = new FlOverlayWindowHost(app);
-        BorderView view = new BorderView(app);
+        BorderView view = new BorderView(app,
+                settings.circleBorderColor(), settings.circleBorderWidthDp());
         int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                 | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
@@ -66,13 +74,38 @@ final class CircleActiveBorderOverlay {
         activeHost = host;
         activeView = view;
         applyVisibilityLocked();
-        DiagnosticLog.i(app, "CIRCLE_BORDER", "shown hideLeases=" + captureHideLeases);
+        DiagnosticLog.i(app, "CIRCLE_BORDER", "shown hideLeases=" + captureHideLeases
+                + " color=0x" + Integer.toHexString(settings.circleBorderColor())
+                + " widthDp=" + settings.circleBorderWidthDp());
     }
 
     static synchronized void hide(Context c, String reason) {
+        circleActive = false;
         Context app = c == null ? null : c.getApplicationContext();
         removeLocked(reason == null ? "hide" : reason);
         if (app != null) DiagnosticLog.i(app, "CIRCLE_BORDER", "hidden reason=" + safe(reason));
+    }
+
+    /** Applies changed preferences without requiring Circle Select to restart. */
+    static synchronized void refreshStyle(Context c) {
+        if (c == null) return;
+        Context app = c.getApplicationContext();
+        FloatSettings settings = new FloatSettings(app);
+        if (!settings.circleBorderEnabled()) {
+            removeLocked("preference_disabled");
+            return;
+        }
+        if (circleActive && activeView == null) {
+            show(app);
+            return;
+        }
+        BorderView view = activeView;
+        if (view != null) {
+            view.applyStyle(settings.circleBorderColor(), settings.circleBorderWidthDp());
+            DiagnosticLog.i(app, "CIRCLE_BORDER", "style refreshed color=0x"
+                    + Integer.toHexString(settings.circleBorderColor())
+                    + " widthDp=" + settings.circleBorderWidthDp());
+        }
     }
 
     static synchronized CaptureLease acquireCaptureHidden(Context c, String reason) {
@@ -148,9 +181,10 @@ final class CircleActiveBorderOverlay {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path borderPath = new Path();
         private final RectF borderRect = new RectF();
-        private final float stroke;
+        private final float density;
         private final float minFallbackRadius;
         private final float maxFallbackRadius;
+        private float stroke;
         private float topLeftRadius;
         private float topRightRadius;
         private float bottomRightRadius;
@@ -164,21 +198,26 @@ final class CircleActiveBorderOverlay {
         private int lastLoggedBr = -1;
         private int lastLoggedBl = -1;
 
-        BorderView(Context c) {
+        BorderView(Context c, int color, int widthDp) {
             super(c);
             context = c.getApplicationContext();
             windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
-            float density = getResources().getDisplayMetrics().density;
-            stroke = Math.max(2f, 3f * density);
+            density = getResources().getDisplayMetrics().density;
             minFallbackRadius = 16f * density;
             maxFallbackRadius = 32f * density;
-            paint.setColor(Color.rgb(66, 133, 244));
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(stroke);
+            applyStyle(color, widthDp);
             setOnApplyWindowInsetsListener((v, insets) -> {
                 refreshGeometry(insets, "insets");
                 return insets;
             });
+        }
+
+        void applyStyle(int color, int widthDp) {
+            stroke = Math.max(1f, Math.max(1, Math.min(8, widthDp)) * density);
+            paint.setColor(color);
+            paint.setStrokeWidth(stroke);
+            invalidate();
         }
 
         @Override protected void onAttachedToWindow() {
