@@ -4,9 +4,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** One complete touch session. FL records a full point stream and can switch to Circle mid-session. */
+/** One complete floating-icon touch session. */
 final class GestureSession {
-    enum Phase { IDLE, DOWN, GESTURE, ICON_DRAG, CIRCLE, FINISHING }
+    enum Phase { IDLE, DOWN, GESTURE, ICON_DRAG, FINISHING }
+
     final ArrayList<GesturePointSample> points = new ArrayList<>();
     Phase phase = Phase.IDLE;
     long downAt;
@@ -28,14 +29,22 @@ final class GestureSession {
     }
 
     void add(float x, float y, long t) {
-        lastX = x; lastY = y;
+        lastX = x;
+        lastY = y;
         points.add(new GesturePointSample(x, y, t));
     }
 
     float dx() { return lastX - downX; }
     float dy() { return lastY - downY; }
-    float distance() { return (float)Math.hypot(dx(), dy()); }
+    float distance() { return (float) Math.hypot(dx(), dy()); }
     long duration(long now) { return Math.max(0L, now - downAt); }
-    List<GesturePointSample> snapshot() { return Collections.unmodifiableList(new ArrayList<>(points)); }
-    void reset() { points.clear(); phase = Phase.IDLE; longPressReady = moved = multiTouch = false; }
+    List<GesturePointSample> snapshot() {
+        return Collections.unmodifiableList(new ArrayList<>(points));
+    }
+
+    void reset() {
+        points.clear();
+        phase = Phase.IDLE;
+        longPressReady = moved = multiTouch = false;
+    }
 }
