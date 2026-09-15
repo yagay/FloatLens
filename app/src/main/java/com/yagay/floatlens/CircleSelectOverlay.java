@@ -87,6 +87,7 @@ public final class CircleSelectOverlay {
         private static final int MODE_START_HANDLE = 2;
         private static final int MODE_END_HANDLE = 3;
         private static final int MODE_CIRCLE = 4;
+        private static final int MODE_IMAGE = 5;
         private static final long RECT_SNAP_PREVIEW_MS = 170L;
         private static final float HANDLE_SNAP_DISTANCE_DP = 96f;
         private static final float TEXT_TAP_SNAP_DISTANCE_DP = 18f;
@@ -99,6 +100,7 @@ public final class CircleSelectOverlay {
         private final WindowManager.LayoutParams windowLayout;
         private final Bitmap screenshot;
         private final CircleViewTextSnapshot viewSnapshot;
+        private final CircleViewImageSnapshot imageSnapshot;
         private final ScreenBitmapTransform transform;
         private final Runnable onClosed;
         private final CircleTextSelectionModel selection;
@@ -113,6 +115,7 @@ public final class CircleSelectOverlay {
         private final ArrayList<PointF> circlePoints = new ArrayList<>();
         private final RectF snappedCircleRect = new RectF();
         private final RectF closeRect = new RectF();
+        private final Rect directImageScreen = new Rect();
 
         private CircleRecognitionSession recognitionSession;
         private OcrDocument pendingDocument;
@@ -139,6 +142,9 @@ public final class CircleSelectOverlay {
             this.screenshot = screenshot;
             this.viewSnapshot = viewSnapshot == null
                     ? CircleViewTextSnapshot.empty(ScreenGeometry.displayBounds(c)) : viewSnapshot;
+            // Capture image nodes before this Accessibility overlay is attached, so the underlying
+            // app remains the source of View geometry. Image regions stay in absolute screen space.
+            this.imageSnapshot = CircleViewImageSnapshot.capture(c);
             this.transform = transform;
             this.onClosed = onClosed;
             this.keyFocusEnabled = keyFocusEnabled;
@@ -165,6 +171,8 @@ public final class CircleSelectOverlay {
             toolbarTextPaint.setColor(Color.WHITE);
             toolbarTextPaint.setTextSize(dp(14));
             toolbarTextPaint.setTextAlign(Paint.Align.CENTER);
+            DiagnosticLog.i(context, "CIRCLE_VIEW_IMAGE", "workspace imageCandidates="
+                    + imageSnapshot.size());
         }
 
         void promoteKeyFocus(String reason) {
@@ -266,6 +274,14 @@ public final class CircleSelectOverlay {
                 drawHandles(canvas, selection.low(), selection.high());
             }
 
+            if (!directImageScreen.isEmpty()) {
+                RectF imageRect = transform.screenToView(directImageScreen, getWidth(), getHeight());
+                if (!imageRect.isEmpty()) {
+                    canvas.drawRoundRect(imageRect, dp(8), dp(8), selectedPaint);
+                    canvas.drawRoundRect(imageRect, dp(8), dp(8), linePaint);
+                }
+            }
+
             if (circlePoints.size() > 1) {
                 Path p = new Path();
                 p.moveTo(circlePoints.get(0).x, circlePoints.get(0).y);
@@ -280,11 +296,12 @@ public final class CircleSelectOverlay {
 
             String status;
             if (circleResolving) status = "正在生成圈画截图…";
+            else if (mode == MODE_IMAGE) status = "已命中 View 图片 · 松手直接提取，不运行 OCR";
             else if (tapRefining) status = "正在精识别点击位置… · 圈画仍是截图";
             else if (!fastIndexReady && !selection.isEmpty()) status = "View 文字已可选 · 正在补充图片文字 · 圈画截图";
             else if (!fastIndexReady) status = "正在建立快速文字索引… · 圈画截图";
-            else if (selection.isEmpty()) status = "未检测到可选文字 · 轻点可局部精识别 · 圈画截图";
-            else status = "点按文字提取 · 手柄调整范围 · 圈画截图";
+            else if (selection.isEmpty()) status = "点按 View 图片可直接提取 · 其他位置可圈画/识别";
+            else status = "点按文字提取 · 点按 View 图片直接提取 · 手柄调整范围";
             canvas.drawText(status, dp(16), dp(34), textPaint);
             drawClose(canvas);
         }
@@ -324,11 +341,13 @@ public final class CircleSelectOverlay {
                 case MotionEvent.ACTION_DOWN -> {
                     applyPendingIfIdle();
                     snappedCircleRect.setEmpty();
+                    directImageScreen.setEmpty();
                     if (closeRect.contains(x, y)) {
                         dismissMagnifier(); closePressed = true; return true;
                     }
                     closePressed = false;
                     FloatActionMenu.dismiss();
+                    ImageActionMenu.dismiss();
                     FloatMenuAnchor.clear();
 
                     if (selection.hasSelection()) {
@@ -350,6 +369,19 @@ public final class CircleSelectOverlay {
                         return true;
                     }
 
+                    Rect image = findDirectImage(x, y);
+                    if (image != null) {
+                        dismissMagnifier();
+                        selection.clear();
+                        directImageScreen.set(image);
+                        mode = MODE_IMAGE;
+                        circlePoints.clear();
+                        DiagnosticLog.i(context, "CIRCLE_VIEW_IMAGE", "direct hit="
+                                + image.toShortString());
+                        invalidate();
+                        return true;
+                    }
+
                     dismissMagnifier();
                     selection.clear();
                     mode = MODE_CIRCLE;
@@ -360,6 +392,7 @@ public final class CircleSelectOverlay {
                 }
                 case MotionEvent.ACTION_MOVE -> {
                     if (closePressed) return true;
+                    if (mode == MODE_IMAGE) return true;
                     if (mode == MODE_TEXT || mode == MODE_START_HANDLE || mode == MODE_END_HANDLE) {
                         int hit = findSelectionWord(x, y);
                         if (hit >= 0) { updateSelectionEndpoint(hit); invalidate(); }
@@ -379,6 +412,13 @@ public final class CircleSelectOverlay {
                     if (closePressed) {
                         closePressed = false;
                         if (closeRect.contains(x, y)) close("user_close");
+                        return true;
+                    }
+                    if (mode == MODE_IMAGE) {
+                        Rect image = directImageScreen.isEmpty() ? null : new Rect(directImageScreen);
+                        mode = MODE_NONE;
+                        if (image != null) showDirectImageMenu(image);
+                        invalidate();
                         return true;
                     }
                     if (mode == MODE_CIRCLE) {
@@ -412,10 +452,32 @@ public final class CircleSelectOverlay {
                 }
                 case MotionEvent.ACTION_CANCEL -> {
                     dismissMagnifier(); closePressed = false; mode = MODE_NONE;
-                    circlePoints.clear(); snappedCircleRect.setEmpty(); invalidate(); return true;
+                    circlePoints.clear(); snappedCircleRect.setEmpty(); directImageScreen.setEmpty();
+                    invalidate(); return true;
                 }
             }
             return true;
+        }
+
+        private Rect findDirectImage(float viewX, float viewY) {
+            if (getWidth() <= 0 || getHeight() <= 0 || imageSnapshot == null) return null;
+            int sx = transform.viewXToScreen(viewX, getWidth());
+            int sy = transform.viewYToScreen(viewY, getHeight());
+            return imageSnapshot.findAt(sx, sy);
+        }
+
+        private void showDirectImageMenu(Rect screenRect) {
+            Bitmap crop = cropScreenRect(screenRect);
+            if (crop == null) {
+                directImageScreen.setEmpty();
+                invalidate();
+                return;
+            }
+            DiagnosticLog.i(context, "CIRCLE_VIEW_IMAGE", "direct crop="
+                    + crop.getWidth() + "x" + crop.getHeight()
+                    + " screen=" + screenRect.toShortString()
+                    + " source=view_bounds ocr=false");
+            ImageActionMenu.show(context, crop, screenRect);
         }
 
         private boolean isTapLike(List<PointF> points) {
@@ -577,7 +639,7 @@ public final class CircleSelectOverlay {
             recognitionSession = null;
             if (session != null) session.cancel();
             dismissMagnifier(); magnifier = null;
-            FloatActionMenu.dismiss(); FloatMenuAnchor.clear();
+            FloatActionMenu.dismiss(); ImageActionMenu.dismiss(); FloatMenuAnchor.clear();
             removeCallbacks(null);
             host.remove(this, "circle_select");
             try { if (!screenshot.isRecycled()) screenshot.recycle(); } catch (Throwable ignored) {}
