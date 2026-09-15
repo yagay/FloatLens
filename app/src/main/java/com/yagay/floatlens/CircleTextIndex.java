@@ -6,10 +6,17 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
-/** View text is authoritative; ML Kit is retained only for geometry assist and screen-space blind spots. */
+/**
+ * Unified Circle text index.
+ *
+ * Native View text remains authoritative for the normal full-frame merge, while an explicit user
+ * ROI refinement is authoritative inside that requested region. This prevents a stale/approximate
+ * View rectangle from immediately suppressing the ML Kit patch that the user asked for.
+ */
 final class CircleTextIndex {
     private OcrDocument viewDocument;
     private OcrDocument ocrSupplement;
+    private final ArrayList<Rect> roiOverrides = new ArrayList<>();
     private int lastGeometryRefinedChars;
     private int lastApproximateViewChars;
 
@@ -35,41 +42,80 @@ final class CircleTextIndex {
     void replaceOcrRegion(OcrDocument patch, Rect screenRegion) {
         if (patch == null || !patch.isScreenSpace()
                 || screenRegion == null || screenRegion.isEmpty()) return;
+        Rect override = new Rect(screenRegion);
         ArrayList<OcrDocument.Line> lines = new ArrayList<>();
         if (ocrSupplement != null) {
             for (OcrDocument.Line line : ocrSupplement.lines()) {
                 if (line == null || line.bounds().isEmpty()) continue;
-                if (!Rect.intersects(line.bounds(), screenRegion)) lines.add(line);
+                if (!Rect.intersects(line.bounds(), override)) lines.add(line);
             }
         }
         lines.addAll(patch.lines());
         ocrSupplement = documentFromLines(lines, patch.engine() + "+roi",
                 Math.max(ocrSupplement == null ? 0f : ocrSupplement.confidence(), patch.confidence()),
                 viewDocument.imageWidth(), viewDocument.imageHeight());
+        addOverride(override);
     }
 
     OcrDocument current() {
-        return mergeViewFirst(viewDocument, ocrSupplement);
+        return mergeViewFirst(viewDocument, ocrSupplement, roiOverrides);
     }
 
     static OcrDocument mergeViewFirst(OcrDocument view, OcrDocument ocr) {
+        return mergeViewFirst(view, ocr, List.of());
+    }
+
+    private static OcrDocument mergeViewFirst(OcrDocument view, OcrDocument ocr,
+                                              List<Rect> roiOverrides) {
         if (view == null || view.lines().isEmpty()) return ocr;
         if (ocr == null || ocr.lines().isEmpty()) return view;
         if (!view.isScreenSpace() || !ocr.isScreenSpace()) {
             throw new IllegalArgumentException("CircleTextIndex requires screen-space documents");
         }
 
-        ArrayList<OcrDocument.Line> lines = new ArrayList<>(view.lines());
+        ArrayList<OcrDocument.Line> keptView = new ArrayList<>();
+        for (OcrDocument.Line viewLine : view.lines()) {
+            if (viewLine == null || viewLine.bounds().isEmpty()) continue;
+            if (!insideOverride(viewLine.bounds(), roiOverrides)) keptView.add(viewLine);
+        }
+
+        ArrayList<OcrDocument.Line> lines = new ArrayList<>(keptView);
         int keptOcr = 0;
         for (OcrDocument.Line ocrLine : ocr.lines()) {
             if (ocrLine == null || ocrLine.bounds().isEmpty()) continue;
-            if (coveredByView(view.lines(), ocrLine)) continue;
+            boolean override = insideOverride(ocrLine.bounds(), roiOverrides);
+            if (!override && coveredByView(keptView, ocrLine)) continue;
             lines.add(ocrLine);
             keptOcr++;
         }
         return documentFromLines(lines,
-                keptOcr == 0 ? "view-snapshot" : "view-snapshot+mlkit-blindspots",
+                keptOcr == 0 ? "view-snapshot" : "view-snapshot+mlkit",
                 1f, view.imageWidth(), view.imageHeight());
+    }
+
+    private void addOverride(Rect region) {
+        for (int i = roiOverrides.size() - 1; i >= 0; i--) {
+            Rect old = roiOverrides.get(i);
+            if (Rect.intersects(old, region) || old.contains(region) || region.contains(old)) {
+                region.union(old);
+                roiOverrides.remove(i);
+            }
+        }
+        roiOverrides.add(new Rect(region));
+    }
+
+    private static boolean insideOverride(Rect line, List<Rect> regions) {
+        if (line == null || line.isEmpty() || regions == null || regions.isEmpty()) return false;
+        long lineArea = Math.max(1L, (long) line.width() * line.height());
+        for (Rect region : regions) {
+            if (region == null || region.isEmpty()) continue;
+            if (region.contains(line.centerX(), line.centerY())) return true;
+            Rect overlap = new Rect();
+            if (!overlap.setIntersect(region, line)) continue;
+            long overlapArea = Math.max(0L, (long) overlap.width() * overlap.height());
+            if (overlapArea >= lineArea * 28L / 100L) return true;
+        }
+        return false;
     }
 
     private static boolean coveredByView(List<OcrDocument.Line> viewLines, OcrDocument.Line ocrLine) {
@@ -82,8 +128,7 @@ final class CircleTextIndex {
             Rect overlap = new Rect();
             if (!overlap.setIntersect(viewBounds, ocrBounds)) continue;
             long overlapArea = Math.max(0L, (long) overlap.width() * overlap.height());
-            float ocrCoverage = overlapArea / (float) ocrArea;
-            if (ocrCoverage >= 0.36f) return true;
+            if (overlapArea / (float) ocrArea >= 0.36f) return true;
         }
         return false;
     }
