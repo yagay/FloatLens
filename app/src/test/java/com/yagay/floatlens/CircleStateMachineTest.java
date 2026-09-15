@@ -7,50 +7,55 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class CircleStateMachineTest {
-    @Test
-    public void enterStartsNewGenerationAndBecomesActive() {
-        CircleStateMachine machine = new CircleStateMachine();
-
-        long generation = machine.enter();
+    @Test public void captureStartsOneWorkflowGeneration() {
+        RecognitionWorkflowState workflow = new RecognitionWorkflowState();
+        long generation = workflow.captureStarted("capture");
 
         assertEquals(1L, generation);
-        assertEquals(CircleStateMachine.State.ACTIVE, machine.state());
-        assertTrue(machine.active());
+        assertEquals(RecognitionWorkflowState.State.CAPTURING, workflow.state());
+        assertTrue(workflow.active());
     }
 
-    @Test
-    public void captureFromIdleImplicitlyStartsGeneration() {
-        CircleStateMachine machine = new CircleStateMachine();
+    @Test public void phasesWithinOneWorkflowKeepGeneration() {
+        RecognitionWorkflowState workflow = new RecognitionWorkflowState();
+        workflow.captureStarted("capture");
+        workflow.recognitionStarted("ocr");
+        workflow.resultsReady(3, "ready");
 
-        machine.captureStarted();
-
-        assertEquals(1L, machine.generation());
-        assertEquals(CircleStateMachine.State.CAPTURE, machine.state());
+        assertEquals(1L, workflow.generation());
+        assertEquals(RecognitionWorkflowState.State.RESULTS, workflow.state());
     }
 
-    @Test
-    public void recognizeAndResultsFollowExpectedStates() {
-        CircleStateMachine machine = new CircleStateMachine();
-        machine.enter();
+    @Test public void startingRecognitionFromIdleCreatesGeneration() {
+        RecognitionWorkflowState workflow = new RecognitionWorkflowState();
+        workflow.recognitionStarted("direct_ocr");
 
-        machine.recognizeStarted();
-        assertEquals(CircleStateMachine.State.OCR, machine.state());
-
-        machine.resultsReady(3);
-        assertEquals(CircleStateMachine.State.RESULTS, machine.state());
+        assertEquals(1L, workflow.generation());
+        assertEquals(RecognitionWorkflowState.State.RECOGNIZING, workflow.state());
     }
 
-    @Test
-    public void finishReturnsToIdleWithoutResettingGeneration() {
-        CircleStateMachine machine = new CircleStateMachine();
-        machine.enter();
-        machine.finish("done");
+    @Test public void finishReturnsIdleAndNextWorkGetsNewGeneration() {
+        RecognitionWorkflowState workflow = new RecognitionWorkflowState();
+        workflow.captureStarted("capture");
+        workflow.finish("done");
 
-        assertEquals(CircleStateMachine.State.IDLE, machine.state());
-        assertFalse(machine.active());
-        assertEquals(1L, machine.generation());
+        assertEquals(RecognitionWorkflowState.State.IDLE, workflow.state());
+        assertFalse(workflow.active());
+        assertEquals(1L, workflow.generation());
 
-        machine.enter();
-        assertEquals(2L, machine.generation());
+        workflow.recognitionStarted("next");
+        assertEquals(2L, workflow.generation());
+    }
+
+    @Test public void legacyFacadeUsesTheSameCoreLifecycle() {
+        CircleStateMachine legacy = new CircleStateMachine();
+        legacy.captureStarted();
+        assertEquals(CircleStateMachine.State.CAPTURE, legacy.state());
+        legacy.recognizeStarted();
+        assertEquals(CircleStateMachine.State.OCR, legacy.state());
+        legacy.resultsReady(1);
+        assertEquals(CircleStateMachine.State.RESULTS, legacy.state());
+        legacy.finish("done");
+        assertEquals(CircleStateMachine.State.IDLE, legacy.state());
     }
 }
