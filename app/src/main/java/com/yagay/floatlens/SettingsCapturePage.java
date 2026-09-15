@@ -11,14 +11,14 @@ final class SettingsCapturePage {
                 "截图来源、截图范围、结果显示和 OCR 模型分开管理。Root / LSPosed 增强开关统一放在“高级权限”中。" );
 
         AppUi.Section capture = AppUi.section(activity, "截图",
-                "状态栏与导航栏范围同时作用于普通截图、OCR 区域截图和圈画模式。" );
+                "状态栏与导航栏设置控制截图范围；圈画模式始终保留实时导航按键可点击。" );
         ui.check(capture.body, "截图保留悬浮图标", null,
                 FloatSettings.K_KEEP_IN_SCREENSHOT, fs.keepInScreenshot());
         ui.check(capture.body, "截取状态栏",
                 "关闭后普通截图和圈画都会排除当前可见的状态栏区域",
                 FloatSettings.K_KEEP_STATUS_BAR, fs.keepStatusBarInScreenshot());
         ui.check(capture.body, "截取按键导航栏",
-                "关闭后普通截图和圈画都会排除导航栏；三键导航下返回 / Home / 最近任务保持可直接点击",
+                "控制普通/区域截图是否保存导航栏像素；圈画模式即使开启也不会覆盖实时导航键，返回 / Home / 最近任务始终可直接点击并退出圈画",
                 CaptureSystemBarsPolicy.K_KEEP_NAVIGATION_BAR,
                 CaptureSystemBarsPolicy.keepNavigationBar(activity));
         ui.check(capture.body, "优先无障碍截图",
