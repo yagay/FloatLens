@@ -13,11 +13,12 @@ import android.view.View;
 import java.util.List;
 
 /**
- * FloatLens floating icon touch engine.
+ * Floating-icon touch owner.
  *
- * Visual resource loading and slideshow timing live in FloatIconRenderer. This class owns FL
- * pointer semantics: immediate temporary-follow movement, 400ms direct-selection dwell, gestures,
- * long press and explicit position-move mode.
+ * One touch can end as tap/double-tap, configured long press, gesture, Direct selection or explicit
+ * position move. The obsolete mid-touch CircleLive branch is intentionally gone; Circle Select is a
+ * normal action routed through ActionRegistry. A long-press timer is armed only when a real long
+ * action is configured, so ActionId.NONE can never steal the 400 ms Direct dwell.
  */
 public class FloatIconView extends View {
     public interface Callback {
@@ -36,25 +37,22 @@ public class FloatIconView extends View {
 
     private static final long FL_DIRECT_SELECT_DELAY_MS = 400L;
     private static final float FL_DIRECT_MOVE_START_DP = 3f;
-    // FL long press uses a two-stage timer: arm at T-100 ms, then require a final
-    // 100 ms stable window. During that final window, ~3 px movement re-arms only the window.
     private static final long FL_LONG_PRESS_FINAL_STABLE_MS = 100L;
     private static final float FL_LONG_PRESS_REARM_PX = 3f;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final GestureSession session = new GestureSession();
     private final FloatIconRenderer renderer;
-    private FloatSettings fs;
     private final Callback cb;
     private final Runnable directSelectionRunnable;
     private final float directRearmSlopPx;
+
+    private FloatSettings fs;
     private long lastTapAt;
     private Runnable longPressPrimeRunnable;
     private Runnable longPressRunnable;
     private Runnable singleTapRunnable;
     private boolean followStarted;
-    private boolean selectionTookOver;
-    private boolean circleActive;
     private boolean longPressPrimed;
     private boolean longPressActionTriggered;
     private boolean directSelectionActive;
@@ -116,7 +114,6 @@ public class FloatIconView extends View {
         invalidate();
     }
 
-    /** Current FL owner-window rectangle used for hint positioning. */
     RectF currentFlWindowBounds() {
         if (!flWindowKnown) beginFlWindowTracking();
         int w = Math.max(1, getWidth() > 0 ? getWidth() : getMeasuredWidth());
@@ -146,17 +143,16 @@ public class FloatIconView extends View {
     @Override protected void onDetachedFromWindow() {
         cancelLongPress();
         cancelDirectSelectionTimer();
-        if(selectionEngine!=null)selectionEngine.cancel();
-        if(circleActive)CircleLiveController.cancel("icon_detached");
+        if (selectionEngine != null) selectionEngine.cancel();
         renderer.detach();
         handler.removeCallbacksAndMessages(null);
         super.onDetachedFromWindow();
     }
 
-    @Override protected void onDraw(Canvas c) {
-        super.onDraw(c);
+    @Override protected void onDraw(Canvas canvas) {
+        super.onDraw(canvas);
         if (directSelectionActive) return;
-        renderer.draw(c, getWidth(), getHeight(), session.phase != GestureSession.Phase.IDLE);
+        renderer.draw(canvas, getWidth(), getHeight(), session.phase != GestureSession.Phase.IDLE);
     }
 
     @Override public boolean onTouchEvent(MotionEvent e) {
@@ -164,21 +160,28 @@ public class FloatIconView extends View {
         final float rx = e.getRawX(), ry = e.getRawY();
         final long now = SystemClock.uptimeMillis();
         if (action != MotionEvent.ACTION_MOVE || session.points.size() % 4 == 0) {
-            DiagnosticLog.i(getContext(), "TOUCH", "action="+action+" pointers="+e.getPointerCount()
-                    +" raw="+Math.round(rx)+","+Math.round(ry)+" phase="+session.phase
-                    +" direct="+directSelectionActive+" regionEditor="+longPressActionTriggered
-                    +" positionMove="+positionMoveMode);
+            DiagnosticLog.i(getContext(), "TOUCH", "action=" + action + " pointers=" + e.getPointerCount()
+                    + " raw=" + Math.round(rx) + "," + Math.round(ry) + " phase=" + session.phase
+                    + " direct=" + directSelectionActive + " long=" + longPressActionTriggered
+                    + " positionMove=" + positionMoveMode);
         }
 
         if (action == MotionEvent.ACTION_POINTER_DOWN) {
             session.multiTouch = true;
             cancelLongPress();
             cancelDirectSelectionTimer();
-            longPressActionTriggered=false;
-            if(directSelectionActive){if(selectionEngine!=null)selectionEngine.cancel();cb.onDirectSelectionEnd();directSelectionActive=false;}
-            else if(selectionEngine!=null)selectionEngine.cancel();
-            if(circleActive){CircleLiveController.cancel("multitouch");circleActive=false;}
-            if(positionMoveMode){FloatService f=FloatService.get();if(f!=null)f.cancelPositionMove();}
+            longPressActionTriggered = false;
+            if (directSelectionActive) {
+                if (selectionEngine != null) selectionEngine.cancel();
+                cb.onDirectSelectionEnd();
+                directSelectionActive = false;
+            } else if (selectionEngine != null) {
+                selectionEngine.cancel();
+            }
+            if (positionMoveMode) {
+                FloatService service = FloatService.get();
+                if (service != null) service.cancelPositionMove();
+            }
             cb.onGestureEnd(session.snapshot());
             invalidate();
             return true;
@@ -187,197 +190,200 @@ public class FloatIconView extends View {
 
         switch (action) {
             case MotionEvent.ACTION_DOWN -> {
-                cancelLongPress();
-                cancelDirectSelectionTimer();
-                if(selectionEngine!=null)selectionEngine.cancel();
-                if(circleActive)CircleLiveController.cancel("new_down");
-                FloatService service=FloatService.get();
-                positionMoveMode=service!=null&&service.isPositionMoveArmed();
-                beginFlWindowTracking();
-                selectionEngine=positionMoveMode?null:new ViewSelectionEngine(getContext(), this);
-                selectionTookOver=false;
-                circleActive=false;
-                longPressPrimed=false;
-                longPressActionTriggered=false;
-                directSelectionActive=false;
-                followStarted=false;
-                lastSelectionRawX=lastSelectionRawY=Float.NaN;
-                directTimerAnchorX=directTimerAnchorY=Float.NaN;
-                longPressAnchorRawX=rx;
-                longPressAnchorRawY=ry;
-                session.begin(rx, ry, now);
-                if(selectionEngine!=null&&selectionEngine.available())selectionEngine.dispatchTouchEvent(e);
-                DiagnosticLog.i(getContext(), "STATE", "DOWN begin="+Math.round(rx)+","+Math.round(ry)
-                        +" flDirectAvailable="+(selectionEngine!=null&&selectionEngine.available())
-                        +" directAxisSlopPx="+Math.round(directRearmSlopPx)
-                        +" positionMove="+positionMoveMode);
-                invalidate();
-
-                if(!positionMoveMode) armFlLongPress(rx, ry);
+                beginTouch(e, rx, ry, now);
                 return true;
             }
-
             case MotionEvent.ACTION_MOVE -> {
-                session.add(rx, ry, now);
-                if (session.multiTouch) return true;
-
-                int moveDx = Math.round(rx - session.downX);
-                int moveDy = Math.round(ry - session.downY);
-                float dist=session.distance();
-
-                if(positionMoveMode){
-                    if((moveDx!=0||moveDy!=0)&&dist>=dp(1.5f)){
-                        if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","explicit position move started");}
-                        updateFlWindowTracking(moveDx, moveDy);
-                        cb.onMove(moveDx,moveDy);
-                        session.moved=true;
-                        session.phase=GestureSession.Phase.ICON_DRAG;
-                    }
-                    return true;
-                }
-
-                if(longPressActionTriggered) return true;
-
-                if(directSelectionActive){
-                    if ((moveDx!=0||moveDy!=0) && followStarted) {
-                        updateFlWindowTracking(moveDx, moveDy);
-                        cb.onMove(moveDx, moveDy);
-                        session.moved=true;
-                    }
-                    if(selectionEngine!=null)selectionEngine.updateDirect(rx,ry);
-                    return true;
-                }
-
-                if(circleActive || session.phase==GestureSession.Phase.CIRCLE){
-                    CircleLiveController.move(rx,ry);
-                    return true;
-                }
-
-                // FL keeps immediate temporary-follow movement independent from long-press
-                // eligibility. Once the T-100 ms prime has fired, only the final 100 ms stable
-                // window is re-armed when the pointer shifts by roughly 3 raw pixels.
-                rearmFlLongPressIfNeeded(rx, ry);
-
-                if ((moveDx!=0||moveDy!=0) && dist>=dp(1.5f)) {
-                    if(!followStarted){followStarted=true;cb.onDragStart();DiagnosticLog.i(getContext(),"STATE","flTemporaryFollowStart distance="+Math.round(dist));}
-                    updateFlWindowTracking(moveDx, moveDy);
-                    cb.onMove(moveDx,moveDy);
-                    session.moved=true;
-                }
-
-                if(followStarted && selectionEngine!=null && selectionEngine.available()) {
-                    selectionEngine.showProbe(rx, ry);
-                    armOrRearmDirectSelection(rx, ry);
-                }
-
-                if(session.phase==GestureSession.Phase.DOWN && dist>=gestureSlopPx()){
-                    cancelLongPress();
-                    session.phase=GestureSession.Phase.GESTURE;
-                    cb.onGestureStart(session.downX,session.downY);
-                }
-                if(session.phase==GestureSession.Phase.GESTURE)cb.onGestureMove(rx,ry);
+                moveTouch(rx, ry, now);
                 return true;
             }
-
             case MotionEvent.ACTION_UP -> {
-                cancelLongPress();
-                cancelDirectSelectionTimer();
-                session.add(rx, ry, now);
-                if(positionMoveMode){
-                    cb.onGestureEnd(session.snapshot());
-                    cb.onRelease(followStarted);
-                    resetSession();
-                    return true;
-                }
-                if(longPressActionTriggered){
-                    if(selectionEngine!=null)selectionEngine.cancel();
-                    cb.onGestureEnd(session.snapshot());
-                    cb.onRelease(followStarted);
-                    DiagnosticLog.i(getContext(),"LONG_PRESS","release consumed");
-                    resetSession();
-                    return true;
-                }
-                if(directSelectionActive){
-                    selectionTookOver=selectionEngine!=null&&selectionEngine.finishDirect(rx,ry);
-                    cb.onDirectSelectionEnd();
-                    directSelectionActive=false;
-                    cb.onGestureEnd(session.snapshot());
-                    cb.onRelease(followStarted);
-                    DiagnosticLog.i(getContext(),"GESTURE_LAYER","code="+GestureCode.RECOGNIZE
-                            +" label="+GestureCode.label(GestureCode.RECOGNIZE)
-                            +" source=fl_direct_release result="+selectionTookOver);
-                    resetSession();
-                    return true;
-                }
-                if(circleActive || session.phase==GestureSession.Phase.CIRCLE){
-                    if(selectionEngine!=null)selectionEngine.cancel();
-                    DiagnosticLog.i(getContext(),"GESTURE_LAYER","code="+GestureCode.CIRCLE_FINISH+" label="+GestureCode.label(GestureCode.CIRCLE_FINISH)+" source=mid_touch_release");
-                    CircleLiveController.finish(rx,ry);
-                    circleActive=false;
-                    cb.onGestureEnd(session.snapshot());
-                    cb.onRelease(false);
-                    resetSession();
-                    return true;
-                }
-                if(selectionEngine!=null)selectionEngine.cancel();
-                selectionTookOver=false;
-                finish(now, false);
+                endTouch(rx, ry, now);
                 return true;
             }
-
             case MotionEvent.ACTION_CANCEL -> {
-                cancelLongPress();
-                cancelDirectSelectionTimer();
-                longPressActionTriggered=false;
-                if(directSelectionActive){
-                    if(selectionEngine!=null)selectionEngine.cancel();
-                    cb.onDirectSelectionEnd();
-                    directSelectionActive=false;
-                }else if(selectionEngine!=null)selectionEngine.cancel();
-                if(circleActive){CircleLiveController.cancel("touch_cancel");circleActive=false;}
-                if(positionMoveMode){FloatService f=FloatService.get();if(f!=null)f.cancelPositionMove();}
-                selectionTookOver=false;
-                finish(now, true);
+                cancelTouch(now);
                 return true;
             }
         }
         return true;
     }
 
-    /** FL long-press timing: prime at T-100 ms, trigger after 100 ms stability. */
-    private void armFlLongPress(float rawX, float rawY) {
+    private void beginTouch(MotionEvent e, float rx, float ry, long now) {
         cancelLongPress();
+        cancelDirectSelectionTimer();
+        if (selectionEngine != null) selectionEngine.cancel();
+
+        FloatService service = FloatService.get();
+        positionMoveMode = service != null && service.isPositionMoveArmed();
+        beginFlWindowTracking();
+        selectionEngine = positionMoveMode ? null : new ViewSelectionEngine(getContext(), this);
+        longPressPrimed = false;
+        longPressActionTriggered = false;
+        directSelectionActive = false;
+        followStarted = false;
+        lastSelectionRawX = lastSelectionRawY = Float.NaN;
+        directTimerAnchorX = directTimerAnchorY = Float.NaN;
+        longPressAnchorRawX = rx;
+        longPressAnchorRawY = ry;
+        session.begin(rx, ry, now);
+        if (selectionEngine != null && selectionEngine.available()) selectionEngine.dispatchTouchEvent(e);
+
+        String longAction = fs.action(FloatSettings.K_ACTION_LONG, ActionId.NONE);
+        DiagnosticLog.i(getContext(), "STATE", "DOWN begin=" + Math.round(rx) + "," + Math.round(ry)
+                + " directAvailable=" + (selectionEngine != null && selectionEngine.available())
+                + " directAxisSlopPx=" + Math.round(directRearmSlopPx)
+                + " longAction=" + longAction
+                + " positionMove=" + positionMoveMode);
+        invalidate();
+        if (!positionMoveMode && !ActionId.NONE.equals(longAction)) armFlLongPress(rx, ry, longAction);
+    }
+
+    private void moveTouch(float rx, float ry, long now) {
+        session.add(rx, ry, now);
+        if (session.multiTouch) return;
+
+        int moveDx = Math.round(rx - session.downX);
+        int moveDy = Math.round(ry - session.downY);
+        float dist = session.distance();
+
+        if (positionMoveMode) {
+            if ((moveDx != 0 || moveDy != 0) && dist >= dp(1.5f)) {
+                if (!followStarted) {
+                    followStarted = true;
+                    cb.onDragStart();
+                    DiagnosticLog.i(getContext(), "STATE", "explicit position move started");
+                }
+                updateFlWindowTracking(moveDx, moveDy);
+                cb.onMove(moveDx, moveDy);
+                session.moved = true;
+                session.phase = GestureSession.Phase.ICON_DRAG;
+            }
+            return;
+        }
+
+        if (longPressActionTriggered) return;
+
+        if (directSelectionActive) {
+            if ((moveDx != 0 || moveDy != 0) && followStarted) {
+                updateFlWindowTracking(moveDx, moveDy);
+                cb.onMove(moveDx, moveDy);
+                session.moved = true;
+            }
+            if (selectionEngine != null) selectionEngine.updateDirect(rx, ry);
+            return;
+        }
+
+        rearmFlLongPressIfNeeded(rx, ry);
+
+        if ((moveDx != 0 || moveDy != 0) && dist >= dp(1.5f)) {
+            if (!followStarted) {
+                followStarted = true;
+                cb.onDragStart();
+                DiagnosticLog.i(getContext(), "STATE", "temporary follow start distance=" + Math.round(dist));
+            }
+            updateFlWindowTracking(moveDx, moveDy);
+            cb.onMove(moveDx, moveDy);
+            session.moved = true;
+        }
+
+        if (followStarted && selectionEngine != null && selectionEngine.available()) {
+            selectionEngine.showProbe(rx, ry);
+            armOrRearmDirectSelection(rx, ry);
+        }
+
+        if (session.phase == GestureSession.Phase.DOWN && dist >= gestureSlopPx()) {
+            cancelLongPress();
+            session.phase = GestureSession.Phase.GESTURE;
+            cb.onGestureStart(session.downX, session.downY);
+        }
+        if (session.phase == GestureSession.Phase.GESTURE) cb.onGestureMove(rx, ry);
+    }
+
+    private void endTouch(float rx, float ry, long now) {
+        cancelLongPress();
+        cancelDirectSelectionTimer();
+        session.add(rx, ry, now);
+
+        if (positionMoveMode) {
+            cb.onGestureEnd(session.snapshot());
+            cb.onRelease(followStarted);
+            resetSession();
+            return;
+        }
+        if (longPressActionTriggered) {
+            if (selectionEngine != null) selectionEngine.cancel();
+            cb.onGestureEnd(session.snapshot());
+            cb.onRelease(followStarted);
+            DiagnosticLog.i(getContext(), "LONG_PRESS", "release consumed");
+            resetSession();
+            return;
+        }
+        if (directSelectionActive) {
+            boolean result = selectionEngine != null && selectionEngine.finishDirect(rx, ry);
+            cb.onDirectSelectionEnd();
+            directSelectionActive = false;
+            cb.onGestureEnd(session.snapshot());
+            cb.onRelease(followStarted);
+            DiagnosticLog.i(getContext(), "GESTURE_LAYER", "source=direct_release result=" + result);
+            resetSession();
+            return;
+        }
+
+        if (selectionEngine != null) selectionEngine.cancel();
+        finish(now, false);
+    }
+
+    private void cancelTouch(long now) {
+        cancelLongPress();
+        cancelDirectSelectionTimer();
+        longPressActionTriggered = false;
+        if (directSelectionActive) {
+            if (selectionEngine != null) selectionEngine.cancel();
+            cb.onDirectSelectionEnd();
+            directSelectionActive = false;
+        } else if (selectionEngine != null) {
+            selectionEngine.cancel();
+        }
+        if (positionMoveMode) {
+            FloatService service = FloatService.get();
+            if (service != null) service.cancelPositionMove();
+        }
+        finish(now, true);
+    }
+
+    /** Two-stage FL long press: prime at T-100 ms, then require 100 ms stability. */
+    private void armFlLongPress(float rawX, float rawY, String configuredAction) {
+        cancelLongPress();
+        if (ActionId.NONE.equals(configuredAction)) return;
         longPressPrimed = false;
         longPressAnchorRawX = rawX;
         longPressAnchorRawY = rawY;
 
         longPressRunnable = () -> {
-            if (session.multiTouch || positionMoveMode || directSelectionActive || circleActive
+            if (session.multiTouch || positionMoveMode || directSelectionActive
                     || longPressActionTriggered
                     || session.phase == GestureSession.Phase.IDLE
                     || session.phase == GestureSession.Phase.GESTURE
-                    || session.phase == GestureSession.Phase.CIRCLE
                     || session.phase == GestureSession.Phase.FINISHING) return;
             longPressPrimed = false;
             session.longPressReady = true;
             longPressActionTriggered = true;
             cancelDirectSelectionTimer();
-            if(selectionEngine!=null)selectionEngine.cancel();
-            String configured = fs.action(FloatSettings.K_ACTION_LONG, ActionId.NONE);
-            DiagnosticLog.i(getContext(),"LONG_PRESS","trigger duration="
-                    +session.duration(SystemClock.uptimeMillis())+" action="+configured
-                    +" followed="+followStarted);
+            if (selectionEngine != null) selectionEngine.cancel();
+            DiagnosticLog.i(getContext(), "LONG_PRESS", "trigger duration="
+                    + session.duration(SystemClock.uptimeMillis()) + " action=" + configuredAction
+                    + " followed=" + followStarted);
             if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-            if (!ActionId.NONE.equals(configured)) cb.onAction(configured);
+            cb.onAction(configuredAction);
             invalidate();
         };
 
         longPressPrimeRunnable = () -> {
-            if (session.multiTouch || positionMoveMode || directSelectionActive || circleActive
+            if (session.multiTouch || positionMoveMode || directSelectionActive
                     || longPressActionTriggered
                     || session.phase == GestureSession.Phase.IDLE
                     || session.phase == GestureSession.Phase.GESTURE
-                    || session.phase == GestureSession.Phase.CIRCLE
                     || session.phase == GestureSession.Phase.FINISHING) return;
             longPressPrimed = true;
             longPressAnchorRawX = session.lastX;
@@ -394,9 +400,8 @@ public class FloatIconView extends View {
 
         long primeDelay = Math.max(0L, fs.longPressMs() - FL_LONG_PRESS_FINAL_STABLE_MS);
         handler.postDelayed(longPressPrimeRunnable, primeDelay);
-        DiagnosticLog.i(getContext(), "LONG_PRESS", "arm totalMs=" + fs.longPressMs()
-                + " primeDelayMs=" + primeDelay
-                + " finalStableMs=" + FL_LONG_PRESS_FINAL_STABLE_MS);
+        DiagnosticLog.i(getContext(), "LONG_PRESS", "arm action=" + configuredAction
+                + " totalMs=" + fs.longPressMs() + " primeDelayMs=" + primeDelay);
     }
 
     private void rearmFlLongPressIfNeeded(float rawX, float rawY) {
@@ -405,91 +410,80 @@ public class FloatIconView extends View {
         float dx = rawX - longPressAnchorRawX;
         float dy = rawY - longPressAnchorRawY;
         if (Math.abs(dx) < FL_LONG_PRESS_REARM_PX && Math.abs(dy) < FL_LONG_PRESS_REARM_PX) return;
-
         handler.removeCallbacks(longPressRunnable);
         longPressAnchorRawX = rawX;
         longPressAnchorRawY = rawY;
         handler.postDelayed(longPressRunnable, FL_LONG_PRESS_FINAL_STABLE_MS);
         DiagnosticLog.i(getContext(), "LONG_PRESS", "rearm dx=" + Math.round(dx)
-                + " dy=" + Math.round(dy)
-                + " anchor=" + Math.round(rawX) + "," + Math.round(rawY)
-                + " stableMs=" + FL_LONG_PRESS_FINAL_STABLE_MS);
+                + " dy=" + Math.round(dy) + " stableMs=" + FL_LONG_PRESS_FINAL_STABLE_MS);
     }
 
     private void armOrRearmDirectSelection(float rawX, float rawY) {
         lastSelectionRawX = rawX;
         lastSelectionRawY = rawY;
-
         if (!directTimerArmed || Float.isNaN(directTimerAnchorX) || Float.isNaN(directTimerAnchorY)) {
             directTimerAnchorX = rawX;
             directTimerAnchorY = rawY;
             directTimerArmed = true;
             handler.removeCallbacks(directSelectionRunnable);
             handler.postDelayed(directSelectionRunnable, FL_DIRECT_SELECT_DELAY_MS);
-            DiagnosticLog.i(getContext(), "FL_DIRECT", "ARM anchor="+Math.round(rawX)+","+Math.round(rawY)
-                    +" delay="+FL_DIRECT_SELECT_DELAY_MS+" axisSlopPx="+Math.round(directRearmSlopPx));
+            DiagnosticLog.i(getContext(), "FL_DIRECT", "ARM anchor=" + Math.round(rawX) + ","
+                    + Math.round(rawY) + " delay=" + FL_DIRECT_SELECT_DELAY_MS);
             return;
         }
-
         float dx = rawX - directTimerAnchorX;
         float dy = rawY - directTimerAnchorY;
         if (Math.abs(dx) <= directRearmSlopPx && Math.abs(dy) <= directRearmSlopPx) return;
-
         handler.removeCallbacks(directSelectionRunnable);
         directTimerAnchorX = rawX;
         directTimerAnchorY = rawY;
         handler.postDelayed(directSelectionRunnable, FL_DIRECT_SELECT_DELAY_MS);
-        DiagnosticLog.i(getContext(), "FL_DIRECT", "REARM anchor="+Math.round(rawX)+","+Math.round(rawY)
-                +" dx="+Math.round(dx)+" dy="+Math.round(dy)
-                +" axisSlopPx="+Math.round(directRearmSlopPx));
+        DiagnosticLog.i(getContext(), "FL_DIRECT", "REARM anchor=" + Math.round(rawX) + ","
+                + Math.round(rawY) + " dx=" + Math.round(dx) + " dy=" + Math.round(dy));
     }
 
     private void finish(long now, boolean cancelled) {
         GestureSession.Phase ended = session.phase;
-        DiagnosticLog.i(getContext(), "FINISH", "ended="+ended+" cancelled="+cancelled
-                +" duration="+session.duration(now)+" distance="+Math.round(session.distance())
-                +" points="+session.points.size()+" multi="+session.multiTouch
-                +" followed="+followStarted+" flSelectionTookOver="+selectionTookOver);
+        DiagnosticLog.i(getContext(), "FINISH", "ended=" + ended + " cancelled=" + cancelled
+                + " duration=" + session.duration(now) + " distance=" + Math.round(session.distance())
+                + " points=" + session.points.size() + " multi=" + session.multiTouch
+                + " followed=" + followStarted);
         session.phase = GestureSession.Phase.FINISHING;
         cb.onGestureEnd(session.snapshot());
         if (session.multiTouch || cancelled) {
             cb.onRelease(followStarted);
-            resetSession(); return;
-        }
-
-        if (selectionTookOver) {
-            cb.onRelease(followStarted);
-            resetSession(); return;
+            resetSession();
+            return;
         }
 
         if (ended == GestureSession.Phase.GESTURE) {
-            GestureDecision d = GestureClassifier.classify(session, fs, getResources().getDisplayMetrics().density);
+            GestureDecision decision = GestureClassifier.classify(
+                    session, fs, getResources().getDisplayMetrics().density);
             cb.onRelease(followStarted);
-            if (!d.isNone()) {
+            if (!decision.isNone()) {
                 if (fs.vibrate()) performHapticFeedback(HapticFeedbackConstants.GESTURE_END);
-                cb.onGestureDecision(d);
+                cb.onGestureDecision(decision);
             }
         } else {
             cb.onRelease(followStarted);
-            if (!followStarted && session.duration(now) <= fs.tapMaxMs() && session.distance() < gestureSlopPx()) handleTap(now);
+            if (!followStarted && session.duration(now) <= fs.tapMaxMs()
+                    && session.distance() < gestureSlopPx()) handleTap(now);
         }
         resetSession();
     }
 
-    private void resetSession(){
+    private void resetSession() {
         cancelLongPress();
         cancelDirectSelectionTimer();
-        selectionEngine=null;
-        selectionTookOver=false;
-        circleActive=false;
-        longPressPrimed=false;
-        longPressActionTriggered=false;
-        directSelectionActive=false;
-        positionMoveMode=false;
-        followStarted=false;
-        flWindowKnown=false;
-        lastSelectionRawX=lastSelectionRawY=Float.NaN;
-        longPressAnchorRawX=longPressAnchorRawY=Float.NaN;
+        selectionEngine = null;
+        longPressPrimed = false;
+        longPressActionTriggered = false;
+        directSelectionActive = false;
+        positionMoveMode = false;
+        followStarted = false;
+        flWindowKnown = false;
+        lastSelectionRawX = lastSelectionRawY = Float.NaN;
+        longPressAnchorRawX = longPressAnchorRawY = Float.NaN;
         session.reset();
         invalidate();
     }
@@ -507,19 +501,21 @@ public class FloatIconView extends View {
         singleTapRunnable = () -> {
             if (lastTapAt == now) {
                 lastTapAt = 0;
-                cb.onGestureDecision(new GestureDecision(GestureCode.TAP,false,0f,0f));
+                cb.onGestureDecision(new GestureDecision(GestureCode.TAP, false, 0f, 0f));
             }
             singleTapRunnable = null;
         };
         handler.postDelayed(singleTapRunnable, fs.doubleTapMs());
     }
 
-    private void cancelDirectSelectionTimer(){
+    private void cancelDirectSelectionTimer() {
         handler.removeCallbacks(directSelectionRunnable);
-        directTimerArmed=false;
-        directTimerAnchorX=directTimerAnchorY=Float.NaN;
+        directTimerArmed = false;
+        directTimerAnchorX = directTimerAnchorY = Float.NaN;
     }
+
     private float gestureSlopPx() { return dp(fs.gestureStartDistance()); }
+
     @Override public void cancelLongPress() {
         super.cancelLongPress();
         if (longPressPrimeRunnable != null) handler.removeCallbacks(longPressPrimeRunnable);
@@ -529,5 +525,6 @@ public class FloatIconView extends View {
         longPressPrimed = false;
         longPressAnchorRawX = longPressAnchorRawY = Float.NaN;
     }
+
     private float dp(float v) { return v * getResources().getDisplayMetrics().density; }
 }
