@@ -38,10 +38,17 @@ public final class PrivilegeSettingsPanel {
                 "进入设置页不会自动申请 Root；只有真正执行 Root 功能或主动检测授权时才调用 su。" );
         SwitchMaterial rootSwitch = preferenceSwitch(activity, fs,
                 "使用 Root 功能",
-                "目前 Root 已用于增强截图；关闭后截图只使用普通后端。",
+                "允许已接入的 Root 增强功能参与后端选择。",
                 FloatSettings.K_ROOT_ENABLED, fs.rootEnabled(),
                 () -> refresh(activity, fs, modeStatus, rootStatus));
         AppUi.addRow(rootSection.body, AppUi.switchContainer(rootSwitch));
+
+        SwitchMaterial rootScreenshotSwitch = preferenceSwitch(activity, fs,
+                "Root 截图增强",
+                "仅在“增强模式”和“使用 Root 功能”同时开启时生效；关闭后截图继续使用普通后端。",
+                FloatSettings.K_ROOT_SCREENSHOT, fs.rootScreenshot(),
+                () -> refresh(activity, fs, modeStatus, rootStatus));
+        AppUi.addRow(rootSection.body, AppUi.switchContainer(rootScreenshotSwitch));
         AppUi.addRow(rootSection.body, statusBlock(activity, "Root 状态", rootStatus));
 
         LinearLayout rootButtons = AppUi.buttonRow(activity);
@@ -61,7 +68,7 @@ public final class PrivilegeSettingsPanel {
         AppUi.addRow(rootSection.body, rootButtons);
 
         TextView rootNote = AppUi.caption(activity,
-                "Root 截图需要同时开启：增强模式、使用 Root 功能、截图与 OCR → Root 截图增强。缺少任意一项都不会调用 Root 截图。",
+                "Root 截图需要同时开启：增强模式、使用 Root 功能、Root 截图增强。缺少任意一项都不会调用 Root 截图。",
                 12);
         AppUi.addRow(rootSection.body, simpleBlock(activity, rootNote));
         AppUi.addSection(root, rootSection);
@@ -79,6 +86,16 @@ public final class PrivilegeSettingsPanel {
                 });
         lsposedSwitch.setEnabled(PrivilegeManager.lsposedProviderAvailable());
         AppUi.addRow(lsposedSection.body, AppUi.switchContainer(lsposedSwitch));
+
+        SwitchMaterial secureScreenshotSwitch = preferenceSwitch(activity, fs,
+                "LSPosed 安全窗口截图增强",
+                "仅 FloatLens 截图时建立短时授权；需要增强模式、LSPosed Provider 和 system_server 已实际加载模块。不会永久移除 FLAG_SECURE。",
+                FloatSettings.K_LSPOSED_SECURE_SCREENSHOT, fs.lsposedSecureScreenshot(),
+                () -> {
+                    LsposedStatusManager.syncRuntimeConfigAsync();
+                    refresh(activity, fs, modeStatus, rootStatus);
+                });
+        AppUi.addRow(lsposedSection.body, AppUi.switchContainer(secureScreenshotSwitch));
         AppUi.addRow(lsposedSection.body, statusBlock(activity, "LSPosed 实际状态", lsposedStatus));
 
         LinearLayout lsposedButtons = AppUi.buttonRow(activity);
