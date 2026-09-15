@@ -20,15 +20,17 @@ import android.widget.Toast;
 import java.util.ArrayList;
 
 /**
- * Fresh Google-style frozen-screen selector.
+ * Google-style frozen-screen selector.
  *
- * It supports tap, circle, highlight and scribble as equivalent ways to create one ROI. The legacy
- * CircleSelectOverlay/TextIndex/ROI-refinement stack is intentionally not referenced by this class.
+ * Circle, highlight, scribble and tap are selection gestures only. The semantic snapshot and OCR
+ * resolver decide whether the selected content is text or an image; gestures no longer all route to
+ * the same screenshot result.
  */
 final class GoogleCircleOverlay {
     private static WorkspaceView active;
 
-    static synchronized boolean show(Context c, GoogleCircleCapture.Frame frame, Runnable onClosed) {
+    static synchronized boolean show(Context c, GoogleCircleCapture.Frame frame,
+                                     GoogleCircleContentSnapshot content, Runnable onClosed) {
         if (frame == null || frame.bitmap == null || frame.bitmap.isRecycled()) return false;
         dismissActive("replace");
         Context app = c.getApplicationContext();
@@ -48,12 +50,17 @@ final class GoogleCircleOverlay {
         lp.x = bounds.left - display.left;
         lp.y = bounds.top - display.top;
 
-        WorkspaceView view = new WorkspaceView(app, host, lp, frame, onClosed, !shadeExpanded);
+        GoogleCircleContentSnapshot safeContent = content == null
+                ? GoogleCircleContentSnapshot.empty(display) : content;
+        WorkspaceView view = new WorkspaceView(app, host, lp, frame, safeContent,
+                onClosed, !shadeExpanded);
         if (!host.add(view, lp, "google_circle")) return false;
         active = view;
         if (!shadeExpanded) view.promoteKeyFocus("initial");
         DiagnosticLog.i(app, "G_CIRCLE", "overlay shown frame=" + bounds.toShortString()
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
+                + " semanticText=" + safeContent.textCount()
+                + " semanticImages=" + safeContent.imageCount()
                 + " coordinateSpace=BITMAP_ONLY");
         return true;
     }
@@ -86,6 +93,7 @@ final class GoogleCircleOverlay {
         private final FlOverlayWindowHost host;
         private final WindowManager.LayoutParams windowLayout;
         private final GoogleCircleCapture.Frame frame;
+        private final GoogleCircleContentSnapshot content;
         private final Runnable onClosed;
         private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private final Paint shadePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -111,12 +119,14 @@ final class GoogleCircleOverlay {
         private boolean keyFocusEnabled;
 
         WorkspaceView(Context c, FlOverlayWindowHost host, WindowManager.LayoutParams windowLayout,
-                      GoogleCircleCapture.Frame frame, Runnable onClosed, boolean keyFocusEnabled) {
+                      GoogleCircleCapture.Frame frame, GoogleCircleContentSnapshot content,
+                      Runnable onClosed, boolean keyFocusEnabled) {
             super(c);
             context = c;
             this.host = host;
             this.windowLayout = windowLayout;
             this.frame = frame;
+            this.content = content;
             this.onClosed = onClosed;
             this.keyFocusEnabled = keyFocusEnabled;
             setClickable(true);
@@ -219,7 +229,7 @@ final class GoogleCircleOverlay {
 
         private void drawHint(Canvas canvas) {
             String text;
-            if (recognizing) text = "正在识别…";
+            if (recognizing) text = "正在识别所选内容…";
             else if (selection == null) text = "圈画 · 涂抹 · 高亮 · 点击";
             else text = kindLabel(selection.kind) + "  ·  可拖动选区或边界";
             float w = Math.min(getWidth() - dp(32), hintTextPaint.measureText(text) + dp(30));
@@ -284,7 +294,7 @@ final class GoogleCircleOverlay {
                         addStrokePoint(point);
                         finishStroke();
                     } else if (editMode != MODE_NONE && selection != null) {
-                        scheduleRecognition(180L);
+                        scheduleRecognition(260L);
                     }
                     editMode = MODE_NONE;
                     editOrigin = null;
@@ -322,7 +332,7 @@ final class GoogleCircleOverlay {
             if (selection == null) return;
             DiagnosticLog.i(context, "G_CIRCLE_GESTURE", "kind=" + selection.kind
                     + " bounds=" + selection.bounds.toShortString());
-            scheduleRecognition(150L);
+            scheduleRecognition(220L);
         }
 
         private int hitEditMode(PointF p) {
@@ -365,7 +375,7 @@ final class GoogleCircleOverlay {
             GoogleCircleSelection.Selection requestSelection = selection;
             postDelayed(() -> {
                 if (closed || generation != recognitionGeneration || selection == null) return;
-                GoogleCircleResultCoordinator.recognize(context, frame, requestSelection,
+                GoogleCircleResultCoordinator.resolve(context, frame, content, requestSelection,
                         resolution -> post(() -> onResolution(generation, requestSelection, resolution)));
             }, delayMs);
         }
@@ -378,18 +388,22 @@ final class GoogleCircleOverlay {
                 return;
             }
             recognizing = false;
-            boolean shown = false;
-            if (resolution.crop != null && !resolution.crop.isRecycled()) {
-                if (resolution.hasText()) {
-                    shown = ResultSurfaceRouter.showOcr(context, resolution.text,
-                            resolution.blocks, resolution.crop, resolution.screenAnchor);
-                } else {
-                    shown = ResultSurfaceRouter.showScreenshot(context,
-                            resolution.crop, resolution.screenAnchor);
-                }
-            }
-            DiagnosticLog.i(context, "G_CIRCLE_RESULT", "kind=" + requestSelection.kind
-                    + " text=" + resolution.hasText() + " shown=" + shown
+            boolean shown = switch (resolution.kind) {
+                case NATIVE_TEXT -> resolution.hasText()
+                        && ResultSurfaceRouter.showViewText(context, resolution.text,
+                        null, resolution.screenAnchor);
+                case OCR_TEXT -> resolution.hasText()
+                        && ResultSurfaceRouter.showOcr(context, resolution.text,
+                        resolution.blocks, null, resolution.screenAnchor);
+                case IMAGE -> resolution.crop != null && !resolution.crop.isRecycled()
+                        && ResultSurfaceRouter.showScreenshot(context,
+                        resolution.crop, resolution.screenAnchor);
+            };
+            DiagnosticLog.i(context, "G_CIRCLE_RESULT", "gesture=" + requestSelection.kind
+                    + " content=" + resolution.kind
+                    + " source=" + resolution.source
+                    + " textChars=" + resolution.text.length()
+                    + " shown=" + shown
                     + " error=" + (resolution.error == null ? "none"
                     : ScreenCaptureBackend.safeMessage(resolution.error)));
             if (shown) {
