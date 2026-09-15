@@ -4,11 +4,16 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.PixelFormat;
+import android.graphics.RectF;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
+import android.view.RoundedCorner;
 import android.view.View;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -44,6 +49,14 @@ final class CircleActiveBorderOverlay {
                 flags,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
+        // The activation border belongs to the physical display edge, not the app content area.
+        // Do not let status/navigation/cutout insets shrink this overlay.
+        if (Build.VERSION.SDK_INT >= 30) {
+            lp.setFitInsetsTypes(0);
+            lp.setFitInsetsSides(0);
+            lp.setFitInsetsIgnoringVisibility(true);
+        }
+        lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
 
         if (!host.add(view, lp, "circle_active_border")) {
             DiagnosticLog.i(app, "CIRCLE_BORDER", "overlay add failed");
@@ -130,22 +143,77 @@ final class CircleActiveBorderOverlay {
 
     private static final class BorderView extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path borderPath = new Path();
+        private final RectF borderRect = new RectF();
         private final float stroke;
+        private final float fallbackRadius;
+        private float topLeftRadius;
+        private float topRightRadius;
+        private float bottomRightRadius;
+        private float bottomLeftRadius;
 
         BorderView(Context c) {
             super(c);
-            stroke = Math.max(2f, 3f * getResources().getDisplayMetrics().density);
+            float density = getResources().getDisplayMetrics().density;
+            stroke = Math.max(2f, 3f * density);
+            fallbackRadius = 24f * density;
             paint.setColor(Color.rgb(66, 133, 244));
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(stroke);
+            setOnApplyWindowInsetsListener((v, insets) -> {
+                updateRoundedCorners(insets);
+                invalidate();
+                return insets;
+            });
+        }
+
+        @Override protected void onAttachedToWindow() {
+            super.onAttachedToWindow();
+            requestApplyInsets();
         }
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
+            if (getWidth() <= 0 || getHeight() <= 0) return;
+
+            WindowInsets rootInsets = getRootWindowInsets();
+            if (rootInsets != null) updateRoundedCorners(rootInsets);
+
             float inset = stroke / 2f;
-            canvas.drawRect(inset, inset,
+            borderRect.set(inset, inset,
                     Math.max(inset, getWidth() - inset),
-                    Math.max(inset, getHeight() - inset), paint);
+                    Math.max(inset, getHeight() - inset));
+
+            float tl = adjustedRadius(topLeftRadius, inset);
+            float tr = adjustedRadius(topRightRadius, inset);
+            float br = adjustedRadius(bottomRightRadius, inset);
+            float bl = adjustedRadius(bottomLeftRadius, inset);
+            float[] radii = new float[]{
+                    tl, tl,
+                    tr, tr,
+                    br, br,
+                    bl, bl
+            };
+            borderPath.reset();
+            borderPath.addRoundRect(borderRect, radii, Path.Direction.CW);
+            canvas.drawPath(borderPath, paint);
+        }
+
+        private void updateRoundedCorners(WindowInsets insets) {
+            if (Build.VERSION.SDK_INT < 31 || insets == null) return;
+            topLeftRadius = radius(insets.getRoundedCorner(RoundedCorner.POSITION_TOP_LEFT));
+            topRightRadius = radius(insets.getRoundedCorner(RoundedCorner.POSITION_TOP_RIGHT));
+            bottomRightRadius = radius(insets.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_RIGHT));
+            bottomLeftRadius = radius(insets.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_LEFT));
+        }
+
+        private float radius(RoundedCorner corner) {
+            return corner == null || corner.getRadius() <= 0 ? fallbackRadius : corner.getRadius();
+        }
+
+        private float adjustedRadius(float radius, float inset) {
+            float source = radius > 0 ? radius : fallbackRadius;
+            return Math.max(0f, source - inset);
         }
     }
 
