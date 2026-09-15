@@ -116,7 +116,7 @@ public final class CircleSelectController {
 
             CircleActiveBorderOverlay.show(app);
 
-            OverlayShadeCoordinator.cleanup(app, shadeState.expandedAtCapture(), "circle_select",
+            FlSystemPanelController.onOverlayReady(app, shadeState, "circle_select",
                     collapsed -> {
                         synchronized (CircleSelectController.class) {
                             if (gen != generation) return;
