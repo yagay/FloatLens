@@ -124,11 +124,17 @@ final class CircleViewTextSnapshot {
                     StringBuilder rowText = new StringBuilder();
                     ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>();
                     int rowGroup = group++;
+                    CharacterBox previous = null;
                     for (CharacterBox c : row) {
+                        if (previous != null && hasWhitespaceBetween(node.text,
+                                previous.sourceOffset + previous.sourceLength, c.sourceOffset)) {
+                            rowGroup = group++;
+                        }
                         if (rowBounds == null) rowBounds = new Rect(c.bounds); else rowBounds.union(c.bounds);
                         rowText.append(c.text);
                         chars.add(new OcrDocument.CharUnit(c.text, c.bounds, 1f,
                                 lineId, rowGroup, order++));
+                        previous = c;
                     }
                     if (rowBounds != null && !rowBounds.isEmpty() && !chars.isEmpty()) {
                         lines.add(new OcrDocument.Line(rowText.toString(), rowBounds, 1f, chars));
@@ -154,8 +160,14 @@ final class CircleViewTextSnapshot {
                 int visible = MlKitTextCore.countVisible(row);
                 int visibleIndex = 0;
                 int rowGroup = group++;
+                boolean sawWhitespace = false;
                 for (int cp : row.codePoints().toArray()) {
-                    if (Character.isWhitespace(cp)) continue;
+                    if (Character.isWhitespace(cp)) {
+                        sawWhitespace = true;
+                        continue;
+                    }
+                    if (sawWhitespace && !chars.isEmpty()) rowGroup = group++;
+                    sawWhitespace = false;
                     int left = lineBounds.left + lineBounds.width() * visibleIndex / Math.max(1, visible);
                     int right = lineBounds.left + lineBounds.width() * (visibleIndex + 1) / Math.max(1, visible);
                     chars.add(new OcrDocument.CharUnit(new String(Character.toChars(cp)),
@@ -186,6 +198,18 @@ final class CircleViewTextSnapshot {
         for (OcrDocument.Line line : lines) score += line.chars().size() * 2d;
         return OcrDocument.screenSpace(full.toString(), blocks, lines,
                 "view-snapshot", 1f, score, width, height);
+    }
+
+    private static boolean hasWhitespaceBetween(String text, int from, int to) {
+        if (text == null || text.isEmpty() || to <= from) return false;
+        int start = Math.max(0, Math.min(text.length(), from));
+        int end = Math.max(start, Math.min(text.length(), to));
+        for (int offset = start; offset < end;) {
+            int cp = text.codePointAt(offset);
+            if (Character.isWhitespace(cp)) return true;
+            offset += Character.charCount(cp);
+        }
+        return false;
     }
 
     private static Rect safeDisplayBounds(Context app, LensAccessibilityService service) {
@@ -269,7 +293,8 @@ final class CircleViewTextSnapshot {
                     Rect r = new Rect((int) Math.floor(union.left), (int) Math.floor(union.top),
                             (int) Math.ceil(union.right), (int) Math.ceil(union.bottom));
                     if (display == null || display.isEmpty() || r.intersect(display)) {
-                        if (!r.isEmpty()) out.add(new CharacterBox(new String(Character.toChars(cp)), r));
+                        if (!r.isEmpty()) out.add(new CharacterBox(
+                                new String(Character.toChars(cp)), r, offset, cpLength));
                     }
                 }
                 offset += cpLength;
@@ -369,10 +394,12 @@ final class CircleViewTextSnapshot {
         }
     }
 
-    private record CharacterBox(String text, Rect bounds) {
+    private record CharacterBox(String text, Rect bounds, int sourceOffset, int sourceLength) {
         CharacterBox {
             text = text == null ? "" : text;
             bounds = bounds == null ? new Rect() : new Rect(bounds);
+            sourceOffset = Math.max(0, sourceOffset);
+            sourceLength = Math.max(1, sourceLength);
         }
     }
 }
