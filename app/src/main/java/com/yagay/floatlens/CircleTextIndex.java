@@ -6,39 +6,38 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
-/** View text is authoritative; OCR is retained only where View text exposes no coverage. */
+/** View text is authoritative; OCR is retained only in screen-space blind spots. */
 final class CircleTextIndex {
     private final OcrDocument viewDocument;
     private OcrDocument ocrSupplement;
 
-    CircleTextIndex(OcrDocument viewDocument, int width, int height) {
-        this.viewDocument = viewDocument == null
-                ? empty("view-snapshot", width, height) : viewDocument;
-        this.ocrSupplement = empty("ocr-supplement", width, height);
+    CircleTextIndex(OcrDocument viewDocument, int screenWidth, int screenHeight) {
+        this.viewDocument = requireScreenOrEmpty(viewDocument, "view-snapshot", screenWidth, screenHeight);
+        this.ocrSupplement = empty("ocr-supplement", screenWidth, screenHeight);
     }
 
     OcrDocument viewDocument() { return viewDocument; }
     OcrDocument ocrSupplement() { return ocrSupplement; }
 
     void setFastOcr(OcrDocument document) {
-        ocrSupplement = document == null
-                ? empty("ocr-supplement", viewDocument.imageWidth(), viewDocument.imageHeight())
-                : document;
+        ocrSupplement = requireScreenOrEmpty(document, "ocr-supplement",
+                viewDocument.imageWidth(), viewDocument.imageHeight());
     }
 
-    void replaceOcrRegion(OcrDocument patch, Rect region) {
-        if (patch == null || region == null || region.isEmpty()) return;
+    void replaceOcrRegion(OcrDocument patch, Rect screenRegion) {
+        if (patch == null || !patch.isScreenSpace()
+                || screenRegion == null || screenRegion.isEmpty()) return;
         ArrayList<OcrDocument.Line> lines = new ArrayList<>();
         if (ocrSupplement != null) {
             for (OcrDocument.Line line : ocrSupplement.lines()) {
                 if (line == null || line.bounds().isEmpty()) continue;
-                if (!Rect.intersects(line.bounds(), region)) lines.add(line);
+                if (!Rect.intersects(line.bounds(), screenRegion)) lines.add(line);
             }
         }
         lines.addAll(patch.lines());
         ocrSupplement = documentFromLines(lines, patch.engine() + "+roi",
                 Math.max(ocrSupplement == null ? 0f : ocrSupplement.confidence(), patch.confidence()),
-                patch.imageWidth(), patch.imageHeight());
+                viewDocument.imageWidth(), viewDocument.imageHeight());
     }
 
     OcrDocument current() {
@@ -48,6 +47,9 @@ final class CircleTextIndex {
     static OcrDocument mergeViewFirst(OcrDocument view, OcrDocument ocr) {
         if (view == null || view.lines().isEmpty()) return ocr;
         if (ocr == null || ocr.lines().isEmpty()) return view;
+        if (!view.isScreenSpace() || !ocr.isScreenSpace()) {
+            throw new IllegalArgumentException("CircleTextIndex requires screen-space documents");
+        }
 
         ArrayList<OcrDocument.Line> lines = new ArrayList<>(view.lines());
         int keptOcr = 0;
@@ -78,6 +80,15 @@ final class CircleTextIndex {
         return false;
     }
 
+    private static OcrDocument requireScreenOrEmpty(OcrDocument document, String engine,
+                                                    int width, int height) {
+        if (document == null) return empty(engine, width, height);
+        if (!document.isScreenSpace()) {
+            throw new IllegalArgumentException(engine + " must be normalized to screen coordinates");
+        }
+        return document;
+    }
+
     private static OcrDocument documentFromLines(List<OcrDocument.Line> source, String engine,
                                                   float confidence, int width, int height) {
         ArrayList<OcrDocument.Line> sorted = new ArrayList<>();
@@ -99,12 +110,12 @@ final class CircleTextIndex {
         }
         double score = sorted.size() * 5d;
         for (OcrDocument.Line line : sorted) score += line.chars().size();
-        return new OcrDocument(full.toString(), blocks, sorted, engine,
+        return OcrDocument.screenSpace(full.toString(), blocks, sorted, engine,
                 confidence, score, Math.max(1, width), Math.max(1, height));
     }
 
     private static OcrDocument empty(String engine, int width, int height) {
-        return new OcrDocument("", List.of(), List.of(), engine, 0f, 0d,
+        return OcrDocument.screenSpace("", List.of(), List.of(), engine, 0f, 0d,
                 Math.max(1, width), Math.max(1, height));
     }
 }
