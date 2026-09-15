@@ -8,8 +8,9 @@ import android.widget.Toast;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
-/** Entry point for the Google-like local Circle Select workspace. */
+/** Entry point for the local Circle Select workspace. */
 public final class CircleSelectController {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final ExecutorService VIEW_SNAPSHOT_IO = Executors.newSingleThreadExecutor(r -> {
@@ -17,11 +18,15 @@ public final class CircleSelectController {
         t.setDaemon(true);
         return t;
     });
+
     private static long generation;
+    private static Future<?> snapshotFuture;
+    private static ScreenshotHideCoordinator.Lease pendingHideLease;
 
     public static synchronized void show(Context c) {
         Context app = c.getApplicationContext();
         long gen = ++generation;
+        cancelPendingLocked(app, "restart");
         CircleSelectOverlay.dismissActive("restart");
         CircleActiveBorderOverlay.hide(app, "restart");
 
@@ -29,6 +34,7 @@ public final class CircleSelectController {
                 app, "circle_select");
         final ScreenshotHideCoordinator.Lease hideLease =
                 ScreenshotHideCoordinator.acquire(app, "circle_select_" + gen);
+        pendingHideLease = hideLease;
 
         FloatService service = FloatService.get();
         if (service != null) service.onCircleCaptureStarted();
@@ -50,18 +56,16 @@ public final class CircleSelectController {
         DiagnosticLog.i(app, "CIRCLE_SELECT", "view snapshot begin gen=" + gen
                 + " shadeExpanded=" + shadeState.expandedAtCapture());
 
-        // Freeze the target app's View text before our AccessibilityOverlay exists. The immutable
-        // snapshot is passed explicitly into this generation's workspace; no static pending state.
-        VIEW_SNAPSHOT_IO.execute(() -> {
+        snapshotFuture = VIEW_SNAPSHOT_IO.submit(() -> {
+            if (Thread.currentThread().isInterrupted()) return;
             long started = android.os.SystemClock.uptimeMillis();
             CircleViewTextSnapshot snapshot = CircleViewTextSnapshot.capture(app);
+            if (Thread.currentThread().isInterrupted()) return;
             long elapsed = android.os.SystemClock.uptimeMillis() - started;
             MAIN.post(() -> {
                 synchronized (CircleSelectController.class) {
-                    if (gen != generation) {
-                        hideLease.release(app);
-                        return;
-                    }
+                    if (gen != generation) return;
+                    snapshotFuture = null;
                 }
                 DiagnosticLog.i(app, "CIRCLE_SELECT", "view snapshot ready gen=" + gen
                         + " nodes=" + snapshot.nodeCount()
@@ -110,8 +114,6 @@ public final class CircleSelectController {
                 return;
             }
 
-            // The frozen bitmap already exists at this point, so the active-state border can never
-            // become part of Circle Select's own screenshot/crop result.
             CircleActiveBorderOverlay.show(app);
 
             OverlayShadeCoordinator.cleanup(app, shadeState.expandedAtCapture(), "circle_select",
@@ -144,10 +146,24 @@ public final class CircleSelectController {
                                 long gen, String reason) {
         hideLease.release(app);
         synchronized (CircleSelectController.class) {
+            if (pendingHideLease == hideLease) pendingHideLease = null;
             if (gen != generation) return;
         }
         CircleActiveBorderOverlay.hide(app, "circle_select_" + reason);
         if (service != null) service.onCircleFinished("circle_select_" + reason);
+    }
+
+    private static void cancelPendingLocked(Context app, String reason) {
+        Future<?> future = snapshotFuture;
+        snapshotFuture = null;
+        if (future != null && !future.isDone()) {
+            boolean cancelled = future.cancel(true);
+            DiagnosticLog.i(app, "CIRCLE_SELECT", "cancel view snapshot reason=" + reason
+                    + " success=" + cancelled);
+        }
+        ScreenshotHideCoordinator.Lease lease = pendingHideLease;
+        pendingHideLease = null;
+        if (lease != null) lease.release(app);
     }
 
     private static String safe(Throwable t) {
