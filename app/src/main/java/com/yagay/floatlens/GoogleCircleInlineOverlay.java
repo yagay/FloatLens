@@ -20,10 +20,10 @@ import android.widget.Toast;
 import java.util.ArrayList;
 
 /**
- * Google-style frozen-screen selector whose resolved content stays on the original screen.
+ * Google-style frozen-screen selector with exact user geometry.
  *
- * Unlike the compatibility ResultActivity pipeline, this surface never launches a result popup.
- * Text is highlighted/rendered at its screen anchor and images are marked at their original bounds.
+ * No gesture padding, minimum ROI enlargement, tap rectangle, or resize minimum is allowed. The
+ * user's stroke bounds are the bounds used for matching, OCR and image selection.
  */
 final class GoogleCircleInlineOverlay {
     private static WorkspaceView active;
@@ -33,6 +33,7 @@ final class GoogleCircleInlineOverlay {
         if (c == null || frame == null || frame.bitmap == null || frame.bitmap.isRecycled()) {
             return false;
         }
+
         dismissActive("replace");
         Context app = c.getApplicationContext();
         FlOverlayWindowHost host = new FlOverlayWindowHost(app);
@@ -43,6 +44,7 @@ final class GoogleCircleInlineOverlay {
         int flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
         if (shadeExpanded) flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 Math.max(1, bounds.width()), Math.max(1, bounds.height()),
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -56,13 +58,14 @@ final class GoogleCircleInlineOverlay {
         WorkspaceView view = new WorkspaceView(app, host, lp, frame, safeContent,
                 onClosed, !shadeExpanded);
         if (!host.add(view, lp, "google_circle_inline")) return false;
+
         active = view;
         if (!shadeExpanded) view.promoteKeyFocus("initial");
         DiagnosticLog.i(app, "G_CIRCLE_INLINE", "overlay shown frame=" + bounds.toShortString()
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
                 + " semanticText=" + safeContent.textCount()
                 + " semanticImages=" + safeContent.imageCount()
-                + " presentation=original_position");
+                + " presentation=original_position autoExpand=false");
         return true;
     }
 
@@ -144,6 +147,7 @@ final class GoogleCircleInlineOverlay {
             this.content = content;
             this.onClosed = onClosed;
             this.keyFocusEnabled = keyFocusEnabled;
+
             setClickable(true);
             setFocusable(true);
             setFocusableInTouchMode(true);
@@ -180,7 +184,7 @@ final class GoogleCircleInlineOverlay {
             hintTextPaint.setTextSize(dp(14));
             hintTextPaint.setTextAlign(Paint.Align.CENTER);
 
-            resultFillPaint.setColor(0x664285F4);
+            resultFillPaint.setColor(0x554285F4);
             resultFillPaint.setStyle(Paint.Style.FILL);
             resultBorderPaint.setColor(0xFF8AB4F8);
             resultBorderPaint.setStyle(Paint.Style.STROKE);
@@ -210,17 +214,14 @@ final class GoogleCircleInlineOverlay {
             super.onDraw(canvas);
             Bitmap bitmap = frame.bitmap;
             if (bitmap == null || bitmap.isRecycled()) return;
+
             canvas.drawBitmap(bitmap, null, new Rect(0, 0, getWidth(), getHeight()), bitmapPaint);
 
             if (selection != null) {
                 RectF selected = frame.bitmapToView(selection.bounds, getWidth(), getHeight());
                 drawOutsideShade(canvas, selected);
-                canvas.drawRoundRect(selected, dp(10), dp(10), selectionPaint);
-                float radius = dp(6);
-                canvas.drawCircle(selected.left, selected.centerY(), radius, handlePaint);
-                canvas.drawCircle(selected.right, selected.centerY(), radius, handlePaint);
-                canvas.drawCircle(selected.centerX(), selected.top, radius, handlePaint);
-                canvas.drawCircle(selected.centerX(), selected.bottom, radius, handlePaint);
+                canvas.drawRoundRect(selected, dp(8), dp(8), selectionPaint);
+                drawSelectionHandles(canvas, selected);
             } else {
                 canvas.drawColor(0x18000000);
             }
@@ -240,11 +241,19 @@ final class GoogleCircleInlineOverlay {
                     getWidth(), Math.min(getHeight(), r.bottom), shadePaint);
         }
 
+        private void drawSelectionHandles(Canvas canvas, RectF selected) {
+            float radius = dp(6);
+            canvas.drawCircle(selected.left, selected.centerY(), radius, handlePaint);
+            canvas.drawCircle(selected.right, selected.centerY(), radius, handlePaint);
+            canvas.drawCircle(selected.centerX(), selected.top, radius, handlePaint);
+            canvas.drawCircle(selected.centerX(), selected.bottom, radius, handlePaint);
+        }
+
         private void drawStroke(Canvas canvas) {
             Path path = new Path();
             boolean first = true;
-            for (PointF p : stroke) {
-                PointF view = frame.bitmapToView(p.x, p.y, getWidth(), getHeight());
+            for (PointF point : stroke) {
+                PointF view = frame.bitmapToView(point.x, point.y, getWidth(), getHeight());
                 if (first) {
                     path.moveTo(view.x, view.y);
                     first = false;
@@ -261,8 +270,8 @@ final class GoogleCircleInlineOverlay {
             RectF target = screenToView(inlineAnchor);
             if (target.isEmpty()) return;
 
-            canvas.drawRoundRect(target, dp(7), dp(7), resultFillPaint);
-            canvas.drawRoundRect(target, dp(7), dp(7), resultBorderPaint);
+            canvas.drawRoundRect(target, dp(6), dp(6), resultFillPaint);
+            canvas.drawRoundRect(target, dp(6), dp(6), resultBorderPaint);
 
             if (inlineKind == GoogleCircleResultCoordinator.Kind.IMAGE) {
                 drawTag(canvas, target, "图片");
@@ -277,18 +286,18 @@ final class GoogleCircleInlineOverlay {
         }
 
         private void drawTextAtOriginalPosition(Canvas canvas, RectF target, String text) {
-            float padding = dp(6);
+            float padding = dp(5);
             float availableWidth = target.width() - padding * 2f;
             float availableHeight = target.height() - padding * 2f;
-            if (availableWidth < dp(24) || availableHeight < dp(16)) {
+            if (availableWidth < dp(20) || availableHeight < dp(14)) {
                 drawTag(canvas, target, "文字");
                 return;
             }
 
-            float size = Math.min(dp(16), Math.max(dp(11), target.height() * 0.24f));
+            float size = Math.min(dp(16), Math.max(dp(10), target.height() * 0.24f));
             resultTextPaint.setTextSize(size);
             Paint.FontMetrics fm = resultTextPaint.getFontMetrics();
-            float lineHeight = Math.max(dp(13), (fm.descent - fm.ascent) * 1.08f);
+            float lineHeight = Math.max(dp(12), (fm.descent - fm.ascent) * 1.06f);
             int maxLines = Math.max(1, (int) Math.floor(availableHeight / lineHeight));
             float baseline = target.top + padding - fm.ascent;
             float left = target.left + padding;
@@ -314,7 +323,8 @@ final class GoogleCircleInlineOverlay {
                         if (lines >= maxLines) break outer;
                     }
                     offset += count;
-                    while (offset < value.length() && Character.isWhitespace(value.charAt(offset))) {
+                    while (offset < value.length()
+                            && Character.isWhitespace(value.charAt(offset))) {
                         offset++;
                     }
                 }
@@ -333,8 +343,10 @@ final class GoogleCircleInlineOverlay {
             float width = textWidth + padX * 2f;
             float left = target.left + dp(4);
             float top = target.top + dp(4);
+
             if (left + width > getWidth()) left = Math.max(0, getWidth() - width - dp(4));
             if (top + height > getHeight()) top = Math.max(0, getHeight() - height - dp(4));
+
             RectF tag = new RectF(left, top, left + width, top + height);
             canvas.drawRoundRect(tag, height / 2f, height / 2f, resultTagPaint);
             float baseline = tag.centerY() - (fm.ascent + fm.descent) / 2f;
@@ -345,11 +357,11 @@ final class GoogleCircleInlineOverlay {
             Rect workspace = frame.screenBounds;
             float sx = getWidth() / (float) Math.max(1, workspace.width());
             float sy = getHeight() / (float) Math.max(1, workspace.height());
-            float left = (screen.left - workspace.left) * sx;
-            float top = (screen.top - workspace.top) * sy;
-            float right = (screen.right - workspace.left) * sx;
-            float bottom = (screen.bottom - workspace.top) * sy;
-            RectF out = new RectF(left, top, right, bottom);
+            RectF out = new RectF(
+                    (screen.left - workspace.left) * sx,
+                    (screen.top - workspace.top) * sy,
+                    (screen.right - workspace.left) * sx,
+                    (screen.bottom - workspace.top) * sy);
             out.left = Math.max(0f, Math.min(getWidth(), out.left));
             out.top = Math.max(0f, Math.min(getHeight(), out.top));
             out.right = Math.max(out.left, Math.min(getWidth(), out.right));
@@ -374,14 +386,15 @@ final class GoogleCircleInlineOverlay {
             if (recognizing) {
                 text = "正在识别所选内容…";
             } else if (inlineKind == GoogleCircleResultCoordinator.Kind.IMAGE) {
-                text = "已在原位置选中图片 · 可继续调整";
+                text = "已按原选区识别图片 · 可继续调整";
             } else if (inlineKind != null) {
-                text = "已在原位置显示文字 · 可继续调整";
+                text = "已按原选区显示文字 · 可继续调整";
             } else if (selection == null) {
                 text = "圈画 · 涂抹 · 高亮 · 点击";
             } else {
-                text = kindLabel(selection.kind) + "  ·  可拖动选区或边界";
+                text = kindLabel(selection.kind) + " · 精确选区 · 可继续调整";
             }
+
             float width = Math.min(getWidth() - dp(32), hintTextPaint.measureText(text) + dp(30));
             float height = dp(38);
             float left = (getWidth() - width) / 2f;
@@ -395,16 +408,20 @@ final class GoogleCircleInlineOverlay {
 
         @Override public boolean onTouchEvent(MotionEvent event) {
             if (closed || event == null) return false;
+
             float x = event.getX();
             float y = event.getY();
             PointF point = frame.viewToBitmap(x, y, getWidth(), getHeight());
+
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN -> {
                     closePressed = closeRect.contains(x, y);
                     if (closePressed) return true;
+
                     recognitionGeneration++;
                     recognizing = false;
                     clearInlineResult();
+
                     if (selection != null) {
                         int hit = hitEditMode(point);
                         if (hit != MODE_NONE) {
@@ -415,6 +432,7 @@ final class GoogleCircleInlineOverlay {
                             return true;
                         }
                     }
+
                     selection = null;
                     stroke.clear();
                     stroke.add(point);
@@ -422,16 +440,15 @@ final class GoogleCircleInlineOverlay {
                     invalidate();
                     return true;
                 }
+
                 case MotionEvent.ACTION_MOVE -> {
                     if (closePressed) return true;
-                    if (editMode == MODE_DRAW) {
-                        addStrokePoint(point);
-                    } else if (editMode != MODE_NONE) {
-                        updateEditedSelection(point);
-                    }
+                    if (editMode == MODE_DRAW) addStrokePoint(point);
+                    else if (editMode != MODE_NONE) updateEditedSelection(point);
                     invalidate();
                     return true;
                 }
+
                 case MotionEvent.ACTION_UP -> {
                     if (closePressed) {
                         boolean close = closeRect.contains(x, y);
@@ -439,18 +456,21 @@ final class GoogleCircleInlineOverlay {
                         if (close) close("user_close");
                         return true;
                     }
+
                     if (editMode == MODE_DRAW) {
                         addStrokePoint(point);
                         finishStroke();
                     } else if (editMode != MODE_NONE && selection != null) {
-                        scheduleRecognition(260L);
+                        scheduleRecognition(220L);
                     }
+
                     editMode = MODE_NONE;
                     editOrigin = null;
                     editStart = null;
                     invalidate();
                     return true;
                 }
+
                 case MotionEvent.ACTION_CANCEL -> {
                     closePressed = false;
                     editMode = MODE_NONE;
@@ -460,77 +480,84 @@ final class GoogleCircleInlineOverlay {
                     invalidate();
                     return true;
                 }
+
                 default -> {
                     return true;
                 }
             }
         }
 
-        private void addStrokePoint(PointF p) {
+        private void addStrokePoint(PointF point) {
             if (stroke.isEmpty()) {
-                stroke.add(p);
+                stroke.add(point);
                 return;
             }
             PointF last = stroke.get(stroke.size() - 1);
-            float min = bitmapPxForDp(2f);
-            if (Math.hypot(p.x - last.x, p.y - last.y) >= min) stroke.add(p);
+            float sampleDistance = bitmapPxForDp(2f);
+            if (Math.hypot(point.x - last.x, point.y - last.y) >= sampleDistance) {
+                stroke.add(point);
+            }
         }
 
         private void finishStroke() {
             float tapSlop = bitmapPxForDp(12f);
             float minShape = bitmapPxForDp(34f);
             selection = GoogleCircleSelection.fromStroke(stroke,
-                    frame.bitmap.getWidth(), frame.bitmap.getHeight(), tapSlop, minShape,
-                    bitmapPxForDp(92f), bitmapPxForDp(70f));
+                    frame.bitmap.getWidth(), frame.bitmap.getHeight(), tapSlop, minShape);
             stroke.clear();
             if (selection == null) return;
+
             DiagnosticLog.i(context, "G_CIRCLE_GESTURE", "kind=" + selection.kind
                     + " bounds=" + selection.bounds.toShortString()
-                    + " presentation=inline");
-            scheduleRecognition(220L);
+                    + " presentation=inline autoExpand=false");
+            scheduleRecognition(180L);
         }
 
-        private int hitEditMode(PointF p) {
+        private int hitEditMode(PointF point) {
             if (selection == null) return MODE_NONE;
-            RectF r = selection.bounds;
-            float slop = bitmapPxForDp(24f);
-            boolean yInside = p.y >= r.top - slop && p.y <= r.bottom + slop;
-            boolean xInside = p.x >= r.left - slop && p.x <= r.right + slop;
-            if (yInside && Math.abs(p.x - r.left) <= slop) return MODE_LEFT;
-            if (yInside && Math.abs(p.x - r.right) <= slop) return MODE_RIGHT;
-            if (xInside && Math.abs(p.y - r.top) <= slop) return MODE_TOP;
-            if (xInside && Math.abs(p.y - r.bottom) <= slop) return MODE_BOTTOM;
-            if (r.contains(p.x, p.y)) return MODE_MOVE;
+            RectF rect = selection.bounds;
+            float hitSlop = bitmapPxForDp(24f);
+            boolean yInside = point.y >= rect.top - hitSlop && point.y <= rect.bottom + hitSlop;
+            boolean xInside = point.x >= rect.left - hitSlop && point.x <= rect.right + hitSlop;
+
+            if (yInside && Math.abs(point.x - rect.left) <= hitSlop) return MODE_LEFT;
+            if (yInside && Math.abs(point.x - rect.right) <= hitSlop) return MODE_RIGHT;
+            if (xInside && Math.abs(point.y - rect.top) <= hitSlop) return MODE_TOP;
+            if (xInside && Math.abs(point.y - rect.bottom) <= hitSlop) return MODE_BOTTOM;
+            if (rect.contains(point.x, point.y)) return MODE_MOVE;
             return MODE_NONE;
         }
 
-        private void updateEditedSelection(PointF p) {
+        private void updateEditedSelection(PointF point) {
             if (selection == null || editOrigin == null || editStart == null) return;
-            RectF r = new RectF(editOrigin);
-            float dx = p.x - editStart.x;
-            float dy = p.y - editStart.y;
-            float min = bitmapPxForDp(42f);
+
+            RectF rect = new RectF(editOrigin);
+            float dx = point.x - editStart.x;
+            float dy = point.y - editStart.y;
             switch (editMode) {
-                case MODE_MOVE -> r.offset(dx, dy);
-                case MODE_LEFT -> r.left = Math.min(r.right - min, editOrigin.left + dx);
-                case MODE_TOP -> r.top = Math.min(r.bottom - min, editOrigin.top + dy);
-                case MODE_RIGHT -> r.right = Math.max(r.left + min, editOrigin.right + dx);
-                case MODE_BOTTOM -> r.bottom = Math.max(r.top + min, editOrigin.bottom + dy);
+                case MODE_MOVE -> rect.offset(dx, dy);
+                case MODE_LEFT -> rect.left = Math.min(rect.right - 1f, editOrigin.left + dx);
+                case MODE_TOP -> rect.top = Math.min(rect.bottom - 1f, editOrigin.top + dy);
+                case MODE_RIGHT -> rect.right = Math.max(rect.left + 1f, editOrigin.right + dx);
+                case MODE_BOTTOM -> rect.bottom = Math.max(rect.top + 1f, editOrigin.bottom + dy);
                 default -> {
                     return;
                 }
             }
-            selection = selection.withBounds(GoogleCircleSelection.clampEditable(r,
-                    frame.bitmap.getWidth(), frame.bitmap.getHeight(), min));
+
+            selection = selection.withBounds(GoogleCircleSelection.clampEditable(rect,
+                    frame.bitmap.getWidth(), frame.bitmap.getHeight()));
         }
 
         private void scheduleRecognition(long delayMs) {
             if (selection == null || closed) return;
+
             int generation = ++recognitionGeneration;
             recognizing = true;
             clearInlineResult();
             invalidate();
             GoogleCircleSelection.Selection requestSelection = selection;
+
             postDelayed(() -> {
                 if (closed || generation != recognitionGeneration || selection == null) return;
                 GoogleCircleResultCoordinator.resolve(context, frame, content, requestSelection,
@@ -558,12 +585,13 @@ final class GoogleCircleInlineOverlay {
             boolean shown = inlineKind != null && !inlineAnchor.isEmpty()
                     && (inlineKind == GoogleCircleResultCoordinator.Kind.IMAGE
                     || !inlineText.isBlank());
+
             DiagnosticLog.i(context, "G_CIRCLE_RESULT", "gesture=" + requestSelection.kind
                     + " content=" + resolution.kind
                     + " source=" + inlineSource
                     + " textChars=" + inlineText.length()
                     + " shown=" + shown
-                    + " presentation=inline_original_position"
+                    + " presentation=inline_original_position autoExpand=false"
                     + " error=" + (resolution.error == null ? "none"
                     : ScreenCaptureBackend.safeMessage(resolution.error)));
 
