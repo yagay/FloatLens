@@ -14,13 +14,12 @@ final class ScreenshotGeometry {
         }
         WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
         Rect display = wm.getCurrentWindowMetrics().getBounds();
-        float sx = raw.getWidth() / (float) Math.max(1, display.width());
-        float sy = raw.getHeight() / (float) Math.max(1, display.height());
-        int left = clamp(Math.round((screenBounds.left - display.left) * sx), 0, raw.getWidth() - 1);
-        int top = clamp(Math.round((screenBounds.top - display.top) * sy), 0, raw.getHeight() - 1);
-        int right = clamp(Math.round((screenBounds.right - display.left) * sx), left + 1, raw.getWidth());
-        int bottom = clamp(Math.round((screenBounds.bottom - display.top) * sy), top + 1, raw.getHeight());
-        Bitmap crop = Bitmap.createBitmap(raw, left, top, right - left, bottom - top);
+        CropMath.Bounds bounds = CropMath.screenRectRound(
+                screenBounds.left, screenBounds.top, screenBounds.right, screenBounds.bottom,
+                display.left, display.top, display.width(), display.height(),
+                raw.getWidth(), raw.getHeight());
+        Bitmap crop = Bitmap.createBitmap(raw, bounds.left, bounds.top,
+                bounds.width(), bounds.height());
         // A full-bounds Bitmap.createBitmap call may return the original object. Callers treat a
         // bounds crop as an independently owned result, so never leak the raw capture identity.
         if (crop == raw) {
