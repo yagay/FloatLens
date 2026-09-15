@@ -1,6 +1,5 @@
 package com.yagay.floatlens;
 
-import android.view.Gravity;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 
@@ -49,7 +48,6 @@ final class SettingsGesturePage {
         lineColors.setHint("例如 #FFFFFF,#42A5F5");
         lineColors.setText(fs.lineColors());
         lineColors.setSingleLine(true);
-        lineColors.setGravity(Gravity.CENTER_VERTICAL);
         lineColors.setOnFocusChangeListener((v, hasFocus) -> {
             if (!hasFocus) fs.prefs().edit()
                     .putString(FloatSettings.K_LINE_COLORS, lineColors.getText().toString()).apply();
