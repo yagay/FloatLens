@@ -46,12 +46,12 @@ public final class PrivilegeManager {
     }
 
     /**
-     * The API-102 framework/status channel is connected through LsposedStatusManager, but the
-     * FloatLens module entry still installs no functional hooks. This must remain false until a
-     * concrete, user-gated LSPosed provider exists; framework presence alone is not a capability.
+     * A controlled API-102 provider now exists. Availability is deliberately stricter than simply
+     * detecting LSPosed: the app must have a writable Remote Preferences channel and at least one
+     * recommended target process must have actually loaded the module.
      */
     public static boolean lsposedProviderAvailable() {
-        return false;
+        return LsposedStatusManager.providerAvailable();
     }
 
     public static boolean canUseLsposed(Context context) {
@@ -75,8 +75,8 @@ public final class PrivilegeManager {
     public static String modeLabel(FloatSettings settings) {
         return switch (mode(settings)) {
             case ROOT -> "Root 增强";
-            case LSPOSED -> "LSPosed 增强";
-            case ROOT_AND_LSPOSED -> "Root + LSPosed 增强";
+            case LSPOSED -> "LSPosed Provider";
+            case ROOT_AND_LSPOSED -> "Root + LSPosed Provider";
             default -> "普通模式";
         };
     }
