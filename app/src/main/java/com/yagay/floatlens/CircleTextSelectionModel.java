@@ -225,12 +225,23 @@ final class CircleTextSelectionModel {
 
     private boolean validIndex(int index) { return index >= 0 && index < chars.size(); }
 
-    /** Normalize mixed View/OCR output into stable line/group/order metadata in screen space. */
+    /**
+     * Normalize mixed View/OCR output into stable line/group/order metadata in screen space.
+     *
+     * Candidates are clipped to the Circle Select workspace here, at the single selection-model
+     * boundary. The source snapshots remain absolute-screen data, but navigation-bar/system-UI
+     * nodes outside the interactive workspace can never become selectable or draw off-screen.
+     */
     private List<OcrDocument.CharUnit> normalize(List<OcrDocument.CharUnit> input) {
         if (input == null || input.isEmpty()) return List.of();
+        Rect workspace = transform.screenFrame();
         ArrayList<OcrDocument.CharUnit> sorted = new ArrayList<>();
         for (OcrDocument.CharUnit c : input) {
-            if (c != null && !c.text().isBlank() && !c.bounds().isEmpty()) sorted.add(c);
+            if (c == null || c.text().isBlank() || c.bounds().isEmpty()) continue;
+            Rect clipped = c.bounds();
+            if (!workspace.isEmpty() && (!clipped.intersect(workspace) || clipped.isEmpty())) continue;
+            sorted.add(new OcrDocument.CharUnit(c.text(), clipped, c.confidence(),
+                    c.line(), c.group(), c.order()));
         }
         sorted.sort((a, b) -> {
             Rect ar = a.bounds(), br = b.bounds();
