@@ -19,8 +19,9 @@ import java.util.Set;
 /**
  * Per-Circle-Select recognition session.
  *
- * View text and every OCR supplement are normalized into absolute screen coordinates before they
- * enter the text index. Screenshot/crop geometry therefore cannot move already indexed text.
+ * Circle Select is intentionally independent from normal screenshot OCR. It supports View+ML Kit,
+ * View-only and ML-Kit-only modes, and never calls PP-OCR. View text and every ML Kit supplement
+ * are normalized into absolute screen coordinates before they enter the text index.
  */
 final class CircleRecognitionSession {
     enum Stage { VIEW_SNAPSHOT, FAST_MLKIT, ROI_PRECISE }
@@ -35,11 +36,13 @@ final class CircleRecognitionSession {
     private final CircleViewTextSnapshot viewSnapshot;
     private final ScreenBitmapTransform transform;
     private final Callback callback;
+    private final int ocrMode;
     private long generation;
     private boolean closed;
     private OcrDocument current;
     private CircleTextIndex index;
     private TextRecognizer fastRecognizer;
+    private TextRecognizer roiRecognizer;
 
     CircleRecognitionSession(Context context, Bitmap screenshot,
                              CircleViewTextSnapshot viewSnapshot,
@@ -47,6 +50,7 @@ final class CircleRecognitionSession {
                              Callback callback) {
         this.app = context.getApplicationContext();
         this.screenshot = screenshot;
+        this.ocrMode = CircleOcrPolicy.mode(new FloatSettings(app));
         Rect fallbackDisplay = ScreenGeometry.displayBounds(app);
         this.viewSnapshot = viewSnapshot == null
                 ? CircleViewTextSnapshot.empty(fallbackDisplay) : viewSnapshot;
@@ -59,41 +63,60 @@ final class CircleRecognitionSession {
         this.callback = callback;
     }
 
+    int mode() { return ocrMode; }
+    boolean visualOcrEnabled() { return ocrMode != CircleOcrPolicy.MODE_VIEW_ONLY; }
+
     void start() {
         if (closed || screenshot == null || screenshot.isRecycled()) return;
         final long run = ++generation;
         long started = android.os.SystemClock.uptimeMillis();
+        Rect frame = transform.screenFrame();
+        boolean useView = ocrMode != CircleOcrPolicy.MODE_MLKIT_ONLY;
+        boolean viewOnly = ocrMode == CircleOcrPolicy.MODE_VIEW_ONLY;
 
         try {
-            OcrDocument view = viewSnapshot.toScreenDocument();
+            OcrDocument view = useView
+                    ? viewSnapshot.toScreenDocument()
+                    : emptyScreenDocument("view-disabled", frame);
             if (!isCurrent(run)) return;
-            Rect frame = transform.screenFrame();
             index = new CircleTextIndex(view,
                     Math.max(1, frame.width()), Math.max(1, frame.height()));
             current = index.current();
             DiagnosticLog.i(app, "CIRCLE_INDEX",
-                    "view snapshot nodes=" + viewSnapshot.nodeCount()
-                            + " exactGeometryNodes=" + viewSnapshot.exactGeometryNodeCount()
+                    "start mode=" + ocrMode
+                            + " view=" + useView
+                            + " mlkit=" + !viewOnly
+                            + " ppocr=false"
+                            + " viewNodes=" + (useView ? viewSnapshot.nodeCount() : 0)
+                            + " exactGeometryNodes=" + (useView ? viewSnapshot.exactGeometryNodeCount() : 0)
                             + " chars=" + view.chars().size()
                             + " lines=" + view.lines().size()
                             + " frame=" + frame.toShortString()
                             + " coordinateSpace=" + view.coordinateSpace()
                             + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
-            emit(current, Stage.VIEW_SNAPSHOT, false);
+            emit(current, Stage.VIEW_SNAPSHOT, viewOnly);
         } catch (Throwable t) {
             DiagnosticLog.i(app, "CIRCLE_INDEX", "view snapshot failed=" + safe(t));
-            Rect frame = transform.screenFrame();
             index = new CircleTextIndex(emptyScreenDocument("view-snapshot", frame),
                     Math.max(1, frame.width()), Math.max(1, frame.height()));
             current = index.current();
-            emitFailure(Stage.VIEW_SNAPSHOT, t, false);
+            emitFailure(Stage.VIEW_SNAPSHOT, t, viewOnly);
         }
 
+        if (viewOnly) {
+            DiagnosticLog.i(app, "CIRCLE_INDEX", "view-only ready ppocr=false");
+            return;
+        }
         startFastMlKit(run);
     }
 
-    /** Refine one missed screen-space region with the configured high-accuracy OCR engine. */
+    /** Refine one missed screen-space region with ML Kit only. PP-OCR is never used here. */
     void refine(Rect screenRegion) {
+        if (ocrMode == CircleOcrPolicy.MODE_VIEW_ONLY) {
+            emitFailure(Stage.ROI_PRECISE,
+                    new IllegalStateException("Circle visual OCR disabled in View-only mode"), true);
+            return;
+        }
         if (closed || screenRegion == null || screenRegion.isEmpty()
                 || screenshot == null || screenshot.isRecycled() || index == null) return;
         Rect region = new Rect(screenRegion);
@@ -112,71 +135,87 @@ final class CircleRecognitionSession {
         }
 
         final long run = generation;
-        DiagnosticLog.i(app, "CIRCLE_INDEX", "roi precise start screen=" + region.toShortString()
-                + " bitmap=" + bitmapRegion.toShortString()
-                + " crop=" + crop.getWidth() + "x" + crop.getHeight());
-        OcrEngine.recognizeDocument(app, crop, new OcrEngine.DocumentCallback() {
-            @Override public void onSuccess(OcrDocument document) {
-                try {
-                    if (!isCurrent(run) || index == null) return;
-                    OcrDocument parentBitmap = document.translated(
-                            bitmapRegion.left, bitmapRegion.top,
-                            screenshot.getWidth(), screenshot.getHeight());
-                    OcrDocument screenPatch = transform.documentBitmapToScreen(parentBitmap);
-                    index.replaceOcrRegion(screenPatch, region);
-                    current = index.current();
-                    DiagnosticLog.i(app, "CIRCLE_INDEX", "roi precise ready engine="
-                            + document.engine()
-                            + " roiChars=" + screenPatch.chars().size()
-                            + " viewChars=" + index.viewDocument().chars().size()
-                            + " mergedChars=" + current.chars().size()
-                            + " screen=" + region.toShortString()
-                            + " coordinateSpace=" + screenPatch.coordinateSpace());
-                    emit(current, Stage.ROI_PRECISE, true);
-                } finally {
-                    if (!crop.isRecycled()) crop.recycle();
-                }
-            }
+        TextRecognizer recognizer = null;
+        try {
+            recognizer = createRecognizer();
+            roiRecognizer = recognizer;
+            String engine = recognizerEngine("roi-mlkit");
+            TextRecognizer finalRecognizer = recognizer;
+            DiagnosticLog.i(app, "CIRCLE_INDEX", "roi mlkit start screen=" + region.toShortString()
+                    + " bitmap=" + bitmapRegion.toShortString()
+                    + " crop=" + crop.getWidth() + "x" + crop.getHeight()
+                    + " ppocr=false");
 
-            @Override public void onFailure(Throwable error) {
-                if (!crop.isRecycled()) crop.recycle();
-                if (!isCurrent(run)) return;
-                DiagnosticLog.i(app, "CIRCLE_INDEX", "roi precise failed=" + safe(error));
-                emitFailure(Stage.ROI_PRECISE, error, true);
-            }
-        });
+            recognizer.process(InputImage.fromBitmap(crop, 0))
+                    .addOnSuccessListener(text -> {
+                        try {
+                            if (!isCurrent(run) || index == null) return;
+                            OcrDocument localBitmap = mlKitDocument(text, engine,
+                                    crop.getWidth(), crop.getHeight());
+                            OcrDocument parentBitmap = localBitmap.translated(
+                                    bitmapRegion.left, bitmapRegion.top,
+                                    screenshot.getWidth(), screenshot.getHeight());
+                            OcrDocument screenPatch = transform.documentBitmapToScreen(parentBitmap);
+                            index.replaceOcrRegion(screenPatch, region);
+                            current = index.current();
+                            DiagnosticLog.i(app, "CIRCLE_INDEX", "roi mlkit ready engine=" + engine
+                                    + " roiChars=" + screenPatch.chars().size()
+                                    + " viewChars=" + index.viewDocument().chars().size()
+                                    + " mergedChars=" + current.chars().size()
+                                    + " screen=" + region.toShortString()
+                                    + " coordinateSpace=" + screenPatch.coordinateSpace()
+                                    + " ppocr=false");
+                            emit(current, Stage.ROI_PRECISE, true);
+                        } finally {
+                            closeRoiRecognizer(finalRecognizer);
+                            if (!crop.isRecycled()) crop.recycle();
+                        }
+                    })
+                    .addOnFailureListener(error -> {
+                        closeRoiRecognizer(finalRecognizer);
+                        if (!crop.isRecycled()) crop.recycle();
+                        if (!isCurrent(run)) return;
+                        DiagnosticLog.i(app, "CIRCLE_INDEX", "roi mlkit failed=" + safe(error));
+                        emitFailure(Stage.ROI_PRECISE, error, true);
+                    });
+        } catch (Throwable t) {
+            if (recognizer != null) closeRoiRecognizer(recognizer);
+            if (!crop.isRecycled()) crop.recycle();
+            DiagnosticLog.i(app, "CIRCLE_INDEX", "roi mlkit init failed=" + safe(t));
+            emitFailure(Stage.ROI_PRECISE, t, true);
+        }
     }
 
     void cancel() {
         if (closed) return;
         closed = true;
         generation++;
-        TextRecognizer recognizer = fastRecognizer;
+        TextRecognizer fast = fastRecognizer;
         fastRecognizer = null;
-        if (recognizer != null) {
-            try { recognizer.close(); } catch (Throwable ignored) {}
+        if (fast != null) {
+            try { fast.close(); } catch (Throwable ignored) {}
         }
-        DiagnosticLog.i(app, "CIRCLE_INDEX", "session cancelled");
+        TextRecognizer roi = roiRecognizer;
+        roiRecognizer = null;
+        if (roi != null) {
+            try { roi.close(); } catch (Throwable ignored) {}
+        }
+        DiagnosticLog.i(app, "CIRCLE_INDEX", "session cancelled mode=" + ocrMode + " ppocr=false");
     }
 
     private void startFastMlKit(long run) {
-        if (!isCurrent(run)) return;
+        if (!isCurrent(run) || ocrMode == CircleOcrPolicy.MODE_VIEW_ONLY) return;
         long started = android.os.SystemClock.uptimeMillis();
         try {
-            Set<String> languages = OcrLanguages.get(app);
-            boolean chinese = OcrLanguages.chineseEnabled(languages);
-            boolean english = OcrLanguages.englishEnabled(languages);
-            if (!chinese && !english) chinese = true;
-
-            TextRecognizer recognizer = chinese
-                    ? TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build())
-                    : TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+            TextRecognizer recognizer = createRecognizer();
             fastRecognizer = recognizer;
-            String engine = chinese ? "fast-mlkit-zh" : "fast-mlkit-latin";
-            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast blind-spot start engine=" + engine
+            String engine = recognizerEngine("fast-mlkit");
+            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast start engine=" + engine
+                    + " mode=" + ocrMode
                     + " image=" + screenshot.getWidth() + "x" + screenshot.getHeight()
                     + " frame=" + transform.screenFrame().toShortString()
-                    + " languages=" + languages);
+                    + " languages=" + OcrLanguages.get(app)
+                    + " ppocr=false");
 
             recognizer.process(InputImage.fromBitmap(screenshot, 0))
                     .addOnSuccessListener(text -> {
@@ -187,12 +226,14 @@ final class CircleRecognitionSession {
                             OcrDocument screenFast = transform.documentBitmapToScreen(bitmapFast);
                             index.setFastOcr(screenFast);
                             current = index.current();
-                            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast blind-spot ready engine=" + engine
+                            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast ready engine=" + engine
+                                    + " mode=" + ocrMode
                                     + " viewChars=" + index.viewDocument().chars().size()
                                     + " ocrChars=" + screenFast.chars().size()
                                     + " mergedChars=" + current.chars().size()
                                     + " coordinateSpace=" + screenFast.coordinateSpace()
-                                    + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
+                                    + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started)
+                                    + " ppocr=false");
                             emit(current, Stage.FAST_MLKIT, true);
                         } finally {
                             closeFastRecognizer(recognizer);
@@ -201,20 +242,43 @@ final class CircleRecognitionSession {
                     .addOnFailureListener(error -> {
                         try {
                             if (!isCurrent(run)) return;
-                            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast blind-spot failed=" + safe(error));
+                            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast failed=" + safe(error));
                             emitFailure(Stage.FAST_MLKIT, error, true);
                         } finally {
                             closeFastRecognizer(recognizer);
                         }
                     });
         } catch (Throwable t) {
-            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast blind-spot init failed=" + safe(t));
+            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast init failed=" + safe(t));
             emitFailure(Stage.FAST_MLKIT, t, true);
         }
     }
 
+    private TextRecognizer createRecognizer() {
+        Set<String> languages = OcrLanguages.get(app);
+        boolean chinese = OcrLanguages.chineseEnabled(languages);
+        boolean english = OcrLanguages.englishEnabled(languages);
+        if (!chinese && !english) chinese = true;
+        return chinese
+                ? TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build())
+                : TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+    }
+
+    private String recognizerEngine(String prefix) {
+        Set<String> languages = OcrLanguages.get(app);
+        boolean chinese = OcrLanguages.chineseEnabled(languages);
+        boolean english = OcrLanguages.englishEnabled(languages);
+        if (!chinese && !english) chinese = true;
+        return prefix + (chinese ? "-zh" : "-latin");
+    }
+
     private void closeFastRecognizer(TextRecognizer recognizer) {
         if (fastRecognizer == recognizer) fastRecognizer = null;
+        try { recognizer.close(); } catch (Throwable ignored) {}
+    }
+
+    private void closeRoiRecognizer(TextRecognizer recognizer) {
+        if (roiRecognizer == recognizer) roiRecognizer = null;
         try { recognizer.close(); } catch (Throwable ignored) {}
     }
 
@@ -309,11 +373,10 @@ final class CircleRecognitionSession {
     private static void appendSplit(List<OcrDocument.CharUnit> out, String value, Rect box,
                                     int line, int group, int startOrder) {
         if (value == null || value.isEmpty() || box == null || box.isEmpty()) return;
-        int[] cps = value.codePoints().toArray();
         int visible = countVisible(value);
         if (visible <= 0) return;
         int index = 0;
-        for (int cp : cps) {
+        for (int cp : value.codePoints().toArray()) {
             if (Character.isWhitespace(cp)) continue;
             int left = box.left + box.width() * index / visible;
             int right = box.left + box.width() * (index + 1) / visible;
