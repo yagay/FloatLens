@@ -103,6 +103,13 @@ final class GoogleCircleInlineOverlay {
         private static final float TEXT_HANDLE_SNAP_DP = 96f;
         private static final float RANGE_TOLERANCE_DP = 6f;
 
+        private static final float CLOSE_SIZE_DP = 42f;
+        private static final float CLOSE_EDGE_MARGIN_DP = 14f;
+        private static final float CLOSE_BOTTOM_GAP_DP = 18f;
+        private static final long CLOSE_MOVE_LONG_PRESS_MS = 350L;
+        private static final String PREF_CLOSE_X_BP = "circle_cancel_x_bp_v1";
+        private static final String PREF_CLOSE_Y_BP = "circle_cancel_y_bp_v1";
+
         private final Context context;
         private final FlOverlayWindowHost host;
         private final WindowManager.LayoutParams windowLayout;
@@ -140,9 +147,27 @@ final class GoogleCircleInlineOverlay {
         private boolean resolvingText;
         private boolean closed;
         private boolean closePressed;
+        private boolean closeDragging;
+        private float closeDragOffsetX;
+        private float closeDragOffsetY;
+        private float closeCenterX = Float.NaN;
+        private float closeCenterY = Float.NaN;
         private boolean confirmPressed;
         private boolean keyFocusEnabled;
         private String selectedTextSource = "";
+
+        private final Runnable closeLongPressRunnable = () -> {
+            if (closed || !closePressed) return;
+            closeDragging = true;
+            try {
+                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+            } catch (Throwable ignored) {
+            }
+            DiagnosticLog.i(context, "G_CIRCLE_CANCEL",
+                    "long_press_drag_start center=" + Math.round(closeRect.centerX())
+                            + "," + Math.round(closeRect.centerY()));
+            invalidate();
+        };
 
         WorkspaceView(Context c, FlOverlayWindowHost host,
                       WindowManager.LayoutParams windowLayout,
@@ -324,15 +349,78 @@ final class GoogleCircleInlineOverlay {
         }
 
         private void drawClose(Canvas canvas) {
-            float size = dp(42);
-            float margin = dp(14);
-            closeRect.set(margin, margin, margin + size, margin + size);
+            layoutCloseRect();
             canvas.drawOval(closeRect, closePaint);
             float cx = closeRect.centerX();
             float cy = closeRect.centerY();
             float d = dp(7);
             canvas.drawLine(cx - d, cy - d, cx + d, cy + d, closeGlyphPaint);
             canvas.drawLine(cx + d, cy - d, cx - d, cy + d, closeGlyphPaint);
+        }
+
+        private void ensureClosePosition() {
+            if (!Float.isNaN(closeCenterX) && !Float.isNaN(closeCenterY)) return;
+            if (getWidth() <= 0 || getHeight() <= 0) return;
+
+            int xBp = -1;
+            int yBp = -1;
+            try {
+                var prefs = context.getSharedPreferences(FloatSettings.PREF, Context.MODE_PRIVATE);
+                xBp = prefs.getInt(PREF_CLOSE_X_BP, -1);
+                yBp = prefs.getInt(PREF_CLOSE_Y_BP, -1);
+            } catch (Throwable ignored) {
+            }
+
+            if (xBp >= 0 && xBp <= 10000 && yBp >= 0 && yBp <= 10000) {
+                closeCenterX = getWidth() * (xBp / 10000f);
+                closeCenterY = getHeight() * (yBp / 10000f);
+            } else {
+                closeCenterX = getWidth() / 2f;
+                closeCenterY = getHeight() - dp(CLOSE_BOTTOM_GAP_DP) - dp(CLOSE_SIZE_DP) / 2f;
+            }
+        }
+
+        private void layoutCloseRect() {
+            ensureClosePosition();
+            if (Float.isNaN(closeCenterX) || Float.isNaN(closeCenterY)) return;
+
+            float half = dp(CLOSE_SIZE_DP) / 2f;
+            float margin = dp(CLOSE_EDGE_MARGIN_DP);
+            float minX = margin + half;
+            float maxX = Math.max(minX, getWidth() - margin - half);
+            float minY = margin + half;
+            float maxY = Math.max(minY, getHeight() - margin - half);
+            closeCenterX = Math.max(minX, Math.min(maxX, closeCenterX));
+            closeCenterY = Math.max(minY, Math.min(maxY, closeCenterY));
+            closeRect.set(closeCenterX - half, closeCenterY - half,
+                    closeCenterX + half, closeCenterY + half);
+        }
+
+        private void moveCloseButton(float centerX, float centerY) {
+            closeCenterX = centerX;
+            closeCenterY = centerY;
+            layoutCloseRect();
+        }
+
+        private void persistCloseButtonPosition() {
+            if (getWidth() <= 0 || getHeight() <= 0
+                    || Float.isNaN(closeCenterX) || Float.isNaN(closeCenterY)) return;
+            int xBp = Math.max(0, Math.min(10000,
+                    Math.round(closeCenterX * 10000f / getWidth())));
+            int yBp = Math.max(0, Math.min(10000,
+                    Math.round(closeCenterY * 10000f / getHeight())));
+            try {
+                context.getSharedPreferences(FloatSettings.PREF, Context.MODE_PRIVATE)
+                        .edit()
+                        .putInt(PREF_CLOSE_X_BP, xBp)
+                        .putInt(PREF_CLOSE_Y_BP, yBp)
+                        .apply();
+                DiagnosticLog.i(context, "G_CIRCLE_CANCEL",
+                        "position_saved xBp=" + xBp + " yBp=" + yBp);
+            } catch (Throwable t) {
+                DiagnosticLog.i(context, "G_CIRCLE_CANCEL", "position_save_failed="
+                        + ScreenCaptureBackend.safeMessage(t));
+            }
         }
 
         private void drawHint(Canvas canvas) {
@@ -354,6 +442,19 @@ final class GoogleCircleInlineOverlay {
             float left = (getWidth() - width) / 2f;
             float top = Math.max(dp(70), getHeight() - height - dp(22));
             RectF pill = new RectF(left, top, left + width, top + height);
+
+            if (!closeRect.isEmpty() && RectF.intersects(pill, closeRect)) {
+                float gap = dp(12);
+                float above = closeRect.top - gap - height;
+                float below = closeRect.bottom + gap;
+                if (above >= dp(70)) {
+                    top = above;
+                } else if (below + height <= getHeight() - dp(4)) {
+                    top = below;
+                }
+                pill.set(left, top, left + width, top + height);
+            }
+
             canvas.drawRoundRect(pill, height / 2f, height / 2f, hintPaint);
             Paint.FontMetrics fm = hintTextPaint.getFontMetrics();
             float baseline = pill.centerY() - (fm.ascent + fm.descent) / 2f;
@@ -370,7 +471,14 @@ final class GoogleCircleInlineOverlay {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN -> {
                     closePressed = closeRect.contains(x, y);
-                    if (closePressed) return true;
+                    if (closePressed) {
+                        closeDragging = false;
+                        closeDragOffsetX = x - closeRect.centerX();
+                        closeDragOffsetY = y - closeRect.centerY();
+                        removeCallbacks(closeLongPressRunnable);
+                        postDelayed(closeLongPressRunnable, CLOSE_MOVE_LONG_PRESS_MS);
+                        return true;
+                    }
 
                     confirmPressed = screenshotSelection != null && confirmRect.contains(x, y);
                     if (confirmPressed) return true;
@@ -412,7 +520,14 @@ final class GoogleCircleInlineOverlay {
                 }
 
                 case MotionEvent.ACTION_MOVE -> {
-                    if (closePressed || confirmPressed) return true;
+                    if (closePressed) {
+                        if (closeDragging) {
+                            moveCloseButton(x - closeDragOffsetX, y - closeDragOffsetY);
+                            invalidate();
+                        }
+                        return true;
+                    }
+                    if (confirmPressed) return true;
                     if (editMode == MODE_DRAW) {
                         addStrokePoint(bitmapPoint);
                     } else if (editMode == MODE_TEXT_START || editMode == MODE_TEXT_END) {
@@ -426,8 +541,16 @@ final class GoogleCircleInlineOverlay {
 
                 case MotionEvent.ACTION_UP -> {
                     if (closePressed) {
-                        boolean shouldClose = closeRect.contains(x, y);
+                        removeCallbacks(closeLongPressRunnable);
+                        boolean wasDragging = closeDragging;
+                        if (wasDragging) {
+                            moveCloseButton(x - closeDragOffsetX, y - closeDragOffsetY);
+                            persistCloseButtonPosition();
+                        }
+                        boolean shouldClose = !wasDragging && closeRect.contains(x, y);
                         closePressed = false;
+                        closeDragging = false;
+                        invalidate();
                         if (shouldClose) close("user_close");
                         return true;
                     }
@@ -455,7 +578,9 @@ final class GoogleCircleInlineOverlay {
                 }
 
                 case MotionEvent.ACTION_CANCEL -> {
+                    removeCallbacks(closeLongPressRunnable);
                     closePressed = false;
+                    closeDragging = false;
                     confirmPressed = false;
                     editMode = MODE_NONE;
                     editOrigin = null;
@@ -738,6 +863,9 @@ final class GoogleCircleInlineOverlay {
         void close(String reason) {
             if (closed) return;
             closed = true;
+            removeCallbacks(closeLongPressRunnable);
+            closePressed = false;
+            closeDragging = false;
             textResolutionGeneration++;
             resolvingText = false;
             FloatActionMenu.dismiss();
