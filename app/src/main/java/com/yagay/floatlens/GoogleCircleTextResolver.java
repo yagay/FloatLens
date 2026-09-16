@@ -272,7 +272,8 @@ final class GoogleCircleTextResolver {
                 + " semanticLabels=false"
                 + " enginePolicy=follow_main_setting");
 
-        CirclePreindexTiledOcr.recognize(state.app, copy, new CirclePreindexTiledOcr.Callback() {
+        CirclePreindexTiledOcr.recognize(state.app, copy,
+                () -> !isCurrent(state, frame), new CirclePreindexTiledOcr.Callback() {
             @Override public void onSuccess(CircleOcrIndex bitmapIndex) {
                 CircleOcrIndex screenIndex = bitmapIndex == null
                         ? null : bitmapIndex.toScreen(frame.transform);
@@ -469,7 +470,8 @@ final class GoogleCircleTextResolver {
                 + " enginePolicy=follow_main_setting"
                 + " pixelOnly=true semanticLabels=false nearbyCaptionSearch=false");
 
-        CircleLocalOcrFallback.recognize(state.app, crop, new OcrEngine.DocumentCallback() {
+        CircleLocalOcrFallback.recognize(state.app, crop,
+                () -> !isCurrent(state, frame), new OcrEngine.DocumentCallback() {
             @Override public void onSuccess(OcrDocument document) {
                 if (!isCurrent(state, frame)) {
                     recycle(crop);
@@ -544,8 +546,8 @@ final class GoogleCircleTextResolver {
             rect.top = bounds.top;
             rect.bottom = bounds.bottom;
         } else {
-            if (rect.top < bounds.top) rect.offset(0, bounds.top - rect.top);
-            if (rect.bottom > bounds.bottom) rect.offset(0, bounds.bottom - rect.bottom);
+            if (rect.top < bounds.top) rect.offset(0f, -rect.top);
+            if (rect.bottom > bounds.bottom) rect.offset(0f, bounds.bottom - rect.bottom);
         }
     }
 
