@@ -1,7 +1,6 @@
 package com.yagay.floatlens;
 
 import android.content.Context;
-import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 
 import com.google.mlkit.vision.common.InputImage;
@@ -13,12 +12,11 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 import java.util.Set;
 
 /**
- * Stable complete-document OCR adapter used by Circle.
+ * Lazy ROI recognizer used by the Circle TextMap workflow.
  *
- * <p>When ML Kit is requested explicitly, exactly one recognizer processes the whole input and its
- * document geometry is preserved intact. Chinese/Latin recognizer outputs are never fused at the
- * character level. The generic recognize() entry still respects the app's main OCR setting for
- * callers outside the AKS-style Circle pre-index.</p>
+ * <p>Circle no longer follows the app's full-screen OCR engine setting. The background phase only
+ * detects text geometry; when a gesture hits a TextMap paragraph (or detector fallback ROI), exactly
+ * one ML Kit recognizer decodes that small screenshot crop and preserves its document geometry.</p>
  */
 final class CircleStableOcr {
     private static final class ChineseHolder {
@@ -31,45 +29,7 @@ final class CircleStableOcr {
                 TextRecognizerOptions.DEFAULT_OPTIONS);
     }
 
-    static void recognize(Context context, Bitmap bitmap, OcrEngine.DocumentCallback callback) {
-        if (context == null || bitmap == null || bitmap.isRecycled() || callback == null) return;
-        Context app = context.getApplicationContext();
-        int mode = readMode(app);
-        boolean smallReady = OcrModelManager.isReady(app, OcrModelManager.SMALL);
-        boolean mediumReady = OcrModelManager.isReady(app, OcrModelManager.MEDIUM);
-
-        boolean directMlKit = mode == 3 || (mode == 0 && !smallReady && !mediumReady);
-        DiagnosticLog.i(app, "G_CIRCLE_STABLE_OCR",
-                "start mode=" + mode
-                        + " directMlKit=" + directMlKit
-                        + " small=" + smallReady
-                        + " medium=" + mediumReady
-                        + " policy=single_complete_document");
-
-        if (directMlKit) {
-            recognizeMlKit(app, bitmap, callback);
-            return;
-        }
-
-        OcrEngine.recognizeDocument(app, bitmap, new OcrEngine.DocumentCallback() {
-            @Override public void onSuccess(OcrDocument document) {
-                if (document != null && document.engine() != null
-                        && document.engine().startsWith("mlkit-fused")) {
-                    DiagnosticLog.i(app, "G_CIRCLE_STABLE_OCR",
-                            "replace fused ML Kit fallback with single complete document");
-                    recognizeMlKit(app, bitmap, callback);
-                } else {
-                    callback.onSuccess(document);
-                }
-            }
-
-            @Override public void onFailure(Throwable error) {
-                callback.onFailure(error);
-            }
-        });
-    }
-
-    /** Circle-only ML Kit path: one complete recognizer document, never Chinese/Latin char fusion. */
+    /** Circle-only ML Kit path: one complete ROI document, never Chinese/Latin character fusion. */
     static void recognizeMlKit(Context context, Bitmap bitmap, OcrEngine.DocumentCallback callback) {
         if (context == null || bitmap == null || bitmap.isRecycled() || callback == null) return;
         Context app = context.getApplicationContext();
@@ -77,9 +37,9 @@ final class CircleStableOcr {
         TextRecognizer recognizer = chinese ? ChineseHolder.INSTANCE : LatinHolder.INSTANCE;
         String engine = chinese ? "mlkit-circle-zh" : "mlkit-circle-latin";
         long started = android.os.SystemClock.uptimeMillis();
-        DiagnosticLog.i(app, "G_CIRCLE_STABLE_OCR",
-                "mlkit_only=true recognizer=" + (chinese ? "chinese" : "latin")
-                        + " policy=single_complete_document");
+        DiagnosticLog.i(app, "G_CIRCLE_LAZY_RECOGNIZER",
+                "start recognizer=" + (chinese ? "chinese" : "latin")
+                        + " scope=roi policy=single_document");
         try {
             recognizer.process(InputImage.fromBitmap(bitmap, 0))
                     .addOnSuccessListener(text -> {
@@ -88,10 +48,10 @@ final class CircleStableOcr {
                                     bitmap.getWidth(), bitmap.getHeight(), 0f, null);
                             if (document == null || document.fullText().isBlank()
                                     || document.chars().isEmpty()) {
-                                callback.onFailure(new IllegalStateException("Circle ML Kit empty"));
+                                callback.onFailure(new IllegalStateException("Circle lazy ML Kit empty"));
                                 return;
                             }
-                            DiagnosticLog.i(app, "G_CIRCLE_STABLE_OCR",
+                            DiagnosticLog.i(app, "G_CIRCLE_LAZY_RECOGNIZER",
                                     "success engine=" + engine
                                             + " chars=" + document.chars().size()
                                             + " lines=" + document.lines().size()
@@ -114,20 +74,6 @@ final class CircleStableOcr {
         boolean english = OcrLanguages.englishEnabled(languages);
         if (!chinese && !english) return true;
         return chinese;
-    }
-
-    private static int readMode(Context app) {
-        try {
-            SharedPreferences p = app.getSharedPreferences(FloatSettings.PREF, Context.MODE_PRIVATE);
-            Object raw = p.getAll().get(FloatSettings.K_OCR_ENGINE);
-            if (raw instanceof Number n) return Math.max(0, Math.min(3, n.intValue()));
-            if (raw instanceof String s) {
-                try { return Math.max(0, Math.min(3, Integer.parseInt(s.trim()))); }
-                catch (Throwable ignored) { return 0; }
-            }
-        } catch (Throwable ignored) {
-        }
-        return 0;
     }
 
     private CircleStableOcr() {}
