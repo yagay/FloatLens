@@ -21,9 +21,9 @@ final class GoogleCircleController {
                 ScreenshotHideCoordinator.acquire(app, "google_circle_" + gen);
         pendingHideLease = hideLease;
         DiagnosticLog.i(app, "G_CIRCLE", "start gen=" + gen
-                + " phase=capture_only"
-                + " textRecognition=deferred_until_gesture"
-                + " classifier=view_then_local_ocr"
+                + " phase=capture_then_text_preindex"
+                + " textRecognition=preindex_after_capture"
+                + " classifier=view_then_cached_ocr"
                 + " circleMode=editable_screenshot autoExpand=false");
 
         GoogleCircleCapture.capture(app, frame -> {
@@ -34,6 +34,10 @@ final class GoogleCircleController {
                     return;
                 }
             }
+
+            // Build the frozen View/OCR position index immediately. The overlay stays interactive;
+            // later taps/scribbles only hit-test this cache and never launch another OCR request.
+            GoogleCircleTextResolver.preload(app, frame);
 
             boolean shown = GoogleCircleInlineOverlay.show(app, frame,
                     () -> restore(app, hideLease, gen, "closed"));
