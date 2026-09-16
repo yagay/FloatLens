@@ -101,6 +101,21 @@ final class ScreenBitmapTransform {
         return Math.round(viewToScreen(0f, viewY, 1, viewHeight).y);
     }
 
+    /**
+     * Converts a physical SCREEN-space distance to the bitmap-space distance used by gesture
+     * classification. X/Y are measured independently through the Matrix and averaged so the result
+     * remains stable even when an OEM capture is scaled non-uniformly.
+     */
+    float screenDistanceToBitmap(float screenPixels) {
+        float distance = Math.max(0f, screenPixels);
+        PointF origin = bitmapToScreen.unmapPoint(screenFrame.left, screenFrame.top);
+        PointF x = bitmapToScreen.unmapPoint(screenFrame.left + distance, screenFrame.top);
+        PointF y = bitmapToScreen.unmapPoint(screenFrame.left, screenFrame.top + distance);
+        float dx = (float) Math.hypot(x.x - origin.x, x.y - origin.y);
+        float dy = (float) Math.hypot(y.x - origin.x, y.y - origin.y);
+        return (dx + dy) * 0.5f;
+    }
+
     /** Converts a full bitmap-space OCR result once, immediately after recognition. */
     OcrDocument documentBitmapToScreen(OcrDocument document) {
         if (document == null) return null;
