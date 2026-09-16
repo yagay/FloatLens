@@ -89,7 +89,7 @@ final class CircleTextOcrPipeline {
                 runMlKit(app, masked, cancelled, new Callback() {
                     @Override public void onSuccess(OcrDocument document) {
                         recycle(masked);
-                        callback.onSuccess(retag(document, "ppdet+" + document.engine()));
+                        callback.onSuccess(retag(document, "ppdet+"));
                     }
 
                     @Override public void onFailure(Throwable error) {
@@ -135,7 +135,7 @@ final class CircleTextOcrPipeline {
                     callback.onFailure(new CancellationException("Circle OCR cancelled after ML Kit"));
                     return;
                 }
-                OcrDocument tagged = masked ? document : retag(document, "full+") ;
+                OcrDocument tagged = masked ? document : retag(document, "full+");
                 DiagnosticLog.i(app, "G_CIRCLE_OCR_PIPELINE",
                         "mlkit success reason=" + reason
                                 + " masked=" + masked
