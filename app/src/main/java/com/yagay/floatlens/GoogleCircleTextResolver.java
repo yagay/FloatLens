@@ -16,10 +16,12 @@ import java.util.concurrent.Executors;
 /**
  * Frozen-screen text index for the Google-style Circle workspace.
  *
- * View text and full-frame OCR are prepared once when Circle opens. Gestures first hit-test that
- * cache. If the cached full-frame OCR misses the actual gesture, a small pixel-only ROI around the
- * gesture is enlarged and OCR'd again. The fallback intentionally uses only screenshot pixels: no
- * Accessibility label, contentDescription, package/app name or nearby semantic mapping is involved.
+ * <p>View text and full-frame OCR are prepared once when Circle opens. All OCR geometry is
+ * normalized to absolute SCREEN coordinates through the capture frame's shared Matrix transform.
+ * If the cached OCR misses the gesture, a tight pixel-only ROI is cropped once at native screenshot
+ * resolution and the multi-scale OCR pipeline handles all enhancement internally. No package name,
+ * Accessibility semantic label, contentDescription or nearby app caption is used as recognition
+ * input.</p>
  */
 final class GoogleCircleTextResolver {
     enum Source { VIEW, VIEW_OCR, IMAGE_OCR, NONE }
@@ -95,14 +97,9 @@ final class GoogleCircleTextResolver {
     private static final float LOCAL_OCR_TAP_TOLERANCE_DP = 28f;
     private static final float RANGE_TOLERANCE_DP = 6f;
 
-    // TAP fallback deliberately stays tight around the touched icon/image. This is not a search for
-    // nearby captions; the goal is to let OCR re-examine the image pixels at a much larger scale.
-    private static final float LOCAL_TAP_HALF_SIZE_DP = 38f; // 76dp square
+    // Keep the local TAP crop tightly centered on image pixels instead of searching nearby captions.
+    private static final float LOCAL_TAP_HALF_SIZE_DP = 38f; // 76dp square in SCREEN space
     private static final float LOCAL_RANGE_PAD_DP = 4f;
-    private static final int LOCAL_TARGET_MIN_EDGE_PX = 384;
-    private static final int LOCAL_MAX_EDGE_PX = 1024;
-    private static final float LOCAL_MIN_SCALE = 2f;
-    private static final float LOCAL_MAX_SCALE = 4f;
 
     private static long indexGeneration;
     private static PreloadState currentIndex;
@@ -123,8 +120,8 @@ final class GoogleCircleTextResolver {
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
                 + " strategy=frozen_view_plus_full_frame_ocr_once"
                 + " fallback=cached_hit_else_local_pixel_ocr"
-                + " localPixelOnly=true"
-                + " coordinateSpace=SCREEN");
+                + " geometry=shared_matrix_transform"
+                + " localPixelOnly=true coordinateSpace=SCREEN");
 
         VIEW_IO.execute(() -> prepareViewPart(state, frame, started));
         INDEX_IO.execute(() -> prepareOcrPart(state, frame, started));
@@ -209,8 +206,7 @@ final class GoogleCircleTextResolver {
 
         OcrEngine.recognizeDocument(state.app, copy, new OcrEngine.DocumentCallback() {
             @Override public void onSuccess(OcrDocument document) {
-                OcrDocument screen = translateToScreen(frame,
-                        new Rect(0, 0, copy.getWidth(), copy.getHeight()), document);
+                OcrDocument screen = frame.transform.documentBitmapToScreen(document);
                 recycle(copy);
                 finishOcrPart(state, frame, screen, null, started);
             }
@@ -340,9 +336,9 @@ final class GoogleCircleTextResolver {
     }
 
     /**
-     * Miss fallback that only re-examines screenshot pixels around the gesture. TAP uses a 76dp
-     * square so launcher captions/nearby text are not intentionally searched. The crop is enlarged
-     * 2-4x before OCR, restoring the old local-ROI advantage for tiny logos and stylized icon text.
+     * Miss fallback that only re-examines screenshot pixels around the gesture. The screenshot is
+     * cropped exactly once; scaling/contrast variants are owned by CircleMultiScaleOcr and returned
+     * to this crop's native coordinate plane before the shared frame transform maps them to SCREEN.
      */
     private static void resolveLocalEnhancedOcr(PreloadState state,
                                                 GoogleCircleCapture.Frame frame,
@@ -363,18 +359,13 @@ final class GoogleCircleTextResolver {
         }
 
         final Bitmap crop;
-        final Bitmap enlarged;
-        final float scaleX;
-        final float scaleY;
         try {
-            crop = Bitmap.createBitmap(source, roi.left, roi.top, roi.width(), roi.height());
-            int[] target = localEnhancedSize(crop.getWidth(), crop.getHeight());
-            Bitmap made = Bitmap.createScaledBitmap(crop, target[0], target[1], true);
-            if (made == null) throw new IllegalStateException("local OCR upscale failed");
-            enlarged = made;
-            scaleX = enlarged.getWidth() / (float) Math.max(1, roi.width());
-            scaleY = enlarged.getHeight() / (float) Math.max(1, roi.height());
-            if (crop != enlarged) recycle(crop);
+            Bitmap made = Bitmap.createBitmap(source, roi.left, roi.top, roi.width(), roi.height());
+            if (made == source) {
+                made = source.copy(Bitmap.Config.ARGB_8888, false);
+                if (made == null) throw new IllegalStateException("local OCR crop copy failed");
+            }
+            crop = made;
         } catch (Throwable t) {
             callback.onResolved(new Result(Source.NONE, null, gestureScreen, roi, t));
             return;
@@ -383,20 +374,21 @@ final class GoogleCircleTextResolver {
         long started = android.os.SystemClock.uptimeMillis();
         DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_OCR", "start gesture=" + gesture.kind
                 + " roi=" + roi.toShortString()
-                + " input=" + roi.width() + "x" + roi.height()
-                + " enlarged=" + enlarged.getWidth() + "x" + enlarged.getHeight()
-                + " scale=" + String.format(java.util.Locale.ROOT, "%.2fx%.2f", scaleX, scaleY)
-                + " enginePolicy=pp_first"
+                + " input=" + crop.getWidth() + "x" + crop.getHeight()
+                + " enhancement=internal_multiscale"
+                + " geometry=roi_to_screen_matrix"
+                + " enginePolicy=follow_main_setting"
                 + " pixelOnly=true semanticLabels=false nearbyCaptionSearch=false");
 
-        CircleLocalOcrFallback.recognize(state.app, enlarged, new OcrEngine.DocumentCallback() {
+        CircleLocalOcrFallback.recognize(state.app, crop, new OcrEngine.DocumentCallback() {
             @Override public void onSuccess(OcrDocument document) {
                 if (!isCurrent(state, frame)) {
-                    recycle(enlarged);
+                    recycle(crop);
                     return;
                 }
-                OcrDocument screen = translateScaledToScreen(frame, roi, document, scaleX, scaleY);
-                recycle(enlarged);
+                OcrDocument screen = frame.transform.documentLocalToScreen(document, roi,
+                        crop.getWidth(), crop.getHeight(), "local-enhanced-");
+                recycle(crop);
                 boolean hit = documentHitsGesture(state.app, frame, gesture, screen,
                         LOCAL_OCR_TAP_TOLERANCE_DP, RANGE_TOLERANCE_DP);
                 DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_OCR", "done gesture=" + gesture.kind
@@ -404,13 +396,13 @@ final class GoogleCircleTextResolver {
                         + " chars=" + (screen == null ? 0 : screen.chars().size())
                         + " text=" + summarize(screen == null ? "" : screen.fullText())
                         + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started)
-                        + " pixelOnly=true");
+                        + " coordinateSpace=SCREEN pixelOnly=true");
                 callback.onResolved(new Result(hit ? Source.IMAGE_OCR : Source.NONE,
                         hit ? screen : null, gestureScreen, roi, null));
             }
 
             @Override public void onFailure(Throwable error) {
-                recycle(enlarged);
+                recycle(crop);
                 if (!isCurrent(state, frame)) return;
                 DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_OCR", "failed gesture="
                         + gesture.kind + " error=" + ScreenCaptureBackend.safeMessage(error));
@@ -419,58 +411,51 @@ final class GoogleCircleTextResolver {
         });
     }
 
+    /** Build OCR search regions in SCREEN space first, then map them to screenshot pixels once. */
     private static Rect localRecognitionRoi(Context app, GoogleCircleCapture.Frame frame,
                                             GoogleCircleSelection.Selection gesture) {
-        int bw = frame.bitmap.getWidth();
-        int bh = frame.bitmap.getHeight();
-        if (bw <= 0 || bh <= 0) return new Rect();
+        if (frame == null || gesture == null || frame.bitmap == null) return new Rect();
 
         if (gesture.kind == GoogleCircleSelection.Kind.TAP) {
-            float halfX = bitmapPxForDp(app, frame, LOCAL_TAP_HALF_SIZE_DP, true);
-            float halfY = bitmapPxForDp(app, frame, LOCAL_TAP_HALF_SIZE_DP, false);
-            Rect roi = new Rect(
-                    (int) Math.floor(gesture.focus.x - halfX),
-                    (int) Math.floor(gesture.focus.y - halfY),
-                    (int) Math.ceil(gesture.focus.x + halfX),
-                    (int) Math.ceil(gesture.focus.y + halfY));
-            return clampBitmapRect(roi, bw, bh);
+            PointF focus = frame.bitmapPointToScreen(gesture.focus.x, gesture.focus.y);
+            float half = dp(app, LOCAL_TAP_HALF_SIZE_DP);
+            Rect screenRoi = new Rect(
+                    (int) Math.floor(focus.x - half),
+                    (int) Math.floor(focus.y - half),
+                    (int) Math.ceil(focus.x + half),
+                    (int) Math.ceil(focus.y + half));
+            shiftIntoBounds(screenRoi, frame.screenBounds);
+            if (!screenRoi.intersect(frame.screenBounds)) return new Rect();
+            return frame.screenRectToBitmap(screenRoi);
         }
 
-        Rect exact = GoogleCircleSelection.exactRectAndClamp(gesture.bounds, bw, bh);
-        if (exact.isEmpty()) return exact;
-        int padX = Math.max(1, Math.round(bitmapPxForDp(app, frame, LOCAL_RANGE_PAD_DP, true)));
-        int padY = Math.max(1, Math.round(bitmapPxForDp(app, frame, LOCAL_RANGE_PAD_DP, false)));
-        Rect roi = new Rect(exact.left - padX, exact.top - padY,
-                exact.right + padX, exact.bottom + padY);
-        return clampBitmapRect(roi, bw, bh);
+        Rect exactBitmap = GoogleCircleSelection.exactRectAndClamp(gesture.bounds,
+                frame.bitmap.getWidth(), frame.bitmap.getHeight());
+        if (exactBitmap.isEmpty()) return new Rect();
+        Rect screenRoi = frame.bitmapRectToScreen(exactBitmap);
+        if (screenRoi.isEmpty()) return new Rect();
+        int pad = Math.max(1, Math.round(dp(app, LOCAL_RANGE_PAD_DP)));
+        screenRoi.inset(-pad, -pad);
+        if (!screenRoi.intersect(frame.screenBounds)) return new Rect();
+        return frame.screenRectToBitmap(screenRoi);
     }
 
-    private static int[] localEnhancedSize(int width, int height) {
-        int w = Math.max(1, width);
-        int h = Math.max(1, height);
-        int min = Math.min(w, h);
-        int max = Math.max(w, h);
-        float scale = Math.max(LOCAL_MIN_SCALE, LOCAL_TARGET_MIN_EDGE_PX / (float) Math.max(1, min));
-        scale = Math.min(LOCAL_MAX_SCALE, scale);
-        if (max * scale > LOCAL_MAX_EDGE_PX) {
-            scale = Math.max(1f, LOCAL_MAX_EDGE_PX / (float) max);
+    private static void shiftIntoBounds(Rect rect, Rect bounds) {
+        if (rect == null || bounds == null || rect.isEmpty() || bounds.isEmpty()) return;
+        if (rect.width() >= bounds.width()) {
+            rect.left = bounds.left;
+            rect.right = bounds.right;
+        } else {
+            if (rect.left < bounds.left) rect.offset(bounds.left - rect.left, 0);
+            if (rect.right > bounds.right) rect.offset(bounds.right - rect.right, 0);
         }
-        return new int[]{Math.max(32, Math.round(w * scale)),
-                Math.max(32, Math.round(h * scale))};
-    }
-
-    private static Rect clampBitmapRect(Rect source, int width, int height) {
-        if (source == null || width <= 0 || height <= 0) return new Rect();
-        Rect r = new Rect(source);
-        if (r.left < 0) r.offset(-r.left, 0);
-        if (r.top < 0) r.offset(0, -r.top);
-        if (r.right > width) r.offset(width - r.right, 0);
-        if (r.bottom > height) r.offset(0, height - r.bottom);
-        r.left = Math.max(0, Math.min(width - 1, r.left));
-        r.top = Math.max(0, Math.min(height - 1, r.top));
-        r.right = Math.max(r.left + 1, Math.min(width, r.right));
-        r.bottom = Math.max(r.top + 1, Math.min(height, r.bottom));
-        return r;
+        if (rect.height() >= bounds.height()) {
+            rect.top = bounds.top;
+            rect.bottom = bounds.bottom;
+        } else {
+            if (rect.top < bounds.top) rect.offset(0, bounds.top - rect.top);
+            if (rect.bottom > bounds.bottom) rect.offset(0, bounds.bottom - rect.bottom);
+        }
     }
 
     private static OcrDocument selectViewDocument(GoogleCircleCapture.Frame frame,
@@ -639,71 +624,6 @@ final class GoogleCircleTextResolver {
                 Math.max(1, width), Math.max(1, height));
     }
 
-    private static OcrDocument translateToScreen(GoogleCircleCapture.Frame frame, Rect roi,
-                                                 OcrDocument local) {
-        return translateScaledToScreen(frame, roi, local, 1f, 1f);
-    }
-
-    private static OcrDocument translateScaledToScreen(GoogleCircleCapture.Frame frame, Rect roi,
-                                                        OcrDocument local,
-                                                        float scaleX, float scaleY) {
-        String prefix = (scaleX == 1f && scaleY == 1f) ? "preindex-" : "local-enhanced-";
-        if (local == null || local.lines().isEmpty()) {
-            return OcrDocument.screenSpace(local == null ? "" : local.fullText(),
-                    local == null ? List.of() : local.blocks(), List.of(),
-                    local == null ? prefix + "ocr" : prefix + local.engine(),
-                    local == null ? 0f : local.confidence(),
-                    local == null ? 0d : local.score(),
-                    Math.max(1, frame.screenBounds.width()),
-                    Math.max(1, frame.screenBounds.height()));
-        }
-
-        float sx = Math.max(0.0001f, scaleX);
-        float sy = Math.max(0.0001f, scaleY);
-        ArrayList<OcrDocument.Line> lines = new ArrayList<>();
-        int lineId = 0;
-        int order = 0;
-        for (OcrDocument.Line line : local.lines()) {
-            Rect lineBitmap = scaledLocalToBitmap(line.bounds(), roi, sx, sy,
-                    frame.bitmap.getWidth(), frame.bitmap.getHeight());
-            if (lineBitmap.isEmpty()) continue;
-            Rect lineScreen = frame.bitmapRectToScreen(lineBitmap);
-            ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>();
-            for (OcrDocument.CharUnit c : line.chars()) {
-                if (c == null) continue;
-                Rect charBitmap = scaledLocalToBitmap(c.bounds(), roi, sx, sy,
-                        frame.bitmap.getWidth(), frame.bitmap.getHeight());
-                if (charBitmap.isEmpty()) continue;
-                Rect charScreen = frame.bitmapRectToScreen(charBitmap);
-                if (charScreen.isEmpty()) continue;
-                chars.add(new OcrDocument.CharUnit(c.text(), charScreen, c.confidence(),
-                        lineId, c.group(), order++));
-            }
-            if (!chars.isEmpty()) {
-                lines.add(new OcrDocument.Line(line.text(), lineScreen,
-                        line.confidence(), chars));
-                lineId++;
-            }
-        }
-
-        return OcrDocument.screenSpace(local.fullText(), local.blocks(), lines,
-                prefix + local.engine(), local.confidence(), local.score(),
-                Math.max(1, frame.screenBounds.width()),
-                Math.max(1, frame.screenBounds.height()));
-    }
-
-    private static Rect scaledLocalToBitmap(Rect local, Rect roi, float scaleX, float scaleY,
-                                            int width, int height) {
-        if (local == null || local.isEmpty()) return new Rect();
-        Rect out = new Rect(
-                roi.left + (int) Math.floor(local.left / scaleX),
-                roi.top + (int) Math.floor(local.top / scaleY),
-                roi.left + (int) Math.ceil(local.right / scaleX),
-                roi.top + (int) Math.ceil(local.bottom / scaleY));
-        if (!out.intersect(0, 0, width, height)) return new Rect();
-        return out;
-    }
-
     private static Rect gestureScreenBounds(GoogleCircleCapture.Frame frame,
                                             GoogleCircleSelection.Selection gesture) {
         Rect bitmap = GoogleCircleSelection.exactRectAndClamp(gesture.bounds,
@@ -712,25 +632,11 @@ final class GoogleCircleTextResolver {
     }
 
     private static PointF bitmapPointToScreen(GoogleCircleCapture.Frame frame, PointF bitmapPoint) {
-        float sx = frame.screenBounds.width() / (float) Math.max(1, frame.bitmap.getWidth());
-        float sy = frame.screenBounds.height() / (float) Math.max(1, frame.bitmap.getHeight());
-        return new PointF(frame.screenBounds.left + bitmapPoint.x * sx,
-                frame.screenBounds.top + bitmapPoint.y * sy);
-    }
-
-    private static float bitmapPxForDp(Context app, GoogleCircleCapture.Frame frame,
-                                       float valueDp, boolean horizontal) {
-        float screenPx = dp(app, valueDp);
-        if (horizontal) {
-            return screenPx * frame.bitmap.getWidth()
-                    / (float) Math.max(1, frame.screenBounds.width());
-        }
-        return screenPx * frame.bitmap.getHeight()
-                / (float) Math.max(1, frame.screenBounds.height());
+        return frame.bitmapPointToScreen(bitmapPoint.x, bitmapPoint.y);
     }
 
     private static float dp(Context app, float value) {
-        return value * app.getResources().getDisplayMetrics().density;
+        return value * ScreenGeometry.density(app);
     }
 
     private static String summarize(String text) {
