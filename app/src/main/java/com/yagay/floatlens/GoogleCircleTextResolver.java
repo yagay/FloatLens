@@ -19,7 +19,8 @@ import java.util.concurrent.Executors;
  * <p>View text and independent OCR passes are prepared once when Circle opens. Full-frame and tile
  * OCR documents are never globally merged. At gesture time only candidates touched by the real
  * tap/highlight/scribble path are compared, and multi-pass consensus chooses the local result.
- * Tight local multi-scale OCR is reserved for a genuine cache miss.</p>
+ * Tight local multi-scale OCR is reserved for a genuine cache miss or verification of compact CJK
+ * image text whose tiny glyphs are especially unstable in whole-screen/tile recognition.</p>
  */
 final class GoogleCircleTextResolver {
     enum Source { VIEW, VIEW_OCR, IMAGE_OCR, NONE }
@@ -98,6 +99,7 @@ final class GoogleCircleTextResolver {
     private static final float RANGE_CORRIDOR_DP = 6f;
 
     private static final float LOCAL_TAP_HALF_SIZE_DP = 38f;
+    private static final float LOCAL_VERIFY_PAD_DP = 18f;
     // The crop must contain the full +/-18dp OCR stroke corridor. Pixels outside that corridor are
     // neutralized before recognition, so this padding does not reintroduce rectangular interference.
     private static final float LOCAL_RANGE_PAD_DP = 20f;
@@ -131,6 +133,7 @@ final class GoogleCircleTextResolver {
                 + " routing=gesture_local_consensus"
                 + " viewMask=exact_character_geometry_only"
                 + " fallback=local_multiscale_pixel_ocr"
+                + " compactCjkVerification=true"
                 + " geometry=shared_matrix_transform"
                 + " coordinateSpace=SCREEN");
 
@@ -390,15 +393,28 @@ final class GoogleCircleTextResolver {
                 state.app, frame, gesture, state.ocrIndex,
                 CACHED_OCR_TAP_TOLERANCE_DP, RANGE_CORRIDOR_DP);
         if (consensus != null && usable(consensus.document)) {
-            Rect fullRoi = new Rect(0, 0, frame.bitmap.getWidth(), frame.bitmap.getHeight());
+            boolean verifyCompact = shouldVerifyCompactImageCandidate(state.app, consensus.document);
             DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE", "indexed hit gesture="
                     + gesture.kind + " source=IMAGE_OCR"
                     + " chars=" + consensus.document.chars().size()
                     + " passHits=" + consensus.passHits
                     + " clusters=" + consensus.clusters
-                    + " maxSupport=" + consensus.maxSupport
-                    + " consensus=true localFallback=false"
+                    + " spatialSupport=" + consensus.maxSupport
+                    + " exactTextSupport=" + consensus.maxTextSupport
+                    + " textConflict=" + consensus.textConflict
+                    + " candidates=" + summarize(consensus.candidateSummary)
+                    + " compactVerify=" + verifyCompact
                     + " preIndex=true coordinateSpace=SCREEN");
+            if (verifyCompact) {
+                DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE",
+                        "compact image text -> tight local verification cachedText="
+                                + summarize(consensus.document.fullText()));
+                resolveLocalEnhancedOcr(state, frame, gesture, gestureScreen, callback,
+                        consensus.document, true);
+                return;
+            }
+
+            Rect fullRoi = new Rect(0, 0, frame.bitmap.getWidth(), frame.bitmap.getHeight());
             callback.onResolved(new Result(Source.IMAGE_OCR, consensus.document,
                     gestureScreen, fullRoi, null, false));
             return;
@@ -408,26 +424,28 @@ final class GoogleCircleTextResolver {
                 + gesture.kind
                 + " cachedOcrAvailable=" + (state.ocrIndex != null && !state.ocrIndex.isEmpty())
                 + " -> local enhanced pixel OCR");
-        resolveLocalEnhancedOcr(state, frame, gesture, gestureScreen, callback);
+        resolveLocalEnhancedOcr(state, frame, gesture, gestureScreen, callback, null, false);
     }
 
     private static void resolveLocalEnhancedOcr(PreloadState state,
                                                 GoogleCircleCapture.Frame frame,
                                                 GoogleCircleSelection.Selection gesture,
                                                 Rect gestureScreen,
-                                                Callback callback) {
+                                                Callback callback,
+                                                OcrDocument cachedFallback,
+                                                boolean compactVerification) {
         if (!isCurrent(state, frame)) return;
         Bitmap source = frame.bitmap;
         if (source == null || source.isRecycled()) {
-            callback.onResolved(new Result(Source.NONE, null, gestureScreen, new Rect(),
-                    new IllegalStateException("frozen screenshot unavailable"), true));
+            returnCachedOrError(callback, cachedFallback, gestureScreen, new Rect(),
+                    new IllegalStateException("frozen screenshot unavailable"));
             return;
         }
 
-        Rect roi = localRecognitionRoi(state.app, frame, gesture);
+        Rect roi = localRecognitionRoi(state.app, frame, gesture,
+                compactVerification ? cachedFallback : null);
         if (roi.isEmpty()) {
-            callback.onResolved(new Result(Source.NONE, null, gestureScreen, roi,
-                    state.ocrError, true));
+            returnCachedOrError(callback, cachedFallback, gestureScreen, roi, state.ocrError);
             return;
         }
 
@@ -445,10 +463,11 @@ final class GoogleCircleTextResolver {
             crop = made;
             maskedViewChars = ViewTextOcrMask.apply(state.app, crop, roi,
                     state.viewDocument, frame.transform);
-            corridor = GestureOcrCorridorMask.apply(state.app, crop, roi,
-                    gesture, frame.transform);
+            corridor = compactVerification
+                    ? new GestureOcrCorridorMask.Result(false, gesture.points.size(), 0f)
+                    : GestureOcrCorridorMask.apply(state.app, crop, roi, gesture, frame.transform);
         } catch (Throwable t) {
-            callback.onResolved(new Result(Source.NONE, null, gestureScreen, roi, t, true));
+            returnCachedOrError(callback, cachedFallback, gestureScreen, roi, t);
             return;
         }
 
@@ -461,11 +480,13 @@ final class GoogleCircleTextResolver {
         DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_OCR", "start gesture=" + gesture.kind
                 + " roi=" + roi.toShortString()
                 + " input=" + crop.getWidth() + "x" + crop.getHeight()
+                + " reason=" + (compactVerification ? "compact_cache_verify" : "cache_miss")
                 + " enhancement=internal_multiscale"
                 + " exactViewCharsMasked=" + maskedViewChars
                 + " corridorApplied=" + corridor.applied
                 + " corridorPoints=" + corridor.pointCount
                 + " corridorHalfWidthBitmapPx=" + Math.round(corridor.halfWidthBitmapPx)
+                + " cachedFallback=" + (cachedFallback != null)
                 + " geometry=roi_to_screen_matrix"
                 + " enginePolicy=follow_main_setting"
                 + " pixelOnly=true semanticLabels=false nearbyCaptionSearch=false");
@@ -485,29 +506,65 @@ final class GoogleCircleTextResolver {
                         LOCAL_OCR_TAP_TOLERANCE_DP, RANGE_CORRIDOR_DP,
                         "local-gesture-selected");
                 boolean hit = usable(scoped);
+                boolean compatible = !compactVerification
+                        || verificationLengthCompatible(cachedFallback, scoped);
+                OcrDocument selected = hit && compatible ? scoped : cachedFallback;
+                boolean usedLocal = selected == scoped && usable(scoped);
                 DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_OCR", "done gesture=" + gesture.kind
                         + " hit=" + hit
+                        + " compatible=" + compatible
+                        + " usedLocal=" + usedLocal
                         + " chars=" + (scoped == null ? 0 : scoped.chars().size())
                         + " text=" + summarize(scoped == null ? "" : scoped.fullText())
+                        + " cachedText=" + summarize(cachedFallback == null ? "" : cachedFallback.fullText())
                         + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started)
                         + " coordinateSpace=SCREEN pixelOnly=true");
-                callback.onResolved(new Result(hit ? Source.IMAGE_OCR : Source.NONE,
-                        hit ? scoped : null, gestureScreen, roi, null, true));
+                if (usable(selected)) {
+                    callback.onResolved(new Result(Source.IMAGE_OCR, selected,
+                            gestureScreen, roi, null, usedLocal));
+                } else {
+                    callback.onResolved(new Result(Source.NONE, null,
+                            gestureScreen, roi, null, true));
+                }
             }
 
             @Override public void onFailure(Throwable error) {
                 recycle(crop);
                 if (!isCurrent(state, frame)) return;
                 DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_OCR", "failed gesture="
-                        + gesture.kind + " error=" + ScreenCaptureBackend.safeMessage(error));
-                callback.onResolved(new Result(Source.NONE, null, gestureScreen, roi, error, true));
+                        + gesture.kind + " error=" + ScreenCaptureBackend.safeMessage(error)
+                        + " cachedFallback=" + (cachedFallback != null));
+                returnCachedOrError(callback, cachedFallback, gestureScreen, roi, error);
             }
         });
     }
 
+    private static void returnCachedOrError(Callback callback, OcrDocument cachedFallback,
+                                            Rect gestureScreen, Rect roi, Throwable error) {
+        if (callback == null) return;
+        if (usable(cachedFallback)) {
+            callback.onResolved(new Result(Source.IMAGE_OCR, cachedFallback,
+                    gestureScreen, roi, error, false));
+        } else {
+            callback.onResolved(new Result(Source.NONE, null, gestureScreen, roi, error, true));
+        }
+    }
+
     private static Rect localRecognitionRoi(Context app, GoogleCircleCapture.Frame frame,
-                                            GoogleCircleSelection.Selection gesture) {
+                                            GoogleCircleSelection.Selection gesture,
+                                            OcrDocument preferredTarget) {
         if (frame == null || gesture == null || frame.bitmap == null) return new Rect();
+
+        if (usable(preferredTarget)) {
+            Rect target = documentBounds(preferredTarget);
+            if (!target.isEmpty()) {
+                int pad = Math.max(1, Math.round(dp(app, LOCAL_VERIFY_PAD_DP)));
+                target.inset(-pad, -pad);
+                if (target.intersect(frame.screenBounds)) {
+                    return frame.screenRectToBitmap(target);
+                }
+            }
+        }
 
         if (gesture.kind == GoogleCircleSelection.Kind.TAP) {
             PointF focus = frame.bitmapPointToScreen(gesture.focus.x, gesture.focus.y);
@@ -531,6 +588,59 @@ final class GoogleCircleTextResolver {
         screenRoi.inset(-pad, -pad);
         if (!screenRoi.intersect(frame.screenBounds)) return new Rect();
         return frame.screenRectToBitmap(screenRoi);
+    }
+
+    private static boolean shouldVerifyCompactImageCandidate(Context app, OcrDocument document) {
+        if (app == null || !usable(document)) return false;
+        String text = document.fullText();
+        if (text == null || text.isBlank()) return false;
+        int total = 0;
+        int cjk = 0;
+        for (int cp : text.codePoints().toArray()) {
+            if (Character.isWhitespace(cp) || (!Character.isLetterOrDigit(cp) && !isCjk(cp))) continue;
+            total++;
+            if (isCjk(cp)) cjk++;
+        }
+        if (total < 2 || total > 6 || cjk < 2 || cjk * 2 < total) return false;
+        Rect bounds = documentBounds(document);
+        if (bounds.isEmpty()) return false;
+        float density = ScreenGeometry.density(app);
+        return bounds.width() <= Math.round(220f * density)
+                && bounds.height() <= Math.round(96f * density);
+    }
+
+    private static boolean verificationLengthCompatible(OcrDocument cached, OcrDocument local) {
+        if (!usable(local)) return false;
+        if (!usable(cached)) return true;
+        int cachedCount = recognitionCodePointCount(cached.fullText());
+        int localCount = recognitionCodePointCount(local.fullText());
+        return cachedCount <= 0 || localCount == cachedCount;
+    }
+
+    private static int recognitionCodePointCount(String text) {
+        if (text == null || text.isBlank()) return 0;
+        int count = 0;
+        for (int cp : text.codePoints().toArray()) {
+            if (Character.isLetterOrDigit(cp) || isCjk(cp)) count++;
+        }
+        return count;
+    }
+
+    private static Rect documentBounds(OcrDocument document) {
+        Rect out = null;
+        if (document != null) {
+            for (OcrDocument.CharUnit c : document.chars()) {
+                if (c == null || c.bounds().isEmpty()) continue;
+                Rect r = c.bounds();
+                if (out == null) out = new Rect(r); else out.union(r);
+            }
+        }
+        return out == null ? new Rect() : out;
+    }
+
+    private static boolean isCjk(int cp) {
+        return (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF)
+                || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x2FA1F);
     }
 
     private static void shiftIntoBounds(Rect rect, Rect bounds) {
@@ -697,7 +807,7 @@ final class GoogleCircleTextResolver {
     private static String summarize(String text) {
         if (text == null) return "";
         String oneLine = text.replace('\n', ' ').replace('\r', ' ').trim();
-        return oneLine.length() <= 48 ? oneLine : oneLine.substring(0, 48) + "…";
+        return oneLine.length() <= 96 ? oneLine : oneLine.substring(0, 96) + "…";
     }
 
     private static void recycle(Bitmap bitmap) {
