@@ -12,10 +12,12 @@ final class ScreenshotGeometry {
         }
         Rect display = ScreenGeometry.displayBounds(c);
         if (display.isEmpty()) throw new IllegalStateException("display bounds unavailable");
-        CropMath.Bounds bounds = CropMath.screenRectRound(
-                screenBounds.left, screenBounds.top, screenBounds.right, screenBounds.bottom,
-                display.left, display.top, display.width(), display.height(),
-                raw.getWidth(), raw.getHeight());
+
+        ScreenBitmapTransform transform = new ScreenBitmapTransform(
+                display, raw.getWidth(), raw.getHeight());
+        Rect bounds = transform.screenToBitmap(screenBounds);
+        if (bounds.isEmpty()) throw new IllegalArgumentException("crop outside display");
+
         Bitmap crop = Bitmap.createBitmap(raw, bounds.left, bounds.top,
                 bounds.width(), bounds.height());
         // A full-bounds Bitmap.createBitmap call may return the original object. Callers treat a
