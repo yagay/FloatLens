@@ -7,23 +7,20 @@ import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Gesture-scoped text resolver for the Google-style workspace.
+ * Frozen-screen text index for the Google-style workspace.
  *
- * Nothing is OCR'd when the workspace opens. For each TAP/HIGHLIGHT/SCRIBBLE gesture we first take
- * a fresh Accessibility/View-text snapshot. Native per-character geometry is used only when Android
- * actually provides it. Synthetic View character boxes are classification-only and are never shown
- * as selectable geometry.
- *
- * When exact View geometry is unavailable, OCR runs only after the user gesture against a bounded
- * context band around that gesture. The band spans the full screen width so selection handles can
- * extend to more words on the same/nearby lines, while avoiding the very slow full-frame OCR path
- * that caused repeated requests to cancel one another before any result reached the UI.
+ * The screenshot is recognized once when the workspace opens. View text geometry and OCR character
+ * geometry are stored in absolute SCREEN coordinates. Later TAP/HIGHLIGHT/SCRIBBLE gestures only
+ * hit-test that frozen index; they never launch another OCR request. This keeps all existing
+ * selection/group/handle rendering behavior while making handle expansion independent of the
+ * original gesture ROI.
  */
 final class GoogleCircleTextResolver {
     enum Source { VIEW, VIEW_OCR, IMAGE_OCR, NONE }
@@ -50,165 +47,266 @@ final class GoogleCircleTextResolver {
         }
     }
 
+    private static final class PendingResolve {
+        final GoogleCircleSelection.Selection gesture;
+        final Callback callback;
+
+        PendingResolve(GoogleCircleSelection.Selection gesture, Callback callback) {
+            this.gesture = gesture;
+            this.callback = callback;
+        }
+    }
+
+    private static final class PreloadState {
+        final long generation;
+        final Context app;
+        final WeakReference<GoogleCircleCapture.Frame> frameRef;
+        final ArrayList<PendingResolve> pending = new ArrayList<>();
+
+        OcrDocument viewDocument;
+        OcrDocument exactViewDocument;
+        OcrDocument ocrDocument;
+        Throwable ocrError;
+        boolean viewDone;
+        boolean ocrDone;
+
+        PreloadState(long generation, Context app, GoogleCircleCapture.Frame frame) {
+            this.generation = generation;
+            this.app = app;
+            this.frameRef = new WeakReference<>(frame);
+        }
+
+        boolean ready() {
+            return viewDone && ocrDone;
+        }
+    }
+
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final ExecutorService VIEW_IO = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "FloatLens-circle-hit-view");
+        Thread t = new Thread(r, "FloatLens-circle-index-view");
+        t.setDaemon(true);
+        return t;
+    });
+    private static final ExecutorService INDEX_IO = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "FloatLens-circle-index-ocr");
         t.setDaemon(true);
         return t;
     });
 
+    private static final Object INDEX_LOCK = new Object();
     private static final float VIEW_TAP_TOLERANCE_DP = 8f;
-    private static final float OCR_TAP_HALF_HEIGHT_DP = 84f;
-    private static final float OCR_CONTEXT_VERTICAL_PAD_DP = 72f;
+    private static long indexGeneration;
+    private static PreloadState currentIndex;
 
+    /** Start one frozen-screen index as soon as capture completes. Safe to call more than once. */
+    static void preload(Context c, GoogleCircleCapture.Frame frame) {
+        if (c == null || frame == null || frame.bitmap == null || frame.bitmap.isRecycled()) return;
+        Context app = c.getApplicationContext();
+        PreloadState state;
+        synchronized (INDEX_LOCK) {
+            if (sameFrame(currentIndex, frame)) return;
+            state = new PreloadState(++indexGeneration, app, frame);
+            currentIndex = state;
+        }
+
+        long started = android.os.SystemClock.uptimeMillis();
+        DiagnosticLog.i(app, "G_CIRCLE_TEXT_INDEX", "start generation=" + state.generation
+                + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
+                + " strategy=frozen_view_plus_full_frame_ocr_once"
+                + " coordinateSpace=SCREEN");
+
+        VIEW_IO.execute(() -> prepareViewPart(state, frame, started));
+        INDEX_IO.execute(() -> prepareOcrPart(state, frame, started));
+    }
+
+    /** Resolve only from the prebuilt index. If it is still building, queue this gesture. */
     static void resolve(Context c, GoogleCircleCapture.Frame frame,
                         GoogleCircleSelection.Selection gesture, Callback callback) {
         if (c == null || frame == null || gesture == null || callback == null) return;
         Context app = c.getApplicationContext();
-        Rect gestureScreen = gestureScreenBounds(frame, gesture);
-        long started = android.os.SystemClock.uptimeMillis();
+        preload(app, frame);
 
-        DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "start gesture=" + gesture.kind
-                + " screen=" + gestureScreen.toShortString()
-                + " strategy=exact_view_else_context_band_ocr"
-                + " preIndex=false staleSnapshot=false");
-
-        VIEW_IO.execute(() -> {
-            OcrDocument viewDocument;
-            try {
-                CircleViewTextSnapshot snapshot = CircleViewTextSnapshot.capture(app);
-                viewDocument = snapshot.toScreenDocument();
-            } catch (Throwable t) {
-                viewDocument = CircleViewTextSnapshot.empty(frame.screenBounds).toScreenDocument();
-                DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "view snapshot failed="
-                        + ScreenCaptureBackend.safeMessage(t));
+        PreloadState state;
+        boolean ready;
+        OcrDocument earlyExact = null;
+        synchronized (INDEX_LOCK) {
+            state = sameFrame(currentIndex, frame) ? currentIndex : null;
+            if (state == null) {
+                callback.onResolved(new Result(Source.NONE, null,
+                        gestureScreenBounds(frame, gesture), new Rect(),
+                        new IllegalStateException("text index unavailable")));
+                return;
             }
+            ready = state.ready();
+            if (!ready && state.viewDone && state.exactViewDocument != null
+                    && documentHitsGesture(app, frame, gesture, state.exactViewDocument,
+                    VIEW_TAP_TOLERANCE_DP)) {
+                earlyExact = state.exactViewDocument;
+            } else if (!ready) {
+                state.pending.add(new PendingResolve(gesture, callback));
+            }
+        }
 
-            OcrDocument exactViewDocument = exactViewGeometry(viewDocument);
-            boolean exactViewHit = documentHitsGesture(app, frame, gesture, exactViewDocument,
-                    VIEW_TAP_TOLERANCE_DP);
-            boolean coarseViewHit = exactViewHit || documentHitsGesture(app, frame, gesture,
-                    viewDocument, VIEW_TAP_TOLERANCE_DP);
-            long elapsed = android.os.SystemClock.uptimeMillis() - started;
-            OcrDocument finalExactViewDocument = exactViewDocument;
-
-            MAIN.post(() -> {
-                if (exactViewHit) {
-                    DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "resolved source=view_exact"
-                            + " chars=" + finalExactViewDocument.chars().size()
-                            + " elapsedMs=" + elapsed
-                            + " coordinateSpace=SCREEN"
-                            + " handleExpansion=whole_view_document");
-                    callback.onResolved(new Result(Source.VIEW, finalExactViewDocument,
-                            gestureScreen, new Rect(), null));
-                    return;
-                }
-
-                Source ocrSource = coarseViewHit ? Source.VIEW_OCR : Source.IMAGE_OCR;
-                DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE",
-                        (coarseViewHit
-                                ? "view hit has no exact character geometry -> context OCR geometry"
-                                : "view miss -> context OCR")
-                                + " elapsedMs=" + elapsed
-                                + " source=" + ocrSource
-                                + " scope=context_band_for_handle_expansion");
-                resolveContextOcr(app, frame, gesture, gestureScreen, ocrSource, callback);
-            });
-        });
+        if (earlyExact != null) {
+            Rect gestureScreen = gestureScreenBounds(frame, gesture);
+            DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "indexed hit source=VIEW"
+                    + " chars=" + earlyExact.chars().size()
+                    + " indexReady=false fastPath=view_exact");
+            callback.onResolved(new Result(Source.VIEW, earlyExact,
+                    gestureScreen, new Rect(), null));
+            return;
+        }
+        if (!ready) {
+            DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "wait for preindex gesture="
+                    + gesture.kind + " generation=" + state.generation);
+            return;
+        }
+        resolvePrepared(state, frame, gesture, callback);
     }
 
-    private static void resolveContextOcr(Context app, GoogleCircleCapture.Frame frame,
-                                          GoogleCircleSelection.Selection gesture,
-                                          Rect gestureScreen, Source resolvedSource,
-                                          Callback callback) {
+    private static void prepareViewPart(PreloadState state, GoogleCircleCapture.Frame frame,
+                                        long started) {
+        OcrDocument view;
+        Throwable error = null;
+        try {
+            view = CircleViewTextSnapshot.capture(state.app).toScreenDocument();
+        } catch (Throwable t) {
+            error = t;
+            view = CircleViewTextSnapshot.empty(frame.screenBounds).toScreenDocument();
+        }
+        OcrDocument exact = exactViewGeometry(view);
+        synchronized (INDEX_LOCK) {
+            if (currentIndex != state) return;
+            state.viewDocument = view;
+            state.exactViewDocument = exact;
+            state.viewDone = true;
+        }
+        DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_INDEX", "view ready generation="
+                + state.generation
+                + " rawChars=" + view.chars().size()
+                + " exactChars=" + exact.chars().size()
+                + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started)
+                + (error == null ? "" : " error=" + ScreenCaptureBackend.safeMessage(error)));
+        dispatchIfReady(state, frame, started);
+    }
+
+    private static void prepareOcrPart(PreloadState state, GoogleCircleCapture.Frame frame,
+                                       long started) {
         Bitmap source = frame.bitmap;
         if (source == null || source.isRecycled()) {
-            callback.onResolved(new Result(Source.NONE, null, gestureScreen, new Rect(),
-                    new IllegalStateException("frozen screenshot unavailable")));
+            finishOcrPart(state, frame, null,
+                    new IllegalStateException("frozen screenshot unavailable"), started);
             return;
         }
 
-        Rect roi = recognitionContextBand(app, frame, gesture);
-        if (roi.isEmpty()) {
-            callback.onResolved(new Result(Source.NONE, null, gestureScreen, roi, null));
-            return;
-        }
-
-        final Bitmap crop;
+        final Bitmap copy;
         try {
-            Bitmap made = Bitmap.createBitmap(source, roi.left, roi.top,
-                    roi.width(), roi.height());
-            if (made == source) {
-                Bitmap copy = source.copy(Bitmap.Config.ARGB_8888, false);
-                if (copy == null) throw new IllegalStateException("OCR context copy failed");
-                made = copy;
-            }
-            crop = made;
+            Bitmap made = source.copy(Bitmap.Config.ARGB_8888, false);
+            if (made == null) throw new IllegalStateException("OCR frame copy failed");
+            copy = made;
         } catch (Throwable t) {
-            callback.onResolved(new Result(Source.NONE, null, gestureScreen, roi, t));
+            finishOcrPart(state, frame, null, t, started);
             return;
         }
 
-        DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "context OCR roi=" + roi.toShortString()
-                + " crop=" + crop.getWidth() + "x" + crop.getHeight()
-                + " semanticSource=" + resolvedSource
-                + " scope=full_width_bounded_height"
-                + " reason=fast_initial_selection_plus_handle_context"
-                + " edgePolicy=clip_not_shift preIndex=false");
+        DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_INDEX", "ocr begin generation="
+                + state.generation + " bitmap=" + copy.getWidth() + "x" + copy.getHeight()
+                + " roi=full_frozen_frame requestsPerWorkspace=1");
 
-        OcrEngine.recognizeDocument(app, crop, new OcrEngine.DocumentCallback() {
+        OcrEngine.recognizeDocument(state.app, copy, new OcrEngine.DocumentCallback() {
             @Override public void onSuccess(OcrDocument document) {
-                OcrDocument screen = translateToScreen(frame, roi, document);
-                recycle(crop);
-                int chars = screen == null ? 0 : screen.chars().size();
-                boolean usable = screen != null && screen.isScreenSpace() && chars > 0;
-                DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "context OCR done usable=" + usable
-                        + " chars=" + chars
-                        + " semanticSource=" + resolvedSource
-                        + " coordinateSpace=" + (screen == null ? "none" : screen.coordinateSpace()));
-
-                callback.onResolved(new Result(usable ? resolvedSource : Source.NONE,
-                        usable ? screen : null, gestureScreen, roi, null));
+                OcrDocument screen = translateToScreen(frame,
+                        new Rect(0, 0, copy.getWidth(), copy.getHeight()), document);
+                recycle(copy);
+                finishOcrPart(state, frame, screen, null, started);
             }
 
             @Override public void onFailure(Throwable error) {
-                recycle(crop);
-                DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "context OCR failed="
-                        + ScreenCaptureBackend.safeMessage(error)
-                        + " semanticSource=" + resolvedSource);
-                callback.onResolved(new Result(Source.NONE, null, gestureScreen, roi, error));
+                recycle(copy);
+                finishOcrPart(state, frame, null, error, started);
             }
         });
     }
 
-    /**
-     * Use a horizontally complete but vertically bounded OCR band. This gives the selection model
-     * neighboring words and lines for handle expansion without paying the latency of a 1272x2641
-     * recognition on every gesture.
-     */
-    private static Rect recognitionContextBand(Context app, GoogleCircleCapture.Frame frame,
-                                               GoogleCircleSelection.Selection gesture) {
-        int bw = frame.bitmap.getWidth();
-        int bh = frame.bitmap.getHeight();
-        if (bw <= 0 || bh <= 0) return new Rect();
+    private static void finishOcrPart(PreloadState state, GoogleCircleCapture.Frame frame,
+                                      OcrDocument document, Throwable error, long started) {
+        synchronized (INDEX_LOCK) {
+            if (currentIndex != state) return;
+            state.ocrDocument = document;
+            state.ocrError = error;
+            state.ocrDone = true;
+        }
+        int chars = document == null ? 0 : document.chars().size();
+        DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_INDEX", "ocr ready generation="
+                + state.generation
+                + " usable=" + (document != null && document.isScreenSpace() && chars > 0)
+                + " chars=" + chars
+                + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started)
+                + (error == null ? "" : " error=" + ScreenCaptureBackend.safeMessage(error)));
+        dispatchIfReady(state, frame, started);
+    }
 
-        int top;
-        int bottom;
-        if (gesture.kind == GoogleCircleSelection.Kind.TAP) {
-            int halfH = Math.max(1, Math.round(bitmapPxForDp(app, frame,
-                    OCR_TAP_HALF_HEIGHT_DP, false)));
-            top = Math.round(gesture.focus.y) - halfH;
-            bottom = Math.round(gesture.focus.y) + halfH;
-        } else {
-            Rect exact = GoogleCircleSelection.exactRectAndClamp(gesture.bounds, bw, bh);
-            if (exact.isEmpty()) return exact;
-            int padY = Math.max(1, Math.round(bitmapPxForDp(app, frame,
-                    OCR_CONTEXT_VERTICAL_PAD_DP, false)));
-            top = exact.top - padY;
-            bottom = exact.bottom + padY;
+    private static void dispatchIfReady(PreloadState state, GoogleCircleCapture.Frame frame,
+                                        long started) {
+        ArrayList<PendingResolve> pending;
+        synchronized (INDEX_LOCK) {
+            if (currentIndex != state || !state.ready()) return;
+            pending = new ArrayList<>(state.pending);
+            state.pending.clear();
         }
 
-        return clip(new Rect(0, top, bw, bottom), bw, bh);
+        DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_INDEX", "ready generation=" + state.generation
+                + " viewExactChars=" + (state.exactViewDocument == null
+                ? 0 : state.exactViewDocument.chars().size())
+                + " ocrChars=" + (state.ocrDocument == null ? 0 : state.ocrDocument.chars().size())
+                + " pending=" + pending.size()
+                + " totalMs=" + (android.os.SystemClock.uptimeMillis() - started));
+
+        if (pending.isEmpty()) return;
+        MAIN.post(() -> {
+            GoogleCircleCapture.Frame liveFrame = state.frameRef.get();
+            if (liveFrame == null || liveFrame != frame) return;
+            for (PendingResolve request : pending) {
+                resolvePrepared(state, frame, request.gesture, request.callback);
+            }
+        });
+    }
+
+    private static void resolvePrepared(PreloadState state, GoogleCircleCapture.Frame frame,
+                                        GoogleCircleSelection.Selection gesture, Callback callback) {
+        Rect gestureScreen = gestureScreenBounds(frame, gesture);
+        OcrDocument exact = state.exactViewDocument;
+        if (exact != null && documentHitsGesture(state.app, frame, gesture, exact,
+                VIEW_TAP_TOLERANCE_DP)) {
+            DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE", "indexed hit gesture="
+                    + gesture.kind + " source=VIEW chars=" + exact.chars().size()
+                    + " preIndex=true coordinateSpace=SCREEN");
+            callback.onResolved(new Result(Source.VIEW, exact, gestureScreen, new Rect(), null));
+            return;
+        }
+
+        OcrDocument ocr = state.ocrDocument;
+        if (ocr != null && ocr.isScreenSpace() && !ocr.chars().isEmpty()) {
+            boolean coarseViewHit = state.viewDocument != null
+                    && documentHitsGesture(state.app, frame, gesture, state.viewDocument,
+                    VIEW_TAP_TOLERANCE_DP);
+            Source source = coarseViewHit ? Source.VIEW_OCR : Source.IMAGE_OCR;
+            Rect fullRoi = new Rect(0, 0, frame.bitmap.getWidth(), frame.bitmap.getHeight());
+            DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE", "indexed hit gesture="
+                    + gesture.kind + " source=" + source
+                    + " chars=" + ocr.chars().size()
+                    + " preIndex=true coordinateSpace=SCREEN");
+            callback.onResolved(new Result(source, ocr, gestureScreen, fullRoi, null));
+            return;
+        }
+
+        DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE", "indexed miss gesture="
+                + gesture.kind + " preIndex=true ocrAvailable=false");
+        callback.onResolved(new Result(Source.NONE, null, gestureScreen, new Rect(), state.ocrError));
+    }
+
+    private static boolean sameFrame(PreloadState state, GoogleCircleCapture.Frame frame) {
+        return state != null && state.frameRef.get() == frame;
     }
 
     /**
@@ -293,23 +391,12 @@ final class GoogleCircleTextResolver {
         return false;
     }
 
-    /** Clip at the frozen frame edge. Never translate the ROI to preserve an old size. */
-    private static Rect clip(Rect source, int width, int height) {
-        if (source == null || width <= 0 || height <= 0) return new Rect();
-        int left = Math.max(0, Math.min(width, source.left));
-        int top = Math.max(0, Math.min(height, source.top));
-        int right = Math.max(0, Math.min(width, source.right));
-        int bottom = Math.max(0, Math.min(height, source.bottom));
-        if (right <= left || bottom <= top) return new Rect();
-        return new Rect(left, top, right, bottom);
-    }
-
     private static OcrDocument translateToScreen(GoogleCircleCapture.Frame frame, Rect roi,
                                                  OcrDocument local) {
         if (local == null || local.lines().isEmpty()) {
             return OcrDocument.screenSpace(local == null ? "" : local.fullText(),
                     local == null ? List.of() : local.blocks(), List.of(),
-                    local == null ? "context-ocr" : "context-" + local.engine(),
+                    local == null ? "preindex-ocr" : "preindex-" + local.engine(),
                     local == null ? 0f : local.confidence(),
                     local == null ? 0d : local.score(),
                     Math.max(1, frame.screenBounds.width()),
@@ -342,7 +429,7 @@ final class GoogleCircleTextResolver {
         }
 
         return OcrDocument.screenSpace(local.fullText(), local.blocks(), lines,
-                "context-" + local.engine(), local.confidence(), local.score(),
+                "preindex-" + local.engine(), local.confidence(), local.score(),
                 Math.max(1, frame.screenBounds.width()),
                 Math.max(1, frame.screenBounds.height()));
     }
@@ -367,17 +454,6 @@ final class GoogleCircleTextResolver {
         float sy = frame.screenBounds.height() / (float) Math.max(1, frame.bitmap.getHeight());
         return new PointF(frame.screenBounds.left + bitmapPoint.x * sx,
                 frame.screenBounds.top + bitmapPoint.y * sy);
-    }
-
-    private static float bitmapPxForDp(Context app, GoogleCircleCapture.Frame frame,
-                                       float dp, boolean horizontal) {
-        float screenPx = dp(app, dp);
-        if (horizontal) {
-            return screenPx * frame.bitmap.getWidth()
-                    / (float) Math.max(1, frame.screenBounds.width());
-        }
-        return screenPx * frame.bitmap.getHeight()
-                / (float) Math.max(1, frame.screenBounds.height());
     }
 
     private static float dp(Context app, float value) {
