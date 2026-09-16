@@ -17,6 +17,16 @@ FloatLens 的悬浮图标拖选行为以已经验证的 fooView/FV 运行时行�
 
 FV 只能决定已经实测确认的交互、时序和窗口行为。截图后端、OCR、结果生命周期、Root / LSPosed 权限边界等 FloatLens 自身架构按项目的单一 owner 规则实现。
 
+## 圈画识别：TextMap + Lazy Recognition
+
+圈画识别只有一条正式主链：`GoogleCircleController → frozen screenshot → CircleTextMap → lazy ROI OCR → frozen-frame region cache`。
+
+进入圈画后不会在后台做整屏 OCR，也不会切成 Tile 后逐块识别文字。后台只把冻结截图缩小后交给 PP-OCR 的 detection session，定位文字框；该 runtime 只加载 detector ONNX，不加载 recognition model。检测框随后由 FloatLens 的几何规则合并为文字行、段落和阅读流，形成不含文字内容的 `CircleTextMap`。
+
+用户点击、划线或涂画时先命中 TextMap：命中后只裁剪对应段落的原始高清截图，并使用 ML Kit 懒识别这一块；没有命中、检测尚未完成或检测器失败时，直接退回手势附近的局部截图 OCR，因此检测器只是加速/布局层，不是单点故障。成功识别的 ROI 只缓存在当前冻结截图会话中，关闭圈画后立即失效。
+
+正式圈画链明确不使用 Accessibility / View 文字作为内容来源，也不再维护旧的 `CircleRecognitionSession`、`CircleTextIndex`、View Snapshot、全屏预识别、Tile OCR 或多尺度 Circle OCR 旁路。
+
 ## Root / LSPosed 增强模式
 
 入口：`FloatLens → 高级 → 高级权限`
@@ -54,7 +64,7 @@ FloatLens 使用 `libxposed-service 102` + Remote Preferences 建立受控 Provi
 
 ## OCR 模型
 
-PP-OCRv6 Small / Medium 模型与 APK 分离。成功下载后 FloatLens 会生成本地 SHA-256 完整性清单，并在冷加载模型前校验；ML Kit 多语言流程采用保守的 completed-tier early-stop，只有当前图像层级的已启用语言全部完成且质量足够时才提前结束。
+PP-OCRv6 Small / Medium 模型与 APK 分离。成功下载后 FloatLens 会生成本地 SHA-256 完整性清单，并在冷加载完整 OCR 模型前校验。圈画 TextMap 优先复用 Small 的 detection ONNX，并且 detection-only runtime 不要求 recognition model/yml 同时加载；实际文字内容仍按需交给局部 ML Kit。普通 OCR 的 ML Kit 多语言流程采用保守的 completed-tier early-stop，只有当前图像层级的已启用语言全部完成且质量足够时才提前结束。
 
 ## Build / CI
 
