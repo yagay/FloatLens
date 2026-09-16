@@ -15,13 +15,12 @@ import java.util.concurrent.Executors;
  * OCR-only text resolver for the Google-style Circle workspace.
  *
  * <p>Circle pre-indexes the frozen screenshot with the AKS spatial strategy: one full-frame OCR
- * pass plus four overlapping 60% quadrant passes. The five recognizer documents remain completely
- * independent. At gesture time we query only passes covering the target and choose one complete
- * recognizer result; documents, lines and characters are never merged across passes.</p>
+ * pass plus four overlapping 60% quadrant passes. The five ML Kit documents remain completely
+ * independent. At gesture time we use the gesture only to choose the best complete pass and to
+ * produce an initial selection hint. The complete OCR document is returned unchanged so selection
+ * handles can expand across words, lines and paragraphs just like AKS keeps its allWords list.</p>
  */
 final class GoogleCircleTextResolver {
-    // VIEW/VIEW_OCR are retained only for binary/source compatibility with older callers. Google
-    // Circle emits IMAGE_OCR or NONE only.
     enum Source { VIEW, VIEW_OCR, IMAGE_OCR, NONE }
 
     interface Callback {
@@ -30,16 +29,21 @@ final class GoogleCircleTextResolver {
 
     static final class Result {
         final Source source;
+        /** Complete selected OCR pass. Never gesture-cropped. */
         final OcrDocument document;
+        /** Gesture-scoped subset used only to initialize the selection range. */
+        final OcrDocument initialSelectionDocument;
         final Rect gestureScreenBounds;
         final Rect ocrBitmapRoi;
         final Throwable error;
         final boolean localFallback;
 
-        Result(Source source, OcrDocument document, Rect gestureScreenBounds,
-               Rect ocrBitmapRoi, Throwable error, boolean localFallback) {
+        Result(Source source, OcrDocument document, OcrDocument initialSelectionDocument,
+               Rect gestureScreenBounds, Rect ocrBitmapRoi, Throwable error,
+               boolean localFallback) {
             this.source = source == null ? Source.NONE : source;
             this.document = document;
+            this.initialSelectionDocument = initialSelectionDocument;
             this.gestureScreenBounds = gestureScreenBounds == null
                     ? new Rect() : new Rect(gestureScreenBounds);
             this.ocrBitmapRoi = ocrBitmapRoi == null ? new Rect() : new Rect(ocrBitmapRoi);
@@ -79,12 +83,12 @@ final class GoogleCircleTextResolver {
 
     private static final class IndexedHit {
         final CircleOcrIndex.Entry entry;
-        final OcrDocument document;
+        final OcrDocument initialSelection;
         final float spatialScore;
 
-        IndexedHit(CircleOcrIndex.Entry entry, OcrDocument document, float spatialScore) {
+        IndexedHit(CircleOcrIndex.Entry entry, OcrDocument initialSelection, float spatialScore) {
             this.entry = entry;
-            this.document = document;
+            this.initialSelection = initialSelection;
             this.spatialScore = spatialScore;
         }
     }
@@ -127,9 +131,11 @@ final class GoogleCircleTextResolver {
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
                 + " strategy=aks_full_plus_4_overlap_tiles"
                 + " textOwner=OCR_ONLY"
+                + " engine=ML_KIT"
                 + " preindex=full+tl+tr+bl+br"
                 + " tileFraction=0.60"
                 + " merge=false characterFusion=false localOcr=false"
+                + " selectionModel=complete_pass_plus_range"
                 + " viewText=false semanticLabels=false"
                 + " geometry=shared_matrix_transform"
                 + " coordinateSpace=SCREEN");
@@ -148,7 +154,7 @@ final class GoogleCircleTextResolver {
         synchronized (INDEX_LOCK) {
             state = sameFrame(currentIndex, frame) ? currentIndex : null;
             if (state == null) {
-                callback.onResolved(new Result(Source.NONE, null,
+                callback.onResolved(new Result(Source.NONE, null, null,
                         gestureScreenBounds(frame, gesture), new Rect(),
                         new IllegalStateException("OCR index unavailable"), false));
                 return;
@@ -165,7 +171,6 @@ final class GoogleCircleTextResolver {
         resolvePrepared(state, frame, gesture, callback);
     }
 
-    /** Release all workspace-scoped OCR documents and pending callbacks when the overlay closes. */
     static void release(Context c, GoogleCircleCapture.Frame frame, String reason) {
         if (frame == null) return;
         Context app = c == null ? null : c.getApplicationContext();
@@ -227,9 +232,9 @@ final class GoogleCircleTextResolver {
         DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_INDEX", "ocr begin generation="
                 + state.generation + " bitmap=" + copy.getWidth() + "x" + copy.getHeight()
                 + " passes=5 tileFraction=0.60"
+                + " engine=ML_KIT"
                 + " merge=false characterFusion=false"
-                + " viewMask=false semanticLabels=false"
-                + " enginePolicy=follow_main_setting");
+                + " viewMask=false semanticLabels=false");
 
         CirclePreindexTiledOcr.recognize(state.app, copy,
                 () -> !isCurrent(state, frame), new CirclePreindexTiledOcr.Callback() {
@@ -275,7 +280,7 @@ final class GoogleCircleTextResolver {
         }
 
         DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_INDEX", "ready generation=" + state.generation
-                + " textOwner=OCR_ONLY"
+                + " textOwner=OCR_ONLY engine=ML_KIT"
                 + " ocrPasses=" + (state.ocrIndex == null ? 0 : state.ocrIndex.passCount())
                 + " ocrCharsTotal=" + (state.ocrIndex == null ? 0 : state.ocrIndex.totalChars())
                 + " pending=" + pending.size()
@@ -299,8 +304,8 @@ final class GoogleCircleTextResolver {
         Rect gestureScreen = gestureScreenBounds(frame, gesture);
         CircleOcrIndex index = state.ocrIndex;
         if (index == null || index.isEmpty() || gestureScreen.isEmpty()) {
-            callback.onResolved(new Result(Source.NONE, null, gestureScreen, new Rect(),
-                    state.ocrError, false));
+            callback.onResolved(new Result(Source.NONE, null, null,
+                    gestureScreen, new Rect(), state.ocrError, false));
             return;
         }
 
@@ -323,11 +328,12 @@ final class GoogleCircleTextResolver {
                     + gesture.kind
                     + " passesAvailable=" + index.passCount()
                     + " localOcr=false");
-            callback.onResolved(new Result(Source.NONE, null,
+            callback.onResolved(new Result(Source.NONE, null, null,
                     gestureScreen, new Rect(), state.ocrError, false));
             return;
         }
 
+        OcrDocument completeDocument = best.entry.document;
         Rect bitmapRoi = frame.screenRectToBitmap(best.entry.coverage);
         DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE", "index hit gesture="
                 + gesture.kind
@@ -335,19 +341,16 @@ final class GoogleCircleTextResolver {
                 + " selectedSource=" + best.entry.source
                 + " fullFrame=" + best.entry.fullFrame
                 + " spatialScore=" + String.format(java.util.Locale.ROOT, "%.3f", best.spatialScore)
-                + " chars=" + best.document.chars().size()
-                + " text=" + summarize(best.document.fullText())
+                + " fullChars=" + completeDocument.chars().size()
+                + " initialChars=" + best.initialSelection.chars().size()
+                + " initialText=" + summarize(best.initialSelection.fullText())
+                + " selectionModel=complete_document_plus_initial_range"
                 + " merge=false characterFusion=false localOcr=false"
                 + " coordinateSpace=SCREEN");
-        callback.onResolved(new Result(Source.IMAGE_OCR, best.document,
-                gestureScreen, bitmapRoi, null, false));
+        callback.onResolved(new Result(Source.IMAGE_OCR, completeDocument,
+                best.initialSelection, gestureScreen, bitmapRoi, null, false));
     }
 
-    /**
-     * Prefer a regional pass when it has a safe view of the target, as in AKS, but do not use the
-     * recognized text itself as a voting signal. This keeps source choice deterministic even when
-     * recognizers disagree about the characters.
-     */
     private static IndexedHit chooseBest(ArrayList<IndexedHit> hits) {
         IndexedHit best = null;
         for (IndexedHit hit : hits) {
@@ -357,23 +360,18 @@ final class GoogleCircleTextResolver {
                 continue;
             }
             if (Math.abs(hit.spatialScore - best.spatialScore) < 0.0001f) {
-                float hc = reportedConfidence(hit.document);
-                float bc = reportedConfidence(best.document);
+                float hc = reportedConfidence(hit.entry.document);
+                float bc = reportedConfidence(best.entry.document);
                 if (hc > bc) {
                     best = hit;
                     continue;
                 }
-                if (hc == bc && hit.document.score() > best.document.score()) best = hit;
+                if (hc == bc && hit.entry.document.score() > best.entry.document.score()) best = hit;
             }
         }
         return best;
     }
 
-    /**
-     * Score only geometry/source context, never recognized content. A tile receives an AKS-style
-     * preference when the target lies comfortably inside it; targets near a tile crop boundary are
-     * penalized so an unclipped full-frame result can win instead.
-     */
     private static float spatialScore(Rect coverage, Rect target, boolean fullFrame) {
         if (coverage == null || coverage.isEmpty() || target == null || target.isEmpty()) return -1f;
         float cx = target.exactCenterX();
@@ -384,10 +382,9 @@ final class GoogleCircleTextResolver {
         float bottom = coverage.bottom - cy;
         float xMargin = Math.max(0f, Math.min(left, right)) / Math.max(1f, coverage.width());
         float yMargin = Math.max(0f, Math.min(top, bottom)) / Math.max(1f, coverage.height());
-        float interior = Math.min(xMargin, yMargin); // 0 at crop edge, ~0.5 at center.
+        float interior = Math.min(xMargin, yMargin);
 
         if (fullFrame) return 1.0f + interior;
-        // A regional OCR pass is preferred only when the target is not at its crop edge.
         float tileBonus = interior >= 0.04f ? 1.0f : -0.20f;
         return 1.0f + tileBonus + interior * 2.0f;
     }
