@@ -26,6 +26,51 @@ final class CircleGestureTextSelector {
         }
     }
 
+    private static final class VisualRow {
+        final ArrayList<GroupHit> groups = new ArrayList<>();
+        float centerY;
+        float averageHeight;
+
+        VisualRow(GroupHit first) {
+            add(first);
+        }
+
+        boolean accepts(GroupHit hit) {
+            if (hit == null || hit.bounds.isEmpty() || groups.isEmpty()) return false;
+            float vertical = axisOverlapRatio(
+                    rowTop(), rowBottom(), hit.bounds.top, hit.bounds.bottom);
+            float gate = Math.max(4f,
+                    Math.min(Math.max(1f, averageHeight), Math.max(1f, hit.bounds.height())) * 0.62f);
+            return vertical >= 0.55f || Math.abs(hit.bounds.centerY() - centerY) <= gate;
+        }
+
+        void add(GroupHit hit) {
+            if (hit == null) return;
+            int count = groups.size();
+            groups.add(hit);
+            if (count == 0) {
+                centerY = hit.bounds.centerY();
+                averageHeight = Math.max(1f, hit.bounds.height());
+            } else {
+                centerY = (centerY * count + hit.bounds.centerY()) / (count + 1);
+                averageHeight = (averageHeight * count + Math.max(1f, hit.bounds.height()))
+                        / (count + 1);
+            }
+        }
+
+        int rowTop() {
+            int top = Integer.MAX_VALUE;
+            for (GroupHit group : groups) top = Math.min(top, group.bounds.top);
+            return top == Integer.MAX_VALUE ? 0 : top;
+        }
+
+        int rowBottom() {
+            int bottom = Integer.MIN_VALUE;
+            for (GroupHit group : groups) bottom = Math.max(bottom, group.bounds.bottom);
+            return bottom == Integer.MIN_VALUE ? 0 : bottom;
+        }
+    }
+
     static List<GroupHit> hitGroups(Context context,
                                     GoogleCircleCapture.Frame frame,
                                     GoogleCircleSelection.Selection gesture,
@@ -109,12 +154,38 @@ final class CircleGestureTextSelector {
         return documentFromGroups(hits, document, engine);
     }
 
+    /**
+     * Rebuild only the small gesture-local result. Groups retain their original character geometry,
+     * while spatially adjacent groups on the same visual row remain one output line. This avoids
+     * turning every English word into a separate newline without reintroducing a global OCR merge.
+     */
     static OcrDocument documentFromGroups(List<GroupHit> groups,
                                           OcrDocument template,
                                           String engine) {
         if (groups == null || groups.isEmpty() || template == null) return null;
-        ArrayList<GroupHit> ordered = new ArrayList<>(groups);
+        ArrayList<GroupHit> ordered = new ArrayList<>();
+        for (GroupHit group : groups) {
+            if (group != null && !group.chars.isEmpty() && !group.bounds.isEmpty()) ordered.add(group);
+        }
+        if (ordered.isEmpty()) return null;
         ordered.sort((a, b) -> compareVisual(a.bounds, b.bounds));
+
+        ArrayList<VisualRow> rows = new ArrayList<>();
+        for (GroupHit group : ordered) {
+            VisualRow best = null;
+            float bestDistance = Float.MAX_VALUE;
+            for (VisualRow row : rows) {
+                if (!row.accepts(group)) continue;
+                float distance = Math.abs(group.bounds.centerY() - row.centerY);
+                if (distance < bestDistance) {
+                    best = row;
+                    bestDistance = distance;
+                }
+            }
+            if (best == null) rows.add(new VisualRow(group));
+            else best.add(group);
+        }
+        rows.sort((a, b) -> Float.compare(a.centerY, b.centerY));
 
         ArrayList<OcrDocument.Line> lines = new ArrayList<>();
         ArrayList<String> blocks = new ArrayList<>();
@@ -125,35 +196,78 @@ final class CircleGestureTextSelector {
         float confidenceSum = 0f;
         int confidenceCount = 0;
 
-        for (GroupHit group : ordered) {
-            if (group == null || group.chars.isEmpty() || group.bounds.isEmpty()) continue;
+        for (VisualRow row : rows) {
+            row.groups.sort((a, b) -> Integer.compare(a.bounds.left, b.bounds.left));
             ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>();
-            StringBuilder text = new StringBuilder();
-            Rect union = null;
-            for (OcrDocument.CharUnit source : group.chars) {
-                if (source == null || source.text().isBlank() || source.bounds().isEmpty()) continue;
-                Rect bounds = source.bounds();
-                chars.add(new OcrDocument.CharUnit(source.text(), bounds, source.confidence(),
-                        lineId, groupId, order++));
-                text.append(source.text());
-                if (union == null) union = new Rect(bounds); else union.union(bounds);
-                confidenceSum += source.confidence();
-                confidenceCount++;
+            StringBuilder lineText = new StringBuilder();
+            Rect lineBounds = null;
+            GroupHit previousGroup = null;
+            float lineConfidenceSum = 0f;
+            int lineConfidenceCount = 0;
+
+            for (GroupHit group : row.groups) {
+                String groupText = group.text == null ? "" : group.text.trim();
+                if (groupText.isEmpty()) {
+                    StringBuilder rebuilt = new StringBuilder();
+                    for (OcrDocument.CharUnit unit : group.chars) {
+                        if (unit != null && !unit.text().isBlank()) rebuilt.append(unit.text());
+                    }
+                    groupText = rebuilt.toString();
+                }
+                if (groupText.isEmpty()) continue;
+
+                if (previousGroup != null && shouldInsertSpace(previousGroup, group)) {
+                    lineText.append(' ');
+                }
+                lineText.append(groupText);
+
+                int outputGroup = groupId++;
+                for (OcrDocument.CharUnit source : group.chars) {
+                    if (source == null || source.text().isBlank() || source.bounds().isEmpty()) continue;
+                    Rect bounds = source.bounds();
+                    chars.add(new OcrDocument.CharUnit(source.text(), bounds, source.confidence(),
+                            lineId, outputGroup, order++));
+                    if (lineBounds == null) lineBounds = new Rect(bounds); else lineBounds.union(bounds);
+                    confidenceSum += source.confidence();
+                    confidenceCount++;
+                    lineConfidenceSum += source.confidence();
+                    lineConfidenceCount++;
+                }
+                previousGroup = group;
             }
-            if (chars.isEmpty() || union == null || union.isEmpty()) continue;
-            String value = group.text.isBlank() ? text.toString() : group.text;
-            lines.add(new OcrDocument.Line(value, union, group.confidence, chars));
+
+            String value = lineText.toString().trim();
+            if (chars.isEmpty() || lineBounds == null || lineBounds.isEmpty() || value.isEmpty()) continue;
+            float lineConfidence = lineConfidenceCount == 0 ? 0f
+                    : lineConfidenceSum / lineConfidenceCount;
+            lines.add(new OcrDocument.Line(value, lineBounds, lineConfidence, chars));
             blocks.add(value);
             if (full.length() > 0) full.append('\n');
             full.append(value);
             lineId++;
-            groupId++;
         }
+
         if (lines.isEmpty()) return null;
         float confidence = confidenceCount == 0 ? 0f : confidenceSum / confidenceCount;
         return OcrDocument.screenSpace(full.toString(), blocks, lines,
                 engine == null ? "gesture-selected" : engine,
                 confidence, template.score(), template.imageWidth(), template.imageHeight());
+    }
+
+    private static boolean shouldInsertSpace(GroupHit previous, GroupHit current) {
+        if (previous == null || current == null) return false;
+        String a = previous.text == null ? "" : previous.text;
+        String b = current.text == null ? "" : current.text;
+        if (a.isEmpty() || b.isEmpty()) return false;
+        int last = a.codePointBefore(a.length());
+        int first = b.codePointAt(0);
+        if (isCjk(last) || isCjk(first)) return false;
+        if (isOpeningPunctuation(last) || isClosingPunctuation(first)) return false;
+
+        int gap = current.bounds.left - previous.bounds.right;
+        float refHeight = Math.max(1f,
+                Math.min(Math.max(1, previous.bounds.height()), Math.max(1, current.bounds.height())));
+        return gap >= -refHeight * 0.12f;
     }
 
     private static List<GroupHit> buildGroups(OcrDocument document) {
@@ -265,6 +379,30 @@ final class CircleGestureTextSelector {
         int dy = a.centerY() - b.centerY();
         if (Math.abs(dy) > tolerance) return Integer.compare(a.centerY(), b.centerY());
         return Integer.compare(a.left, b.left);
+    }
+
+    private static float axisOverlapRatio(int aStart, int aEnd, int bStart, int bEnd) {
+        int overlap = Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
+        int smaller = Math.max(1, Math.min(Math.max(1, aEnd - aStart), Math.max(1, bEnd - bStart)));
+        return overlap / (float) smaller;
+    }
+
+    private static boolean isCjk(int cp) {
+        return (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF)
+                || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x2FA1F);
+    }
+
+    private static boolean isClosingPunctuation(int cp) {
+        return cp == '.' || cp == ',' || cp == ':' || cp == ';' || cp == '!' || cp == '?'
+                || cp == ')' || cp == ']' || cp == '}' || cp == '%' || cp == 0x3002
+                || cp == 0xFF0C || cp == 0xFF01 || cp == 0xFF1F || cp == 0xFF1A
+                || cp == 0xFF1B || cp == 0x3001 || cp == 0x3009 || cp == 0x300B
+                || cp == 0x300D || cp == 0x300F || cp == 0x3011;
+    }
+
+    private static boolean isOpeningPunctuation(int cp) {
+        return cp == '(' || cp == '[' || cp == '{' || cp == 0x3008 || cp == 0x300A
+                || cp == 0x300C || cp == 0x300E || cp == 0x3010;
     }
 
     private static long area(Rect rect) {
