@@ -12,7 +12,7 @@ final class CircleTextSelectionModel {
     private List<OcrDocument.CharUnit> chars = List.of();
     private int startIndex = -1;
     private int endIndex = -1;
-    /** Non-contiguous rectangle selection before a handle is dragged. Always expanded to groups. */
+    /** Non-contiguous initial selection before a handle is dragged. Always expanded to groups. */
     private List<Integer> explicitSelection = List.of();
     /**
      * Initial tap/scribble selection is semantic-group based. Once either selection handle is moved,
@@ -99,10 +99,7 @@ final class CircleTextSelectionModel {
         return indexes.isEmpty() ? -1 : indexes.get(0);
     }
 
-    /**
-     * First character of the last selected visual segment. This lets the old overlay place the
-     * right handle on the union box even when a word is only partially selected.
-     */
+    /** First character of the last selected visual segment. */
     int high() {
         List<Integer> indexes = selectionIndices();
         if (indexes.isEmpty()) return -1;
@@ -127,11 +124,6 @@ final class CircleTextSelectionModel {
         return out;
     }
 
-    /**
-     * Compatibility surface for existing overlays: one drawable rectangle per selected semantic
-     * segment. Before a handle is moved, a segment is the whole word/group. After a handle is moved,
-     * the first/last segment can be only the selected letters inside that word.
-     */
     RectF wordViewRect(int index, int viewWidth, int viewHeight) {
         if (!validIndex(index)) return new RectF();
         if (!characterAdjustment) {
@@ -165,7 +157,6 @@ final class CircleTextSelectionModel {
         return screen == null ? new RectF() : transform.screenToView(screen, viewWidth, viewHeight);
     }
 
-    /** One visual rectangle per selected semantic segment, not one rectangle per character. */
     List<RectF> selectionGroupViewRects(int viewWidth, int viewHeight) {
         List<Integer> indexes = selectionIndices();
         if (indexes.isEmpty()) return List.of();
@@ -212,11 +203,6 @@ final class CircleTextSelectionModel {
         return best;
     }
 
-    /**
-     * Exact character hit first; otherwise snap to the nearest character on the same row. Callers
-     * decide whether that character should expand to its whole group (initial tap) or remain exact
-     * (selection-handle adjustment).
-     */
     int findSelectionWord(float viewX, float viewY, int viewWidth, int viewHeight,
                           float maxDistancePx) {
         int exact = findWordAt(viewX, viewY, viewWidth, viewHeight);
@@ -263,7 +249,56 @@ final class CircleTextSelectionModel {
             for (int j = lo; j <= hi; j++) selected[j] = true;
         }
         if (!found) return false;
+        return applyBooleanSelection(selected);
+    }
 
+    /**
+     * Initialize selection from a gesture-scoped hint while retaining the complete OCR document.
+     * Hint characters come from the same recognizer pass, so geometry is the primary identity.
+     */
+    boolean selectHintDocument(OcrDocument hint) {
+        if (hint == null || !hint.isScreenSpace() || hint.chars().isEmpty() || chars.isEmpty()) {
+            return false;
+        }
+        boolean[] selected = new boolean[chars.size()];
+        boolean found = false;
+        for (OcrDocument.CharUnit h : hint.chars()) {
+            if (h == null || h.bounds().isEmpty() || h.text().isBlank()) continue;
+            int best = -1;
+            float bestScore = -1f;
+            Rect hr = h.bounds();
+            for (int i = 0; i < chars.size(); i++) {
+                OcrDocument.CharUnit c = chars.get(i);
+                if (c == null || !h.text().equals(c.text())) continue;
+                Rect cr = c.bounds();
+                if (cr.equals(hr)) {
+                    best = i;
+                    bestScore = Float.MAX_VALUE;
+                    break;
+                }
+                Rect intersection = new Rect();
+                if (!intersection.setIntersect(hr, cr)) continue;
+                float overlap = (float) intersection.width() * intersection.height();
+                float denom = Math.max(1f, Math.min(
+                        (float) hr.width() * hr.height(), (float) cr.width() * cr.height()));
+                float score = overlap / denom;
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = i;
+                }
+            }
+            if (best < 0 || bestScore < 0.55f) continue;
+            found = true;
+            int lo = groupStart(best);
+            int hi = groupEnd(best);
+            for (int i = lo; i <= hi; i++) selected[i] = true;
+        }
+        if (!found) return false;
+        return applyBooleanSelection(selected);
+    }
+
+    private boolean applyBooleanSelection(boolean[] selected) {
+        if (selected == null || selected.length != chars.size()) return false;
         ArrayList<Integer> hit = new ArrayList<>();
         for (int i = 0; i < selected.length; i++) if (selected[i]) hit.add(i);
         if (hit.isEmpty()) return false;
@@ -370,13 +405,6 @@ final class CircleTextSelectionModel {
 
     private boolean validIndex(int index) { return index >= 0 && index < chars.size(); }
 
-    /**
-     * Normalize mixed View/OCR output into stable visual-line metadata while preserving the source
-     * recognizer's semantic group boundaries. View snapshot groups come from actual whitespace in
-     * the source CharSequence; PP-OCR groups come from actual recognized spaces; ML Kit groups map
-     * to its Elements. Geometry is used only to order rows, never to invent a word break inside a
-     * valid source group.
-     */
     private List<OcrDocument.CharUnit> normalize(List<OcrDocument.CharUnit> input) {
         if (input == null || input.isEmpty()) return List.of();
         Rect workspace = transform.screenFrame();
