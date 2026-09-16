@@ -624,8 +624,19 @@ public final class OcrEngine {
         MAIN.post(() -> {
             if (stale(app, generation, requestId, "deliver_main")) return;
             if (callback != null) {
-                try { callback.onSuccess(document); }
-                catch (Throwable t) { DiagnosticLog.i(app, "OCR_DISPATCH", "callback failed=" + safe(t)); }
+                try {
+                    callback.onSuccess(document);
+                } catch (Throwable t) {
+                    DiagnosticLog.i(app, "OCR_DISPATCH",
+                            "success callback failed=" + safe(t));
+                    try {
+                        callback.onFailure(new IllegalStateException(
+                                "OCR success callback failed", t));
+                    } catch (Throwable failureError) {
+                        DiagnosticLog.i(app, "OCR_DISPATCH",
+                                "failure callback also failed=" + safe(failureError));
+                    }
+                }
                 return;
             }
             if (!deliverUi) return;
