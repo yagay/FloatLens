@@ -22,10 +22,10 @@ final class GoogleCircleController {
                 ScreenshotHideCoordinator.acquire(app, "google_circle_" + gen);
         pendingHideLease = hideLease;
         DiagnosticLog.i(app, "G_CIRCLE", "start gen=" + gen
-                + " phase=capture_then_ocr_preindex"
-                + " textRecognition=pp_detect_then_single_mlkit"
-                + " classifier=gesture_select_from_single_document"
-                + " tiles=false aksMerge=false characterFusion=false localOcr=false"
+                + " phase=capture_then_screenshot_text"
+                + " textRecognition=fast_full_mlkit_plus_local_crop"
+                + " classifier=gesture_to_frozen_screenshot_ocr"
+                + " preindexBlocking=false ppocrPreindex=false localOcr=true"
                 + " viewText=false semanticLabels=false contentHints=false"
                 + " gestureGeometry=exact_path"
                 + " circleMode=editable_screenshot autoExpand=false");
@@ -39,8 +39,9 @@ final class GoogleCircleController {
                 }
             }
 
-            // Build one frozen OCR document immediately. PP-OCR may localize text pixels, while
-            // ML Kit remains the only text recognizer. No tiled OCR or cross-pass merge participates.
+            // Start a fast full-frame ML Kit cache, but never make interactive gestures wait for it.
+            // GoogleCircleTextResolver always falls back to OCR of a tight crop from this same
+            // frozen screenshot when the cache is not ready or does not geometrically hit.
             GoogleCircleTextResolver.preload(app, frame);
 
             boolean shown = GoogleCircleInlineOverlay.show(app, frame, () -> {
