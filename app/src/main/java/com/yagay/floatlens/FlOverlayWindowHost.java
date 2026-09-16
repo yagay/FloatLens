@@ -9,6 +9,14 @@ import java.util.Map;
 
 /** Shared FloatLens WindowManager host for ordinary overlay surfaces. */
 final class FlOverlayWindowHost {
+    /**
+     * A text action menu is often attached from the same ACTION_UP that finishes a text selection.
+     * Some overlay/window combinations can route that release into the newly attached first menu
+     * item. The first item is Copy, so guard the new menu briefly until the selection touch is fully
+     * released. The menu is still drawn immediately; only input is delayed.
+     */
+    private static final long FLOAT_ACTION_MENU_INPUT_GUARD_MS = 120L;
+
     private final Context context;
     private final WindowManager appWindowManager;
     private final Map<View, Boolean> accessibilityHosted = new IdentityHashMap<>();
@@ -21,28 +29,58 @@ final class FlOverlayWindowHost {
 
     boolean add(View view, WindowManager.LayoutParams lp, String tag) {
         if (view == null || lp == null) return false;
+        boolean menuInputGuard = prepareInputGuard(lp, tag);
         LensAccessibilityService a = LensAccessibilityService.get();
         if (a != null && a.addAccessibilityOverlay(view, lp)) {
             remember(view, true);
             DiagnosticLog.i(context, "FL_WINDOW", tag + " host=accessibility type=" + lp.type);
+            if (menuInputGuard) armInputGuardRelease(view, lp, tag);
             return true;
         }
-        return addApplication(view, lp, tag);
+        return addApplicationPrepared(view, lp, tag, menuInputGuard);
     }
 
     boolean addApplication(View view, WindowManager.LayoutParams lp, String tag) {
         if (view == null || lp == null) return false;
+        boolean menuInputGuard = prepareInputGuard(lp, tag);
+        return addApplicationPrepared(view, lp, tag, menuInputGuard);
+    }
+
+    private boolean addApplicationPrepared(View view, WindowManager.LayoutParams lp, String tag,
+                                           boolean menuInputGuard) {
         try {
             lp.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
             appWindowManager.addView(view, lp);
             remember(view, false);
             DiagnosticLog.i(context, "FL_WINDOW", tag + " host=application type=" + lp.type);
+            if (menuInputGuard) armInputGuardRelease(view, lp, tag);
             return true;
         } catch (Throwable t) {
             accessibilityHosted.remove(view);
             DiagnosticLog.i(context, "FL_WINDOW", tag + " application add failed=" + t);
             return false;
         }
+    }
+
+    private boolean prepareInputGuard(WindowManager.LayoutParams lp, String tag) {
+        if (!"float_action_menu".equals(tag)) return false;
+        if ((lp.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0) return false;
+        lp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+        DiagnosticLog.i(context, "FLOAT_ACTION_MENU",
+                "input guard armed ms=" + FLOAT_ACTION_MENU_INPUT_GUARD_MS
+                        + " reason=selection_release menuOnly=true clipboardWrite=false");
+        return true;
+    }
+
+    private void armInputGuardRelease(View view, WindowManager.LayoutParams lp, String tag) {
+        view.postDelayed(() -> {
+            if (!accessibilityHosted.containsKey(view)) return;
+            lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+            boolean updated = update(view, lp, tag + "_input_ready");
+            DiagnosticLog.i(context, "FLOAT_ACTION_MENU",
+                    "input guard released updated=" + updated
+                            + " menuOnly=true clipboardWrite=false");
+        }, FLOAT_ACTION_MENU_INPUT_GUARD_MS);
     }
 
     boolean update(View view, WindowManager.LayoutParams lp, String tag) {
