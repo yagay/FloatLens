@@ -72,9 +72,9 @@ final class GoogleCircleCapture {
 
             Rect display = ScreenGeometry.displayBounds(app);
             FloatSettings settings = new FloatSettings(app);
-            // Keep the status-bar preference, but always leave live navigation outside the overlay.
+            boolean keepNavigation = settings.keepNavigationBarInScreenshot();
             Rect workspace = CaptureSystemBarsPolicy.captureBounds(
-                    app, settings.keepStatusBarInScreenshot(), false);
+                    app, settings.keepStatusBarInScreenshot(), keepNavigation);
             try {
                 Bitmap frozen;
                 if (workspace.equals(display)) {
@@ -87,6 +87,8 @@ final class GoogleCircleCapture {
                 DiagnosticLog.i(app, "G_CIRCLE_CAPTURE", "ready display=" + display.toShortString()
                         + " workspace=" + workspace.toShortString()
                         + " bitmap=" + frozen.getWidth() + "x" + frozen.getHeight()
+                        + " keepStatusBar=" + settings.keepStatusBarInScreenshot()
+                        + " keepNavigationBar=" + keepNavigation
                         + " coordinateSpace=BITMAP_ONLY");
                 ok.accept(frame);
             } catch (Throwable t) {
