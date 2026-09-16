@@ -14,10 +14,10 @@ import java.util.function.BooleanSupplier;
  * Builds the frozen Circle OCR index using the AKS spatial strategy: one full-frame pass plus four
  * overlapping 60% quadrant crops.
  *
- * <p>The five OCR documents are deliberately kept independent. There is no global word/line/char
- * merge and no cross-pass character fusion. Each crop is mapped back into full-bitmap coordinates
- * immediately; gesture-time selection later chooses one complete recognizer result from the passes
- * that actually cover the user's target. Circle uses ML Kit only.</p>
+ * <p>Each ML Kit pass is mapped back into full-bitmap coordinates. When all available passes
+ * finish, {@link CircleOcrIndex} builds one AKS-style global document at whole Element/group
+ * granularity: exact-text heavy-overlap duplicates are removed, conflicting groups are preserved,
+ * and characters are never fused between OCR sources.</p>
  */
 final class CirclePreindexTiledOcr {
     interface Callback {
@@ -73,7 +73,9 @@ final class CirclePreindexTiledOcr {
                             + " bitmap=" + source.getWidth() + "x" + source.getHeight()
                             + " passes=" + specs.size()
                             + " tileFraction=" + TILE_FRACTION
-                            + " parallel=true merge=false characterFusion=false"
+                            + " parallel=true"
+                            + " merge=aks_word_group exactText=true overlap=0.70"
+                            + " characterFusion=false"
                             + " enginePolicy=mlkit_only_single_document"
                             + " workspaceCancellation=true");
 
@@ -187,8 +189,10 @@ final class CirclePreindexTiledOcr {
                 DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
                         "finish usable=true passes=" + complete.passCount()
                                 + " totalChars=" + complete.totalChars()
+                                + " mergedChars=" + complete.mergedChars()
                                 + " engine=mlkit"
-                                + " merge=false characterFusion=false"
+                                + " merge=aks_word_group exactText=true overlap=0.70"
+                                + " characterFusion=false"
                                 + " elapsedMs="
                                 + (android.os.SystemClock.uptimeMillis() - started));
                 callback.onSuccess(complete);
