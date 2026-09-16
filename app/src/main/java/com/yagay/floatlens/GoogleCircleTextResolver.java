@@ -98,7 +98,9 @@ final class GoogleCircleTextResolver {
     private static final float RANGE_CORRIDOR_DP = 6f;
 
     private static final float LOCAL_TAP_HALF_SIZE_DP = 38f;
-    private static final float LOCAL_RANGE_PAD_DP = 4f;
+    // The crop must contain the full +/-18dp OCR stroke corridor. Pixels outside that corridor are
+    // neutralized before recognition, so this padding does not reintroduce rectangular interference.
+    private static final float LOCAL_RANGE_PAD_DP = 20f;
 
     private static long indexGeneration;
     private static PreloadState currentIndex;
@@ -430,6 +432,7 @@ final class GoogleCircleTextResolver {
 
         final Bitmap crop;
         final int maskedViewChars;
+        final GestureOcrCorridorMask.Result corridor;
         try {
             Bitmap made = Bitmap.createBitmap(source, roi.left, roi.top, roi.width(), roi.height());
             if (made == source || !made.isMutable()) {
@@ -441,6 +444,8 @@ final class GoogleCircleTextResolver {
             crop = made;
             maskedViewChars = ViewTextOcrMask.apply(state.app, crop, roi,
                     state.viewDocument, frame.transform);
+            corridor = GestureOcrCorridorMask.apply(state.app, crop, roi,
+                    gesture, frame.transform);
         } catch (Throwable t) {
             callback.onResolved(new Result(Source.NONE, null, gestureScreen, roi, t, true));
             return;
@@ -457,6 +462,9 @@ final class GoogleCircleTextResolver {
                 + " input=" + crop.getWidth() + "x" + crop.getHeight()
                 + " enhancement=internal_multiscale"
                 + " exactViewCharsMasked=" + maskedViewChars
+                + " corridorApplied=" + corridor.applied
+                + " corridorPoints=" + corridor.pointCount
+                + " corridorHalfWidthBitmapPx=" + Math.round(corridor.halfWidthBitmapPx)
                 + " geometry=roi_to_screen_matrix"
                 + " enginePolicy=follow_main_setting"
                 + " pixelOnly=true semanticLabels=false nearbyCaptionSearch=false");
