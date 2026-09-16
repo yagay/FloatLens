@@ -17,27 +17,23 @@ final class CircleSelectFrame {
             }
 
             Rect display = ScreenGeometry.displayBounds(app);
-            Rect workspace = contentBounds(app);
+            Rect content = contentBounds(app);
             FloatSettings settings = new FloatSettings(app);
             boolean keepNavigation = settings.keepNavigationBarInScreenshot();
-            Rect configuredCapture = CaptureSystemBarsPolicy.captureBounds(
-                    app, settings.keepStatusBarInScreenshot(), keepNavigation);
             try {
                 Bitmap frame;
-                if (workspace.equals(display)) {
+                if (content.equals(display)) {
                     frame = raw;
                 } else {
-                    frame = ScreenshotGeometry.cropScreenBounds(app, raw, workspace);
+                    frame = ScreenshotGeometry.cropScreenBounds(app, raw, content);
                     if (frame != raw && !raw.isRecycled()) raw.recycle();
                 }
-                DiagnosticLog.i(app, "CIRCLE_SELECT", "interactive frame display="
+                DiagnosticLog.i(app, "CIRCLE_SELECT", "configured frame display="
                         + display.toShortString()
-                        + " configuredCapture=" + configuredCapture.toShortString()
-                        + " workspace=" + workspace.toShortString()
+                        + " content=" + content.toShortString()
                         + " bitmap=" + frame.getWidth() + "x" + frame.getHeight()
                         + " keepStatusBar=" + settings.keepStatusBarInScreenshot()
-                        + " keepNavigationBar=" + keepNavigation
-                        + " liveNavigationAlwaysInteractive=true");
+                        + " keepNavigationBar=" + keepNavigation);
                 ok.accept(frame);
             } catch (Throwable error) {
                 if (!raw.isRecycled()) raw.recycle();
@@ -46,11 +42,12 @@ final class CircleSelectFrame {
         }, fail);
     }
 
-    /** Circle always leaves live navigation controls outside its interactive window. */
     static Rect contentBounds(Context c) {
         FloatSettings settings = new FloatSettings(c);
         return CaptureSystemBarsPolicy.captureBounds(
-                c, settings.keepStatusBarInScreenshot(), false);
+                c,
+                settings.keepStatusBarInScreenshot(),
+                settings.keepNavigationBarInScreenshot());
     }
 
     /** Compatibility alias; physical display ownership lives in ScreenGeometry. */
