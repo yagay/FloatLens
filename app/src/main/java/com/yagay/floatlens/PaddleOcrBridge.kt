@@ -19,10 +19,15 @@ import kotlinx.coroutines.withContext
 import kotlin.math.max
 import kotlin.math.min
 
-/** PP-OCR adapter. Engine-specific output is normalized to OcrDocument here. */
+/** PP-OCR adapter. Engine-specific output is normalized at this boundary. */
 object PaddleOcrBridge {
     interface Callback {
         fun onSuccess(document: OcrDocument, totalMs: Long, lineCount: Int)
+        fun onFailure(message: String)
+    }
+
+    interface DetectionCallback {
+        fun onSuccess(regions: List<Rect>, totalMs: Long)
         fun onFailure(message: String)
     }
 
@@ -56,6 +61,38 @@ object PaddleOcrBridge {
             } catch (t: Throwable) {
                 val msg = describeThrowable(t)
                 DiagnosticLog.i(app, "PPOCRV6_BRIDGE", "failure model=$model $msg")
+                withContext(Dispatchers.Main) { callback.onFailure(msg) }
+            }
+        }
+    }
+
+    /**
+     * Detection-only path. PP-OCR owns only localization; callers may use another recognizer for
+     * decoding. Rectangles remain in the original bitmap coordinate space.
+     */
+    @JvmStatic
+    fun detect(context: Context, bitmap: Bitmap, model: Int, callback: DetectionCallback) {
+        val app = context.applicationContext
+        scope.launch {
+            val started = System.currentTimeMillis()
+            try {
+                if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
+                    throw IllegalArgumentException("invalid bitmap")
+                }
+                if (!OcrModelManager.isReady(app, model)) throw IllegalStateException("model_not_downloaded")
+                val boxes = runMutex.withLock {
+                    val ocr = getOrCreate(app, model)
+                    ocr.detect(bitmap)
+                }
+                val regions = boxes.mapNotNull { boxRect(it, bitmap.width, bitmap.height) }
+                    .filter { !it.isEmpty }
+                val elapsed = System.currentTimeMillis() - started
+                DiagnosticLog.i(app, "PPOCRV6_DETECT",
+                    "success model=$model regions=${regions.size} elapsedMs=$elapsed")
+                withContext(Dispatchers.Main) { callback.onSuccess(regions, elapsed) }
+            } catch (t: Throwable) {
+                val msg = describeThrowable(t)
+                DiagnosticLog.i(app, "PPOCRV6_DETECT", "failure model=$model $msg")
                 withContext(Dispatchers.Main) { callback.onFailure(msg) }
             }
         }
@@ -268,8 +305,8 @@ object PaddleOcrBridge {
     @JvmStatic
     fun releaseModel(model: Int) {
         scope.launch {
-            // Same lock order as recognize(): run -> init. This guarantees no native ORT session is
-            // closed while an inference using that engine is running or about to start.
+            // Same lock order as recognize()/detect(): run -> init. This guarantees no native ORT
+            // session is closed while inference is running or about to start.
             runMutex.withLock {
                 initMutex.withLock {
                     val old = synchronized(engines) { engines.remove(model) }
