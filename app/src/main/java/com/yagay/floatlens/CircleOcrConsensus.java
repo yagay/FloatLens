@@ -15,13 +15,24 @@ final class CircleOcrConsensus {
         final OcrDocument document;
         final int passHits;
         final int clusters;
+        /** Number of OCR passes that hit the same spatial target, regardless of recognized text. */
         final int maxSupport;
+        /** Maximum number of independent passes that agree on the exact normalized chosen text. */
+        final int maxTextSupport;
+        /** True when at least one spatial cluster contains two or more different recognized texts. */
+        final boolean textConflict;
+        /** Compact diagnostic summary of source=text alternatives near the gesture. */
+        final String candidateSummary;
 
-        Result(OcrDocument document, int passHits, int clusters, int maxSupport) {
+        Result(OcrDocument document, int passHits, int clusters, int maxSupport,
+               int maxTextSupport, boolean textConflict, String candidateSummary) {
             this.document = document;
             this.passHits = passHits;
             this.clusters = clusters;
             this.maxSupport = maxSupport;
+            this.maxTextSupport = maxTextSupport;
+            this.textConflict = textConflict;
+            this.candidateSummary = candidateSummary == null ? "" : candidateSummary;
         }
     }
 
@@ -53,6 +64,26 @@ final class CircleOcrConsensus {
         }
 
         int support() { return sources.size(); }
+
+        int exactTextSupport(Candidate candidate) {
+            if (candidate == null) return 0;
+            String key = normalize(candidate.hit.text);
+            if (key.isEmpty()) return 0;
+            HashSet<String> agreeingSources = new HashSet<>();
+            for (Candidate member : members) {
+                if (key.equals(normalize(member.hit.text))) agreeingSources.add(member.entry.source);
+            }
+            return agreeingSources.size();
+        }
+
+        int distinctTextCount() {
+            HashSet<String> values = new HashSet<>();
+            for (Candidate member : members) {
+                String key = normalize(member.hit.text);
+                if (!key.isEmpty()) values.add(key);
+            }
+            return values.size();
+        }
     }
 
     static Result resolve(Context context,
@@ -62,7 +93,7 @@ final class CircleOcrConsensus {
                           float tapToleranceDp,
                           float corridorDp) {
         if (context == null || frame == null || gesture == null || index == null || index.isEmpty()) {
-            return new Result(null, 0, 0, 0);
+            return new Result(null, 0, 0, 0, 0, false, "");
         }
 
         ArrayList<Candidate> candidates = new ArrayList<>();
@@ -76,7 +107,7 @@ final class CircleOcrConsensus {
                 candidates.add(new Candidate(entry, hit));
             }
         }
-        if (candidates.isEmpty()) return new Result(null, passHits, 0, 0);
+        if (candidates.isEmpty()) return new Result(null, passHits, 0, 0, 0, false, "");
 
         float density = ScreenGeometry.density(context);
         ArrayList<Cluster> clusters = new ArrayList<>();
@@ -97,13 +128,22 @@ final class CircleOcrConsensus {
 
         ArrayList<Chosen> chosen = new ArrayList<>();
         int maxSupport = 0;
+        int maxTextSupport = 0;
+        boolean textConflict = false;
+        StringBuilder alternatives = new StringBuilder();
         for (Cluster cluster : clusters) {
             Candidate best = choose(cluster, frame.screenBounds);
             if (best == null) continue;
             maxSupport = Math.max(maxSupport, cluster.support());
+            maxTextSupport = Math.max(maxTextSupport, cluster.exactTextSupport(best));
+            textConflict |= cluster.distinctTextCount() > 1;
+            appendClusterSummary(alternatives, cluster);
             chosen.add(new Chosen(best, score(best, cluster, frame.screenBounds)));
         }
-        if (chosen.isEmpty()) return new Result(null, passHits, clusters.size(), maxSupport);
+        if (chosen.isEmpty()) {
+            return new Result(null, passHits, clusters.size(), maxSupport,
+                    maxTextSupport, textConflict, alternatives.toString());
+        }
 
         // A transitive spatial cluster can still leave two nearly identical representatives. Keep
         // only the better one without modifying its original character geometry.
@@ -120,7 +160,8 @@ final class CircleOcrConsensus {
         if (template == null && !index.entries().isEmpty()) template = index.entries().get(0).document;
         OcrDocument document = CircleGestureTextSelector.documentFromGroups(groups, template,
                 "gesture-consensus");
-        return new Result(document, passHits, clusters.size(), maxSupport);
+        return new Result(document, passHits, clusters.size(), maxSupport,
+                maxTextSupport, textConflict, alternatives.toString());
     }
 
     private static final class Chosen {
@@ -148,7 +189,6 @@ final class CircleOcrConsensus {
 
     private static double score(Candidate candidate, Cluster cluster, Rect frameBounds) {
         String key = normalize(candidate.hit.text);
-        int exactSupport = 0;
         double fuzzyAgreement = 0d;
         Set<String> exactSources = new HashSet<>();
         Set<String> fuzzySources = new HashSet<>();
@@ -160,7 +200,7 @@ final class CircleOcrConsensus {
             if (key.equals(otherKey)) exactSources.add(other.entry.source);
             if (fuzzySources.add(other.entry.source)) fuzzyAgreement += similarity;
         }
-        exactSupport = exactSources.size();
+        int exactSupport = exactSources.size();
 
         float confidence = candidate.hit.confidence;
         if (!Float.isFinite(confidence)) confidence = 0f;
@@ -215,6 +255,21 @@ final class CircleOcrConsensus {
             if (similarity >= 0.55f) return i;
         }
         return -1;
+    }
+
+    private static void appendClusterSummary(StringBuilder out, Cluster cluster) {
+        if (out == null || cluster == null || out.length() >= 220) return;
+        if (out.length() > 0) out.append(" | ");
+        int added = 0;
+        for (Candidate member : cluster.members) {
+            if (added++ > 0) out.append(',');
+            out.append(member.entry.source).append('=');
+            String text = member.hit.text == null ? "" : member.hit.text
+                    .replace('\n', ' ').replace('\r', ' ').trim();
+            if (text.length() > 24) text = text.substring(0, 24) + "…";
+            out.append(text);
+            if (out.length() >= 220) break;
+        }
     }
 
     private static float overlapRatio(Rect a, Rect b) {
