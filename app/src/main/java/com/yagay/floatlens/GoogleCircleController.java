@@ -43,10 +43,12 @@ final class GoogleCircleController {
             GoogleCircleTextResolver.preload(app, frame);
 
             boolean shown = GoogleCircleInlineOverlay.show(app, frame, () -> {
+                GoogleCircleTextResolver.release(app, frame, "workspace_closed");
                 CircleActiveBorderOverlay.hide(app, "workspace_closed");
                 restore(app, hideLease, gen, "closed");
             });
             if (!shown) {
+                GoogleCircleTextResolver.release(app, frame, "overlay_failed");
                 frame.recycle();
                 CircleActiveBorderOverlay.hide(app, "overlay_failed");
                 restore(app, hideLease, gen, "overlay_failed");
