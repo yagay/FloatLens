@@ -4,28 +4,25 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
 
-import com.google.mlkit.vision.common.InputImage;
-import com.google.mlkit.vision.text.TextRecognizer;
-
 import java.util.List;
 
 /**
  * Screenshot-only recognition session for Circle Select.
  *
- * One frozen screenshot is the source for both the fast full-frame text index and precise ROI
- * refinement. Accessibility/View text is intentionally not read or merged here.
+ * One frozen screenshot is the only source of truth. Full-frame indexing and precise ROI refinement
+ * both reuse the normal screenshot {@link OcrEngine}, so engine/model/language selection stays
+ * identical to ordinary screenshot OCR. Accessibility/View text is not read or merged here.
  */
 final class CircleRecognitionSession {
-    // VIEW_SNAPSHOT is kept for callback/source compatibility; screenshot-only sessions do not emit it.
-    enum Stage { VIEW_SNAPSHOT, FAST_MLKIT, ROI_PRECISE }
+    // Legacy stages are retained for source compatibility. New sessions emit FAST_SCREENSHOT_OCR.
+    enum Stage { VIEW_SNAPSHOT, FAST_MLKIT, FAST_SCREENSHOT_OCR, ROI_PRECISE }
 
     interface Callback {
         void onUpdate(OcrDocument document, Stage stage, boolean fastReady);
         void onFailure(Stage stage, Throwable error, boolean fastReady);
     }
 
-    private static final int MLKIT_MIN_IMAGE_EDGE = 32;
-    private static final float MLKIT_CONFIDENCE = 0.72f;
+    private static final int OCR_MIN_IMAGE_EDGE = 32;
 
     private final Context app;
     private final Bitmap screenshot;
@@ -33,10 +30,10 @@ final class CircleRecognitionSession {
     private final Callback callback;
     private long generation;
     private boolean closed;
+    private boolean fastFinished;
+    private Rect pendingRefineRegion;
     private OcrDocument current;
     private CircleTextIndex index;
-    private TextRecognizer fastRecognizer;
-    private TextRecognizer roiRecognizer;
 
     CircleRecognitionSession(Context context, Bitmap screenshot,
                              CircleViewTextSnapshot ignoredViewSnapshot,
@@ -60,29 +57,70 @@ final class CircleRecognitionSession {
         if (closed || screenshot == null || screenshot.isRecycled()) return;
         final long run = ++generation;
         Rect frame = transform.screenFrame();
+        fastFinished = false;
+        pendingRefineRegion = null;
 
         index = new CircleTextIndex(emptyScreenDocument("screenshot-base", frame),
                 Math.max(1, frame.width()), Math.max(1, frame.height()));
         current = index.current();
 
         DiagnosticLog.i(app, "CIRCLE_INDEX",
-                "start source=screenshot mlkit=true view=false ppocr=false"
+                "start source=screenshot engine=shared-screenshot-ocr view=false"
                         + " image=" + screenshot.getWidth() + "x" + screenshot.getHeight()
                         + " frame=" + frame.toShortString());
-        startFastMlKit(run);
+
+        OcrEngine.recognizeDocument(app, screenshot, new OcrEngine.DocumentCallback() {
+            @Override public void onSuccess(OcrDocument document) {
+                if (!isCurrent(run) || index == null) return;
+                fastFinished = true;
+                try {
+                    OcrDocument screenDocument = toScreenDocument(document);
+                    index.setFastOcr(screenDocument);
+                    current = index.current();
+                    DiagnosticLog.i(app, "CIRCLE_INDEX", "full screenshot ocr ready engine="
+                            + document.engine()
+                            + " chars=" + screenDocument.chars().size()
+                            + " lines=" + screenDocument.lines().size()
+                            + " coordinateSpace=" + screenDocument.coordinateSpace());
+                    emit(current, Stage.FAST_SCREENSHOT_OCR, true);
+                } catch (Throwable t) {
+                    DiagnosticLog.i(app, "CIRCLE_INDEX", "full screenshot ocr map failed=" + safe(t));
+                    emitFailure(Stage.FAST_SCREENSHOT_OCR, t, true);
+                }
+                drainPendingRefine();
+            }
+
+            @Override public void onFailure(Throwable error) {
+                if (!isCurrent(run)) return;
+                fastFinished = true;
+                DiagnosticLog.i(app, "CIRCLE_INDEX", "full screenshot ocr failed=" + safe(error));
+                emitFailure(Stage.FAST_SCREENSHOT_OCR, error, true);
+                drainPendingRefine();
+            }
+        });
     }
 
-    /** Refine one screen-space region by cropping the same frozen screenshot and running ML Kit. */
+    /** Refine one screen-space region using the same OCR engine/model/language path as screenshots. */
     void refine(Rect screenRegion) {
         if (closed || screenRegion == null || screenRegion.isEmpty()
                 || screenshot == null || screenshot.isRecycled() || index == null) return;
+
         Rect requestedRegion = new Rect(screenRegion);
         if (!requestedRegion.intersect(transform.screenFrame()) || requestedRegion.isEmpty()) return;
+
+        // Do not let a later full-frame result overwrite a precise ROI patch. Queue the tap until
+        // the initial screenshot OCR has completed; only one tap refinement can be active in UI.
+        if (!fastFinished) {
+            pendingRefineRegion = requestedRegion;
+            DiagnosticLog.i(app, "CIRCLE_INDEX", "roi queued until full screenshot ocr ready region="
+                    + requestedRegion.toShortString());
+            return;
+        }
+
         Rect requestedBitmap = transform.screenToBitmap(requestedRegion);
         if (requestedBitmap.isEmpty()) return;
-
         Rect bitmapRegion = ensureMinBitmapRegion(requestedBitmap,
-                screenshot.getWidth(), screenshot.getHeight(), MLKIT_MIN_IMAGE_EDGE);
+                screenshot.getWidth(), screenshot.getHeight(), OCR_MIN_IMAGE_EDGE);
         if (bitmapRegion.isEmpty()) return;
         Rect region = transform.bitmapToScreen(bitmapRegion);
         if (region.isEmpty()) return;
@@ -98,129 +136,65 @@ final class CircleRecognitionSession {
         }
 
         final long run = generation;
-        TextRecognizer recognizer = null;
-        try {
-            recognizer = MlKitTextCore.createPreferredRecognizer(app);
-            roiRecognizer = recognizer;
-            String engine = MlKitTextCore.preferredEngine("roi-mlkit", app);
-            TextRecognizer finalRecognizer = recognizer;
-            DiagnosticLog.i(app, "CIRCLE_INDEX", "roi screenshot mlkit start requested="
-                    + requestedRegion.toShortString()
-                    + " screen=" + region.toShortString()
-                    + " bitmap=" + bitmapRegion.toShortString()
-                    + " crop=" + crop.getWidth() + "x" + crop.getHeight()
-                    + " ppocr=false");
+        DiagnosticLog.i(app, "CIRCLE_INDEX", "roi screenshot ocr start requested="
+                + requestedRegion.toShortString()
+                + " screen=" + region.toShortString()
+                + " bitmap=" + bitmapRegion.toShortString()
+                + " crop=" + crop.getWidth() + "x" + crop.getHeight());
 
-            recognizer.process(InputImage.fromBitmap(crop, 0))
-                    .addOnSuccessListener(text -> {
-                        try {
-                            if (!isCurrent(run) || index == null) return;
-                            OcrDocument localBitmap = MlKitTextCore.toDocument(
-                                    text, engine, crop.getWidth(), crop.getHeight(),
-                                    MLKIT_CONFIDENCE, null);
-                            OcrDocument parentBitmap = localBitmap.translated(
-                                    bitmapRegion.left, bitmapRegion.top,
-                                    screenshot.getWidth(), screenshot.getHeight());
-                            OcrDocument screenPatch = transform.documentBitmapToScreen(parentBitmap);
-                            index.replaceOcrRegion(screenPatch, region);
-                            current = index.current();
-                            DiagnosticLog.i(app, "CIRCLE_INDEX", "roi screenshot mlkit ready engine=" + engine
-                                    + " roiChars=" + screenPatch.chars().size()
-                                    + " mergedChars=" + current.chars().size()
-                                    + " screen=" + region.toShortString()
-                                    + " coordinateSpace=" + screenPatch.coordinateSpace()
-                                    + " ppocr=false");
-                            emit(current, Stage.ROI_PRECISE, true);
-                        } finally {
-                            closeRoiRecognizer(finalRecognizer);
-                            if (!crop.isRecycled()) crop.recycle();
-                        }
-                    })
-                    .addOnFailureListener(error -> {
-                        closeRoiRecognizer(finalRecognizer);
-                        if (!crop.isRecycled()) crop.recycle();
-                        if (!isCurrent(run)) return;
-                        DiagnosticLog.i(app, "CIRCLE_INDEX", "roi screenshot mlkit failed=" + safe(error));
-                        emitFailure(Stage.ROI_PRECISE, error, true);
-                    });
-        } catch (Throwable t) {
-            if (recognizer != null) closeRoiRecognizer(recognizer);
-            if (!crop.isRecycled()) crop.recycle();
-            DiagnosticLog.i(app, "CIRCLE_INDEX", "roi screenshot mlkit init failed=" + safe(t));
-            emitFailure(Stage.ROI_PRECISE, t, true);
-        }
+        OcrEngine.recognizeDocument(app, crop, new OcrEngine.DocumentCallback() {
+            @Override public void onSuccess(OcrDocument localBitmap) {
+                try {
+                    if (!isCurrent(run) || index == null) return;
+                    OcrDocument parentBitmap = localBitmap.translated(
+                            bitmapRegion.left, bitmapRegion.top,
+                            screenshot.getWidth(), screenshot.getHeight());
+                    OcrDocument screenPatch = transform.documentBitmapToScreen(parentBitmap);
+                    index.replaceOcrRegion(screenPatch, region);
+                    current = index.current();
+                    DiagnosticLog.i(app, "CIRCLE_INDEX", "roi screenshot ocr ready engine="
+                            + localBitmap.engine()
+                            + " roiChars=" + screenPatch.chars().size()
+                            + " mergedChars=" + current.chars().size()
+                            + " screen=" + region.toShortString()
+                            + " coordinateSpace=" + screenPatch.coordinateSpace());
+                    emit(current, Stage.ROI_PRECISE, true);
+                } catch (Throwable t) {
+                    DiagnosticLog.i(app, "CIRCLE_INDEX", "roi screenshot ocr map failed=" + safe(t));
+                    emitFailure(Stage.ROI_PRECISE, t, true);
+                } finally {
+                    if (!crop.isRecycled()) crop.recycle();
+                }
+            }
+
+            @Override public void onFailure(Throwable error) {
+                if (!crop.isRecycled()) crop.recycle();
+                if (!isCurrent(run)) return;
+                DiagnosticLog.i(app, "CIRCLE_INDEX", "roi screenshot ocr failed=" + safe(error));
+                emitFailure(Stage.ROI_PRECISE, error, true);
+            }
+        });
     }
 
     void cancel() {
         if (closed) return;
         closed = true;
         generation++;
-        TextRecognizer fast = fastRecognizer;
-        fastRecognizer = null;
-        if (fast != null) try { fast.close(); } catch (Throwable ignored) {}
-        TextRecognizer roi = roiRecognizer;
-        roiRecognizer = null;
-        if (roi != null) try { roi.close(); } catch (Throwable ignored) {}
-        DiagnosticLog.i(app, "CIRCLE_INDEX", "session cancelled source=screenshot ppocr=false");
+        pendingRefineRegion = null;
+        DiagnosticLog.i(app, "CIRCLE_INDEX", "session cancelled source=screenshot engine=shared-screenshot-ocr");
     }
 
-    private void startFastMlKit(long run) {
-        if (!isCurrent(run)) return;
-        long started = android.os.SystemClock.uptimeMillis();
-        try {
-            TextRecognizer recognizer = MlKitTextCore.createPreferredRecognizer(app);
-            fastRecognizer = recognizer;
-            String engine = MlKitTextCore.preferredEngine("fast-mlkit", app);
-            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast screenshot mlkit start engine=" + engine
-                    + " image=" + screenshot.getWidth() + "x" + screenshot.getHeight()
-                    + " frame=" + transform.screenFrame().toShortString()
-                    + " languages=" + OcrLanguages.get(app)
-                    + " ppocr=false");
-
-            recognizer.process(InputImage.fromBitmap(screenshot, 0))
-                    .addOnSuccessListener(text -> {
-                        try {
-                            if (!isCurrent(run) || index == null) return;
-                            OcrDocument bitmapFast = MlKitTextCore.toDocument(
-                                    text, engine, screenshot.getWidth(), screenshot.getHeight(),
-                                    MLKIT_CONFIDENCE, null);
-                            OcrDocument screenFast = transform.documentBitmapToScreen(bitmapFast);
-                            index.setFastOcr(screenFast);
-                            current = index.current();
-                            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast screenshot mlkit ready engine=" + engine
-                                    + " ocrChars=" + screenFast.chars().size()
-                                    + " mergedChars=" + current.chars().size()
-                                    + " coordinateSpace=" + screenFast.coordinateSpace()
-                                    + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started)
-                                    + " ppocr=false");
-                            emit(current, Stage.FAST_MLKIT, true);
-                        } finally {
-                            closeFastRecognizer(recognizer);
-                        }
-                    })
-                    .addOnFailureListener(error -> {
-                        try {
-                            if (!isCurrent(run)) return;
-                            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast screenshot mlkit failed=" + safe(error));
-                            emitFailure(Stage.FAST_MLKIT, error, true);
-                        } finally {
-                            closeFastRecognizer(recognizer);
-                        }
-                    });
-        } catch (Throwable t) {
-            DiagnosticLog.i(app, "CIRCLE_INDEX", "fast screenshot mlkit init failed=" + safe(t));
-            emitFailure(Stage.FAST_MLKIT, t, true);
-        }
+    private void drainPendingRefine() {
+        if (closed || !fastFinished) return;
+        Rect pending = pendingRefineRegion;
+        pendingRefineRegion = null;
+        if (pending != null && !pending.isEmpty()) refine(pending);
     }
 
-    private void closeFastRecognizer(TextRecognizer recognizer) {
-        if (fastRecognizer == recognizer) fastRecognizer = null;
-        try { recognizer.close(); } catch (Throwable ignored) {}
-    }
-
-    private void closeRoiRecognizer(TextRecognizer recognizer) {
-        if (roiRecognizer == recognizer) roiRecognizer = null;
-        try { recognizer.close(); } catch (Throwable ignored) {}
+    private OcrDocument toScreenDocument(OcrDocument document) {
+        if (document == null) return emptyScreenDocument("screenshot-ocr-empty", transform.screenFrame());
+        if (document.isScreenSpace()) return document;
+        return transform.documentBitmapToScreen(document);
     }
 
     private static Rect ensureMinBitmapRegion(Rect source, int bitmapWidth, int bitmapHeight,
