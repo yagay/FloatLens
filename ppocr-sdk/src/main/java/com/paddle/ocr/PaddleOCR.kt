@@ -18,6 +18,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import com.paddle.ocr.engine.OCREngine
 import com.paddle.ocr.engine.OCREngineResult
+import com.paddle.ocr.model.OCRBox
 import com.paddle.ocr.model.OCRRunResult
 import com.paddle.ocr.model.OCRError
 import kotlinx.coroutines.Dispatchers
@@ -77,6 +78,14 @@ class PaddleOCR private constructor(
             throw OCRError.InvalidImage()
         }
         return recognizeResult { engine.run(bitmap) }
+    }
+
+    /** Detection-only entry used when another recognizer owns text decoding. */
+    suspend fun detect(bitmap: Bitmap): List<OCRBox> {
+        if (bitmap.width == 0 || bitmap.height == 0) {
+            throw OCRError.InvalidImage()
+        }
+        return withContext(Dispatchers.IO) { engine.detect(bitmap).boxes }
     }
 
     suspend fun recognize(imageBytes: ByteArray): OCRRunResult {
