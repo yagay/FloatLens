@@ -8,7 +8,7 @@ final class SettingsCapturePage {
     static LinearLayout build(SettingsActivity activity, FloatSettings fs) {
         SettingsPageUi ui = new SettingsPageUi(activity, fs);
         LinearLayout root = AppUi.pageRoot(activity, "截图与 OCR",
-                "普通截图 OCR 与圈画图片文字共用同一套 OCR 引擎、模型和语言设置；圈画命中 View 文字时仍优先直接读取 View。Root / LSPosed 增强开关统一放在“高级权限”中。" );
+                "普通截图 OCR 与圈画文字识别统一使用截图数据，并共用同一套 OCR 引擎、模型和语言设置；圈画不再读取 Accessibility / View 文字。Root / LSPosed 增强开关统一放在“高级权限”中。" );
 
         AppUi.Section capture = AppUi.section(activity, "截图",
                 "状态栏与导航栏范围同时作用于普通截图、OCR 区域截图和圈画模式。" );
@@ -32,7 +32,7 @@ final class SettingsCapturePage {
         AppUi.addSection(root, circleBorder);
 
         AppUi.Section result = AppUi.section(activity, "OCR / OCR 结果",
-                "OCR 引擎同时用于普通截图、区域截图以及圈画中的图片文字识别；View 文字不需要视觉 OCR。" );
+                "同一 OCR 引擎同时用于普通截图、区域截图、圈画整屏文字索引以及点击位置的局部精识别。" );
         ui.check(result.body, "显示原选区图片", null,
                 FloatSettings.K_OCR_SHOW_IMAGE, fs.ocrShowImage());
         ui.check(result.body, "显示文字", null,
@@ -43,7 +43,7 @@ final class SettingsCapturePage {
         AppUi.addSection(root, result);
 
         AppUi.Section models = AppUi.section(activity, "本地 PP-OCRv6 模型",
-                "普通截图 OCR 与圈画图片文字共用。模型与 APK 分离。Small 约 32 MB；Medium 约 139 MB。" );
+                "普通截图 OCR 与圈画文字识别共用。模型与 APK 分离。Small 约 32 MB；Medium 约 139 MB。" );
         try {
             ui.addOcrModelRow(models.body, OcrModelManager.SMALL);
             ui.addOcrModelRow(models.body, OcrModelManager.MEDIUM);
@@ -59,7 +59,7 @@ final class SettingsCapturePage {
         AppUi.addSection(root, models);
 
         AppUi.Section languages = AppUi.section(activity, "识别语言",
-                "普通截图 OCR 与圈画图片文字共用语言选择；简体和繁體共用中文识别器，至少保留一种语言。" );
+                "普通截图 OCR 与圈画文字识别共用语言选择；简体和繁體共用中文识别器，至少保留一种语言。" );
         ui.addOcrLanguageChecks(languages.body);
         AppUi.addSection(root, languages);
         return root;
