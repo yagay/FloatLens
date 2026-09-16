@@ -4,6 +4,8 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.RectF;
 
+import java.util.function.BooleanSupplier;
+
 /**
  * Gesture-scoped OCR fallback for image text/logos missed by the frozen multi-pass OCR index.
  *
@@ -16,6 +18,12 @@ final class CircleLocalOcrFallback {
     private CircleLocalOcrFallback() {}
 
     static void recognize(Context context, Bitmap bitmap, OcrEngine.DocumentCallback callback) {
+        recognize(context, bitmap, () -> false, callback);
+    }
+
+    static void recognize(Context context, Bitmap bitmap,
+                          BooleanSupplier cancelled,
+                          OcrEngine.DocumentCallback callback) {
         if (context == null || bitmap == null || bitmap.isRecycled() || callback == null) return;
         Context app = context.getApplicationContext();
 
@@ -25,9 +33,10 @@ final class CircleLocalOcrFallback {
                         + " tileRecovery=full_empty_only"
                         + " tileMerge=false"
                         + " geometry=normalized_once"
+                        + " workspaceCancellation=true"
                         + " enginePolicy=follow_main_setting");
 
-        CircleMultiScaleOcr.recognize(app, bitmap, new CircleMultiScaleOcr.Callback() {
+        CircleMultiScaleOcr.recognize(app, bitmap, cancelled, new CircleMultiScaleOcr.Callback() {
             @Override public void onSuccess(OcrDocument document, float scaleX, float scaleY,
                                             String variant) {
                 try {
