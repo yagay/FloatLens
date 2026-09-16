@@ -17,7 +17,7 @@ import java.util.function.BooleanSupplier;
  * <p>The five OCR documents are deliberately kept independent. There is no global word/line/char
  * merge and no cross-pass character fusion. Each crop is mapped back into full-bitmap coordinates
  * immediately; gesture-time selection later chooses one complete recognizer result from the passes
- * that actually cover the user's target.</p>
+ * that actually cover the user's target. Circle uses ML Kit only.</p>
  */
 final class CirclePreindexTiledOcr {
     interface Callback {
@@ -74,7 +74,7 @@ final class CirclePreindexTiledOcr {
                             + " passes=" + specs.size()
                             + " tileFraction=" + TILE_FRACTION
                             + " parallel=true merge=false characterFusion=false"
-                            + " enginePolicy=follow_main_setting"
+                            + " enginePolicy=mlkit_only_single_document"
                             + " workspaceCancellation=true");
 
             for (int i = 0; i < specs.size(); i++) launchPass(i, specs.get(i));
@@ -102,9 +102,10 @@ final class CirclePreindexTiledOcr {
             DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
                     "pass start source=" + spec.source
                             + " coverage=" + spec.coverage.toShortString()
-                            + " bitmap=" + input.getWidth() + "x" + input.getHeight());
+                            + " bitmap=" + input.getWidth() + "x" + input.getHeight()
+                            + " engine=mlkit");
 
-            OcrEngine.recognizeDocument(app, input, new OcrEngine.DocumentCallback() {
+            CircleStableOcr.recognizeMlKit(app, input, new OcrEngine.DocumentCallback() {
                 @Override public void onSuccess(OcrDocument document) {
                     OcrDocument mapped = null;
                     Throwable error = null;
@@ -129,6 +130,7 @@ final class CirclePreindexTiledOcr {
                                     + " usable=" + usable(mapped)
                                     + " chars=" + (mapped == null ? 0 : mapped.chars().size())
                                     + " lines=" + (mapped == null ? 0 : mapped.lines().size())
+                                    + " engine=" + (mapped == null ? "none" : mapped.engine())
                                     + " elapsedMs="
                                     + (android.os.SystemClock.uptimeMillis() - passStarted));
                 }
@@ -185,6 +187,7 @@ final class CirclePreindexTiledOcr {
                 DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
                         "finish usable=true passes=" + complete.passCount()
                                 + " totalChars=" + complete.totalChars()
+                                + " engine=mlkit"
                                 + " merge=false characterFusion=false"
                                 + " elapsedMs="
                                 + (android.os.SystemClock.uptimeMillis() - started));
