@@ -1,8 +1,10 @@
 package com.yagay.floatlens;
 
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Canvas;
+import android.graphics.DashPathEffect;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
@@ -15,15 +17,16 @@ import android.view.RoundedCorner;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.view.animation.LinearInterpolator;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Non-interactive screen-edge indicator shown while Circle Select is active.
  *
- * The indicator is deliberately kept outside the frozen Circle Select bitmap. FloatLens capture
- * sessions can also acquire a short hide lease so a later screenshot taken while Circle Select is
- * still active never records the border.
+ * The border is added only after the frozen Circle bitmap has been captured. It therefore remains a
+ * live activation cue above the workspace without contaminating the image being selected/cropped.
+ * The dashed stroke continuously advances around the physical display edge as a marching-ants cue.
  */
 final class CircleActiveBorderOverlay {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
@@ -34,6 +37,7 @@ final class CircleActiveBorderOverlay {
     private static boolean circleActive;
 
     static synchronized void show(Context c) {
+        if (c == null) return;
         Context app = c.getApplicationContext();
         circleActive = true;
         removeLocked("replace");
@@ -58,8 +62,6 @@ final class CircleActiveBorderOverlay {
                 flags,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
-        // The activation border belongs to the physical display edge, not the app content area.
-        // Do not let status/navigation/cutout insets shrink this overlay.
         if (Build.VERSION.SDK_INT >= 30) {
             lp.setFitInsetsTypes(0);
             lp.setFitInsetsSides(0);
@@ -74,7 +76,8 @@ final class CircleActiveBorderOverlay {
         activeHost = host;
         activeView = view;
         applyVisibilityLocked();
-        DiagnosticLog.i(app, "CIRCLE_BORDER", "shown hideLeases=" + captureHideLeases
+        DiagnosticLog.i(app, "CIRCLE_BORDER", "shown mode=marching_ants hideLeases="
+                + captureHideLeases
                 + " color=0x" + Integer.toHexString(settings.circleBorderColor())
                 + " widthDp=" + settings.circleBorderWidthDp());
     }
@@ -141,8 +144,9 @@ final class CircleActiveBorderOverlay {
         } else {
             MAIN.post(() -> {
                 synchronized (CircleActiveBorderOverlay.class) {
-                    if (activeView == view) view.setVisibility(captureHideLeases > 0
-                            ? View.INVISIBLE : View.VISIBLE);
+                    if (activeView == view) {
+                        view.setVisibility(captureHideLeases > 0 ? View.INVISIBLE : View.VISIBLE);
+                    }
                 }
             });
         }
@@ -153,6 +157,7 @@ final class CircleActiveBorderOverlay {
         FlOverlayWindowHost host = activeHost;
         activeView = null;
         activeHost = null;
+        if (view != null) view.stopAnimation();
         if (view != null && host != null) host.remove(view, "circle_active_border_" + safe(reason));
     }
 
@@ -176,6 +181,8 @@ final class CircleActiveBorderOverlay {
     }
 
     private static final class BorderView extends View {
+        private static final long MARCH_DURATION_MS = 720L;
+
         private final Context context;
         private final WindowManager windowManager;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -184,7 +191,11 @@ final class CircleActiveBorderOverlay {
         private final float density;
         private final float minFallbackRadius;
         private final float maxFallbackRadius;
+        private ValueAnimator animator;
         private float stroke;
+        private float dashLength;
+        private float dashGap;
+        private float dashPhase;
         private float topLeftRadius;
         private float topRightRadius;
         private float bottomRightRadius;
@@ -206,6 +217,8 @@ final class CircleActiveBorderOverlay {
             minFallbackRadius = 16f * density;
             maxFallbackRadius = 32f * density;
             paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
             applyStyle(color, widthDp);
             setOnApplyWindowInsetsListener((v, insets) -> {
                 refreshGeometry(insets, "insets");
@@ -215,15 +228,55 @@ final class CircleActiveBorderOverlay {
 
         void applyStyle(int color, int widthDp) {
             stroke = Math.max(1f, Math.max(1, Math.min(8, widthDp)) * density);
+            dashLength = Math.max(6f * density, stroke * 3.2f);
+            dashGap = Math.max(4f * density, stroke * 2.2f);
             paint.setColor(color);
             paint.setStrokeWidth(stroke);
+            updateDashEffect();
             invalidate();
+        }
+
+        private void updateDashEffect() {
+            paint.setPathEffect(new DashPathEffect(
+                    new float[]{Math.max(1f, dashLength), Math.max(1f, dashGap)}, dashPhase));
+        }
+
+        private void startAnimation() {
+            if (animator != null && animator.isStarted()) return;
+            stopAnimation();
+            float cycle = Math.max(2f, dashLength + dashGap);
+            animator = ValueAnimator.ofFloat(0f, cycle);
+            animator.setDuration(MARCH_DURATION_MS);
+            animator.setRepeatCount(ValueAnimator.INFINITE);
+            animator.setRepeatMode(ValueAnimator.RESTART);
+            animator.setInterpolator(new LinearInterpolator());
+            animator.addUpdateListener(a -> {
+                dashPhase = (float) a.getAnimatedValue();
+                updateDashEffect();
+                invalidate();
+            });
+            animator.start();
+        }
+
+        void stopAnimation() {
+            ValueAnimator running = animator;
+            animator = null;
+            if (running != null) {
+                running.removeAllUpdateListeners();
+                running.cancel();
+            }
         }
 
         @Override protected void onAttachedToWindow() {
             super.onAttachedToWindow();
             requestApplyInsets();
             post(() -> refreshGeometry(getRootWindowInsets(), "attached"));
+            startAnimation();
+        }
+
+        @Override protected void onDetachedFromWindow() {
+            stopAnimation();
+            super.onDetachedFromWindow();
         }
 
         @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) {
@@ -246,8 +299,6 @@ final class CircleActiveBorderOverlay {
             super.onDraw(canvas);
             if (getWidth() <= 0 || getHeight() <= 0) return;
 
-            // Root insets normally drive updates. Re-check here as a final OEM safeguard for ROMs
-            // that resize overlay windows without dispatching a fresh inset callback.
             if (geometryWidth != getWidth() || geometryHeight != getHeight()) {
                 refreshGeometry(getRootWindowInsets(), "draw_guard");
             }
@@ -310,7 +361,6 @@ final class CircleActiveBorderOverlay {
         private float adaptiveFallbackRadius(int width, int height) {
             int shortEdge = Math.min(width, height);
             if (shortEdge <= 0) return minFallbackRadius;
-            // Scale with the current physical display shape rather than a model/brand table.
             float proportional = shortEdge * 0.035f;
             return Math.max(minFallbackRadius, Math.min(maxFallbackRadius, proportional));
         }
@@ -339,7 +389,8 @@ final class CircleActiveBorderOverlay {
             lastLoggedBl = bl;
             DiagnosticLog.i(context, "CIRCLE_BORDER", "geometry reason=" + safe(reason)
                     + " size=" + geometryWidth + "x" + geometryHeight
-                    + " radii=" + tl + "," + tr + "," + br + "," + bl);
+                    + " radii=" + tl + "," + tr + "," + br + "," + bl
+                    + " animated=true");
         }
     }
 
