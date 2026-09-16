@@ -9,8 +9,9 @@ import java.util.List;
  * Immutable collection of independent OCR passes for one frozen Circle frame.
  *
  * <p>Passes are deliberately never merged globally. Each document keeps the recognizer's own
- * line/group/character structure; gesture-time consensus decides only among candidates near the
- * user's actual selection. This prevents a bad tile merge from corrupting the whole screen.</p>
+ * line/group/character structure; gesture-time selection chooses one complete pass near the user's
+ * actual target. This prevents a bad tile or a conflicting recognition from corrupting another
+ * pass, and no recognized text is used to vote across OCR sources.</p>
  */
 final class CircleOcrIndex {
     static final class Entry {
