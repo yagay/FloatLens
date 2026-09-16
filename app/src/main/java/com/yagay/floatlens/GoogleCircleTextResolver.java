@@ -7,21 +7,21 @@ import android.graphics.Rect;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Screenshot-only text resolver for the Google-style Circle workspace.
+ * TextMap + lazy-recognition resolver for the Google-style Circle workspace.
  *
- * <p>Interactive gestures always prefer already cached OCR and otherwise OCR only a tight ROI from
- * the frozen screenshot. A two-lane overlapping tile index is built asynchronously in the
- * background and is never awaited by a gesture. All caches live only for the frozen screenshot
- * session and are released with the workspace.</p>
+ * <p>The frozen screenshot is the only content source. Background work performs detection only on a
+ * downscaled copy, then geometry stitches detector boxes into paragraph-like TextMap nodes. No
+ * background OCR is performed. A gesture first hits that map and lazily OCRs only the corresponding
+ * paragraph ROI. If the detector is not ready or misses the gesture, a tight gesture crop is OCR'd
+ * directly. Successful region OCR is cached only for the lifetime of the frozen frame.</p>
  */
 final class GoogleCircleTextResolver {
-    enum Source { VIEW, VIEW_OCR, IMAGE_OCR, NONE }
+    enum Source { IMAGE_OCR, NONE }
 
     interface Callback {
         void onResolved(Result result);
@@ -29,9 +29,9 @@ final class GoogleCircleTextResolver {
 
     static final class Result {
         final Source source;
-        /** SCREEN-space OCR document used by the selection surface. */
+        /** SCREEN-space OCR document for the lazily recognized ROI. */
         final OcrDocument document;
-        /** Gesture-scoped subset used only to initialize selection start/end. */
+        /** Gesture/paragraph scoped subset used to initialize the selection. */
         final OcrDocument initialSelectionDocument;
         final Rect gestureScreenBounds;
         final Rect ocrBitmapRoi;
@@ -57,7 +57,7 @@ final class GoogleCircleTextResolver {
         final OcrDocument screenDocument;
 
         CachedRegion(Rect bitmapRoi, OcrDocument screenDocument) {
-            this.bitmapRoi = bitmapRoi == null ? new Rect() : new Rect(bitmapRoi);
+            this.bitmapRoi = new Rect(bitmapRoi);
             this.screenDocument = screenDocument;
         }
     }
@@ -67,14 +67,12 @@ final class GoogleCircleTextResolver {
         final Context app;
         final WeakReference<GoogleCircleCapture.Frame> frameRef;
         final ArrayList<CachedRegion> regionCache = new ArrayList<>();
-        final ArrayList<OcrDocument> tileDocuments = new ArrayList<>();
-        final ArrayList<Rect> tileRois = new ArrayList<>();
 
-        OcrDocument screenDocument;
-        Throwable ocrError;
-        int nextTileIndex;
-        int completedTiles;
-        int failedTiles;
+        CircleTextMap textMap;
+        Throwable detectionError;
+        boolean detectionDone;
+        int detectorModel;
+        long detectionMs;
 
         PreloadState(long generation, Context app, GoogleCircleCapture.Frame frame) {
             this.generation = generation;
@@ -83,19 +81,19 @@ final class GoogleCircleTextResolver {
         }
     }
 
-    private static final int TILE_CONCURRENCY = 2;
-    private static final float TILE_OVERLAP_RATIO = 0.10f;
-    private static final int REGION_CACHE_MAX = 10;
-    private static final float REGION_CACHE_OVERLAP_MIN = 0.68f;
+    private static final ExecutorService LAYOUT_IO = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "FloatLens-circle-text-map");
+        t.setDaemon(true);
+        return t;
+    });
 
-    private static final ExecutorService INDEX_IO = Executors.newFixedThreadPool(
-            TILE_CONCURRENCY, r -> {
-                Thread t = new Thread(r, "FloatLens-circle-tile-ocr");
-                t.setDaemon(true);
-                return t;
-            });
-
-    private static final Object INDEX_LOCK = new Object();
+    private static final Object STATE_LOCK = new Object();
+    private static final int DETECTOR_MAX_LONG_SIDE = 1024;
+    private static final int REGION_CACHE_MAX = 12;
+    private static final float REGION_CACHE_OVERLAP_MIN = 0.72f;
+    private static final float TEXT_MAP_HIT_PAD_DP = 14f;
+    private static final float TEXT_MAP_ROI_PAD_X_DP = 14f;
+    private static final float TEXT_MAP_ROI_PAD_Y_DP = 10f;
     private static final float CACHED_OCR_TAP_TOLERANCE_DP = 10f;
     private static final float RANGE_CORRIDOR_DP = 10f;
     private static final float LOCAL_TAP_HALF_WIDTH_DP = 92f;
@@ -105,266 +103,247 @@ final class GoogleCircleTextResolver {
     private static final float LOCAL_MIN_WIDTH_DP = 96f;
     private static final float LOCAL_MIN_HEIGHT_DP = 44f;
 
-    private static long indexGeneration;
-    private static PreloadState currentIndex;
+    private static long generation;
+    private static PreloadState current;
 
-    static void preload(Context c, GoogleCircleCapture.Frame frame) {
-        if (c == null || frame == null || frame.bitmap == null || frame.bitmap.isRecycled()) return;
-        Context app = c.getApplicationContext();
+    static void preload(Context context, GoogleCircleCapture.Frame frame) {
+        if (context == null || frame == null || frame.bitmap == null || frame.bitmap.isRecycled()) return;
+        Context app = context.getApplicationContext();
         PreloadState state;
-        synchronized (INDEX_LOCK) {
-            if (sameFrame(currentIndex, frame)) return;
-            if (currentIndex != null) clearStateLocked(currentIndex);
-            state = new PreloadState(++indexGeneration, app, frame);
-            state.tileRois.addAll(buildTileRois(frame.bitmap.getWidth(), frame.bitmap.getHeight()));
-            currentIndex = state;
+        synchronized (STATE_LOCK) {
+            if (sameFrame(current, frame)) return;
+            if (current != null) clearLocked(current);
+            state = new PreloadState(++generation, app, frame);
+            current = state;
         }
 
-        DiagnosticLog.i(app, "G_CIRCLE_TEXT_INDEX", "start generation=" + state.generation
+        DiagnosticLog.i(app, "G_CIRCLE_TEXT_MAP", "start generation=" + state.generation
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
-                + " strategy=roi_cache_plus_overlapping_tiles"
-                + " textOwner=IMAGE_OCR_ONLY"
-                + " foreground=gesture_local_mlkit"
-                + " background=two_lane_tile_mlkit"
-                + " tiles=" + state.tileRois.size()
-                + " tileConcurrency=" + TILE_CONCURRENCY
-                + " tileOverlap=" + TILE_OVERLAP_RATIO
-                + " regionCache=true cacheScope=frozen_frame"
-                + " preindexBlocking=false ppocrPreindex=false viewText=false"
-                + " geometry=shared_matrix_transform coordinateSpace=SCREEN");
+                + " strategy=detector_textmap_then_lazy_ocr"
+                + " background=det_only_downscaled"
+                + " paragraphStitching=geometry"
+                + " lazyRecognition=true regionCache=frozen_frame"
+                + " backgroundOcr=false tileOcr=false fullFrameOcr=false"
+                + " preindexBlocking=false viewText=false coordinateSpace=BITMAP");
 
-        for (int lane = 0; lane < TILE_CONCURRENCY; lane++) {
-            final int laneId = lane;
-            INDEX_IO.execute(() -> startNextTile(state, frame, laneId));
-        }
+        LAYOUT_IO.execute(() -> prepareTextMap(state, frame));
     }
 
-    static void resolve(Context c, GoogleCircleCapture.Frame frame,
+    static void resolve(Context context, GoogleCircleCapture.Frame frame,
                         GoogleCircleSelection.Selection gesture, Callback callback) {
-        if (c == null || frame == null || gesture == null || callback == null) return;
-        Context app = c.getApplicationContext();
+        if (context == null || frame == null || gesture == null || callback == null) return;
+        Context app = context.getApplicationContext();
         preload(app, frame);
 
         PreloadState state;
-        OcrDocument indexed;
-        Throwable indexError;
-        synchronized (INDEX_LOCK) {
-            state = sameFrame(currentIndex, frame) ? currentIndex : null;
+        CircleTextMap map;
+        Throwable detectionError;
+        boolean detectionDone;
+        synchronized (STATE_LOCK) {
+            state = sameFrame(current, frame) ? current : null;
             if (state == null) {
                 callback.onResolved(new Result(Source.NONE, null, null,
                         gestureScreenBounds(frame, gesture), new Rect(),
-                        new IllegalStateException("screenshot OCR state unavailable"), true));
+                        new IllegalStateException("TextMap state unavailable"), true));
                 return;
             }
-            indexed = state.screenDocument;
-            indexError = state.ocrError;
+            map = state.textMap;
+            detectionError = state.detectionError;
+            detectionDone = state.detectionDone;
         }
 
-        Rect desiredRoi = localBitmapRoi(state.app, frame, gesture);
-        CachedRegion region = findCachedRegion(state, desiredRoi, frame, gesture);
-        if (region != null && usable(region.screenDocument)) {
-            OcrDocument initial = selectGesture(state.app, frame, gesture, region.screenDocument);
-            if (!usable(initial) && gesture.kind == GoogleCircleSelection.Kind.TAP) {
-                initial = nearestGroupDocument(region.screenDocument,
-                        frame.bitmapPointToScreen(gesture.focus.x, gesture.focus.y));
-            }
-            if (usable(initial)) {
-                DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "region cache hit gesture="
-                        + gesture.kind
-                        + " roi=" + region.bitmapRoi.toShortString()
-                        + " documentChars=" + region.screenDocument.chars().size()
-                        + " initialChars=" + initial.chars().size()
-                        + " text=" + summarize(initial.fullText())
-                        + " engine=" + region.screenDocument.engine()
-                        + " cache=frozen_frame_region");
-                callback.onResolved(new Result(Source.IMAGE_OCR, region.screenDocument, initial,
-                        gestureScreenBounds(frame, gesture), region.bitmapRoi, null, false));
-                return;
-            }
-        }
-
-        if (usable(indexed)) {
-            OcrDocument initial = selectGesture(state.app, frame, gesture, indexed);
-            if (usable(initial)) {
-                Rect fullBitmap = new Rect(0, 0, frame.bitmap.getWidth(), frame.bitmap.getHeight());
-                DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "tile index hit gesture="
-                        + gesture.kind
-                        + " documentChars=" + indexed.chars().size()
-                        + " initialChars=" + initial.chars().size()
-                        + " text=" + summarize(initial.fullText())
-                        + " engine=" + indexed.engine()
-                        + " completedTiles=" + tileCompleted(state)
-                        + " localFallback=false coordinateSpace=SCREEN");
-                callback.onResolved(new Result(Source.IMAGE_OCR, indexed, initial,
-                        gestureScreenBounds(frame, gesture), fullBitmap, null, false));
-                return;
-            }
-            DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "tile index miss gesture="
-                    + gesture.kind + " -> local screenshot OCR"
-                    + " documentChars=" + indexed.chars().size()
-                    + " completedTiles=" + tileCompleted(state)
-                    + " engine=" + indexed.engine());
+        int hitPad = bitmapPxForDp(state.app, frame, TEXT_MAP_HIT_PAD_DP);
+        CircleTextMap.Target target = map == null ? null : map.targetFor(gesture, hitPad);
+        boolean paragraphTarget = target != null && !target.bounds.isEmpty();
+        Rect desiredRoi;
+        if (paragraphTarget) {
+            desiredRoi = expandTextMapRoi(state.app, frame, target.bounds);
+            DiagnosticLog.i(app, "G_CIRCLE_TEXT_MAP", "hit gesture=" + gesture.kind
+                    + " paragraphs=" + target.idsForLog()
+                    + " lines=" + target.lineCount
+                    + " roi=" + desiredRoi.toShortString()
+                    + " lazyRecognition=true");
         } else {
-            DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "background index not ready gesture="
-                    + gesture.kind + " -> local screenshot OCR"
-                    + " completedTiles=" + tileCompleted(state)
-                    + (indexError == null ? "" : " indexError=" + safe(indexError)));
+            desiredRoi = localBitmapRoi(state.app, frame, gesture);
+            DiagnosticLog.i(app, "G_CIRCLE_TEXT_MAP", "miss gesture=" + gesture.kind
+                    + " mapReady=" + (map != null)
+                    + " detectionDone=" + detectionDone
+                    + " -> gesture_roi_fallback"
+                    + (detectionError == null ? "" : " detectionError=" + safe(detectionError))
+                    + " roi=" + desiredRoi.toShortString());
         }
 
-        resolveLocalScreenshot(state, frame, gesture, desiredRoi, callback);
+        CachedRegion cached = findCachedRegion(state, desiredRoi, frame, gesture);
+        if (cached != null) {
+            OcrDocument initial = initialSelection(state.app, frame, gesture,
+                    cached.screenDocument, paragraphTarget);
+            if (usable(initial)) {
+                DiagnosticLog.i(app, "G_CIRCLE_LAZY_OCR", "cache hit gesture=" + gesture.kind
+                        + " source=" + (paragraphTarget ? "textmap_paragraph" : "gesture_fallback")
+                        + " roi=" + cached.bitmapRoi.toShortString()
+                        + " chars=" + cached.screenDocument.chars().size()
+                        + " selectedChars=" + initial.chars().size());
+                callback.onResolved(new Result(Source.IMAGE_OCR, cached.screenDocument, initial,
+                        gestureScreenBounds(frame, gesture), cached.bitmapRoi, null,
+                        !paragraphTarget));
+                return;
+            }
+        }
+
+        resolveLazyScreenshot(state, frame, gesture, desiredRoi, paragraphTarget, callback);
     }
 
-    static void release(Context c, GoogleCircleCapture.Frame frame, String reason) {
+    static void release(Context context, GoogleCircleCapture.Frame frame, String reason) {
         if (frame == null) return;
-        Context app = c == null ? null : c.getApplicationContext();
+        Context app = context == null ? null : context.getApplicationContext();
         PreloadState released;
-        int chars;
-        int lines;
         int regions;
-        int tiles;
-        synchronized (INDEX_LOCK) {
-            if (!sameFrame(currentIndex, frame)) return;
-            released = currentIndex;
-            chars = released.screenDocument == null ? 0 : released.screenDocument.chars().size();
-            lines = released.screenDocument == null ? 0 : released.screenDocument.lines().size();
+        int paragraphs;
+        int lines;
+        synchronized (STATE_LOCK) {
+            if (!sameFrame(current, frame)) return;
+            released = current;
             regions = released.regionCache.size();
-            tiles = released.completedTiles;
-            currentIndex = null;
-            indexGeneration++;
-            clearStateLocked(released);
+            paragraphs = released.textMap == null ? 0 : released.textMap.paragraphCount();
+            lines = released.textMap == null ? 0 : released.textMap.lineCount();
+            current = null;
+            generation++;
+            clearLocked(released);
         }
-        Context logContext = app == null ? released.app : app;
-        DiagnosticLog.i(logContext, "G_CIRCLE_TEXT_INDEX", "release generation="
-                + released.generation
-                + " reason=" + (reason == null ? "unknown" : reason)
-                + " chars=" + chars + " lines=" + lines
-                + " cachedRegions=" + regions + " completedTiles=" + tiles);
+        DiagnosticLog.i(app == null ? released.app : app, "G_CIRCLE_TEXT_MAP",
+                "release generation=" + released.generation
+                        + " reason=" + (reason == null ? "unknown" : reason)
+                        + " paragraphs=" + paragraphs + " lines=" + lines
+                        + " cachedRegions=" + regions);
     }
 
-    private static void clearStateLocked(PreloadState state) {
-        if (state == null) return;
-        state.screenDocument = null;
-        state.ocrError = null;
-        state.regionCache.clear();
-        state.tileDocuments.clear();
-        state.tileRois.clear();
-        state.nextTileIndex = 0;
-        state.completedTiles = 0;
-        state.failedTiles = 0;
-    }
-
-    private static void startNextTile(PreloadState state,
-                                      GoogleCircleCapture.Frame frame,
-                                      int laneId) {
+    private static void prepareTextMap(PreloadState state, GoogleCircleCapture.Frame frame) {
         if (!isCurrent(state, frame)) return;
+        Bitmap source = frame.bitmap;
+        if (source == null || source.isRecycled()) return;
 
-        final int tileIndex;
-        final Rect roi;
-        synchronized (INDEX_LOCK) {
-            if (currentIndex != state || state.nextTileIndex >= state.tileRois.size()) return;
-            tileIndex = state.nextTileIndex++;
-            roi = new Rect(state.tileRois.get(tileIndex));
-        }
+        int sourceWidth = source.getWidth();
+        int sourceHeight = source.getHeight();
+        int longest = Math.max(sourceWidth, sourceHeight);
+        float scale = longest > DETECTOR_MAX_LONG_SIDE
+                ? DETECTOR_MAX_LONG_SIDE / (float) longest : 1f;
+        int detectorWidth = Math.max(1, Math.round(sourceWidth * scale));
+        int detectorHeight = Math.max(1, Math.round(sourceHeight * scale));
 
-        final Bitmap crop;
+        final Bitmap detectorBitmap;
         try {
-            crop = Bitmap.createBitmap(frame.bitmap, roi.left, roi.top, roi.width(), roi.height());
+            detectorBitmap = scale < 0.999f
+                    ? Bitmap.createScaledBitmap(source, detectorWidth, detectorHeight, true)
+                    : source.copy(Bitmap.Config.ARGB_8888, false);
+            if (detectorBitmap == null) throw new IllegalStateException("detector bitmap copy failed");
         } catch (Throwable t) {
-            finishTile(state, frame, laneId, tileIndex, roi, null, t, 0L);
-            INDEX_IO.execute(() -> startNextTile(state, frame, laneId));
+            finishTextMapFailure(state, frame, t);
             return;
         }
 
-        long started = android.os.SystemClock.uptimeMillis();
-        DiagnosticLog.i(state.app, "G_CIRCLE_TILE_OCR", "start generation=" + state.generation
-                + " lane=" + laneId
-                + " tile=" + (tileIndex + 1) + "/" + state.tileRois.size()
-                + " roi=" + roi.toShortString()
-                + " crop=" + crop.getWidth() + "x" + crop.getHeight()
-                + " overlap=" + TILE_OVERLAP_RATIO);
-
-        CircleStableOcr.recognizeMlKit(state.app, crop, new OcrEngine.DocumentCallback() {
-            @Override public void onSuccess(OcrDocument tileBitmapDocument) {
-                try {
-                    if (!isCurrent(state, frame)) return;
-                    OcrDocument parentBitmap = tileBitmapDocument == null ? null
-                            : tileBitmapDocument.translated(roi.left, roi.top,
-                                    frame.bitmap.getWidth(), frame.bitmap.getHeight());
-                    OcrDocument screenDocument = parentBitmap == null ? null
-                            : frame.transform.documentBitmapToScreen(parentBitmap);
-                    finishTile(state, frame, laneId, tileIndex, roi,
-                            screenDocument, null, started);
-                } catch (Throwable t) {
-                    finishTile(state, frame, laneId, tileIndex, roi,
-                            null, t, started);
-                } finally {
-                    recycle(crop);
-                }
-                INDEX_IO.execute(() -> startNextTile(state, frame, laneId));
-            }
-
-            @Override public void onFailure(Throwable error) {
-                recycle(crop);
-                if (isCurrent(state, frame)) {
-                    finishTile(state, frame, laneId, tileIndex, roi,
-                            null, error, started);
-                    INDEX_IO.execute(() -> startNextTile(state, frame, laneId));
-                }
-            }
-        });
-    }
-
-    private static void finishTile(PreloadState state,
-                                   GoogleCircleCapture.Frame frame,
-                                   int laneId,
-                                   int tileIndex,
-                                   Rect roi,
-                                   OcrDocument screenDocument,
-                                   Throwable error,
-                                   long started) {
-        OcrDocument merged;
-        int completed;
-        int failed;
-        int total;
-        synchronized (INDEX_LOCK) {
-            if (currentIndex != state) return;
-            if (usable(screenDocument)) state.tileDocuments.add(screenDocument);
-            if (error != null) {
-                state.failedTiles++;
-                state.ocrError = error;
-            }
-            state.completedTiles++;
-            state.screenDocument = mergeScreenDocuments(state.tileDocuments);
-            merged = state.screenDocument;
-            completed = state.completedTiles;
-            failed = state.failedTiles;
-            total = state.tileRois.size();
+        if (!isCurrent(state, frame)) {
+            recycle(detectorBitmap);
+            return;
         }
 
-        long elapsed = started <= 0L ? 0L : android.os.SystemClock.uptimeMillis() - started;
-        DiagnosticLog.i(state.app, "G_CIRCLE_TILE_OCR", "finish generation=" + state.generation
-                + " lane=" + laneId
-                + " tile=" + (tileIndex + 1) + "/" + total
-                + " roi=" + roi.toShortString()
-                + " usable=" + usable(screenDocument)
-                + " tileChars=" + (screenDocument == null ? 0 : screenDocument.chars().size())
-                + " mergedChars=" + (merged == null ? 0 : merged.chars().size())
-                + " completed=" + completed + "/" + total
-                + " failed=" + failed
-                + " elapsedMs=" + elapsed
-                + (error == null ? "" : " error=" + safe(error)));
+        DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_MAP", "detect begin generation="
+                + state.generation
+                + " source=" + sourceWidth + "x" + sourceHeight
+                + " detectorBitmap=" + detectorWidth + "x" + detectorHeight
+                + " scale=" + String.format(java.util.Locale.US, "%.3f", scale)
+                + " recognition=false");
+
+        PaddleTextDetectorBridge.detect(state.app, detectorBitmap,
+                new PaddleTextDetectorBridge.Callback() {
+                    @Override public void onSuccess(List<Rect> regions, long totalMs,
+                                                    int model, long coldLoadMs) {
+                        try {
+                            if (!isCurrent(state, frame)) return;
+                            ArrayList<Rect> original = mapRegionsToOriginal(regions,
+                                    detectorBitmap.getWidth(), detectorBitmap.getHeight(),
+                                    sourceWidth, sourceHeight);
+                            CircleTextMap map = CircleTextMap.build(original, sourceWidth, sourceHeight);
+                            synchronized (STATE_LOCK) {
+                                if (current != state) return;
+                                state.textMap = map;
+                                state.detectionDone = true;
+                                state.detectionError = null;
+                                state.detectorModel = model;
+                                state.detectionMs = totalMs;
+                            }
+                            DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_MAP", "ready generation="
+                                    + state.generation
+                                    + " model=" + model
+                                    + " detectorRegions=" + original.size()
+                                    + " lines=" + map.lineCount()
+                                    + " paragraphs=" + map.paragraphCount()
+                                    + " detectorMs=" + totalMs
+                                    + " coldLoadMs=" + coldLoadMs
+                                    + " recognition=false");
+                        } catch (Throwable t) {
+                            finishTextMapFailure(state, frame, t);
+                        } finally {
+                            recycle(detectorBitmap);
+                        }
+                    }
+
+                    @Override public void onFailure(String message) {
+                        try {
+                            if (isCurrent(state, frame)) {
+                                finishTextMapFailure(state, frame,
+                                        new IllegalStateException(message));
+                            }
+                        } finally {
+                            recycle(detectorBitmap);
+                        }
+                    }
+                });
     }
 
-    private static void resolveLocalScreenshot(PreloadState state,
-                                               GoogleCircleCapture.Frame frame,
-                                               GoogleCircleSelection.Selection gesture,
-                                               Rect bitmapRoi,
-                                               Callback callback) {
-        if (!isCurrent(state, frame) || frame.bitmap == null || frame.bitmap.isRecycled()) return;
+    private static void finishTextMapFailure(PreloadState state,
+                                             GoogleCircleCapture.Frame frame,
+                                             Throwable error) {
+        synchronized (STATE_LOCK) {
+            if (current != state) return;
+            state.detectionDone = true;
+            state.detectionError = error;
+            state.textMap = null;
+        }
+        DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_MAP", "failed generation=" + state.generation
+                + " error=" + safe(error)
+                + " fallback=gesture_local_ocr");
+    }
+
+    private static ArrayList<Rect> mapRegionsToOriginal(List<Rect> source,
+                                                         int detectorWidth, int detectorHeight,
+                                                         int originalWidth, int originalHeight) {
+        ArrayList<Rect> out = new ArrayList<>();
+        if (source == null || detectorWidth <= 0 || detectorHeight <= 0) return out;
+        float sx = originalWidth / (float) detectorWidth;
+        float sy = originalHeight / (float) detectorHeight;
+        for (Rect rect : source) {
+            if (rect == null || rect.isEmpty()) continue;
+            int left = Math.max(0, Math.min(originalWidth - 1, Math.round(rect.left * sx)));
+            int top = Math.max(0, Math.min(originalHeight - 1, Math.round(rect.top * sy)));
+            int right = Math.max(left + 1,
+                    Math.min(originalWidth, Math.round(rect.right * sx)));
+            int bottom = Math.max(top + 1,
+                    Math.min(originalHeight, Math.round(rect.bottom * sy)));
+            out.add(new Rect(left, top, right, bottom));
+        }
+        return out;
+    }
+
+    private static void resolveLazyScreenshot(PreloadState state,
+                                              GoogleCircleCapture.Frame frame,
+                                              GoogleCircleSelection.Selection gesture,
+                                              Rect bitmapRoi,
+                                              boolean paragraphTarget,
+                                              Callback callback) {
         Rect gestureScreen = gestureScreenBounds(frame, gesture);
-        if (bitmapRoi == null || bitmapRoi.isEmpty()) {
-            callback.onResolved(new Result(Source.NONE, null, null,
-                    gestureScreen, new Rect(), new IllegalStateException("empty local OCR ROI"), true));
+        if (!isCurrent(state, frame) || bitmapRoi == null || bitmapRoi.isEmpty()) {
+            callback.onResolved(new Result(Source.NONE, null, null, gestureScreen,
+                    bitmapRoi, new IllegalStateException("empty lazy OCR ROI"), !paragraphTarget));
             return;
         }
 
@@ -374,16 +353,16 @@ final class GoogleCircleTextResolver {
                     bitmapRoi.width(), bitmapRoi.height());
         } catch (Throwable t) {
             callback.onResolved(new Result(Source.NONE, null, null,
-                    gestureScreen, bitmapRoi, t, true));
+                    gestureScreen, bitmapRoi, t, !paragraphTarget));
             return;
         }
 
         long started = android.os.SystemClock.uptimeMillis();
-        DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_OCR", "start gesture=" + gesture.kind
-                + " strategy=frozen_screenshot_direct_mlkit"
+        DiagnosticLog.i(state.app, "G_CIRCLE_LAZY_OCR", "start gesture=" + gesture.kind
+                + " source=" + (paragraphTarget ? "textmap_paragraph" : "gesture_fallback")
                 + " roi=" + bitmapRoi.toShortString()
                 + " crop=" + crop.getWidth() + "x" + crop.getHeight()
-                + " cacheMiss=true ppocr=false preindexWait=false");
+                + " engine=direct_mlkit backgroundOcr=false");
 
         CircleStableOcr.recognizeMlKit(state.app, crop, new OcrEngine.DocumentCallback() {
             @Override public void onSuccess(OcrDocument localBitmap) {
@@ -394,37 +373,30 @@ final class GoogleCircleTextResolver {
                                     frame.bitmap.getWidth(), frame.bitmap.getHeight());
                     OcrDocument localScreen = parentBitmap == null ? null
                             : frame.transform.documentBitmapToScreen(parentBitmap);
-                    OcrDocument initial = selectGesture(state.app, frame, gesture, localScreen);
-                    if (!usable(initial) && gesture.kind == GoogleCircleSelection.Kind.TAP) {
-                        initial = nearestGroupDocument(localScreen,
-                                frame.bitmapPointToScreen(gesture.focus.x, gesture.focus.y));
-                    }
-
+                    OcrDocument initial = initialSelection(state.app, frame, gesture,
+                            localScreen, paragraphTarget);
                     if (!usable(localScreen) || !usable(initial)) {
-                        DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_OCR", "empty after map gesture="
-                                + gesture.kind + " engine="
-                                + (localBitmap == null ? "none" : localBitmap.engine()));
                         callback.onResolved(new Result(Source.NONE, null, null,
                                 gestureScreen, bitmapRoi,
-                                new IllegalStateException("local screenshot OCR has no selectable text"), true));
+                                new IllegalStateException("lazy OCR has no selectable text"),
+                                !paragraphTarget));
                         return;
                     }
 
                     cacheRegion(state, bitmapRoi, localScreen);
-                    DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_OCR", "success gesture="
+                    DiagnosticLog.i(state.app, "G_CIRCLE_LAZY_OCR", "success gesture="
                             + gesture.kind
+                            + " source=" + (paragraphTarget ? "textmap_paragraph" : "gesture_fallback")
                             + " engine=" + localBitmap.engine()
                             + " documentChars=" + localScreen.chars().size()
                             + " selectedChars=" + initial.chars().size()
-                            + " text=" + summarize(initial.fullText())
-                            + " cacheStore=true"
-                            + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started)
-                            + " coordinateSpace=SCREEN");
+                            + " cacheStore=true elapsedMs="
+                            + (android.os.SystemClock.uptimeMillis() - started));
                     callback.onResolved(new Result(Source.IMAGE_OCR, localScreen, initial,
-                            gestureScreen, bitmapRoi, null, true));
+                            gestureScreen, bitmapRoi, null, !paragraphTarget));
                 } catch (Throwable t) {
                     callback.onResolved(new Result(Source.NONE, null, null,
-                            gestureScreen, bitmapRoi, t, true));
+                            gestureScreen, bitmapRoi, t, !paragraphTarget));
                 } finally {
                     recycle(crop);
                 }
@@ -433,17 +405,33 @@ final class GoogleCircleTextResolver {
             @Override public void onFailure(Throwable error) {
                 recycle(crop);
                 if (!isCurrent(state, frame)) return;
-                DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_OCR", "failed gesture="
+                DiagnosticLog.i(state.app, "G_CIRCLE_LAZY_OCR", "failed gesture="
                         + gesture.kind + " error=" + safe(error)
                         + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
                 callback.onResolved(new Result(Source.NONE, null, null,
-                        gestureScreen, bitmapRoi, error, true));
+                        gestureScreen, bitmapRoi, error, !paragraphTarget));
             }
         });
     }
 
-    private static CachedRegion findCachedRegion(PreloadState state,
-                                                 Rect desiredRoi,
+    private static OcrDocument initialSelection(Context app, GoogleCircleCapture.Frame frame,
+                                                GoogleCircleSelection.Selection gesture,
+                                                OcrDocument document,
+                                                boolean paragraphTarget) {
+        if (!usable(document)) return null;
+        // For stroke/highlight hits the TextMap already resolved the natural reading-flow paragraph,
+        // so initialize the selection with the complete lazily recognized paragraph instead of the
+        // stroke's dead rectangular corridor. TAP keeps word-level precision.
+        if (paragraphTarget && gesture.kind != GoogleCircleSelection.Kind.TAP) return document;
+        OcrDocument initial = selectGesture(app, frame, gesture, document);
+        if (!usable(initial) && gesture.kind == GoogleCircleSelection.Kind.TAP) {
+            initial = nearestGroupDocument(document,
+                    frame.bitmapPointToScreen(gesture.focus.x, gesture.focus.y));
+        }
+        return initial;
+    }
+
+    private static CachedRegion findCachedRegion(PreloadState state, Rect desiredRoi,
                                                  GoogleCircleCapture.Frame frame,
                                                  GoogleCircleSelection.Selection gesture) {
         if (state == null || desiredRoi == null || desiredRoi.isEmpty()) return null;
@@ -451,18 +439,17 @@ final class GoogleCircleTextResolver {
                 frame.bitmap.getWidth(), frame.bitmap.getHeight());
         int focusX = Math.round(gesture.focus.x);
         int focusY = Math.round(gesture.focus.y);
-
-        synchronized (INDEX_LOCK) {
-            if (currentIndex != state) return null;
+        synchronized (STATE_LOCK) {
+            if (current != state) return null;
             for (int i = state.regionCache.size() - 1; i >= 0; i--) {
                 CachedRegion entry = state.regionCache.get(i);
                 Rect cached = entry.bitmapRoi;
-                boolean exactCoverage = cached.contains(desiredRoi);
-                boolean enoughOverlap = overlapCoverage(desiredRoi, cached) >= REGION_CACHE_OVERLAP_MIN;
+                boolean desiredCovered = cached.contains(desiredRoi)
+                        || overlapCoverage(desiredRoi, cached) >= REGION_CACHE_OVERLAP_MIN;
                 boolean gestureCovered = gesture.kind == GoogleCircleSelection.Kind.TAP
                         ? cached.contains(focusX, focusY)
-                        : overlapCoverage(gestureBitmap, cached) >= 0.95f;
-                if ((exactCoverage || enoughOverlap) && gestureCovered && usable(entry.screenDocument)) {
+                        : overlapCoverage(gestureBitmap, cached) >= 0.90f;
+                if (desiredCovered && gestureCovered && usable(entry.screenDocument)) {
                     state.regionCache.remove(i);
                     state.regionCache.add(entry);
                     return entry;
@@ -472,10 +459,10 @@ final class GoogleCircleTextResolver {
         return null;
     }
 
-    private static void cacheRegion(PreloadState state, Rect bitmapRoi, OcrDocument screenDocument) {
-        if (state == null || bitmapRoi == null || bitmapRoi.isEmpty() || !usable(screenDocument)) return;
-        synchronized (INDEX_LOCK) {
-            if (currentIndex != state) return;
+    private static void cacheRegion(PreloadState state, Rect bitmapRoi, OcrDocument document) {
+        if (state == null || bitmapRoi == null || bitmapRoi.isEmpty() || !usable(document)) return;
+        synchronized (STATE_LOCK) {
+            if (current != state) return;
             for (int i = state.regionCache.size() - 1; i >= 0; i--) {
                 CachedRegion existing = state.regionCache.get(i);
                 if (existing.bitmapRoi.equals(bitmapRoi)
@@ -483,151 +470,17 @@ final class GoogleCircleTextResolver {
                     state.regionCache.remove(i);
                 }
             }
-            state.regionCache.add(new CachedRegion(bitmapRoi, screenDocument));
-            while (state.regionCache.size() > REGION_CACHE_MAX) {
-                state.regionCache.remove(0);
-            }
+            state.regionCache.add(new CachedRegion(bitmapRoi, document));
+            while (state.regionCache.size() > REGION_CACHE_MAX) state.regionCache.remove(0);
         }
     }
 
-    private static int tileCompleted(PreloadState state) {
-        synchronized (INDEX_LOCK) {
-            return currentIndex == state ? state.completedTiles : 0;
-        }
-    }
-
-    private static ArrayList<Rect> buildTileRois(int width, int height) {
-        ArrayList<Rect> out = new ArrayList<>();
-        if (width <= 0 || height <= 0) return out;
-
-        int columns = 2;
-        int rows = height > width * 1.55f ? 3 : 2;
-        int baseW = Math.max(1, (int) Math.ceil(width / (double) columns));
-        int baseH = Math.max(1, (int) Math.ceil(height / (double) rows));
-        int overlapX = Math.max(16, Math.round(baseW * TILE_OVERLAP_RATIO));
-        int overlapY = Math.max(16, Math.round(baseH * TILE_OVERLAP_RATIO));
-
-        for (int row = 0; row < rows; row++) {
-            for (int column = 0; column < columns; column++) {
-                int left = column * baseW;
-                int top = row * baseH;
-                int right = Math.min(width, left + baseW);
-                int bottom = Math.min(height, top + baseH);
-                if (column > 0) left = Math.max(0, left - overlapX);
-                if (column < columns - 1) right = Math.min(width, right + overlapX);
-                if (row > 0) top = Math.max(0, top - overlapY);
-                if (row < rows - 1) bottom = Math.min(height, bottom + overlapY);
-                Rect tile = new Rect(left, top, right, bottom);
-                if (!tile.isEmpty()) out.add(tile);
-            }
-        }
-        return out;
-    }
-
-    private static OcrDocument mergeScreenDocuments(List<OcrDocument> documents) {
-        if (documents == null || documents.isEmpty()) return null;
-
-        ArrayList<OcrDocument.Line> candidates = new ArrayList<>();
-        int imageWidth = 1;
-        int imageHeight = 1;
-        float confidenceSum = 0f;
-        int confidenceCount = 0;
-
-        for (OcrDocument document : documents) {
-            if (!usable(document)) continue;
-            imageWidth = Math.max(imageWidth, document.imageWidth());
-            imageHeight = Math.max(imageHeight, document.imageHeight());
-            confidenceSum += document.confidence();
-            confidenceCount++;
-            candidates.addAll(document.lines());
-        }
-        if (candidates.isEmpty()) return null;
-
-        candidates.sort(Comparator
-                .comparingInt((OcrDocument.Line line) -> line.bounds().top)
-                .thenComparingInt(line -> line.bounds().left));
-
-        ArrayList<OcrDocument.Line> accepted = new ArrayList<>();
-        for (OcrDocument.Line candidate : candidates) {
-            boolean duplicate = false;
-            for (OcrDocument.Line existing : accepted) {
-                if (samePhysicalLine(existing, candidate)) {
-                    duplicate = true;
-                    if (candidate.chars().size() > existing.chars().size()) {
-                        int index = accepted.indexOf(existing);
-                        accepted.set(index, candidate);
-                    }
-                    break;
-                }
-            }
-            if (!duplicate) accepted.add(candidate);
-        }
-
-        accepted.sort(Comparator
-                .comparingInt((OcrDocument.Line line) -> line.bounds().top)
-                .thenComparingInt(line -> line.bounds().left));
-
-        ArrayList<OcrDocument.Line> rebuilt = new ArrayList<>();
-        ArrayList<String> blocks = new ArrayList<>();
-        StringBuilder fullText = new StringBuilder();
-        int order = 0;
-        int lineIndex = 0;
-        for (OcrDocument.Line sourceLine : accepted) {
-            ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>();
-            for (OcrDocument.CharUnit c : sourceLine.chars()) {
-                if (c.text().isBlank() || c.bounds().isEmpty()) continue;
-                chars.add(new OcrDocument.CharUnit(c.text(), c.bounds(), c.confidence(),
-                        lineIndex, c.group(), order++));
-            }
-            if (chars.isEmpty()) continue;
-            String text = sourceLine.text() == null ? "" : sourceLine.text().trim();
-            if (text.isEmpty()) {
-                StringBuilder value = new StringBuilder();
-                for (OcrDocument.CharUnit c : chars) value.append(c.text());
-                text = value.toString().trim();
-            }
-            if (text.isEmpty()) continue;
-            rebuilt.add(new OcrDocument.Line(text, sourceLine.bounds(),
-                    sourceLine.confidence(), chars));
-            blocks.add(text);
-            if (fullText.length() > 0) fullText.append('\n');
-            fullText.append(text);
-            lineIndex++;
-        }
-        if (rebuilt.isEmpty()) return null;
-
-        float confidence = confidenceCount == 0 ? 0f : confidenceSum / confidenceCount;
-        return OcrDocument.screenSpace(fullText.toString(), blocks, rebuilt,
-                "mlkit-circle-tiles", confidence, 0d, imageWidth, imageHeight);
-    }
-
-    private static boolean samePhysicalLine(OcrDocument.Line a, OcrDocument.Line b) {
-        Rect ra = a.bounds();
-        Rect rb = b.bounds();
-        if (ra.isEmpty() || rb.isEmpty()) return false;
-        float overlap = overlapCoverage(ra, rb);
-        float reverse = overlapCoverage(rb, ra);
-        float mutual = Math.min(overlap, reverse);
-        if (mutual >= 0.72f) return true;
-        String ta = normalizeText(a.text());
-        String tb = normalizeText(b.text());
-        return !ta.isEmpty() && ta.equals(tb) && mutual >= 0.35f;
-    }
-
-    private static String normalizeText(String text) {
-        return text == null ? "" : text.replaceAll("\\s+", "").trim();
-    }
-
-    private static float overlapCoverage(Rect target, Rect cover) {
-        if (target == null || cover == null || target.isEmpty() || cover.isEmpty()) return 0f;
-        int left = Math.max(target.left, cover.left);
-        int top = Math.max(target.top, cover.top);
-        int right = Math.min(target.right, cover.right);
-        int bottom = Math.min(target.bottom, cover.bottom);
-        if (right <= left || bottom <= top) return 0f;
-        long intersection = (long) (right - left) * (bottom - top);
-        long area = (long) target.width() * target.height();
-        return area <= 0L ? 0f : Math.min(1f, intersection / (float) area);
+    private static Rect expandTextMapRoi(Context app, GoogleCircleCapture.Frame frame, Rect source) {
+        int padX = bitmapPxForDp(app, frame, TEXT_MAP_ROI_PAD_X_DP);
+        int padY = bitmapPxForDp(app, frame, TEXT_MAP_ROI_PAD_Y_DP);
+        return clampRect(new Rect(source.left - padX, source.top - padY,
+                        source.right + padX, source.bottom + padY),
+                frame.bitmap.getWidth(), frame.bitmap.getHeight());
     }
 
     private static OcrDocument selectGesture(Context app, GoogleCircleCapture.Frame frame,
@@ -636,15 +489,13 @@ final class GoogleCircleTextResolver {
         if (!usable(document)) return null;
         return CircleGestureTextSelector.selectDocument(app, frame, gesture, document,
                 CACHED_OCR_TAP_TOLERANCE_DP, RANGE_CORRIDOR_DP,
-                "screenshot-gesture-selected");
+                "lazy-screenshot-selected");
     }
 
     private static Rect localBitmapRoi(Context app, GoogleCircleCapture.Frame frame,
                                        GoogleCircleSelection.Selection gesture) {
         int width = frame.bitmap.getWidth();
         int height = frame.bitmap.getHeight();
-        if (width <= 0 || height <= 0) return new Rect();
-
         Rect base = GoogleCircleSelection.exactRectAndClamp(gesture.bounds, width, height);
         if (base.isEmpty()) return new Rect();
 
@@ -659,9 +510,8 @@ final class GoogleCircleTextResolver {
 
         int padX = bitmapPxForDp(app, frame, LOCAL_RANGE_PAD_X_DP);
         int padY = bitmapPxForDp(app, frame, LOCAL_RANGE_PAD_Y_DP);
-        Rect expanded = new Rect(base.left - padX, base.top - padY,
-                base.right + padX, base.bottom + padY);
-        expanded = clampRect(expanded, width, height);
+        Rect expanded = clampRect(new Rect(base.left - padX, base.top - padY,
+                base.right + padX, base.bottom + padY), width, height);
         int minW = bitmapPxForDp(app, frame, LOCAL_MIN_WIDTH_DP);
         int minH = bitmapPxForDp(app, frame, LOCAL_MIN_HEIGHT_DP);
         return ensureMinimumRect(expanded, width, height, minW, minH);
@@ -671,24 +521,24 @@ final class GoogleCircleTextResolver {
         if (source == null || source.isEmpty()) return new Rect();
         int targetW = Math.min(width, Math.max(source.width(), Math.max(1, minW)));
         int targetH = Math.min(height, Math.max(source.height(), Math.max(1, minH)));
-        int left = source.centerX() - targetW / 2;
-        int top = source.centerY() - targetH / 2;
-        left = Math.max(0, Math.min(left, width - targetW));
-        top = Math.max(0, Math.min(top, height - targetH));
+        int left = Math.max(0, Math.min(source.centerX() - targetW / 2, width - targetW));
+        int top = Math.max(0, Math.min(source.centerY() - targetH / 2, height - targetH));
         return new Rect(left, top, left + targetW, top + targetH);
     }
 
     private static Rect clampRect(Rect source, int width, int height) {
         if (source == null || width <= 0 || height <= 0) return new Rect();
-        Rect out = new Rect(Math.max(0, source.left), Math.max(0, source.top),
-                Math.min(width, source.right), Math.min(height, source.bottom));
-        return out.isEmpty() ? new Rect() : out;
+        int left = Math.max(0, Math.min(width - 1, source.left));
+        int top = Math.max(0, Math.min(height - 1, source.top));
+        int right = Math.max(left + 1, Math.min(width, source.right));
+        int bottom = Math.max(top + 1, Math.min(height, source.bottom));
+        return new Rect(left, top, right, bottom);
     }
 
     private static int bitmapPxForDp(Context app, GoogleCircleCapture.Frame frame, float dp) {
         float density = app.getResources().getDisplayMetrics().density;
-        float screenPx = Math.max(1f, dp * density);
-        return Math.max(1, Math.round(frame.transform.screenDistanceToBitmap(screenPx)));
+        return Math.max(1, Math.round(frame.transform.screenDistanceToBitmap(
+                Math.max(1f, dp * density))));
     }
 
     private static OcrDocument nearestGroupDocument(OcrDocument document, PointF screenPoint) {
@@ -723,11 +573,22 @@ final class GoogleCircleTextResolver {
         }
         String value = text.toString().trim();
         if (chars.isEmpty() || bounds == null || bounds.isEmpty() || value.isEmpty()) return null;
-        OcrDocument.Line line = new OcrDocument.Line(value, bounds,
-                document.confidence(), chars);
+        OcrDocument.Line line = new OcrDocument.Line(value, bounds, document.confidence(), chars);
         return OcrDocument.screenSpace(value, List.of(value), List.of(line),
                 document.engine() + "+nearest-group", document.confidence(), document.score(),
                 document.imageWidth(), document.imageHeight());
+    }
+
+    private static float overlapCoverage(Rect target, Rect cover) {
+        if (target == null || cover == null || target.isEmpty() || cover.isEmpty()) return 0f;
+        int left = Math.max(target.left, cover.left);
+        int top = Math.max(target.top, cover.top);
+        int right = Math.min(target.right, cover.right);
+        int bottom = Math.min(target.bottom, cover.bottom);
+        if (right <= left || bottom <= top) return 0f;
+        long intersection = (long) (right - left) * (bottom - top);
+        long area = (long) target.width() * target.height();
+        return area <= 0L ? 0f : Math.min(1f, intersection / (float) area);
     }
 
     private static boolean usable(OcrDocument document) {
@@ -740,9 +601,16 @@ final class GoogleCircleTextResolver {
     }
 
     private static boolean isCurrent(PreloadState state, GoogleCircleCapture.Frame frame) {
-        synchronized (INDEX_LOCK) {
-            return currentIndex == state && sameFrame(state, frame);
+        synchronized (STATE_LOCK) {
+            return current == state && sameFrame(state, frame);
         }
+    }
+
+    private static void clearLocked(PreloadState state) {
+        state.textMap = null;
+        state.detectionError = null;
+        state.detectionDone = false;
+        state.regionCache.clear();
     }
 
     private static Rect gestureScreenBounds(GoogleCircleCapture.Frame frame,
@@ -750,12 +618,6 @@ final class GoogleCircleTextResolver {
         Rect bitmap = GoogleCircleSelection.exactRectAndClamp(gesture.bounds,
                 frame.bitmap.getWidth(), frame.bitmap.getHeight());
         return bitmap.isEmpty() ? new Rect() : frame.bitmapRectToScreen(bitmap);
-    }
-
-    private static String summarize(String text) {
-        if (text == null) return "";
-        String oneLine = text.replace('\n', ' ').replace('\r', ' ').trim();
-        return oneLine.length() <= 96 ? oneLine : oneLine.substring(0, 96) + "…";
     }
 
     private static String safe(Throwable error) {

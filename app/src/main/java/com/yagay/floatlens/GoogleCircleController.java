@@ -22,13 +22,13 @@ final class GoogleCircleController {
                 ScreenshotHideCoordinator.acquire(app, "google_circle_" + gen);
         pendingHideLease = hideLease;
         DiagnosticLog.i(app, "G_CIRCLE", "start gen=" + gen
-                + " phase=capture_then_screenshot_text"
-                + " textRecognition=local_roi_plus_tiled_cache"
-                + " classifier=gesture_to_frozen_screenshot_ocr"
-                + " foreground=on_demand_local_roi"
-                + " background=two_lane_overlapping_tiles"
+                + " phase=capture_then_textmap"
+                + " layoutDetection=downscaled_det_only"
+                + " paragraphStitching=geometry_reading_flow"
+                + " textRecognition=lazy_roi_mlkit"
                 + " regionCache=frozen_frame_lru"
-                + " preindexBlocking=false ppocrPreindex=false localOcr=true"
+                + " backgroundOcr=false tileOcr=false fullFrameOcr=false"
+                + " preindexBlocking=false localFallback=true"
                 + " viewText=false semanticLabels=false contentHints=false"
                 + " gestureGeometry=exact_path"
                 + " circleMode=editable_screenshot autoExpand=false");
@@ -42,9 +42,8 @@ final class GoogleCircleController {
                 }
             }
 
-            // Build a non-blocking background text index from overlapping screenshot tiles.
-            // Interactive gestures never wait for it: the resolver first reuses a frozen-frame ROI
-            // cache and otherwise OCRs only the gesture's tight crop from this same screenshot.
+            // Build only a lightweight detector TextMap in the background. Text recognition is
+            // deferred until a gesture hits a paragraph; detector misses use a tight local ROI.
             GoogleCircleTextResolver.preload(app, frame);
 
             boolean shown = GoogleCircleInlineOverlay.show(app, frame, () -> {

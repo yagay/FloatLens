@@ -39,10 +39,7 @@ class ORTSessionManager(
     fun loadModels(detAssetPath: String, recAssetPath: String) {
         val loadStart = System.currentTimeMillis()
         env = OrtEnvironment.getEnvironment()
-        val opts = OrtSession.SessionOptions().apply {
-            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-            setIntraOpNumThreads(config.numThreads)
-        }
+        val opts = sessionOptions()
         try {
             val ortEnv = env ?: throw OCRError.ModelLoadFailed("OCR", Exception("Environment not initialized"))
             detSession = createModelSession(ortEnv, detAssetPath, opts, "detection")
@@ -54,17 +51,37 @@ class ORTSessionManager(
                 throw t
             }
 
-            detInputName = try {
-                detSession!!.inputNames.iterator().next()
-            } catch (t: Throwable) {
-                throw OCRError.ModelLoadFailed("detection input", t)
-            }
-            recInputName = try {
-                recSession!!.inputNames.iterator().next()
-            } catch (t: Throwable) {
-                throw OCRError.ModelLoadFailed("recognition input", t)
-            }
+            detInputName = inputName(detSession!!, "detection input")
+            recInputName = inputName(recSession!!, "recognition input")
             coldLoadTimeMs = System.currentTimeMillis() - loadStart
+        } catch (t: Throwable) {
+            if (detSession == null && recSession == null) env = null
+            throw t
+        } finally {
+            opts.close()
+        }
+    }
+
+    /**
+     * Detection-only runtime used by FloatLens' background TextMap builder.
+     * It intentionally never opens/maps the recognition model, so a layout scan cannot pay the
+     * memory or cold-start cost of text decoding before the user actually selects a paragraph.
+     */
+    fun loadDetectionModel(detAssetPath: String) {
+        val loadStart = System.currentTimeMillis()
+        env = OrtEnvironment.getEnvironment()
+        val opts = sessionOptions()
+        try {
+            val ortEnv = env ?: throw OCRError.ModelLoadFailed("detection", Exception("Environment not initialized"))
+            detSession = createModelSession(ortEnv, detAssetPath, opts, "detection")
+            recSession = null
+            detInputName = inputName(detSession!!, "detection input")
+            coldLoadTimeMs = System.currentTimeMillis() - loadStart
+        } catch (t: Throwable) {
+            try { detSession?.close() } catch (_: Throwable) { }
+            detSession = null
+            env = null
+            throw t
         } finally {
             opts.close()
         }
@@ -97,6 +114,19 @@ class ORTSessionManager(
                 recSession = null
                 env = null
             }
+        }
+    }
+
+    private fun sessionOptions(): OrtSession.SessionOptions = OrtSession.SessionOptions().apply {
+        setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+        setIntraOpNumThreads(config.numThreads)
+    }
+
+    private fun inputName(session: OrtSession, label: String): String {
+        return try {
+            session.inputNames.iterator().next()
+        } catch (t: Throwable) {
+            throw OCRError.ModelLoadFailed(label, t)
         }
     }
 
