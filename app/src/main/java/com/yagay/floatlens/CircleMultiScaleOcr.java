@@ -6,7 +6,6 @@ import android.graphics.Canvas;
 import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
 import android.graphics.Paint;
-import android.graphics.Rect;
 import android.graphics.RectF;
 
 import java.util.ArrayList;
@@ -17,12 +16,13 @@ import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
 /**
- * Small, deterministic OCR verifier for gesture-local image text/logos.
+ * Small, deterministic OCR verifier for gesture-local image text.
  *
  * <p>Exactly three representations of the same tight ROI are recognized: a clean adaptive upscale,
- * grayscale/high-contrast, and light-ink binary. There are no local tiles, no scale ladder and no
- * character/document merging. All three results are mapped back to the original ROI, exact text
- * votes are counted, and one complete recognizer result wins.</p>
+ * grayscale/high-contrast, and automatic-polarity binary. There are no local tiles, scale ladders,
+ * script-specific bonuses or character/document merges. Every pass returns one complete recognizer
+ * document mapped back to the original ROI; exact text votes win first, then a generic readability
+ * score chooses between ties.</p>
  */
 final class CircleMultiScaleOcr {
     interface Callback {
@@ -33,7 +33,7 @@ final class CircleMultiScaleOcr {
     private enum Variant {
         UPSCALE("upscale", 3),
         CONTRAST("contrast", 2),
-        LIGHT_BINARY("light-binary", 1);
+        ADAPTIVE_BINARY("adaptive-binary", 1);
 
         final String label;
         final int tiePriority;
@@ -49,7 +49,7 @@ final class CircleMultiScaleOcr {
     private static final float MIN_SCALE = 1.5f;
     private static final float MAX_SCALE = 4f;
     private static final Variant[] VARIANTS = {
-            Variant.UPSCALE, Variant.CONTRAST, Variant.LIGHT_BINARY
+            Variant.UPSCALE, Variant.CONTRAST, Variant.ADAPTIVE_BINARY
     };
 
     private static final class Candidate {
@@ -87,10 +87,10 @@ final class CircleMultiScaleOcr {
 
         void start() {
             DiagnosticLog.i(app, "G_CIRCLE_MULTI_OCR",
-                    "start strategy=three_variant_local_verifier"
+                    "start strategy=three_variant_image_text"
                             + " input=" + source.getWidth() + "x" + source.getHeight()
-                            + " variants=upscale,contrast,light-binary"
-                            + " tiles=false merge=false"
+                            + " variants=upscale,contrast,adaptive-binary"
+                            + " tiles=false merge=false scriptBias=false"
                             + " enginePolicy=follow_main_setting"
                             + " workspaceCancellation=true");
             runNext();
@@ -134,7 +134,9 @@ final class CircleMultiScaleOcr {
                             + " bitmap=" + input.getWidth() + "x" + input.getHeight()
                             + " scale=" + String.format(Locale.ROOT, "%.2fx%.2f", scaleX, scaleY));
 
-            OcrEngine.recognizeDocument(app, input, new OcrEngine.DocumentCallback() {
+            // Stable document mode follows the user's OCR engine selection but, for ML Kit,
+            // chooses one complete recognizer result instead of fusing Chinese/Latin characters.
+            OcrEngine.recognizeDocumentStable(app, input, new OcrEngine.DocumentCallback() {
                 @Override public void onSuccess(OcrDocument document) {
                     try {
                         if (finished) return;
@@ -216,8 +218,9 @@ final class CircleMultiScaleOcr {
                     "finish usable=true variant=" + best.variant.label
                             + " votes=" + Math.max(1, bestVotes)
                             + " candidates=" + candidates.size()
+                            + " quality=" + String.format(Locale.ROOT, "%.1f", best.quality)
                             + " text=" + summarize(best.document.fullText())
-                            + " merge=false tiles=false");
+                            + " merge=false tiles=false scriptBias=false");
             callback.onSuccess(best.document, 1f, 1f, best.variant.label);
         }
 
@@ -272,7 +275,7 @@ final class CircleMultiScaleOcr {
             return copy;
         }
         if (variant == Variant.CONTRAST) return makeContrast(scaled, source);
-        return makeLightBinary(scaled, source);
+        return makeAdaptiveBinary(scaled, source);
     }
 
     private static Bitmap makeContrast(Bitmap scaled, Bitmap source) {
@@ -304,7 +307,12 @@ final class CircleMultiScaleOcr {
         }
     }
 
-    private static Bitmap makeLightBinary(Bitmap scaled, Bitmap source) {
+    /**
+     * Generic binary preprocessing. Otsu finds the luminance split and the dominant image luminance
+     * chooses polarity: dark ink on a light background stays dark; light ink on a dark background
+     * is inverted to dark ink on white. This is image-driven and has no language/content rules.
+     */
+    private static Bitmap makeAdaptiveBinary(Bitmap scaled, Bitmap source) {
         Bitmap working = scaled;
         try {
             if (!working.isMutable()) {
@@ -318,23 +326,32 @@ final class CircleMultiScaleOcr {
             int[] pixels = new int[width * height];
             int[] histogram = new int[256];
             working.getPixels(pixels, 0, width, 0, 0, width, height);
+            long luminanceSum = 0L;
             for (int color : pixels) {
                 int r = (color >> 16) & 0xff;
                 int g = (color >> 8) & 0xff;
                 int b = color & 0xff;
                 int y = (77 * r + 150 * g + 29 * b) >> 8;
                 histogram[y]++;
+                luminanceSum += y;
             }
-            int threshold = Math.max(140, Math.min(225, otsuThreshold(histogram, pixels.length)));
+            int threshold = Math.max(48, Math.min(208, otsuThreshold(histogram, pixels.length)));
+            float mean = luminanceSum / (float) Math.max(1, pixels.length);
+            boolean lightBackground = mean >= 128f;
             for (int i = 0; i < pixels.length; i++) {
                 int color = pixels[i];
                 int r = (color >> 16) & 0xff;
                 int g = (color >> 8) & 0xff;
                 int b = color & 0xff;
                 int y = (77 * r + 150 * g + 29 * b) >> 8;
-                pixels[i] = y >= threshold ? 0xff000000 : 0xffffffff;
+                boolean ink = lightBackground ? y <= threshold : y >= threshold;
+                pixels[i] = ink ? 0xff000000 : 0xffffffff;
             }
             working.setPixels(pixels, 0, width, 0, 0, width, height);
+            DiagnosticLog.i(null, "G_CIRCLE_MULTI_OCR",
+                    "adaptive-binary threshold=" + threshold
+                            + " mean=" + Math.round(mean)
+                            + " polarity=" + (lightBackground ? "dark_on_light" : "light_on_dark"));
             return working;
         } catch (Throwable t) {
             if (working != null && working != source && !working.isRecycled()) working.recycle();
@@ -343,13 +360,13 @@ final class CircleMultiScaleOcr {
     }
 
     private static int otsuThreshold(int[] histogram, int total) {
-        if (histogram == null || histogram.length < 256 || total <= 0) return 180;
+        if (histogram == null || histogram.length < 256 || total <= 0) return 128;
         long sum = 0L;
         for (int i = 0; i < 256; i++) sum += (long) i * histogram[i];
         long backgroundWeight = 0L;
         long backgroundSum = 0L;
         double bestVariance = -1d;
-        int best = 180;
+        int best = 128;
         for (int t = 0; t < 256; t++) {
             backgroundWeight += histogram[t];
             if (backgroundWeight == 0) continue;
@@ -384,23 +401,30 @@ final class CircleMultiScaleOcr {
                 && !document.lines().isEmpty() && !document.chars().isEmpty();
     }
 
+    /** Generic candidate score: no script, brand or language-specific preference. */
     private static double quality(OcrDocument document, String key, Variant variant) {
         if (document == null || key == null || key.isEmpty()) return Double.NEGATIVE_INFINITY;
-        int total = key.codePointCount(0, key.length());
-        int cjk = 0;
-        int latin = 0;
-        for (int cp : key.codePoints().toArray()) {
-            if (isCjk(cp)) cjk++;
-            else if ((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z')) latin++;
+        String text = document.fullText();
+        int meaningful = 0;
+        int visible = 0;
+        int garbage = 0;
+        if (text != null) {
+            for (int cp : text.codePoints().toArray()) {
+                if (Character.isWhitespace(cp)) continue;
+                visible++;
+                if (Character.isLetterOrDigit(cp)) meaningful++;
+                else if (cp == 0xfffd || Character.isISOControl(cp)
+                        || (cp >= 0xe000 && cp <= 0xf8ff)) garbage++;
+            }
         }
-        double scriptScore = 0d;
-        if (total >= 2 && total <= 6 && cjk >= 2) {
-            scriptScore += (cjk / (double) total) * 120d;
-            if (cjk * 2 >= total) scriptScore -= latin * 28d;
-        }
+        double readableRatio = meaningful / (double) Math.max(1, visible);
         return document.score()
                 + document.confidence() * 100d
-                + scriptScore
+                + meaningful * 4d
+                + Math.min(64, document.chars().size()) * 0.25d
+                + Math.min(16, document.lines().size()) * 0.5d
+                + readableRatio * 40d
+                - garbage * 30d
                 + variant.tiePriority * 3d;
     }
 
@@ -408,14 +432,9 @@ final class CircleMultiScaleOcr {
         if (text == null || text.isBlank()) return "";
         StringBuilder out = new StringBuilder();
         text.toLowerCase(Locale.ROOT).codePoints().forEach(cp -> {
-            if (Character.isLetterOrDigit(cp) || isCjk(cp)) out.appendCodePoint(cp);
+            if (Character.isLetterOrDigit(cp)) out.appendCodePoint(cp);
         });
         return out.toString();
-    }
-
-    private static boolean isCjk(int cp) {
-        return (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF)
-                || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x2FA1F);
     }
 
     private static String summarize(String text) {
