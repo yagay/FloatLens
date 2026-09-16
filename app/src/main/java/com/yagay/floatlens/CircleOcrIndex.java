@@ -6,12 +6,12 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Immutable collection of independent OCR passes for one frozen Circle frame.
+ * OCR passes for one frozen Circle frame plus one AKS-style global merged document.
  *
- * <p>Passes are deliberately never merged globally. Each document keeps the recognizer's own
- * line/group/character structure; gesture-time selection chooses one complete pass near the user's
- * actual target. This prevents a bad tile or a conflicting recognition from corrupting another
- * pass, and no recognized text is used to vote across OCR sources.</p>
+ * <p>The raw Full/TL/TR/BL/BR documents stay available for diagnostics, but text selection uses
+ * the merged document. Merge happens only at complete ML Kit Element/group granularity: exact-text
+ * spatial duplicates are removed, conflicting groups are kept, and characters are never fused
+ * across OCR sources.</p>
  */
 final class CircleOcrIndex {
     static final class Entry {
@@ -29,6 +29,7 @@ final class CircleOcrIndex {
     }
 
     private final List<Entry> entries;
+    private final OcrDocument mergedDocument;
 
     CircleOcrIndex(List<Entry> value) {
         ArrayList<Entry> safe = new ArrayList<>();
@@ -39,16 +40,23 @@ final class CircleOcrIndex {
             }
         }
         entries = List.copyOf(safe);
+        mergedDocument = CircleAksOcrMerger.merge(entries);
     }
 
     List<Entry> entries() { return entries; }
     boolean isEmpty() { return entries.isEmpty(); }
     int passCount() { return entries.size(); }
+    OcrDocument mergedDocument() { return usable(mergedDocument) ? mergedDocument : fullFrameDocument(); }
 
     int totalChars() {
         int count = 0;
         for (Entry entry : entries) count += entry.document.chars().size();
         return count;
+    }
+
+    int mergedChars() {
+        OcrDocument document = mergedDocument();
+        return document == null ? 0 : document.chars().size();
     }
 
     OcrDocument fullFrameDocument() {
@@ -58,7 +66,7 @@ final class CircleOcrIndex {
         return entries.isEmpty() ? null : entries.get(0).document;
     }
 
-    /** Convert every pass exactly once from full-bitmap coordinates into absolute SCREEN space. */
+    /** Convert every raw pass once into absolute SCREEN space, then rebuild the merged document. */
     CircleOcrIndex toScreen(ScreenBitmapTransform transform) {
         if (transform == null || entries.isEmpty()) return new CircleOcrIndex(List.of());
         ArrayList<Entry> mapped = new ArrayList<>();
