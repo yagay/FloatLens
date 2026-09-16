@@ -12,13 +12,12 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * OCR-only text resolver for the Google-style Circle workspace.
+ * OCR-only resolver using AKS's Full + four overlapping-tile strategy with one global word merge.
  *
- * <p>Circle pre-indexes the frozen screenshot with the AKS spatial strategy: one full-frame OCR
- * pass plus four overlapping 60% quadrant passes. The five ML Kit documents remain completely
- * independent. At gesture time we use the gesture only to choose the best complete pass and to
- * produce an initial selection hint. The complete OCR document is returned unchanged so selection
- * handles can expand across words, lines and paragraphs just like AKS keeps its allWords list.</p>
+ * <p>All five ML Kit passes are mapped into one coordinate space and merged at complete
+ * Element/group granularity. Exact-text heavy-overlap duplicates are removed; conflicting words
+ * stay separate, exactly as in AKS. The merged document is never gesture-cropped, so selection
+ * handles can cross tile boundaries, lines and paragraphs.</p>
  */
 final class GoogleCircleTextResolver {
     enum Source { VIEW, VIEW_OCR, IMAGE_OCR, NONE }
@@ -29,9 +28,9 @@ final class GoogleCircleTextResolver {
 
     static final class Result {
         final Source source;
-        /** Complete selected OCR pass. Never gesture-cropped. */
+        /** Complete AKS-style merged screen document. */
         final OcrDocument document;
-        /** Gesture-scoped subset used only to initialize the selection range. */
+        /** Gesture-scoped subset used only to initialize selection start/end. */
         final OcrDocument initialSelectionDocument;
         final Rect gestureScreenBounds;
         final Rect ocrBitmapRoi;
@@ -81,18 +80,6 @@ final class GoogleCircleTextResolver {
         boolean ready() { return ocrDone; }
     }
 
-    private static final class IndexedHit {
-        final CircleOcrIndex.Entry entry;
-        final OcrDocument initialSelection;
-        final float spatialScore;
-
-        IndexedHit(CircleOcrIndex.Entry entry, OcrDocument initialSelection, float spatialScore) {
-            this.entry = entry;
-            this.initialSelection = initialSelection;
-            this.spatialScore = spatialScore;
-        }
-    }
-
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final ExecutorService INDEX_IO = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "FloatLens-circle-index-ocr");
@@ -130,15 +117,13 @@ final class GoogleCircleTextResolver {
         DiagnosticLog.i(app, "G_CIRCLE_TEXT_INDEX", "start generation=" + state.generation
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
                 + " strategy=aks_full_plus_4_overlap_tiles"
-                + " textOwner=OCR_ONLY"
-                + " engine=ML_KIT"
-                + " preindex=full+tl+tr+bl+br"
-                + " tileFraction=0.60"
-                + " merge=false characterFusion=false localOcr=false"
-                + " selectionModel=complete_pass_plus_range"
+                + " textOwner=OCR_ONLY engine=ML_KIT"
+                + " preindex=full+tl+tr+bl+br tileFraction=0.60"
+                + " merge=aks_word_group exactText=true overlap=0.70"
+                + " characterFusion=false localOcr=false"
+                + " selectionModel=global_merged_document_plus_range"
                 + " viewText=false semanticLabels=false"
-                + " geometry=shared_matrix_transform"
-                + " coordinateSpace=SCREEN");
+                + " geometry=shared_matrix_transform coordinateSpace=SCREEN");
 
         INDEX_IO.execute(() -> prepareOcrPart(state, frame, started));
     }
@@ -164,7 +149,7 @@ final class GoogleCircleTextResolver {
         }
 
         if (!ready) {
-            DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "wait for AKS preindex gesture="
+            DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "wait for AKS merged preindex gesture="
                     + gesture.kind + " generation=" + state.generation);
             return;
         }
@@ -177,12 +162,14 @@ final class GoogleCircleTextResolver {
         PreloadState released;
         int ocrPasses;
         int ocrChars;
+        int mergedChars;
         int pending;
         synchronized (INDEX_LOCK) {
             if (!sameFrame(currentIndex, frame)) return;
             released = currentIndex;
             ocrPasses = released.ocrIndex == null ? 0 : released.ocrIndex.passCount();
             ocrChars = released.ocrIndex == null ? 0 : released.ocrIndex.totalChars();
+            mergedChars = released.ocrIndex == null ? 0 : released.ocrIndex.mergedChars();
             pending = released.pending.size();
             currentIndex = null;
             indexGeneration++;
@@ -194,6 +181,7 @@ final class GoogleCircleTextResolver {
                 + " reason=" + (reason == null ? "unknown" : reason)
                 + " ocrPasses=" + ocrPasses
                 + " ocrChars=" + ocrChars
+                + " mergedChars=" + mergedChars
                 + " pendingCleared=" + pending);
     }
 
@@ -231,9 +219,8 @@ final class GoogleCircleTextResolver {
 
         DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_INDEX", "ocr begin generation="
                 + state.generation + " bitmap=" + copy.getWidth() + "x" + copy.getHeight()
-                + " passes=5 tileFraction=0.60"
-                + " engine=ML_KIT"
-                + " merge=false characterFusion=false"
+                + " passes=5 tileFraction=0.60 engine=ML_KIT"
+                + " merge=aks_word_group characterFusion=false"
                 + " viewMask=false semanticLabels=false");
 
         CirclePreindexTiledOcr.recognize(state.app, copy,
@@ -265,6 +252,7 @@ final class GoogleCircleTextResolver {
                 + " usable=" + (index != null && !index.isEmpty())
                 + " passes=" + (index == null ? 0 : index.passCount())
                 + " totalChars=" + (index == null ? 0 : index.totalChars())
+                + " mergedChars=" + (index == null ? 0 : index.mergedChars())
                 + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started)
                 + (error == null ? "" : " error=" + ScreenCaptureBackend.safeMessage(error)));
         dispatchIfReady(state, frame, started);
@@ -283,6 +271,7 @@ final class GoogleCircleTextResolver {
                 + " textOwner=OCR_ONLY engine=ML_KIT"
                 + " ocrPasses=" + (state.ocrIndex == null ? 0 : state.ocrIndex.passCount())
                 + " ocrCharsTotal=" + (state.ocrIndex == null ? 0 : state.ocrIndex.totalChars())
+                + " mergedChars=" + (state.ocrIndex == null ? 0 : state.ocrIndex.mergedChars())
                 + " pending=" + pending.size()
                 + " totalMs=" + (android.os.SystemClock.uptimeMillis() - started));
 
@@ -309,99 +298,40 @@ final class GoogleCircleTextResolver {
             return;
         }
 
-        ArrayList<IndexedHit> hits = new ArrayList<>();
-        for (CircleOcrIndex.Entry entry : index.entries()) {
-            if (entry == null || !usable(entry.document)
-                    || !coverageTouchesGesture(entry.coverage, gestureScreen)) continue;
-            OcrDocument scoped = CircleGestureTextSelector.selectDocument(
-                    state.app, frame, gesture, entry.document,
-                    CACHED_OCR_TAP_TOLERANCE_DP, RANGE_CORRIDOR_DP,
-                    entry.source + "-gesture-selected");
-            if (!usable(scoped)) continue;
-            hits.add(new IndexedHit(entry, scoped,
-                    spatialScore(entry.coverage, gestureScreen, entry.fullFrame)));
+        OcrDocument merged = index.mergedDocument();
+        if (!usable(merged)) {
+            callback.onResolved(new Result(Source.NONE, null, null,
+                    gestureScreen, new Rect(), state.ocrError, false));
+            return;
         }
 
-        IndexedHit best = chooseBest(hits);
-        if (best == null) {
-            DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE", "index miss gesture="
+        OcrDocument initial = CircleGestureTextSelector.selectDocument(
+                state.app, frame, gesture, merged,
+                CACHED_OCR_TAP_TOLERANCE_DP, RANGE_CORRIDOR_DP,
+                "aks-merged-gesture-selected");
+        if (!usable(initial)) {
+            DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE", "merged index miss gesture="
                     + gesture.kind
                     + " passesAvailable=" + index.passCount()
+                    + " mergedChars=" + merged.chars().size()
                     + " localOcr=false");
             callback.onResolved(new Result(Source.NONE, null, null,
                     gestureScreen, new Rect(), state.ocrError, false));
             return;
         }
 
-        OcrDocument completeDocument = best.entry.document;
-        Rect bitmapRoi = frame.screenRectToBitmap(best.entry.coverage);
-        DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE", "index hit gesture="
+        Rect fullBitmap = new Rect(0, 0, frame.bitmap.getWidth(), frame.bitmap.getHeight());
+        DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE", "merged index hit gesture="
                 + gesture.kind
-                + " passHits=" + hits.size()
-                + " selectedSource=" + best.entry.source
-                + " fullFrame=" + best.entry.fullFrame
-                + " spatialScore=" + String.format(java.util.Locale.ROOT, "%.3f", best.spatialScore)
-                + " fullChars=" + completeDocument.chars().size()
-                + " initialChars=" + best.initialSelection.chars().size()
-                + " initialText=" + summarize(best.initialSelection.fullText())
-                + " selectionModel=complete_document_plus_initial_range"
-                + " merge=false characterFusion=false localOcr=false"
-                + " coordinateSpace=SCREEN");
-        callback.onResolved(new Result(Source.IMAGE_OCR, completeDocument,
-                best.initialSelection, gestureScreen, bitmapRoi, null, false));
-    }
-
-    private static IndexedHit chooseBest(ArrayList<IndexedHit> hits) {
-        IndexedHit best = null;
-        for (IndexedHit hit : hits) {
-            if (hit == null) continue;
-            if (best == null || hit.spatialScore > best.spatialScore) {
-                best = hit;
-                continue;
-            }
-            if (Math.abs(hit.spatialScore - best.spatialScore) < 0.0001f) {
-                float hc = reportedConfidence(hit.entry.document);
-                float bc = reportedConfidence(best.entry.document);
-                if (hc > bc) {
-                    best = hit;
-                    continue;
-                }
-                if (hc == bc && hit.entry.document.score() > best.entry.document.score()) best = hit;
-            }
-        }
-        return best;
-    }
-
-    private static float spatialScore(Rect coverage, Rect target, boolean fullFrame) {
-        if (coverage == null || coverage.isEmpty() || target == null || target.isEmpty()) return -1f;
-        float cx = target.exactCenterX();
-        float cy = target.exactCenterY();
-        float left = cx - coverage.left;
-        float right = coverage.right - cx;
-        float top = cy - coverage.top;
-        float bottom = coverage.bottom - cy;
-        float xMargin = Math.max(0f, Math.min(left, right)) / Math.max(1f, coverage.width());
-        float yMargin = Math.max(0f, Math.min(top, bottom)) / Math.max(1f, coverage.height());
-        float interior = Math.min(xMargin, yMargin);
-
-        if (fullFrame) return 1.0f + interior;
-        float tileBonus = interior >= 0.04f ? 1.0f : -0.20f;
-        return 1.0f + tileBonus + interior * 2.0f;
-    }
-
-    private static boolean coverageTouchesGesture(Rect coverage, Rect gestureScreen) {
-        if (coverage == null || coverage.isEmpty() || gestureScreen == null || gestureScreen.isEmpty()) {
-            return false;
-        }
-        if (coverage.contains(Math.round(gestureScreen.exactCenterX()),
-                Math.round(gestureScreen.exactCenterY()))) return true;
-        return Rect.intersects(coverage, gestureScreen);
-    }
-
-    private static float reportedConfidence(OcrDocument document) {
-        if (document == null) return 0f;
-        float value = document.confidence();
-        return value > 0f ? value : 0f;
+                + " passes=" + index.passCount()
+                + " mergedChars=" + merged.chars().size()
+                + " initialChars=" + initial.chars().size()
+                + " initialText=" + summarize(initial.fullText())
+                + " selectionModel=global_merged_document_plus_initial_range"
+                + " merge=aks_word_group exactText=true overlap=0.70"
+                + " characterFusion=false localOcr=false coordinateSpace=SCREEN");
+        callback.onResolved(new Result(Source.IMAGE_OCR, merged,
+                initial, gestureScreen, fullBitmap, null, false));
     }
 
     private static boolean usable(OcrDocument document) {
