@@ -67,8 +67,7 @@ final class ActionRegistry {
             }
             case ActionId.AI_SCREEN -> {
                 OcrEngine.invalidatePending(c, "action_google_circle");
-                DiagnosticLog.i(c, "AI_SCREEN", "enter fresh Google-style circle workspace");
-                // Legacy CircleSelectController is intentionally isolated and no longer routed here.
+                DiagnosticLog.i(c, "AI_SCREEN", "enter TextMap lazy-recognition circle workspace");
                 GoogleCircleController.show(c);
             }
             case ActionId.MOVE_ICON -> {
