@@ -9,6 +9,7 @@ import android.os.Looper;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -16,14 +17,15 @@ import java.util.concurrent.Executors;
  * OCR-only text resolver for the Google-style Circle workspace.
  *
  * <p>There is one text owner: OCR. Circle performs one frozen full-frame OCR pass for ordinary
- * screen text. Gesture resolution reads only that OCR geometry. A cache miss, or a compact CJK-like
- * image-text hit, is verified with the tight gesture-local three-variant OCR fallback. Accessibility
- * View text, semantic labels and View/OCR geometry refinement are deliberately excluded from this
- * pipeline so two text sources can never compete for the same screen location.</p>
+ * screen text, preserves that recognizer geometry, and resolves the user's gesture against it.
+ * Gesture-local three-variant OCR is a generic image-text quality pass: taps are always verified
+ * locally, while range gestures are verified only when the recognized glyph pixels are small or
+ * the recognizer reports genuinely low confidence. No app, icon, brand, language or semantic label
+ * is used to decide whether local image OCR should run.</p>
  */
 final class GoogleCircleTextResolver {
-    // VIEW/VIEW_OCR are retained only for binary/source compatibility with callers compiled against
-    // older revisions. The Google Circle pipeline now emits IMAGE_OCR or NONE only.
+    // VIEW/VIEW_OCR are retained only for binary/source compatibility with older callers. Google
+    // Circle emits IMAGE_OCR or NONE only.
     enum Source { VIEW, VIEW_OCR, IMAGE_OCR, NONE }
 
     interface Callback {
@@ -93,10 +95,11 @@ final class GoogleCircleTextResolver {
 
     private static final float LOCAL_TAP_HALF_SIZE_DP = 38f;
     private static final float LOCAL_VERIFY_PAD_DP = 18f;
-    // The crop must contain the full OCR stroke corridor. Pixels outside that corridor are
-    // neutralized before recognition for range gestures, so this padding does not reintroduce the
-    // old rectangular-interference problem.
     private static final float LOCAL_RANGE_PAD_DP = 20f;
+    /** Range text at or below this median glyph height gets a local image-quality verification. */
+    private static final float LOCAL_VERIFY_GLYPH_HEIGHT_DP = 20f;
+    /** A zero confidence means "not reported" and must not itself trigger verification. */
+    private static final float LOCAL_VERIFY_CONFIDENCE = 0.72f;
 
     private static long indexGeneration;
     private static PreloadState currentIndex;
@@ -126,7 +129,7 @@ final class GoogleCircleTextResolver {
                 + " strategy=ocr_only_full_then_local3"
                 + " textOwner=OCR_ONLY"
                 + " preindex=full_once"
-                + " fallback=gesture_local_three_variant"
+                + " localPolicy=tap_always_small_or_low_quality_range"
                 + " viewText=false viewMask=false semanticLabels=false"
                 + " geometry=shared_matrix_transform"
                 + " coordinateSpace=SCREEN");
@@ -207,8 +210,6 @@ final class GoogleCircleTextResolver {
             return;
         }
 
-        // Keep OCR input independent from the workspace bitmap lifetime. The pixels are unmodified:
-        // no View mask, semantic mask or accessibility-derived preprocessing is applied.
         final Bitmap copy;
         try {
             copy = source.copy(Bitmap.Config.ARGB_8888, false);
@@ -225,8 +226,7 @@ final class GoogleCircleTextResolver {
 
         DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_INDEX", "ocr begin generation="
                 + state.generation + " bitmap=" + copy.getWidth() + "x" + copy.getHeight()
-                + " roi=full"
-                + " requestsPerWorkspace=1"
+                + " roi=full requestsPerWorkspace=1"
                 + " viewMask=false semanticLabels=false"
                 + " enginePolicy=follow_main_setting");
 
@@ -303,17 +303,21 @@ final class GoogleCircleTextResolver {
                 : null;
 
         if (usable(scoped)) {
-            boolean verifyCompact = shouldVerifyCompactImageCandidate(state.app, scoped);
+            String verifyReason = localVerificationReason(state.app, gesture, scoped);
+            boolean verifyLocal = verifyReason != null;
             DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE", "full hit gesture="
                     + gesture.kind
                     + " chars=" + scoped.chars().size()
                     + " text=" + summarize(scoped.fullText())
-                    + " compactVerify=" + verifyCompact
-                    + " textOwner=OCR_ONLY"
-                    + " preIndex=true coordinateSpace=SCREEN");
-            if (verifyCompact) {
+                    + " localVerify=" + verifyLocal
+                    + " verifyReason=" + (verifyReason == null ? "none" : verifyReason)
+                    + " medianGlyphDp=" + String.format(java.util.Locale.ROOT, "%.1f",
+                    medianGlyphHeightDp(state.app, scoped))
+                    + " confidence=" + scoped.confidence()
+                    + " textOwner=OCR_ONLY preIndex=true coordinateSpace=SCREEN");
+            if (verifyLocal) {
                 resolveLocalEnhancedOcr(state, frame, gesture, gestureScreen, callback,
-                        scoped, true);
+                        scoped, true, verifyReason);
                 return;
             }
 
@@ -327,7 +331,8 @@ final class GoogleCircleTextResolver {
                 + gesture.kind
                 + " fullOcrAvailable=" + usable(full)
                 + " -> local three-variant OCR");
-        resolveLocalEnhancedOcr(state, frame, gesture, gestureScreen, callback, null, false);
+        resolveLocalEnhancedOcr(state, frame, gesture, gestureScreen, callback,
+                null, false, "full_miss");
     }
 
     private static void resolveLocalEnhancedOcr(PreloadState state,
@@ -336,7 +341,8 @@ final class GoogleCircleTextResolver {
                                                 Rect gestureScreen,
                                                 Callback callback,
                                                 OcrDocument cachedFallback,
-                                                boolean compactVerification) {
+                                                boolean verifyingFullHit,
+                                                String reason) {
         if (!isCurrent(state, frame)) return;
         Bitmap source = frame.bitmap;
         if (source == null || source.isRecycled()) {
@@ -346,7 +352,7 @@ final class GoogleCircleTextResolver {
         }
 
         Rect roi = localRecognitionRoi(state.app, frame, gesture,
-                compactVerification ? cachedFallback : null);
+                verifyingFullHit ? cachedFallback : null);
         if (roi.isEmpty()) {
             returnCachedOrError(callback, cachedFallback, gestureScreen, roi, state.ocrError);
             return;
@@ -363,7 +369,7 @@ final class GoogleCircleTextResolver {
                 made = mutable;
             }
             crop = made;
-            corridor = compactVerification
+            corridor = verifyingFullHit
                     ? new GestureOcrCorridorMask.Result(false, gesture.points.size(), 0f)
                     : GestureOcrCorridorMask.apply(state.app, crop, roi, gesture, frame.transform);
         } catch (Throwable t) {
@@ -380,9 +386,9 @@ final class GoogleCircleTextResolver {
         DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_OCR", "start gesture=" + gesture.kind
                 + " roi=" + roi.toShortString()
                 + " input=" + crop.getWidth() + "x" + crop.getHeight()
-                + " reason=" + (compactVerification ? "compact_full_verify" : "full_miss")
+                + " reason=" + (reason == null ? "generic_image_quality" : reason)
                 + " enhancement=three_variant"
-                + " variants=scaled,contrast,light_binary"
+                + " variants=upscale,contrast,adaptive_binary"
                 + " viewMask=false semanticLabels=false"
                 + " corridorApplied=" + corridor.applied
                 + " corridorPoints=" + corridor.pointCount
@@ -390,7 +396,7 @@ final class GoogleCircleTextResolver {
                 + " cachedFallback=" + (cachedFallback != null)
                 + " geometry=roi_to_screen_matrix"
                 + " enginePolicy=follow_main_setting"
-                + " pixelOnly=true nearbyCaptionSearch=false");
+                + " pixelOnly=true contentHints=false");
 
         CircleLocalOcrFallback.recognize(state.app, crop,
                 () -> !isCurrent(state, frame), new OcrEngine.DocumentCallback() {
@@ -407,13 +413,10 @@ final class GoogleCircleTextResolver {
                         LOCAL_OCR_TAP_TOLERANCE_DP, RANGE_CORRIDOR_DP,
                         "local-gesture-selected");
                 boolean hit = usable(localScoped);
-                boolean compatible = !compactVerification
-                        || verificationLengthCompatible(cachedFallback, localScoped);
-                OcrDocument selected = hit && compatible ? localScoped : cachedFallback;
-                boolean usedLocal = selected == localScoped && usable(localScoped);
+                OcrDocument selected = hit ? localScoped : cachedFallback;
+                boolean usedLocal = hit;
                 DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_OCR", "done gesture=" + gesture.kind
                         + " hit=" + hit
-                        + " compatible=" + compatible
                         + " usedLocal=" + usedLocal
                         + " chars=" + (localScoped == null ? 0 : localScoped.chars().size())
                         + " text=" + summarize(localScoped == null ? "" : localScoped.fullText())
@@ -491,40 +494,37 @@ final class GoogleCircleTextResolver {
         return frame.screenRectToBitmap(screenRoi);
     }
 
-    private static boolean shouldVerifyCompactImageCandidate(Context app, OcrDocument document) {
-        if (app == null || !usable(document)) return false;
-        String text = document.fullText();
-        if (text == null || text.isBlank()) return false;
-        int total = 0;
-        int cjk = 0;
-        for (int cp : text.codePoints().toArray()) {
-            if (Character.isWhitespace(cp) || (!Character.isLetterOrDigit(cp) && !isCjk(cp))) continue;
-            total++;
-            if (isCjk(cp)) cjk++;
-        }
-        if (total < 2 || total > 6 || cjk < 2 || cjk * 2 < total) return false;
-        Rect bounds = documentBounds(document);
-        if (bounds.isEmpty()) return false;
-        float density = ScreenGeometry.density(app);
-        return bounds.width() <= Math.round(220f * density)
-                && bounds.height() <= Math.round(96f * density);
+    /**
+     * Generic image-text quality policy. A tap is cheap to verify because it defines one small
+     * target. Range gestures keep the full OCR result unless the source glyph pixels are small or a
+     * recognizer that actually reports confidence says the result is weak.
+     */
+    private static String localVerificationReason(Context app,
+                                                  GoogleCircleSelection.Selection gesture,
+                                                  OcrDocument document) {
+        if (app == null || gesture == null || !usable(document)) return null;
+        if (gesture.kind == GoogleCircleSelection.Kind.TAP) return "tap_local_quality";
+        float medianDp = medianGlyphHeightDp(app, document);
+        if (medianDp > 0f && medianDp <= LOCAL_VERIFY_GLYPH_HEIGHT_DP) return "small_glyph_pixels";
+        float confidence = document.confidence();
+        if (confidence > 0f && confidence < LOCAL_VERIFY_CONFIDENCE) return "low_confidence";
+        return null;
     }
 
-    private static boolean verificationLengthCompatible(OcrDocument cached, OcrDocument local) {
-        if (!usable(local)) return false;
-        if (!usable(cached)) return true;
-        int cachedCount = recognitionCodePointCount(cached.fullText());
-        int localCount = recognitionCodePointCount(local.fullText());
-        return cachedCount <= 0 || localCount == cachedCount;
-    }
-
-    private static int recognitionCodePointCount(String text) {
-        if (text == null || text.isBlank()) return 0;
-        int count = 0;
-        for (int cp : text.codePoints().toArray()) {
-            if (Character.isLetterOrDigit(cp) || isCjk(cp)) count++;
+    private static float medianGlyphHeightDp(Context app, OcrDocument document) {
+        if (app == null || document == null || document.chars().isEmpty()) return 0f;
+        ArrayList<Integer> heights = new ArrayList<>();
+        for (OcrDocument.CharUnit c : document.chars()) {
+            if (c == null || c.bounds().isEmpty()) continue;
+            heights.add(Math.max(1, c.bounds().height()));
         }
-        return count;
+        if (heights.isEmpty()) return 0f;
+        Collections.sort(heights);
+        int n = heights.size();
+        float medianPx = (n & 1) == 1 ? heights.get(n / 2)
+                : (heights.get(n / 2 - 1) + heights.get(n / 2)) * 0.5f;
+        float density = Math.max(0.1f, ScreenGeometry.density(app));
+        return medianPx / density;
     }
 
     private static Rect documentBounds(OcrDocument document) {
@@ -537,11 +537,6 @@ final class GoogleCircleTextResolver {
             }
         }
         return out == null ? new Rect() : out;
-    }
-
-    private static boolean isCjk(int cp) {
-        return (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF)
-                || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x2FA1F);
     }
 
     private static void shiftIntoBounds(Rect rect, Rect bounds) {
