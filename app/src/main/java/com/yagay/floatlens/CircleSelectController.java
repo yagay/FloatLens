@@ -29,7 +29,7 @@ public final class CircleSelectController {
         if (service != null) service.onCircleCaptureStarted();
 
         DiagnosticLog.i(app, "CIRCLE_SELECT", "recognition source=screenshot"
-                + " mlkit=true view=false ppocr=false gen=" + gen);
+                + " engine=shared-screenshot-ocr view=false gen=" + gen);
 
         // Circle Select has one source of truth: the frozen screenshot. Keep the empty snapshot
         // parameter only for API compatibility with the overlay while View text is retired.
