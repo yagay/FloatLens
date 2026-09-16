@@ -7,11 +7,12 @@ import android.graphics.RectF;
 import java.util.function.BooleanSupplier;
 
 /**
- * Gesture-scoped OCR fallback for image text/logos missed by the frozen full-frame index.
+ * Gesture-scoped OCR fallback and quality verifier for image text.
  *
  * <p>The fallback follows the user's main OCR engine setting and runs exactly three deterministic
- * visual representations of the same tight crop: adaptive upscale, contrast and light-ink binary.
- * No local tiling, scale ladder or document merge is used.</p>
+ * representations of the same tight crop: adaptive upscale, grayscale/high-contrast and automatic
+ * polarity binary. No app/icon/brand/language rule, local tiling, scale ladder or document merge is
+ * used. The winning pass is always one complete recognizer document.</p>
  */
 final class CircleLocalOcrFallback {
     private CircleLocalOcrFallback() {}
@@ -27,10 +28,11 @@ final class CircleLocalOcrFallback {
         Context app = context.getApplicationContext();
 
         DiagnosticLog.i(app, "G_CIRCLE_LOCAL_OCR",
-                "start strategy=three_variant_local_verifier"
+                "start strategy=three_variant_image_text"
                         + " bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight()
-                        + " variants=upscale,contrast,light-binary"
-                        + " tiles=false merge=false"
+                        + " variants=upscale,contrast,adaptive-binary"
+                        + " tiles=false merge=false scriptBias=false contentHints=false"
+                        + " structure=single_complete_document"
                         + " geometry=normalized_once"
                         + " workspaceCancellation=true"
                         + " enginePolicy=follow_main_setting");
@@ -51,7 +53,7 @@ final class CircleLocalOcrFallback {
                                     + " remapped=" + (document != normalized));
                     if (normalized == null || normalized.fullText().isBlank()
                             || normalized.chars().isEmpty()) {
-                        callback.onFailure(new IllegalStateException("local OCR verifier empty"));
+                        callback.onFailure(new IllegalStateException("local image OCR empty"));
                     } else {
                         callback.onSuccess(normalized);
                     }
@@ -64,7 +66,7 @@ final class CircleLocalOcrFallback {
                 DiagnosticLog.i(app, "G_CIRCLE_LOCAL_OCR",
                         "verified failed error=" + safe(error));
                 callback.onFailure(error == null
-                        ? new IllegalStateException("local OCR verifier failed") : error);
+                        ? new IllegalStateException("local image OCR failed") : error);
             }
         });
     }
