@@ -23,9 +23,9 @@ final class GoogleCircleController {
         pendingHideLease = hideLease;
         DiagnosticLog.i(app, "G_CIRCLE", "start gen=" + gen
                 + " phase=capture_then_ocr_preindex"
-                + " textRecognition=ocr_only_aks_full_plus_4_tiles"
-                + " classifier=gesture_select_one_complete_pass"
-                + " merge=false characterFusion=false localOcr=false"
+                + " textRecognition=pp_detect_then_single_mlkit"
+                + " classifier=gesture_select_from_single_document"
+                + " tiles=false aksMerge=false characterFusion=false localOcr=false"
                 + " viewText=false semanticLabels=false contentHints=false"
                 + " gestureGeometry=exact_path"
                 + " circleMode=editable_screenshot autoExpand=false");
@@ -39,9 +39,8 @@ final class GoogleCircleController {
                 }
             }
 
-            // Build the frozen OCR index immediately using one full-frame pass plus four overlapping
-            // 60% quadrant passes. Every pass remains independent and is mapped into SCREEN space;
-            // Accessibility/View text never participates and there is no global OCR merge.
+            // Build one frozen OCR document immediately. PP-OCR may localize text pixels, while
+            // ML Kit remains the only text recognizer. No tiled OCR or cross-pass merge participates.
             GoogleCircleTextResolver.preload(app, frame);
 
             boolean shown = GoogleCircleInlineOverlay.show(app, frame, () -> {
