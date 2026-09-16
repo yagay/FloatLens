@@ -6,7 +6,6 @@ import android.graphics.Rect;
 import android.graphics.RectF;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -89,7 +88,8 @@ final class CirclePreindexTiledOcr {
                             + " passes=" + passes.size()
                             + " tileFraction=" + TILE_FRACTION
                             + " enginePolicy=follow_main_setting"
-                            + " merge=character_spatial_dedup");
+                            + " merge=character_spatial_dedup"
+                            + " failOpen=full_frame");
             runNext();
         }
 
@@ -103,12 +103,8 @@ final class CirclePreindexTiledOcr {
             final Pass pass = passes.get(index++);
             final Bitmap input;
             try {
-                if (pass.full) {
-                    input = source;
-                } else {
-                    input = Bitmap.createBitmap(source, pass.roi.left, pass.roi.top,
-                            pass.roi.width(), pass.roi.height());
-                }
+                input = pass.full ? source : Bitmap.createBitmap(source,
+                        pass.roi.left, pass.roi.top, pass.roi.width(), pass.roi.height());
             } catch (Throwable t) {
                 lastError = t;
                 DiagnosticLog.i(app, "G_CIRCLE_PREINDEX_TILE",
@@ -131,16 +127,13 @@ final class CirclePreindexTiledOcr {
                         OcrDocument mapped = pass.full
                                 ? normalizeFull(document, source.getWidth(), source.getHeight())
                                 : mapTile(document, pass.roi, source.getWidth(), source.getHeight(), pass.name);
-                        if (usable(mapped)) {
-                            documents.add(new DocumentSource(mapped, pass.name, !pass.full));
-                        }
+                        if (usable(mapped)) documents.add(new DocumentSource(mapped, pass.name, !pass.full));
                         DiagnosticLog.i(app, "G_CIRCLE_PREINDEX_TILE",
                                 "pass done source=" + pass.name
                                         + " chars=" + (mapped == null ? 0 : mapped.chars().size())
                                         + " lines=" + (mapped == null ? 0 : mapped.lines().size())
                                         + " engine=" + (document == null ? "none" : document.engine())
-                                        + " elapsedMs="
-                                        + (android.os.SystemClock.uptimeMillis() - started));
+                                        + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
                     } catch (Throwable t) {
                         lastError = t;
                         DiagnosticLog.i(app, "G_CIRCLE_PREINDEX_TILE",
@@ -156,8 +149,7 @@ final class CirclePreindexTiledOcr {
                     DiagnosticLog.i(app, "G_CIRCLE_PREINDEX_TILE",
                             "pass failed source=" + pass.name
                                     + " error=" + safe(error)
-                                    + " elapsedMs="
-                                    + (android.os.SystemClock.uptimeMillis() - started));
+                                    + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
                     if (!pass.full) recycle(input);
                     runNext();
                 }
@@ -167,14 +159,38 @@ final class CirclePreindexTiledOcr {
         private void finish() {
             if (finished) return;
             finished = true;
-            OcrDocument merged = merge(documents, source.getWidth(), source.getHeight());
+
+            OcrDocument merged = null;
+            Throwable mergeError = null;
+            try {
+                merged = merge(documents, source.getWidth(), source.getHeight());
+            } catch (Throwable t) {
+                mergeError = t;
+                lastError = t;
+                DiagnosticLog.i(app, "G_CIRCLE_PREINDEX_TILE",
+                        "merge failed error=" + safe(t) + " -> fail-open full-frame");
+            }
+
             if (usable(merged)) {
                 DiagnosticLog.i(app, "G_CIRCLE_PREINDEX_TILE",
                         "finish usable=true sources=" + documents.size()
                                 + " chars=" + merged.chars().size()
                                 + " lines=" + merged.lines().size()
-                                + " textChars=" + merged.fullText().length());
+                                + " textChars=" + merged.fullText().length()
+                                + " fallback=false");
                 callback.onSuccess(merged);
+                return;
+            }
+
+            OcrDocument fallback = bestFallbackDocument(documents);
+            if (usable(fallback)) {
+                DiagnosticLog.i(app, "G_CIRCLE_PREINDEX_TILE",
+                        "finish usable=true sources=" + documents.size()
+                                + " chars=" + fallback.chars().size()
+                                + " lines=" + fallback.lines().size()
+                                + " fallback=true reason="
+                                + (mergeError == null ? "merged_empty" : safe(mergeError)));
+                callback.onSuccess(fallback);
                 return;
             }
 
@@ -197,7 +213,6 @@ final class CirclePreindexTiledOcr {
         int h = Math.max(1, height);
         ArrayList<Pass> out = new ArrayList<>();
         out.add(new Pass(new Rect(0, 0, w, h), "full", true));
-
         if (Math.min(w, h) < MIN_FRAME_EDGE_FOR_TILES) return List.copyOf(out);
 
         int tw = Math.max(1, Math.min(w, Math.round(w * TILE_FRACTION)));
@@ -224,8 +239,8 @@ final class CirclePreindexTiledOcr {
         CoordinateMapper mapper = new CoordinateMapper(
                 new RectF(0f, 0f, document.imageWidth(), document.imageHeight()),
                 new RectF(0f, 0f, Math.max(1, width), Math.max(1, height)));
-        return mapper.mapDocument(document, false, Math.max(1, width), Math.max(1, height),
-                "full-");
+        return mapper.mapDocument(document, false,
+                Math.max(1, width), Math.max(1, height), "full-");
     }
 
     private static OcrDocument mapTile(OcrDocument document, Rect roi,
@@ -238,6 +253,17 @@ final class CirclePreindexTiledOcr {
                 Math.max(1, width), Math.max(1, height), name + "-");
     }
 
+    private static OcrDocument bestFallbackDocument(List<DocumentSource> sources) {
+        if (sources == null || sources.isEmpty()) return null;
+        OcrDocument firstUsable = null;
+        for (DocumentSource source : sources) {
+            if (source == null || !usable(source.document)) continue;
+            if (firstUsable == null) firstUsable = source.document;
+            if (!source.tile || "full".equals(source.source)) return source.document;
+        }
+        return firstUsable;
+    }
+
     private static OcrDocument merge(List<DocumentSource> sources, int width, int height) {
         if (sources == null || sources.isEmpty()) return null;
 
@@ -248,11 +274,8 @@ final class CirclePreindexTiledOcr {
                 if (unit == null || unit.text().isBlank() || unit.bounds().isEmpty()) continue;
                 CharCandidate incoming = new CharCandidate(unit, source.source, source.tile);
                 int duplicate = findDuplicate(accepted, incoming);
-                if (duplicate < 0) {
-                    accepted.add(incoming);
-                } else if (prefer(incoming, accepted.get(duplicate))) {
-                    accepted.set(duplicate, incoming);
-                }
+                if (duplicate < 0) accepted.add(incoming);
+                else if (prefer(incoming, accepted.get(duplicate))) accepted.set(duplicate, incoming);
             }
         }
         if (accepted.isEmpty()) return null;
@@ -289,9 +312,10 @@ final class CirclePreindexTiledOcr {
             }
         }
 
-        ArrayList<Integer> order = new ArrayList<>();
-        for (int i = 0; i < rows.size(); i++) order.add(i);
-        order.sort(Comparator.comparingDouble(rowCenters::get));
+        ArrayList<Integer> rowOrder = new ArrayList<>();
+        for (int i = 0; i < rows.size(); i++) rowOrder.add(i);
+        // Explicit Float comparison avoids ART/desugaring bridge casts from Float -> Double.
+        rowOrder.sort((a, b) -> Float.compare(rowCenters.get(a), rowCenters.get(b)));
 
         ArrayList<OcrDocument.Line> lines = new ArrayList<>();
         ArrayList<String> blocks = new ArrayList<>();
@@ -302,9 +326,9 @@ final class CirclePreindexTiledOcr {
         float confidenceSum = 0f;
         int confidenceCount = 0;
 
-        for (int rowIndex : order) {
+        for (int rowIndex : rowOrder) {
             ArrayList<CharCandidate> row = rows.get(rowIndex);
-            row.sort(Comparator.comparingInt(c -> c.unit.bounds().left));
+            row.sort((a, b) -> Integer.compare(a.unit.bounds().left, b.unit.bounds().left));
             if (row.isEmpty()) continue;
 
             ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>();
@@ -407,9 +431,7 @@ final class CirclePreindexTiledOcr {
     }
 
     private static boolean shouldInsertSpace(String previous, String current, boolean groupBreak) {
-        if (!groupBreak || previous == null || previous.isEmpty() || current == null || current.isEmpty()) {
-            return false;
-        }
+        if (!groupBreak || previous == null || previous.isEmpty() || current == null || current.isEmpty()) return false;
         int a = previous.codePointBefore(previous.length());
         int b = current.codePointAt(0);
         return !isCjk(a) && !isCjk(b) && !isPunctuation(a) && !isPunctuation(b);
@@ -443,8 +465,7 @@ final class CirclePreindexTiledOcr {
     private static String safe(Throwable error) {
         if (error == null) return "unknown";
         String message = error.getMessage();
-        return message == null || message.isBlank()
-                ? error.getClass().getSimpleName() : message;
+        return message == null || message.isBlank() ? error.getClass().getSimpleName() : message;
     }
 
     private CirclePreindexTiledOcr() {}
