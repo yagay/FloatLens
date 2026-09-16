@@ -16,6 +16,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 
 /**
  * Stable gesture-local OCR recovery for text/logos missed by the frozen multi-pass index.
@@ -73,6 +75,7 @@ final class CircleMultiScaleOcr {
         final Context app;
         final Bitmap source;
         final Callback callback;
+        final BooleanSupplier cancelled;
         final ArrayList<Candidate> fullCandidates = new ArrayList<>();
         final ArrayList<Candidate> tileCandidates = new ArrayList<>();
         final Map<String, Integer> fullVotes = new HashMap<>();
@@ -84,9 +87,10 @@ final class CircleMultiScaleOcr {
         boolean finished;
         boolean tileStageStarted;
 
-        Session(Context app, Bitmap source, Callback callback) {
+        Session(Context app, Bitmap source, BooleanSupplier cancelled, Callback callback) {
             this.app = app;
             this.source = source;
+            this.cancelled = cancelled;
             this.callback = callback;
             this.tiles = buildTiles(source.getWidth(), source.getHeight());
         }
@@ -98,12 +102,17 @@ final class CircleMultiScaleOcr {
                             + " passes=1x,2x,3x,4x,contrast3x"
                             + " tileRecoveryOnlyWhenFullEmpty=true"
                             + " tileMerge=false"
+                            + " workspaceCancellation=true"
                             + " enginePolicy=follow_main_setting");
             runNextFullPass();
         }
 
         private void runNextFullPass() {
             if (finished) return;
+            if (isCancelled()) {
+                cancel("before_full_pass");
+                return;
+            }
             if (passIndex >= SCALES.length + 1) {
                 if (!fullCandidates.isEmpty()) {
                     finishBestFull("best_full_after_all_passes");
@@ -132,6 +141,12 @@ final class CircleMultiScaleOcr {
                 return;
             }
 
+            if (isCancelled()) {
+                recycleVariant(input);
+                cancel("prepared_" + variant);
+                return;
+            }
+
             final float scaleX = input.getWidth() / (float) Math.max(1, source.getWidth());
             final float scaleY = input.getHeight() / (float) Math.max(1, source.getHeight());
             final long started = android.os.SystemClock.uptimeMillis();
@@ -144,6 +159,10 @@ final class CircleMultiScaleOcr {
                 @Override public void onSuccess(OcrDocument document) {
                     try {
                         if (finished) return;
+                        if (isCancelled()) {
+                            cancel("after_" + variant);
+                            return;
+                        }
                         OcrDocument mapped = mapDocumentToSource(document,
                                 new Rect(0, 0, source.getWidth(), source.getHeight()),
                                 source.getWidth(), source.getHeight(), "full-" + variant + "-");
@@ -190,13 +209,18 @@ final class CircleMultiScaleOcr {
                                     + " error=" + safe(error)
                                     + " elapsedMs="
                                     + (android.os.SystemClock.uptimeMillis() - started));
-                    runNextFullPass();
+                    if (isCancelled()) cancel("failure_" + variant);
+                    else runNextFullPass();
                 }
             });
         }
 
         private void startTiles() {
             if (finished || tileStageStarted) return;
+            if (isCancelled()) {
+                cancel("before_tiles");
+                return;
+            }
             tileStageStarted = true;
             DiagnosticLog.i(app, "G_CIRCLE_TILE_OCR",
                     "start reason=all_full_passes_empty"
@@ -209,32 +233,52 @@ final class CircleMultiScaleOcr {
 
         private void runNextTile() {
             if (finished) return;
+            if (isCancelled()) {
+                cancel("before_tile");
+                return;
+            }
             if (tileIndex >= tiles.size()) {
                 finishBestTile();
                 return;
             }
 
             final TileSpec tile = tiles.get(tileIndex++);
-            final Bitmap crop;
-            final Bitmap input;
-            final float scaleX;
-            final float scaleY;
+            Bitmap preparedCrop = null;
+            Bitmap preparedInput = null;
+            float preparedScaleX = 1f;
+            float preparedScaleY = 1f;
             try {
-                crop = Bitmap.createBitmap(source, tile.bounds.left, tile.bounds.top,
+                preparedCrop = Bitmap.createBitmap(source, tile.bounds.left, tile.bounds.top,
                         tile.bounds.width(), tile.bounds.height());
-                int minEdge = Math.max(1, Math.min(crop.getWidth(), crop.getHeight()));
+                int minEdge = Math.max(1, Math.min(preparedCrop.getWidth(), preparedCrop.getHeight()));
                 float requestedScale = Math.max(TILE_MIN_SCALE,
                         Math.min(TILE_MAX_SCALE, TILE_TARGET_MIN_EDGE_PX / (float) minEdge));
-                input = makeVariant(crop, requestedScale, false);
-                scaleX = input.getWidth() / (float) Math.max(1, crop.getWidth());
-                scaleY = input.getHeight() / (float) Math.max(1, crop.getHeight());
+                preparedInput = makeVariant(preparedCrop, requestedScale, false);
+                preparedScaleX = preparedInput.getWidth()
+                        / (float) Math.max(1, preparedCrop.getWidth());
+                preparedScaleY = preparedInput.getHeight()
+                        / (float) Math.max(1, preparedCrop.getHeight());
             } catch (Throwable t) {
                 lastError = t;
+                if (preparedInput != null) recycleVariant(preparedInput);
+                if (preparedCrop != null && preparedCrop != preparedInput) recycleVariant(preparedCrop);
                 DiagnosticLog.i(app, "G_CIRCLE_TILE_OCR",
                         "prepare failed tile=" + tile.name
                                 + " bounds=" + tile.bounds.toShortString()
                                 + " error=" + safe(t));
-                runNextTile();
+                if (isCancelled()) cancel("prepare_" + tile.name);
+                else runNextTile();
+                return;
+            }
+
+            final Bitmap crop = preparedCrop;
+            final Bitmap input = preparedInput;
+            final float scaleX = preparedScaleX;
+            final float scaleY = preparedScaleY;
+            if (isCancelled()) {
+                recycleVariant(input);
+                if (crop != input) recycleVariant(crop);
+                cancel("prepared_" + tile.name);
                 return;
             }
 
@@ -243,6 +287,10 @@ final class CircleMultiScaleOcr {
                 @Override public void onSuccess(OcrDocument document) {
                     try {
                         if (finished) return;
+                        if (isCancelled()) {
+                            cancel("after_" + tile.name);
+                            return;
+                        }
                         OcrDocument mapped = mapDocumentToSource(document, tile.bounds,
                                 source.getWidth(), source.getHeight(), "tile-" + tile.name + "-");
                         String key = normalize(mapped == null ? "" : mapped.fullText());
@@ -262,7 +310,7 @@ final class CircleMultiScaleOcr {
                         recycleVariant(input);
                         if (crop != input) recycleVariant(crop);
                     }
-                    runNextTile();
+                    if (!finished) runNextTile();
                 }
 
                 @Override public void onFailure(Throwable error) {
@@ -272,9 +320,29 @@ final class CircleMultiScaleOcr {
                     DiagnosticLog.i(app, "G_CIRCLE_TILE_OCR",
                             "pass failed tile=" + tile.name
                                     + " error=" + safe(error));
-                    runNextTile();
+                    if (finished) return;
+                    if (isCancelled()) cancel("failure_" + tile.name);
+                    else runNextTile();
                 }
             });
+        }
+
+        private boolean isCancelled() {
+            if (cancelled == null) return false;
+            try { return cancelled.getAsBoolean(); }
+            catch (Throwable ignored) { return true; }
+        }
+
+        private void cancel(String stage) {
+            if (finished) return;
+            finished = true;
+            CancellationException error = new CancellationException(
+                    "Circle local OCR cancelled at " + stage);
+            DiagnosticLog.i(app, "G_CIRCLE_MULTI_OCR",
+                    "cancel stage=" + stage
+                            + " fullPasses=" + fullCandidates.size()
+                            + " tilePasses=" + tileCandidates.size());
+            callback.onFailure(error);
         }
 
         private void finishForKey(String key, String reason) {
@@ -295,6 +363,10 @@ final class CircleMultiScaleOcr {
 
         private void finishBestFull(String reason) {
             if (finished) return;
+            if (isCancelled()) {
+                cancel("finish_full");
+                return;
+            }
             Candidate best = null;
             int bestVotes = -1;
             double bestQuality = Double.NEGATIVE_INFINITY;
@@ -313,6 +385,10 @@ final class CircleMultiScaleOcr {
 
         private void finishBestTile() {
             if (finished) return;
+            if (isCancelled()) {
+                cancel("finish_tile");
+                return;
+            }
             Candidate best = null;
             double bestQuality = Double.NEGATIVE_INFINITY;
             for (Candidate candidate : tileCandidates) {
@@ -328,6 +404,10 @@ final class CircleMultiScaleOcr {
 
         private void finishCandidate(Candidate candidate, String reason, int votes) {
             if (finished || candidate == null) return;
+            if (isCancelled()) {
+                cancel("finish_candidate");
+                return;
+            }
             finished = true;
             DiagnosticLog.i(app, candidate.tile ? "G_CIRCLE_TILE_OCR" : "G_CIRCLE_MULTI_OCR",
                     "finish reason=" + reason
@@ -342,6 +422,10 @@ final class CircleMultiScaleOcr {
 
         private void failEmpty(String reason) {
             if (finished) return;
+            if (isCancelled()) {
+                cancel("fail_empty");
+                return;
+            }
             finished = true;
             Throwable error = lastError == null
                     ? new IllegalStateException("multi-scale OCR empty") : lastError;
@@ -352,8 +436,13 @@ final class CircleMultiScaleOcr {
     }
 
     static void recognize(Context context, Bitmap bitmap, Callback callback) {
+        recognize(context, bitmap, () -> false, callback);
+    }
+
+    static void recognize(Context context, Bitmap bitmap,
+                          BooleanSupplier cancelled, Callback callback) {
         if (context == null || bitmap == null || bitmap.isRecycled() || callback == null) return;
-        new Session(context.getApplicationContext(), bitmap, callback).start();
+        new Session(context.getApplicationContext(), bitmap, cancelled, callback).start();
     }
 
     private static List<TileSpec> buildTiles(int width, int height) {
@@ -397,24 +486,31 @@ final class CircleMultiScaleOcr {
             return scaled;
         }
 
-        Bitmap out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(out);
-        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-        ColorMatrix matrix = new ColorMatrix();
-        matrix.setSaturation(0f);
-        float contrastValue = 1.8f;
-        float offset = 128f * (1f - contrastValue);
-        ColorMatrix contrastMatrix = new ColorMatrix(new float[]{
-                contrastValue, 0, 0, 0, offset,
-                0, contrastValue, 0, 0, offset,
-                0, 0, contrastValue, 0, offset,
-                0, 0, 0, 1, 0
-        });
-        matrix.postConcat(contrastMatrix);
-        paint.setColorFilter(new ColorMatrixColorFilter(matrix));
-        canvas.drawBitmap(scaled, 0f, 0f, paint);
-        if (scaled != source && !scaled.isRecycled()) scaled.recycle();
-        return out;
+        Bitmap out = null;
+        try {
+            out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(out);
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+            ColorMatrix matrix = new ColorMatrix();
+            matrix.setSaturation(0f);
+            float contrastValue = 1.8f;
+            float offset = 128f * (1f - contrastValue);
+            ColorMatrix contrastMatrix = new ColorMatrix(new float[]{
+                    contrastValue, 0, 0, 0, offset,
+                    0, contrastValue, 0, 0, offset,
+                    0, 0, contrastValue, 0, offset,
+                    0, 0, 0, 1, 0
+            });
+            matrix.postConcat(contrastMatrix);
+            paint.setColorFilter(new ColorMatrixColorFilter(matrix));
+            canvas.drawBitmap(scaled, 0f, 0f, paint);
+            return out;
+        } catch (Throwable t) {
+            if (out != null && !out.isRecycled()) out.recycle();
+            throw t;
+        } finally {
+            if (scaled != source && scaled != out && !scaled.isRecycled()) scaled.recycle();
+        }
     }
 
     private static OcrDocument mapDocumentToSource(OcrDocument document, Rect target,
