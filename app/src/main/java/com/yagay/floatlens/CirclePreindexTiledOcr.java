@@ -9,6 +9,8 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 
 /**
  * Builds independent OCR passes for one frozen Circle frame.
@@ -42,15 +44,17 @@ final class CirclePreindexTiledOcr {
         final Context app;
         final Bitmap source;
         final Callback callback;
+        final BooleanSupplier cancelled;
         final List<Pass> passes;
         final ArrayList<CircleOcrIndex.Entry> entries = new ArrayList<>();
         int index;
         Throwable lastError;
         boolean finished;
 
-        Session(Context app, Bitmap source, Callback callback) {
+        Session(Context app, Bitmap source, BooleanSupplier cancelled, Callback callback) {
             this.app = app;
             this.source = source;
+            this.cancelled = cancelled;
             this.callback = callback;
             this.passes = buildPasses(source.getWidth(), source.getHeight());
         }
@@ -62,12 +66,17 @@ final class CirclePreindexTiledOcr {
                             + " passes=" + passes.size()
                             + " tileFraction=" + TILE_FRACTION
                             + " enginePolicy=follow_main_setting"
-                            + " merge=none independentDocuments=true");
+                            + " merge=none independentDocuments=true"
+                            + " workspaceCancellation=true");
             runNext();
         }
 
         private void runNext() {
             if (finished) return;
+            if (isCancelled()) {
+                cancel("before_pass");
+                return;
+            }
             if (index >= passes.size()) {
                 finish();
                 return;
@@ -97,6 +106,11 @@ final class CirclePreindexTiledOcr {
             OcrEngine.recognizeDocument(app, input, new OcrEngine.DocumentCallback() {
                 @Override public void onSuccess(OcrDocument document) {
                     try {
+                        if (finished) return;
+                        if (isCancelled()) {
+                            cancel("after_" + pass.name);
+                            return;
+                        }
                         OcrDocument mapped = pass.full
                                 ? normalizeFull(document, source.getWidth(), source.getHeight())
                                 : mapTile(document, pass.roi, source.getWidth(),
@@ -119,7 +133,7 @@ final class CirclePreindexTiledOcr {
                     } finally {
                         if (!pass.full) recycle(input);
                     }
-                    runNext();
+                    if (!finished) runNext();
                 }
 
                 @Override public void onFailure(Throwable error) {
@@ -130,13 +144,35 @@ final class CirclePreindexTiledOcr {
                                     + " elapsedMs="
                                     + (android.os.SystemClock.uptimeMillis() - started));
                     if (!pass.full) recycle(input);
-                    runNext();
+                    if (finished) return;
+                    if (isCancelled()) cancel("failure_" + pass.name);
+                    else runNext();
                 }
             });
         }
 
+        private boolean isCancelled() {
+            if (cancelled == null) return false;
+            try { return cancelled.getAsBoolean(); }
+            catch (Throwable ignored) { return true; }
+        }
+
+        private void cancel(String stage) {
+            if (finished) return;
+            finished = true;
+            CancellationException error = new CancellationException(
+                    "Circle preindex cancelled at " + stage);
+            DiagnosticLog.i(app, "G_CIRCLE_PREINDEX_TILE",
+                    "cancel stage=" + stage + " completedPasses=" + entries.size());
+            callback.onFailure(error);
+        }
+
         private void finish() {
             if (finished) return;
+            if (isCancelled()) {
+                cancel("finish");
+                return;
+            }
             finished = true;
             CircleOcrIndex result = new CircleOcrIndex(entries);
             if (!result.isEmpty()) {
@@ -157,8 +193,13 @@ final class CirclePreindexTiledOcr {
     }
 
     static void recognize(Context context, Bitmap bitmap, Callback callback) {
+        recognize(context, bitmap, () -> false, callback);
+    }
+
+    static void recognize(Context context, Bitmap bitmap,
+                          BooleanSupplier cancelled, Callback callback) {
         if (context == null || bitmap == null || bitmap.isRecycled() || callback == null) return;
-        new Session(context.getApplicationContext(), bitmap, callback).start();
+        new Session(context.getApplicationContext(), bitmap, cancelled, callback).start();
     }
 
     private static List<Pass> buildPasses(int width, int height) {
