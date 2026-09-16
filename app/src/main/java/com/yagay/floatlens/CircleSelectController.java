@@ -1,26 +1,15 @@
 package com.yagay.floatlens;
 
 import android.content.Context;
-import android.graphics.Bitmap;
 import android.os.Handler;
 import android.os.Looper;
 import android.widget.Toast;
 
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-
 /** Entry point for the local Circle Select workspace. */
 public final class CircleSelectController {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
-    private static final ExecutorService VIEW_SNAPSHOT_IO = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "FloatLens-circle-view-snapshot");
-        t.setDaemon(true);
-        return t;
-    });
 
     private static long generation;
-    private static Future<?> snapshotFuture;
     private static ScreenshotHideCoordinator.Lease pendingHideLease;
 
     public static synchronized void show(Context c) {
@@ -39,42 +28,13 @@ public final class CircleSelectController {
         FloatService service = FloatService.get();
         if (service != null) service.onCircleCaptureStarted();
 
-        FloatSettings settings = new FloatSettings(app);
-        int ocrMode = CircleOcrPolicy.mode(settings);
-        boolean needView = CircleOcrPolicy.viewEnabled(settings);
-        DiagnosticLog.i(app, "CIRCLE_SELECT", "recognition mode=" + ocrMode
-                + " view=" + needView
-                + " mlkit=" + CircleOcrPolicy.mlKitEnabled(settings)
-                + " ppocr=false gen=" + gen);
+        DiagnosticLog.i(app, "CIRCLE_SELECT", "recognition source=screenshot"
+                + " mlkit=true view=false ppocr=false gen=" + gen);
 
-        if (!needView) {
-            CircleViewTextSnapshot empty = CircleViewTextSnapshot.empty(ScreenGeometry.displayBounds(app));
-            MAIN.post(() -> captureAndShow(app, service, hideLease, shadeState, empty, gen));
-            return;
-        }
-
-        DiagnosticLog.i(app, "CIRCLE_SELECT", "view snapshot begin gen=" + gen
-                + " shadeExpanded=" + shadeState.expandedAtCapture());
-
-        snapshotFuture = VIEW_SNAPSHOT_IO.submit(() -> {
-            if (Thread.currentThread().isInterrupted()) return;
-            long started = android.os.SystemClock.uptimeMillis();
-            CircleViewTextSnapshot snapshot = CircleViewTextSnapshot.capture(app);
-            if (Thread.currentThread().isInterrupted()) return;
-            long elapsed = android.os.SystemClock.uptimeMillis() - started;
-            MAIN.post(() -> {
-                synchronized (CircleSelectController.class) {
-                    if (gen != generation) return;
-                    snapshotFuture = null;
-                }
-                DiagnosticLog.i(app, "CIRCLE_SELECT", "view snapshot ready gen=" + gen
-                        + " nodes=" + snapshot.nodeCount()
-                        + " exactGeometry=" + snapshot.exactGeometryNodeCount()
-                        + " elapsedMs=" + elapsed);
-                MAIN.postDelayed(() -> captureAndShow(app, service, hideLease,
-                        shadeState, snapshot, gen), 24L);
-            });
-        });
+        // Circle Select has one source of truth: the frozen screenshot. Keep the empty snapshot
+        // parameter only for API compatibility with the overlay while View text is retired.
+        CircleViewTextSnapshot empty = CircleViewTextSnapshot.empty(ScreenGeometry.displayBounds(app));
+        MAIN.post(() -> captureAndShow(app, service, hideLease, shadeState, empty, gen));
     }
 
     private static void captureAndShow(Context app, FloatService service,
@@ -88,7 +48,7 @@ public final class CircleSelectController {
             }
         }
         DiagnosticLog.i(app, "CIRCLE_SELECT", "capture begin gen=" + gen
-                + " viewNodes=" + snapshot.nodeCount());
+                + " source=screenshot");
         CircleSelectFrame.capture(app, bitmap -> {
             synchronized (CircleSelectController.class) {
                 if (gen != generation) {
@@ -104,9 +64,9 @@ public final class CircleSelectController {
 
             boolean shown = CircleSelectOverlay.show(app, bitmap, snapshot,
                     () -> restore(app, service, hideLease, gen, "closed"));
-            DiagnosticLog.i(app, "CIRCLE_SELECT", "accessibility workspace shown=" + shown
+            DiagnosticLog.i(app, "CIRCLE_SELECT", "workspace shown=" + shown
                     + " bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight()
-                    + " viewNodes=" + snapshot.nodeCount());
+                    + " source=screenshot");
             if (!shown) {
                 if (!bitmap.isRecycled()) bitmap.recycle();
                 restore(app, service, hideLease, gen, "overlay_failed");
@@ -154,16 +114,12 @@ public final class CircleSelectController {
     }
 
     private static void cancelPendingLocked(Context app, String reason) {
-        Future<?> future = snapshotFuture;
-        snapshotFuture = null;
-        if (future != null && !future.isDone()) {
-            boolean cancelled = future.cancel(true);
-            DiagnosticLog.i(app, "CIRCLE_SELECT", "cancel view snapshot reason=" + reason
-                    + " success=" + cancelled);
-        }
         ScreenshotHideCoordinator.Lease lease = pendingHideLease;
         pendingHideLease = null;
-        if (lease != null) lease.release(app);
+        if (lease != null) {
+            lease.release(app);
+            DiagnosticLog.i(app, "CIRCLE_SELECT", "cancel pending capture reason=" + reason);
+        }
     }
 
     private static String safe(Throwable t) {
