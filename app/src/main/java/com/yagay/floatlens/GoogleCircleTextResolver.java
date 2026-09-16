@@ -546,8 +546,8 @@ final class GoogleCircleTextResolver {
             rect.top = bounds.top;
             rect.bottom = bounds.bottom;
         } else {
-            if (rect.top < bounds.top) rect.offset(0f, -rect.top);
-            if (rect.bottom > bounds.bottom) rect.offset(0f, bounds.bottom - rect.bottom);
+            if (rect.top < bounds.top) rect.offset(0, bounds.top - rect.top);
+            if (rect.bottom > bounds.bottom) rect.offset(0, bounds.bottom - rect.bottom);
         }
     }
 
