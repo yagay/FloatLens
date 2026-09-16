@@ -4,6 +4,7 @@ import android.graphics.PointF;
 import android.graphics.Rect;
 import android.graphics.RectF;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /** Exact gesture classification and geometry for the Google-style workflow. */
@@ -14,15 +15,28 @@ final class GoogleCircleSelection {
         final Kind kind;
         final RectF bounds;
         final PointF focus;
+        /** Exact sampled bitmap-space stroke. Text routing must not collapse it to bounds. */
+        final List<PointF> points;
 
         Selection(Kind kind, RectF bounds, PointF focus) {
+            this(kind, bounds, focus, List.of());
+        }
+
+        Selection(Kind kind, RectF bounds, PointF focus, List<PointF> points) {
             this.kind = kind;
             this.bounds = new RectF(bounds);
             this.focus = new PointF(focus.x, focus.y);
+            ArrayList<PointF> copied = new ArrayList<>();
+            if (points != null) {
+                for (PointF point : points) {
+                    if (point != null) copied.add(new PointF(point.x, point.y));
+                }
+            }
+            this.points = List.copyOf(copied);
         }
 
         Selection withBounds(RectF newBounds) {
-            return new Selection(kind, newBounds, focus);
+            return new Selection(kind, newBounds, focus, points);
         }
     }
 
@@ -63,7 +77,6 @@ final class GoogleCircleSelection {
         if (tap) {
             kind = Kind.TAP;
             focus = new PointF(last.x, last.y);
-            // A tap is a point selection. Do not synthesize a surrounding OCR rectangle.
             bounds = new RectF(last.x, last.y, last.x + 1f, last.y + 1f);
         } else {
             boolean highlight = widthForClassification >= heightForClassification * 2.35f
@@ -77,13 +90,12 @@ final class GoogleCircleSelection {
             else if (closed) kind = Kind.CIRCLE;
             else kind = Kind.SCRIBBLE;
 
-            // Exact user stroke bounds. No gesture-specific padding is allowed here.
             bounds = new RectF(minX, minY, maxX, maxY);
         }
 
         clampExact(bounds, bitmapWidth, bitmapHeight);
         if (bounds.width() < 1f || bounds.height() < 1f) return null;
-        return new Selection(kind, bounds, focus);
+        return new Selection(kind, bounds, focus, points);
     }
 
     /** Convert a user selection to bitmap pixels without growing it to any minimum size. */
