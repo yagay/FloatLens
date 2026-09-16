@@ -107,10 +107,19 @@ final class GoogleCircleTextResolver {
         if (c == null || frame == null || frame.bitmap == null || frame.bitmap.isRecycled()) return;
         Context app = c.getApplicationContext();
         PreloadState state;
+        PreloadState replaced = null;
         synchronized (INDEX_LOCK) {
             if (sameFrame(currentIndex, frame)) return;
+            if (currentIndex != null) {
+                replaced = currentIndex;
+                clearStateLocked(replaced);
+            }
             state = new PreloadState(++indexGeneration, app, frame);
             currentIndex = state;
+        }
+        if (replaced != null) {
+            DiagnosticLog.i(app, "G_CIRCLE_TEXT_INDEX", "replace stale generation="
+                    + replaced.generation + " with=" + state.generation);
         }
 
         long started = android.os.SystemClock.uptimeMillis();
@@ -152,6 +161,46 @@ final class GoogleCircleTextResolver {
             return;
         }
         resolvePrepared(state, frame, gesture, callback);
+    }
+
+    /** Release all workspace-scoped documents and pending callbacks as soon as the overlay closes. */
+    static void release(Context c, GoogleCircleCapture.Frame frame, String reason) {
+        if (frame == null) return;
+        Context app = c == null ? null : c.getApplicationContext();
+        PreloadState released;
+        int viewChars;
+        int ocrPasses;
+        int ocrChars;
+        int pending;
+        synchronized (INDEX_LOCK) {
+            if (!sameFrame(currentIndex, frame)) return;
+            released = currentIndex;
+            viewChars = released.viewDocument == null ? 0 : released.viewDocument.chars().size();
+            ocrPasses = released.ocrIndex == null ? 0 : released.ocrIndex.passCount();
+            ocrChars = released.ocrIndex == null ? 0 : released.ocrIndex.totalChars();
+            pending = released.pending.size();
+            currentIndex = null;
+            indexGeneration++;
+            clearStateLocked(released);
+        }
+        Context logContext = app == null ? released.app : app;
+        DiagnosticLog.i(logContext, "G_CIRCLE_TEXT_INDEX", "release generation="
+                + released.generation
+                + " reason=" + (reason == null ? "unknown" : reason)
+                + " viewChars=" + viewChars
+                + " ocrPasses=" + ocrPasses
+                + " ocrChars=" + ocrChars
+                + " pendingCleared=" + pending);
+    }
+
+    private static void clearStateLocked(PreloadState state) {
+        if (state == null) return;
+        state.pending.clear();
+        state.viewDocument = null;
+        state.ocrIndex = null;
+        state.ocrError = null;
+        state.viewDone = false;
+        state.ocrDone = false;
     }
 
     private static void prepareViewPart(PreloadState state, GoogleCircleCapture.Frame frame,
