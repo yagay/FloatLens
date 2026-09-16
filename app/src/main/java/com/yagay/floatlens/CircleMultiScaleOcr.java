@@ -23,9 +23,10 @@ import java.util.function.BooleanSupplier;
  * Stable gesture-local OCR recovery for text/logos missed by the frozen multi-pass index.
  *
  * <p>The complete local ROI is tried at several scales through the user's main OCR setting. Every
- * successful result is immediately normalized back to the original ROI coordinate plane. Two
- * identical normalized results form an early consensus and finish the session. Overlap tiles are a
- * last-resort recovery path only when every complete-ROI pass is empty; tile results are never
+ * successful result is immediately normalized back to the original ROI coordinate plane. Ordinary
+ * text may finish after two identical results, while compact CJK-like image text intentionally runs
+ * every full-ROI variant so correlated full-screen/tile mistakes do not win too early. Overlap tiles
+ * are a last-resort recovery path only when every complete-ROI pass is empty; tile results are never
  * globally merged or character-spliced.</p>
  */
 final class CircleMultiScaleOcr {
@@ -36,6 +37,7 @@ final class CircleMultiScaleOcr {
 
     private static final int MAX_EDGE = 1024;
     private static final float[] SCALES = {1f, 2f, 3f, 4f};
+    private static final int EXTRA_FULL_VARIANTS = 2; // contrast-3x + light-binary-3x
     private static final int TILE_TRIGGER_EDGE_PX = 320;
     private static final float TILE_FRACTION = 0.68f;
     private static final int TILE_TARGET_MIN_EDGE_PX = 480;
@@ -99,7 +101,8 @@ final class CircleMultiScaleOcr {
             DiagnosticLog.i(app, "G_CIRCLE_MULTI_OCR",
                     "start strategy=whole_roi_multiscale_consensus"
                             + " input=" + source.getWidth() + "x" + source.getHeight()
-                            + " passes=1x,2x,3x,4x,contrast3x"
+                            + " passes=1x,2x,3x,4x,contrast3x,light-binary3x"
+                            + " compactCjkRunAll=true"
                             + " tileRecoveryOnlyWhenFullEmpty=true"
                             + " tileMerge=false"
                             + " workspaceCancellation=true"
@@ -113,7 +116,7 @@ final class CircleMultiScaleOcr {
                 cancel("before_full_pass");
                 return;
             }
-            if (passIndex >= SCALES.length + 1) {
+            if (passIndex >= SCALES.length + EXTRA_FULL_VARIANTS) {
                 if (!fullCandidates.isEmpty()) {
                     finishBestFull("best_full_after_all_passes");
                 } else if (!tiles.isEmpty()) {
@@ -124,15 +127,20 @@ final class CircleMultiScaleOcr {
                 return;
             }
 
-            final boolean contrast = passIndex == SCALES.length;
-            final float requestedScale = contrast ? 3f : SCALES[passIndex];
-            final String variant = contrast
-                    ? "contrast-3x" : String.format(Locale.ROOT, "%.0fx", requestedScale);
-            passIndex++;
+            final int currentPass = passIndex++;
+            final boolean contrast = currentPass == SCALES.length;
+            final boolean lightBinary = currentPass == SCALES.length + 1;
+            final float requestedScale = (contrast || lightBinary) ? 3f : SCALES[currentPass];
+            final String variant = lightBinary
+                    ? "light-binary-3x"
+                    : (contrast ? "contrast-3x"
+                    : String.format(Locale.ROOT, "%.0fx", requestedScale));
 
             final Bitmap input;
             try {
-                input = makeVariant(source, requestedScale, contrast);
+                input = lightBinary
+                        ? makeLightInkBinaryVariant(source, requestedScale)
+                        : makeVariant(source, requestedScale, contrast);
             } catch (Throwable t) {
                 lastError = t;
                 DiagnosticLog.i(app, "G_CIRCLE_MULTI_OCR",
@@ -169,23 +177,26 @@ final class CircleMultiScaleOcr {
                         String key = normalize(mapped == null ? "" : mapped.fullText());
                         boolean usable = usable(mapped) && !key.isEmpty();
                         int vote = 0;
+                        boolean extended = false;
                         if (usable) {
                             Candidate candidate = new Candidate(mapped, scaleX, scaleY,
                                     variant, key, false);
                             fullCandidates.add(candidate);
                             vote = fullVotes.getOrDefault(key, 0) + 1;
                             fullVotes.put(key, vote);
+                            extended = requiresExtendedConsensus(key);
                         }
                         DiagnosticLog.i(app, "G_CIRCLE_MULTI_OCR",
                                 "pass done variant=" + variant
                                         + " usable=" + usable
                                         + " vote=" + vote
+                                        + " compactExtended=" + extended
                                         + " chars=" + (mapped == null ? 0 : mapped.chars().size())
                                         + " text=" + summarize(mapped == null ? "" : mapped.fullText())
                                         + " elapsedMs="
                                         + (android.os.SystemClock.uptimeMillis() - started));
 
-                        if (usable && vote >= 2) {
+                        if (usable && vote >= 2 && !extended) {
                             finishForKey(key, "full_consensus");
                         } else {
                             runNextFullPass();
@@ -513,6 +524,81 @@ final class CircleMultiScaleOcr {
         }
     }
 
+    /**
+     * Builds a high-contrast black-on-white view of light glyphs. This is useful for small logos
+     * whose white strokes sit on saturated/dark colors, but is kept as only one vote among the
+     * normal variants so ordinary dark-on-light text is not forced through this representation.
+     */
+    private static Bitmap makeLightInkBinaryVariant(Bitmap source, float requestedScale) {
+        int sw = Math.max(1, source.getWidth());
+        int sh = Math.max(1, source.getHeight());
+        float maxScale = MAX_EDGE / (float) Math.max(sw, sh);
+        float scale = Math.max(1f, Math.min(requestedScale, maxScale));
+        int width = Math.max(1, Math.round(sw * scale));
+        int height = Math.max(1, Math.round(sh * scale));
+        Bitmap scaled = Bitmap.createScaledBitmap(source, width, height, true);
+        Bitmap working = scaled;
+        try {
+            if (!working.isMutable()) {
+                Bitmap mutable = working.copy(Bitmap.Config.ARGB_8888, true);
+                if (mutable == null) throw new IllegalStateException("binary OCR copy failed");
+                if (working != source) working.recycle();
+                working = mutable;
+            }
+
+            int[] pixels = new int[width * height];
+            int[] histogram = new int[256];
+            working.getPixels(pixels, 0, width, 0, 0, width, height);
+            for (int color : pixels) {
+                int r = (color >> 16) & 0xff;
+                int g = (color >> 8) & 0xff;
+                int b = color & 0xff;
+                int y = (77 * r + 150 * g + 29 * b) >> 8;
+                histogram[y]++;
+            }
+            int threshold = Math.max(140, Math.min(225, otsuThreshold(histogram, pixels.length)));
+            for (int i = 0; i < pixels.length; i++) {
+                int color = pixels[i];
+                int r = (color >> 16) & 0xff;
+                int g = (color >> 8) & 0xff;
+                int b = color & 0xff;
+                int y = (77 * r + 150 * g + 29 * b) >> 8;
+                pixels[i] = y >= threshold ? 0xff000000 : 0xffffffff;
+            }
+            working.setPixels(pixels, 0, width, 0, 0, width, height);
+            return working;
+        } catch (Throwable t) {
+            if (working != null && working != source && !working.isRecycled()) working.recycle();
+            throw t;
+        }
+    }
+
+    private static int otsuThreshold(int[] histogram, int total) {
+        if (histogram == null || histogram.length < 256 || total <= 0) return 180;
+        long sum = 0L;
+        for (int i = 0; i < 256; i++) sum += (long) i * histogram[i];
+        long backgroundWeight = 0L;
+        long backgroundSum = 0L;
+        double bestVariance = -1d;
+        int best = 180;
+        for (int t = 0; t < 256; t++) {
+            backgroundWeight += histogram[t];
+            if (backgroundWeight == 0) continue;
+            long foregroundWeight = total - backgroundWeight;
+            if (foregroundWeight == 0) break;
+            backgroundSum += (long) t * histogram[t];
+            double backgroundMean = backgroundSum / (double) backgroundWeight;
+            double foregroundMean = (sum - backgroundSum) / (double) foregroundWeight;
+            double diff = backgroundMean - foregroundMean;
+            double variance = backgroundWeight * (double) foregroundWeight * diff * diff;
+            if (variance > bestVariance) {
+                bestVariance = variance;
+                best = t;
+            }
+        }
+        return best;
+    }
+
     private static OcrDocument mapDocumentToSource(OcrDocument document, Rect target,
                                                    int width, int height, String prefix) {
         if (document == null || target == null || target.isEmpty()) return null;
@@ -534,6 +620,15 @@ final class CircleMultiScaleOcr {
         String key = normalize(document.fullText());
         return document.score() + document.confidence() * 100.0
                 + Math.min(64, key.codePointCount(0, key.length()));
+    }
+
+    private static boolean requiresExtendedConsensus(String key) {
+        if (key == null || key.isEmpty()) return false;
+        int[] cps = key.codePoints().toArray();
+        if (cps.length < 2 || cps.length > 6) return false;
+        int cjk = 0;
+        for (int cp : cps) if (isCjk(cp)) cjk++;
+        return cjk >= 2 && cjk * 2 >= cps.length;
     }
 
     private static String normalize(String text) {
