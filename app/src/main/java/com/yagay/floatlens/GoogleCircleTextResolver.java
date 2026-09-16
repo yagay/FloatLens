@@ -125,14 +125,16 @@ final class GoogleCircleTextResolver {
         long started = android.os.SystemClock.uptimeMillis();
         DiagnosticLog.i(app, "G_CIRCLE_TEXT_INDEX", "start generation=" + state.generation
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
-                + " strategy=frozen_view_plus_independent_ocr_passes"
+                + " strategy=frozen_view_then_independent_ocr_passes"
                 + " routing=gesture_local_consensus"
+                + " viewMask=exact_character_geometry_only"
                 + " fallback=local_multiscale_pixel_ocr"
                 + " geometry=shared_matrix_transform"
                 + " coordinateSpace=SCREEN");
 
+        // View text must finish first because only its reliable, native per-character geometry is
+        // used as a negative OCR mask. OCR never consumes View text content or semantic labels.
         VIEW_IO.execute(() -> prepareViewPart(state, frame, started));
-        INDEX_IO.execute(() -> prepareOcrPart(state, frame, started));
     }
 
     static void resolve(Context c, GoogleCircleCapture.Frame frame,
@@ -225,11 +227,14 @@ final class GoogleCircleTextResolver {
                 + " ownership=screen_selection_model"
                 + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started)
                 + (error == null ? "" : " error=" + ScreenCaptureBackend.safeMessage(error)));
-        dispatchIfReady(state, frame, started);
+
+        if (!isCurrent(state, frame)) return;
+        INDEX_IO.execute(() -> prepareOcrPart(state, frame, started));
     }
 
     private static void prepareOcrPart(PreloadState state, GoogleCircleCapture.Frame frame,
                                        long started) {
+        if (!isCurrent(state, frame)) return;
         Bitmap source = frame.bitmap;
         if (source == null || source.isRecycled()) {
             finishOcrPart(state, frame, null,
@@ -238,12 +243,21 @@ final class GoogleCircleTextResolver {
         }
 
         final Bitmap copy;
+        final int maskedViewChars;
         try {
-            Bitmap made = source.copy(Bitmap.Config.ARGB_8888, false);
+            Bitmap made = source.copy(Bitmap.Config.ARGB_8888, true);
             if (made == null) throw new IllegalStateException("OCR frame copy failed");
             copy = made;
+            maskedViewChars = ViewTextOcrMask.apply(state.app, copy,
+                    new Rect(0, 0, source.getWidth(), source.getHeight()),
+                    state.viewDocument, frame.transform);
         } catch (Throwable t) {
             finishOcrPart(state, frame, null, t, started);
+            return;
+        }
+
+        if (!isCurrent(state, frame)) {
+            recycle(copy);
             return;
         }
 
@@ -252,6 +266,8 @@ final class GoogleCircleTextResolver {
                 + " roi=full_plus_overlap_tiles"
                 + " requestsPerWorkspace=1_full_plus_4_tiles"
                 + " merge=none"
+                + " exactViewCharsMasked=" + maskedViewChars
+                + " semanticLabels=false"
                 + " enginePolicy=follow_main_setting");
 
         CirclePreindexTiledOcr.recognize(state.app, copy, new CirclePreindexTiledOcr.Callback() {
@@ -305,9 +321,11 @@ final class GoogleCircleTextResolver {
 
         if (pending.isEmpty()) return;
         MAIN.post(() -> {
+            if (!isCurrent(state, frame)) return;
             GoogleCircleCapture.Frame liveFrame = state.frameRef.get();
             if (liveFrame == null || liveFrame != frame) return;
             for (PendingResolve request : pending) {
+                if (!isCurrent(state, frame)) return;
                 resolvePrepared(state, frame, request.gesture, request.callback);
             }
         });
@@ -315,6 +333,7 @@ final class GoogleCircleTextResolver {
 
     private static void resolvePrepared(PreloadState state, GoogleCircleCapture.Frame frame,
                                         GoogleCircleSelection.Selection gesture, Callback callback) {
+        if (!isCurrent(state, frame)) return;
         Rect gestureScreen = gestureScreenBounds(frame, gesture);
         OcrDocument selectedView = selectViewDocument(frame, gesture, state.viewDocument);
 
@@ -394,6 +413,7 @@ final class GoogleCircleTextResolver {
                                                 GoogleCircleSelection.Selection gesture,
                                                 Rect gestureScreen,
                                                 Callback callback) {
+        if (!isCurrent(state, frame)) return;
         Bitmap source = frame.bitmap;
         if (source == null || source.isRecycled()) {
             callback.onResolved(new Result(Source.NONE, null, gestureScreen, new Rect(),
@@ -409,15 +429,25 @@ final class GoogleCircleTextResolver {
         }
 
         final Bitmap crop;
+        final int maskedViewChars;
         try {
             Bitmap made = Bitmap.createBitmap(source, roi.left, roi.top, roi.width(), roi.height());
-            if (made == source) {
-                made = source.copy(Bitmap.Config.ARGB_8888, false);
-                if (made == null) throw new IllegalStateException("local OCR crop copy failed");
+            if (made == source || !made.isMutable()) {
+                Bitmap mutable = made.copy(Bitmap.Config.ARGB_8888, true);
+                if (mutable == null) throw new IllegalStateException("local OCR crop copy failed");
+                if (made != source) recycle(made);
+                made = mutable;
             }
             crop = made;
+            maskedViewChars = ViewTextOcrMask.apply(state.app, crop, roi,
+                    state.viewDocument, frame.transform);
         } catch (Throwable t) {
             callback.onResolved(new Result(Source.NONE, null, gestureScreen, roi, t, true));
+            return;
+        }
+
+        if (!isCurrent(state, frame)) {
+            recycle(crop);
             return;
         }
 
@@ -426,6 +456,7 @@ final class GoogleCircleTextResolver {
                 + " roi=" + roi.toShortString()
                 + " input=" + crop.getWidth() + "x" + crop.getHeight()
                 + " enhancement=internal_multiscale"
+                + " exactViewCharsMasked=" + maskedViewChars
                 + " geometry=roi_to_screen_matrix"
                 + " enginePolicy=follow_main_setting"
                 + " pixelOnly=true semanticLabels=false nearbyCaptionSearch=false");
