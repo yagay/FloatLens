@@ -7,12 +7,11 @@ import android.graphics.RectF;
 import java.util.function.BooleanSupplier;
 
 /**
- * Gesture-scoped OCR fallback for image text/logos missed by the frozen multi-pass OCR index.
+ * Gesture-scoped OCR fallback for image text/logos missed by the frozen full-frame index.
  *
- * <p>The fallback never forces PP-OCR. Every pass follows the main OCR engine setting. The complete
- * local ROI is tried at multiple scales and normalized back to the original crop inside
- * {@link CircleMultiScaleOcr}. Overlap tiles are recovery-only when every complete-ROI pass is
- * empty, and tile results are never globally merged.</p>
+ * <p>The fallback follows the user's main OCR engine setting and runs exactly three deterministic
+ * visual representations of the same tight crop: adaptive upscale, contrast and light-ink binary.
+ * No local tiling, scale ladder or document merge is used.</p>
  */
 final class CircleLocalOcrFallback {
     private CircleLocalOcrFallback() {}
@@ -28,10 +27,10 @@ final class CircleLocalOcrFallback {
         Context app = context.getApplicationContext();
 
         DiagnosticLog.i(app, "G_CIRCLE_LOCAL_OCR",
-                "start strategy=main_setting_multiscale_consensus"
+                "start strategy=three_variant_local_verifier"
                         + " bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight()
-                        + " tileRecovery=full_empty_only"
-                        + " tileMerge=false"
+                        + " variants=upscale,contrast,light-binary"
+                        + " tiles=false merge=false"
                         + " geometry=normalized_once"
                         + " workspaceCancellation=true"
                         + " enginePolicy=follow_main_setting");
@@ -43,7 +42,7 @@ final class CircleLocalOcrFallback {
                     OcrDocument normalized = normalizeIfNeeded(document,
                             bitmap.getWidth(), bitmap.getHeight(), variant);
                     DiagnosticLog.i(app, "G_CIRCLE_LOCAL_OCR",
-                            "enhanced success variant=" + variant
+                            "verified success variant=" + variant
                                     + " engine=" + (normalized == null ? "none" : normalized.engine())
                                     + " chars=" + (normalized == null ? 0 : normalized.chars().size())
                                     + " reportedScale=" + scaleX + "x" + scaleY
@@ -52,7 +51,7 @@ final class CircleLocalOcrFallback {
                                     + " remapped=" + (document != normalized));
                     if (normalized == null || normalized.fullText().isBlank()
                             || normalized.chars().isEmpty()) {
-                        callback.onFailure(new IllegalStateException("enhanced local OCR empty"));
+                        callback.onFailure(new IllegalStateException("local OCR verifier empty"));
                     } else {
                         callback.onSuccess(normalized);
                     }
@@ -63,9 +62,9 @@ final class CircleLocalOcrFallback {
 
             @Override public void onFailure(Throwable error) {
                 DiagnosticLog.i(app, "G_CIRCLE_LOCAL_OCR",
-                        "enhanced failed error=" + safe(error));
+                        "verified failed error=" + safe(error));
                 callback.onFailure(error == null
-                        ? new IllegalStateException("enhanced local OCR failed") : error);
+                        ? new IllegalStateException("local OCR verifier failed") : error);
             }
         });
     }
