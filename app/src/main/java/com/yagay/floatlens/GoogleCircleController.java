@@ -13,6 +13,7 @@ final class GoogleCircleController {
         long gen = ++generation;
 
         GoogleCircleInlineOverlay.dismissActive("restart");
+        CircleActiveBorderOverlay.hide(app, "restart");
         cancelPendingLocked(app);
 
         FlSystemPanelController.CaptureState shadeState =
@@ -39,14 +40,21 @@ final class GoogleCircleController {
             // later taps/scribbles only hit-test this cache and never launch another OCR request.
             GoogleCircleTextResolver.preload(app, frame);
 
-            boolean shown = GoogleCircleInlineOverlay.show(app, frame,
-                    () -> restore(app, hideLease, gen, "closed"));
+            boolean shown = GoogleCircleInlineOverlay.show(app, frame, () -> {
+                CircleActiveBorderOverlay.hide(app, "workspace_closed");
+                restore(app, hideLease, gen, "closed");
+            });
             if (!shown) {
                 frame.recycle();
+                CircleActiveBorderOverlay.hide(app, "overlay_failed");
                 restore(app, hideLease, gen, "overlay_failed");
                 Toast.makeText(app, "圈画识别启动失败", Toast.LENGTH_SHORT).show();
                 return;
             }
+
+            // The edge indicator is added after the frozen frame and workspace are ready. Therefore
+            // it stays above the workspace but can never be captured into the frozen source bitmap.
+            CircleActiveBorderOverlay.show(app);
 
             FlSystemPanelController.onOverlayReady(app, shadeState, "google_circle",
                     collapsed -> {
@@ -65,6 +73,7 @@ final class GoogleCircleController {
                     return;
                 }
             }
+            CircleActiveBorderOverlay.hide(app, "capture_failed");
             restore(app, hideLease, gen, "capture_failed");
             DiagnosticLog.i(app, "G_CIRCLE", "capture failed="
                     + ScreenCaptureBackend.safeMessage(error));
