@@ -12,12 +12,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * OCR-only resolver using AKS's Full + four overlapping-tile strategy with one global word merge.
+ * OCR-only resolver backed by one stable screen document.
  *
- * <p>All five ML Kit passes are mapped into one coordinate space and merged at complete
- * Element/group granularity. Exact-text heavy-overlap duplicates are removed; conflicting words
- * stay separate, exactly as in AKS. The merged document is never gesture-cropped, so selection
- * handles can cross tile boundaries, lines and paragraphs.</p>
+ * <p>The frozen screenshot is preprocessed once by {@link CircleTextOcrPipeline}: PP-OCR locates
+ * text regions when a model is installed, then ML Kit performs one complete-document recognition.
+ * There are no tiles, no AKS/global pass merge, no character fusion, and no gesture-time OCR.</p>
  */
 final class GoogleCircleTextResolver {
     enum Source { VIEW, VIEW_OCR, IMAGE_OCR, NONE }
@@ -28,7 +27,7 @@ final class GoogleCircleTextResolver {
 
     static final class Result {
         final Source source;
-        /** Complete AKS-style merged screen document. */
+        /** Complete single-source SCREEN-space OCR document. */
         final OcrDocument document;
         /** Gesture-scoped subset used only to initialize selection start/end. */
         final OcrDocument initialSelectionDocument;
@@ -67,7 +66,7 @@ final class GoogleCircleTextResolver {
         final WeakReference<GoogleCircleCapture.Frame> frameRef;
         final ArrayList<PendingResolve> pending = new ArrayList<>();
 
-        CircleOcrIndex ocrIndex;
+        OcrDocument screenDocument;
         Throwable ocrError;
         boolean ocrDone;
 
@@ -82,7 +81,7 @@ final class GoogleCircleTextResolver {
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final ExecutorService INDEX_IO = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "FloatLens-circle-index-ocr");
+        Thread t = new Thread(r, "FloatLens-circle-single-ocr");
         t.setDaemon(true);
         return t;
     });
@@ -116,12 +115,11 @@ final class GoogleCircleTextResolver {
         long started = android.os.SystemClock.uptimeMillis();
         DiagnosticLog.i(app, "G_CIRCLE_TEXT_INDEX", "start generation=" + state.generation
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
-                + " strategy=aks_full_plus_4_overlap_tiles"
-                + " textOwner=OCR_ONLY engine=ML_KIT"
-                + " preindex=full+tl+tr+bl+br tileFraction=0.60"
-                + " merge=aks_word_group exactText=true overlap=0.70"
-                + " characterFusion=false localOcr=false"
-                + " selectionModel=global_merged_document_plus_range"
+                + " strategy=pp_detect_then_single_mlkit"
+                + " textOwner=OCR_ONLY"
+                + " preindex=single_document"
+                + " tiles=false aksMerge=false characterFusion=false localOcr=false"
+                + " selectionModel=global_single_document_plus_range"
                 + " viewText=false semanticLabels=false"
                 + " geometry=shared_matrix_transform coordinateSpace=SCREEN");
 
@@ -141,7 +139,7 @@ final class GoogleCircleTextResolver {
             if (state == null) {
                 callback.onResolved(new Result(Source.NONE, null, null,
                         gestureScreenBounds(frame, gesture), new Rect(),
-                        new IllegalStateException("OCR index unavailable"), false));
+                        new IllegalStateException("OCR document unavailable"), false));
                 return;
             }
             ready = state.ready();
@@ -149,7 +147,7 @@ final class GoogleCircleTextResolver {
         }
 
         if (!ready) {
-            DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "wait for AKS merged preindex gesture="
+            DiagnosticLog.i(app, "G_CIRCLE_TEXT_RESOLVE", "wait for single OCR document gesture="
                     + gesture.kind + " generation=" + state.generation);
             return;
         }
@@ -160,16 +158,14 @@ final class GoogleCircleTextResolver {
         if (frame == null) return;
         Context app = c == null ? null : c.getApplicationContext();
         PreloadState released;
-        int ocrPasses;
-        int ocrChars;
-        int mergedChars;
+        int chars;
+        int lines;
         int pending;
         synchronized (INDEX_LOCK) {
             if (!sameFrame(currentIndex, frame)) return;
             released = currentIndex;
-            ocrPasses = released.ocrIndex == null ? 0 : released.ocrIndex.passCount();
-            ocrChars = released.ocrIndex == null ? 0 : released.ocrIndex.totalChars();
-            mergedChars = released.ocrIndex == null ? 0 : released.ocrIndex.mergedChars();
+            chars = released.screenDocument == null ? 0 : released.screenDocument.chars().size();
+            lines = released.screenDocument == null ? 0 : released.screenDocument.lines().size();
             pending = released.pending.size();
             currentIndex = null;
             indexGeneration++;
@@ -179,16 +175,15 @@ final class GoogleCircleTextResolver {
         DiagnosticLog.i(logContext, "G_CIRCLE_TEXT_INDEX", "release generation="
                 + released.generation
                 + " reason=" + (reason == null ? "unknown" : reason)
-                + " ocrPasses=" + ocrPasses
-                + " ocrChars=" + ocrChars
-                + " mergedChars=" + mergedChars
+                + " chars=" + chars
+                + " lines=" + lines
                 + " pendingCleared=" + pending);
     }
 
     private static void clearStateLocked(PreloadState state) {
         if (state == null) return;
         state.pending.clear();
-        state.ocrIndex = null;
+        state.screenDocument = null;
         state.ocrError = null;
         state.ocrDone = false;
     }
@@ -219,17 +214,17 @@ final class GoogleCircleTextResolver {
 
         DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_INDEX", "ocr begin generation="
                 + state.generation + " bitmap=" + copy.getWidth() + "x" + copy.getHeight()
-                + " passes=5 tileFraction=0.60 engine=ML_KIT"
-                + " merge=aks_word_group characterFusion=false"
+                + " pipeline=pp_detect_then_single_mlkit"
+                + " tiles=false aksMerge=false characterFusion=false"
                 + " viewMask=false semanticLabels=false");
 
-        CirclePreindexTiledOcr.recognize(state.app, copy,
-                () -> !isCurrent(state, frame), new CirclePreindexTiledOcr.Callback() {
-            @Override public void onSuccess(CircleOcrIndex bitmapIndex) {
-                CircleOcrIndex screenIndex = bitmapIndex == null
-                        ? null : bitmapIndex.toScreen(frame.transform);
+        CircleTextOcrPipeline.recognize(state.app, copy,
+                () -> !isCurrent(state, frame), new CircleTextOcrPipeline.Callback() {
+            @Override public void onSuccess(OcrDocument bitmapDocument) {
+                OcrDocument screenDocument = bitmapDocument == null
+                        ? null : frame.transform.documentBitmapToScreen(bitmapDocument);
                 recycle(copy);
-                finishOcrPart(state, frame, screenIndex, null, started);
+                finishOcrPart(state, frame, screenDocument, null, started);
             }
 
             @Override public void onFailure(Throwable error) {
@@ -240,19 +235,19 @@ final class GoogleCircleTextResolver {
     }
 
     private static void finishOcrPart(PreloadState state, GoogleCircleCapture.Frame frame,
-                                      CircleOcrIndex index, Throwable error, long started) {
+                                      OcrDocument document, Throwable error, long started) {
         synchronized (INDEX_LOCK) {
             if (currentIndex != state) return;
-            state.ocrIndex = index;
+            state.screenDocument = document;
             state.ocrError = error;
             state.ocrDone = true;
         }
         DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_INDEX", "ocr ready generation="
                 + state.generation
-                + " usable=" + (index != null && !index.isEmpty())
-                + " passes=" + (index == null ? 0 : index.passCount())
-                + " totalChars=" + (index == null ? 0 : index.totalChars())
-                + " mergedChars=" + (index == null ? 0 : index.mergedChars())
+                + " usable=" + usable(document)
+                + " chars=" + (document == null ? 0 : document.chars().size())
+                + " lines=" + (document == null ? 0 : document.lines().size())
+                + " engine=" + (document == null ? "none" : document.engine())
                 + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started)
                 + (error == null ? "" : " error=" + ScreenCaptureBackend.safeMessage(error)));
         dispatchIfReady(state, frame, started);
@@ -268,10 +263,10 @@ final class GoogleCircleTextResolver {
         }
 
         DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_INDEX", "ready generation=" + state.generation
-                + " textOwner=OCR_ONLY engine=ML_KIT"
-                + " ocrPasses=" + (state.ocrIndex == null ? 0 : state.ocrIndex.passCount())
-                + " ocrCharsTotal=" + (state.ocrIndex == null ? 0 : state.ocrIndex.totalChars())
-                + " mergedChars=" + (state.ocrIndex == null ? 0 : state.ocrIndex.mergedChars())
+                + " textOwner=OCR_ONLY"
+                + " engine=" + (state.screenDocument == null ? "none" : state.screenDocument.engine())
+                + " chars=" + (state.screenDocument == null ? 0 : state.screenDocument.chars().size())
+                + " lines=" + (state.screenDocument == null ? 0 : state.screenDocument.lines().size())
                 + " pending=" + pending.size()
                 + " totalMs=" + (android.os.SystemClock.uptimeMillis() - started));
 
@@ -291,29 +286,22 @@ final class GoogleCircleTextResolver {
                                         GoogleCircleSelection.Selection gesture, Callback callback) {
         if (!isCurrent(state, frame)) return;
         Rect gestureScreen = gestureScreenBounds(frame, gesture);
-        CircleOcrIndex index = state.ocrIndex;
-        if (index == null || index.isEmpty() || gestureScreen.isEmpty()) {
-            callback.onResolved(new Result(Source.NONE, null, null,
-                    gestureScreen, new Rect(), state.ocrError, false));
-            return;
-        }
-
-        OcrDocument merged = index.mergedDocument();
-        if (!usable(merged)) {
+        OcrDocument document = state.screenDocument;
+        if (!usable(document) || gestureScreen.isEmpty()) {
             callback.onResolved(new Result(Source.NONE, null, null,
                     gestureScreen, new Rect(), state.ocrError, false));
             return;
         }
 
         OcrDocument initial = CircleGestureTextSelector.selectDocument(
-                state.app, frame, gesture, merged,
+                state.app, frame, gesture, document,
                 CACHED_OCR_TAP_TOLERANCE_DP, RANGE_CORRIDOR_DP,
-                "aks-merged-gesture-selected");
+                "single-ocr-gesture-selected");
         if (!usable(initial)) {
-            DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE", "merged index miss gesture="
+            DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE", "single document miss gesture="
                     + gesture.kind
-                    + " passesAvailable=" + index.passCount()
-                    + " mergedChars=" + merged.chars().size()
+                    + " documentChars=" + document.chars().size()
+                    + " engine=" + document.engine()
                     + " localOcr=false");
             callback.onResolved(new Result(Source.NONE, null, null,
                     gestureScreen, new Rect(), state.ocrError, false));
@@ -321,16 +309,16 @@ final class GoogleCircleTextResolver {
         }
 
         Rect fullBitmap = new Rect(0, 0, frame.bitmap.getWidth(), frame.bitmap.getHeight());
-        DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE", "merged index hit gesture="
+        DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_RESOLVE", "single document hit gesture="
                 + gesture.kind
-                + " passes=" + index.passCount()
-                + " mergedChars=" + merged.chars().size()
+                + " documentChars=" + document.chars().size()
                 + " initialChars=" + initial.chars().size()
                 + " initialText=" + summarize(initial.fullText())
-                + " selectionModel=global_merged_document_plus_initial_range"
-                + " merge=aks_word_group exactText=true overlap=0.70"
-                + " characterFusion=false localOcr=false coordinateSpace=SCREEN");
-        callback.onResolved(new Result(Source.IMAGE_OCR, merged,
+                + " engine=" + document.engine()
+                + " selectionModel=global_single_document_plus_initial_range"
+                + " tiles=false aksMerge=false characterFusion=false localOcr=false"
+                + " coordinateSpace=SCREEN");
+        callback.onResolved(new Result(Source.IMAGE_OCR, document,
                 initial, gestureScreen, fullBitmap, null, false));
     }
 
