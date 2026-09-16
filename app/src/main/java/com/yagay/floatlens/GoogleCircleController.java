@@ -22,9 +22,10 @@ final class GoogleCircleController {
                 ScreenshotHideCoordinator.acquire(app, "google_circle_" + gen);
         pendingHideLease = hideLease;
         DiagnosticLog.i(app, "G_CIRCLE", "start gen=" + gen
-                + " phase=capture_then_text_preindex"
-                + " textRecognition=independent_full_plus_tiles"
-                + " classifier=view_then_cached_consensus_then_local_ocr"
+                + " phase=capture_then_ocr_preindex"
+                + " textRecognition=ocr_only_full_then_local3"
+                + " classifier=full_ocr_then_local_three_variant"
+                + " viewText=false semanticLabels=false"
                 + " gestureGeometry=exact_path"
                 + " circleMode=editable_screenshot autoExpand=false");
 
@@ -37,9 +38,9 @@ final class GoogleCircleController {
                 }
             }
 
-            // Build frozen View text plus independent full/tile OCR indexes immediately. Most later
-            // gestures only query these SCREEN-space caches; a tight local OCR request is permitted
-            // only when both View and every cached OCR pass genuinely miss the user's target.
+            // Build one frozen full-screen OCR index immediately. Ordinary text is selected from
+            // that SCREEN-space document. Small image text/logos and genuine misses use only the
+            // user's tight local crop; Accessibility/View text never participates in Circle.
             GoogleCircleTextResolver.preload(app, frame);
 
             boolean shown = GoogleCircleInlineOverlay.show(app, frame, () -> {
