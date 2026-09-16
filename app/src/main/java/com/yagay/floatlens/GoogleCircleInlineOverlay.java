@@ -21,14 +21,12 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Frozen-screen Circle workflow with two separate modes.
+ * Frozen-screen Circle workflow with separate text-selection and screenshot-selection modes.
  *
- * Text is resolved only after TAP/SCRIBBLE/HIGHLIGHT ends. The resolver first checks fresh native
- * View text; only a View miss triggers OCR on a small ROI around that gesture. Both sources are
- * normalized into absolute screen-space characters and rendered with the old selectable-text model.
- *
- * A closed CIRCLE never runs text recognition. It creates an exact editable screenshot rectangle;
- * the user adjusts it and presses 完成 before the image action menu is shown.
+ * <p>Text is resolved only after TAP/SCRIBBLE/HIGHLIGHT ends. The resolver returns a gesture-scoped
+ * SCREEN-space document from View text, independent cached OCR consensus, or the final local OCR
+ * fallback. The overlay therefore never re-expands a resolved document into unrelated screen text.
+ * A closed CIRCLE remains an exact editable screenshot rectangle and never becomes text OCR.</p>
  */
 final class GoogleCircleInlineOverlay {
     private static WorkspaceView active;
@@ -65,8 +63,9 @@ final class GoogleCircleInlineOverlay {
         if (!shadeExpanded) view.promoteKeyFocus("initial");
         DiagnosticLog.i(app, "G_CIRCLE_INLINE", "overlay shown frame=" + bounds.toShortString()
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
-                + " textRecognition=deferred"
-                + " classifier=view_then_local_ocr"
+                + " textRecognition=preindexed"
+                + " classifier=view_then_cached_consensus_then_local_ocr"
+                + " geometry=shared_frame_transform"
                 + " screenshotMode=circle_edit_confirm autoExpand=false");
         return true;
     }
@@ -97,11 +96,12 @@ final class GoogleCircleInlineOverlay {
         private static final int MODE_TEXT_START = 7;
         private static final int MODE_TEXT_END = 8;
 
-        private static final float VIEW_TEXT_TAP_SNAP_DP = 10f;
-        private static final float OCR_TEXT_TAP_SNAP_DP = 44f;
+        /** Resolver already scopes cached results to the gesture; this is only a rounding allowance. */
+        private static final float CACHED_TEXT_TAP_SNAP_DP = 4f;
+        /** Local OCR may return slightly loose character geometry after aggressive upscaling. */
+        private static final float LOCAL_TEXT_TAP_SNAP_DP = 28f;
         private static final float TEXT_HANDLE_HIT_DP = 28f;
         private static final float TEXT_HANDLE_SNAP_DP = 96f;
-        private static final float RANGE_TOLERANCE_DP = 6f;
 
         private static final float CLOSE_SIZE_DP = 42f;
         private static final float CLOSE_EDGE_MARGIN_DP = 14f;
@@ -181,8 +181,8 @@ final class GoogleCircleInlineOverlay {
                 invalidate();
             };
 
-            textTransform = new ScreenBitmapTransform(frame.screenBounds,
-                    frame.bitmap.getWidth(), frame.bitmap.getHeight());
+            // Reuse the capture frame's single transform owner. Do not create a second geometry path.
+            textTransform = frame.transform;
             textSelection = new CircleTextSelectionModel(textTransform);
             textSelection.setChars(List.of());
 
@@ -428,13 +428,13 @@ final class GoogleCircleInlineOverlay {
             if (screenshotSelection != null) {
                 text = "调整截图窗口 · 调好后点完成";
             } else if (resolvingText) {
-                text = "正在识别当前位置 · View → 图片文字";
+                text = "正在匹配当前位置 · View → OCR缓存 → 局部OCR";
             } else if (textSelection.hasSelection()) {
                 text = "IMAGE_OCR".equals(selectedTextSource)
                         ? "图片文字已在原位置可选 · 拖动手柄调整"
                         : "View 文字已在原位置可选 · 拖动手柄调整";
             } else {
-                text = "点击/涂抹时即时识别文字 · 圈画截图";
+                text = "点击/涂抹选择文字 · 圈画截图";
             }
 
             float width = Math.min(getWidth() - dp(32), hintTextPaint.measureText(text) + dp(30));
@@ -569,7 +569,6 @@ final class GoogleCircleInlineOverlay {
                         updateTextEndpoint(x, y);
                         showTextSelectionMenu();
                     }
-                    // Screenshot edits deliberately wait for the explicit 完成 button.
                     editMode = MODE_NONE;
                     editOrigin = null;
                     editStart = null;
@@ -618,8 +617,9 @@ final class GoogleCircleInlineOverlay {
 
             DiagnosticLog.i(context, "G_CIRCLE_GESTURE", "kind=" + gesture.kind
                     + " bounds=" + gesture.bounds.toShortString()
+                    + " points=" + gesture.points.size()
                     + " routing=" + (gesture.kind == GoogleCircleSelection.Kind.CIRCLE
-                    ? "editable_screenshot" : "deferred_view_then_local_ocr")
+                    ? "editable_screenshot" : "view_then_cached_consensus_then_local_ocr")
                     + " autoExpand=false");
 
             if (gesture.kind == GoogleCircleSelection.Kind.CIRCLE) {
@@ -669,7 +669,7 @@ final class GoogleCircleInlineOverlay {
             }
 
             textSelection.setDocument(result.document);
-            boolean selected = selectFromResolvedDocument(gesture, result.source);
+            boolean selected = selectFromResolvedDocument(gesture, result);
             if (!selected) {
                 textSelection.clear();
                 selectedTextSource = "";
@@ -681,6 +681,7 @@ final class GoogleCircleInlineOverlay {
             selectedTextSource = result.source.name();
             DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT", "resolved=true gesture="
                     + gesture.kind + " source=" + result.source
+                    + " localFallback=" + result.localFallback
                     + " chars=" + textSelection.selectionIndices().size()
                     + " textChars=" + textSelection.selectedText().length()
                     + " originalPosition=true coordinateSpace=SCREEN");
@@ -689,31 +690,28 @@ final class GoogleCircleInlineOverlay {
         }
 
         private boolean selectFromResolvedDocument(GoogleCircleSelection.Selection gesture,
-                                                   GoogleCircleTextResolver.Source source) {
+                                                    GoogleCircleTextResolver.Result result) {
+            if (textSelection.isEmpty() || result == null) return false;
             if (gesture.kind == GoogleCircleSelection.Kind.TAP) {
                 PointF viewPoint = frame.bitmapToView(gesture.focus.x, gesture.focus.y,
                         getWidth(), getHeight());
-                float snap = source == GoogleCircleTextResolver.Source.IMAGE_OCR
-                        ? dp(OCR_TEXT_TAP_SNAP_DP) : dp(VIEW_TEXT_TAP_SNAP_DP);
-                int hit = textSelection.findSelectionWord(viewPoint.x, viewPoint.y,
-                        getWidth(), getHeight(), snap);
+                int hit = textSelection.findWordAt(viewPoint.x, viewPoint.y,
+                        getWidth(), getHeight());
+                if (hit < 0) {
+                    float snap = dp(result.localFallback
+                            ? LOCAL_TEXT_TAP_SNAP_DP : CACHED_TEXT_TAP_SNAP_DP);
+                    hit = textSelection.findSelectionWord(viewPoint.x, viewPoint.y,
+                            getWidth(), getHeight(), snap);
+                }
                 if (hit < 0) return false;
                 textSelection.selectSingle(hit);
                 return true;
             }
 
-            Rect bitmapRect = GoogleCircleSelection.exactRectAndClamp(gesture.bounds,
-                    frame.bitmap.getWidth(), frame.bitmap.getHeight());
-            Rect screenRect = bitmapRect.isEmpty() ? new Rect()
-                    : frame.bitmapRectToScreen(bitmapRect);
-            if (screenRect.isEmpty()) return false;
-            if (textSelection.selectIntersecting(screenRect)) return true;
-
-            int tolerance = Math.max(1, Math.round(dp(RANGE_TOLERANCE_DP)));
-            Rect tolerant = new Rect(screenRect);
-            tolerant.inset(-tolerance, -tolerance);
-            tolerant.intersect(frame.screenBounds);
-            return textSelection.selectIntersecting(tolerant);
+            // Resolver output is already path-scoped. Selecting it all avoids reintroducing the old
+            // bounding-box hit test that selected text from empty space inside a scribble's bounds.
+            textSelection.selectAll();
+            return textSelection.hasSelection();
         }
 
         private void cancelTextResolution(String reason) {
@@ -879,10 +877,7 @@ final class GoogleCircleInlineOverlay {
         }
 
         private float bitmapPxForDp(float value) {
-            float screenPx = dp(value);
-            float sx = frame.bitmap.getWidth() / (float) Math.max(1, frame.screenBounds.width());
-            float sy = frame.bitmap.getHeight() / (float) Math.max(1, frame.screenBounds.height());
-            return screenPx * (sx + sy) * 0.5f;
+            return frame.transform.screenDistanceToBitmap(dp(value));
         }
 
         private float dp(float value) {
