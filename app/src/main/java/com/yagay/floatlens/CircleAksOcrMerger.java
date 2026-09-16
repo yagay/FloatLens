@@ -12,14 +12,35 @@ import java.util.Map;
 /**
  * AKS-style global merge for Circle OCR passes.
  *
- * <p>Each ML Kit Element/group is treated as AKS treats a Tesseract word. Passes are considered in
- * reverse source order (later regional passes before earlier/full), exact text plus heavy spatial
- * overlap removes duplicates, conflicting text is deliberately kept, and accepted groups are then
- * rebuilt into visual rows. Characters are never mixed between OCR groups.</p>
+ * <p>ML Kit output is first adapted into AKS-style visual words. Latin/digit Elements remain
+ * independent words. Adjacent CJK groups on the same recognizer line are joined when their
+ * geometry shows one continuous visual run. The adapter never invents characters and preserves
+ * every original ML Kit character rectangle. The resulting words are then merged with the AKS
+ * exact-text + heavy-overlap rule. Characters are never fused across OCR passes.</p>
  */
 final class CircleAksOcrMerger {
     private static final float DUPLICATE_OVERLAP = 0.70f;
     private static final float SAME_ROW_CENTER_FACTOR = 0.60f;
+
+    // ML Kit may split a continuous Chinese visual word into one Element per character. Join only
+    // when both neighboring groups look CJK-like and geometry strongly indicates continuity.
+    private static final float CJK_MIN_HEIGHT_RATIO = 0.62f;
+    private static final float CJK_MAX_CENTER_DELTA_FACTOR = 0.42f;
+    private static final float CJK_MAX_GAP_HEIGHT_FACTOR = 0.58f;
+
+    private static final class RawGroup {
+        final String text;
+        final Rect bounds;
+        final List<OcrDocument.CharUnit> chars;
+        final float confidence;
+
+        RawGroup(String text, Rect bounds, List<OcrDocument.CharUnit> chars, float confidence) {
+            this.text = text == null ? "" : text;
+            this.bounds = bounds == null ? new Rect() : new Rect(bounds);
+            this.chars = chars == null ? List.of() : List.copyOf(chars);
+            this.confidence = confidence;
+        }
+    }
 
     private static final class WordCandidate {
         final String source;
@@ -49,7 +70,7 @@ final class CircleAksOcrMerger {
             CircleOcrIndex.Entry entry = entries.get(sourceIndex);
             if (entry == null || entry.document == null || entry.document.chars().isEmpty()) continue;
             if (template == null) template = entry.document;
-            collectGroups(all, entry, sourceIndex);
+            collectWords(all, entry, sourceIndex);
         }
         if (template == null || all.isEmpty()) return null;
 
@@ -147,7 +168,7 @@ final class CircleAksOcrMerger {
         float confidence = confidenceCount == 0 ? 0f : confidenceSum / confidenceCount;
         double score = lines.size() * 5d;
         for (OcrDocument.Line line : lines) score += line.chars().size();
-        String engine = "aks-merged-mlkit";
+        String engine = "aks-merged-mlkit-word-adapted";
         if (template.isScreenSpace()) {
             return OcrDocument.screenSpace(full.toString(), blocks, lines, engine,
                     confidence, score, template.imageWidth(), template.imageHeight());
@@ -156,32 +177,128 @@ final class CircleAksOcrMerger {
                 confidence, score, template.imageWidth(), template.imageHeight());
     }
 
-    private static void collectGroups(List<WordCandidate> out, CircleOcrIndex.Entry entry,
-                                      int priority) {
+    private static void collectWords(List<WordCandidate> out, CircleOcrIndex.Entry entry,
+                                     int priority) {
         for (OcrDocument.Line line : entry.document.lines()) {
             if (line == null || line.chars().isEmpty()) continue;
-            Map<Integer, ArrayList<OcrDocument.CharUnit>> groups = new LinkedHashMap<>();
+
+            Map<Integer, ArrayList<OcrDocument.CharUnit>> grouped = new LinkedHashMap<>();
             for (OcrDocument.CharUnit unit : line.chars()) {
                 if (unit == null || unit.text().isBlank() || unit.bounds().isEmpty()) continue;
-                groups.computeIfAbsent(unit.group(), ignored -> new ArrayList<>()).add(unit);
+                grouped.computeIfAbsent(unit.group(), ignored -> new ArrayList<>()).add(unit);
             }
-            for (ArrayList<OcrDocument.CharUnit> chars : groups.values()) {
-                if (chars.isEmpty()) continue;
-                chars.sort(Comparator.comparingInt(c -> c.bounds().left));
-                StringBuilder text = new StringBuilder();
-                Rect bounds = null;
-                float confidence = 0f;
-                for (OcrDocument.CharUnit unit : chars) {
-                    text.append(unit.text());
-                    Rect r = unit.bounds();
-                    if (bounds == null) bounds = new Rect(r); else bounds.union(r);
-                    confidence += unit.confidence();
+
+            ArrayList<RawGroup> raw = new ArrayList<>();
+            for (ArrayList<OcrDocument.CharUnit> chars : grouped.values()) {
+                RawGroup group = rawGroup(chars);
+                if (group != null) raw.add(group);
+            }
+            if (raw.isEmpty()) continue;
+            raw.sort(Comparator.comparingInt(g -> g.bounds.left));
+
+            RawGroup pending = raw.get(0);
+            for (int i = 1; i < raw.size(); i++) {
+                RawGroup next = raw.get(i);
+                if (shouldJoinCjkGroups(pending, next)) {
+                    pending = joinGroups(pending, next);
+                } else {
+                    addWord(out, entry.source, pending, priority);
+                    pending = next;
                 }
-                if (bounds == null || bounds.isEmpty() || text.length() == 0) continue;
-                out.add(new WordCandidate(entry.source, text.toString(), bounds, chars,
-                        confidence / chars.size(), priority));
             }
+            addWord(out, entry.source, pending, priority);
         }
+    }
+
+    private static RawGroup rawGroup(List<OcrDocument.CharUnit> input) {
+        if (input == null || input.isEmpty()) return null;
+        ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>();
+        for (OcrDocument.CharUnit unit : input) {
+            if (unit == null || unit.text().isBlank() || unit.bounds().isEmpty()) continue;
+            chars.add(unit);
+        }
+        if (chars.isEmpty()) return null;
+        chars.sort(Comparator.comparingInt(c -> c.bounds().left));
+
+        StringBuilder text = new StringBuilder();
+        Rect bounds = null;
+        float confidence = 0f;
+        for (OcrDocument.CharUnit unit : chars) {
+            text.append(unit.text());
+            Rect r = unit.bounds();
+            if (bounds == null) bounds = new Rect(r); else bounds.union(r);
+            confidence += unit.confidence();
+        }
+        if (bounds == null || bounds.isEmpty() || text.length() == 0) return null;
+        return new RawGroup(text.toString(), bounds, chars, confidence / chars.size());
+    }
+
+    private static void addWord(List<WordCandidate> out, String source,
+                                RawGroup group, int priority) {
+        if (group == null || group.text.isBlank() || group.bounds.isEmpty() || group.chars.isEmpty()) {
+            return;
+        }
+        out.add(new WordCandidate(source, group.text, group.bounds, group.chars,
+                group.confidence, priority));
+    }
+
+    private static RawGroup joinGroups(RawGroup left, RawGroup right) {
+        ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>(
+                left.chars.size() + right.chars.size());
+        chars.addAll(left.chars);
+        chars.addAll(right.chars);
+        chars.sort(Comparator.comparingInt(c -> c.bounds().left));
+        Rect bounds = new Rect(left.bounds);
+        bounds.union(right.bounds);
+        float confidence = (left.confidence * left.chars.size()
+                + right.confidence * right.chars.size())
+                / Math.max(1, left.chars.size() + right.chars.size());
+        return new RawGroup(left.text + right.text, bounds, chars, confidence);
+    }
+
+    private static boolean shouldJoinCjkGroups(RawGroup left, RawGroup right) {
+        if (left == null || right == null || left.bounds.isEmpty() || right.bounds.isEmpty()) return false;
+        if (!isCjkVisualText(left.text) || !isCjkVisualText(right.text)) return false;
+
+        float lh = Math.max(1f, left.bounds.height());
+        float rh = Math.max(1f, right.bounds.height());
+        float heightRatio = Math.min(lh, rh) / Math.max(lh, rh);
+        if (heightRatio < CJK_MIN_HEIGHT_RATIO) return false;
+
+        float centerDelta = Math.abs(left.bounds.exactCenterY() - right.bounds.exactCenterY());
+        if (centerDelta > Math.max(lh, rh) * CJK_MAX_CENTER_DELTA_FACTOR) return false;
+
+        float gap = Math.max(0f, right.bounds.left - left.bounds.right);
+        float maxGap = Math.max(lh, rh) * CJK_MAX_GAP_HEIGHT_FACTOR;
+        return gap <= maxGap;
+    }
+
+    /**
+     * True for a CJK run that may include common CJK punctuation. Latin letters and digits prevent
+     * joining so mixed-language labels keep ML Kit's own Element boundaries.
+     */
+    private static boolean isCjkVisualText(String text) {
+        if (text == null || text.isBlank()) return false;
+        boolean sawCjk = false;
+        for (int offset = 0; offset < text.length();) {
+            int cp = text.codePointAt(offset);
+            offset += Character.charCount(cp);
+            if (Character.isWhitespace(cp)) continue;
+            if (isCjk(cp)) {
+                sawCjk = true;
+                continue;
+            }
+            if (isCjkPunctuation(cp)) continue;
+            return false;
+        }
+        return sawCjk;
+    }
+
+    private static boolean isCjkPunctuation(int cp) {
+        return (cp >= 0x3000 && cp <= 0x303F)
+                || cp == 0xFF0C || cp == 0x3002 || cp == 0xFF01 || cp == 0xFF1F
+                || cp == 0xFF1A || cp == 0xFF1B || cp == 0x3001
+                || cp == 0x2014 || cp == 0x2026;
     }
 
     private static float duplicateOverlap(Rect candidate, Rect existing) {
