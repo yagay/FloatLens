@@ -23,8 +23,11 @@ final class GoogleCircleController {
         pendingHideLease = hideLease;
         DiagnosticLog.i(app, "G_CIRCLE", "start gen=" + gen
                 + " phase=capture_then_screenshot_text"
-                + " textRecognition=fast_full_mlkit_plus_local_crop"
+                + " textRecognition=local_roi_plus_tiled_cache"
                 + " classifier=gesture_to_frozen_screenshot_ocr"
+                + " foreground=on_demand_local_roi"
+                + " background=two_lane_overlapping_tiles"
+                + " regionCache=frozen_frame_lru"
                 + " preindexBlocking=false ppocrPreindex=false localOcr=true"
                 + " viewText=false semanticLabels=false contentHints=false"
                 + " gestureGeometry=exact_path"
@@ -39,9 +42,9 @@ final class GoogleCircleController {
                 }
             }
 
-            // Start a fast full-frame ML Kit cache, but never make interactive gestures wait for it.
-            // GoogleCircleTextResolver always falls back to OCR of a tight crop from this same
-            // frozen screenshot when the cache is not ready or does not geometrically hit.
+            // Build a non-blocking background text index from overlapping screenshot tiles.
+            // Interactive gestures never wait for it: the resolver first reuses a frozen-frame ROI
+            // cache and otherwise OCRs only the gesture's tight crop from this same screenshot.
             GoogleCircleTextResolver.preload(app, frame);
 
             boolean shown = GoogleCircleInlineOverlay.show(app, frame, () -> {
