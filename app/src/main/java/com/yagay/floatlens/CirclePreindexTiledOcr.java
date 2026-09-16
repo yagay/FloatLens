@@ -5,22 +5,208 @@ import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.graphics.RectF;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
 /**
- * Builds the frozen Circle OCR index from one full-frame pass.
+ * Builds the frozen Circle OCR index using the AKS spatial strategy: one full-frame pass plus four
+ * overlapping 60% quadrant crops.
  *
- * <p>The preindex is deliberately simple: one screenshot, one document OCR request, one geometry
- * mapping. It is used for ordinary text and coarse location only. Small image text/logos are
- * verified later from a tight local crop, so overlapping full-screen tiles cannot vote against
- * each other or make the result change between otherwise identical gestures.</p>
+ * <p>The five OCR documents are deliberately kept independent. There is no global word/line/char
+ * merge and no cross-pass character fusion. Each crop is mapped back into full-bitmap coordinates
+ * immediately; gesture-time selection later chooses one complete recognizer result from the passes
+ * that actually cover the user's target.</p>
  */
 final class CirclePreindexTiledOcr {
     interface Callback {
         void onSuccess(CircleOcrIndex index);
         void onFailure(Throwable error);
+    }
+
+    private static final float TILE_FRACTION = 0.60f;
+
+    private static final class PassSpec {
+        final String source;
+        final boolean fullFrame;
+        final Rect coverage;
+
+        PassSpec(String source, boolean fullFrame, Rect coverage) {
+            this.source = source;
+            this.fullFrame = fullFrame;
+            this.coverage = new Rect(coverage);
+        }
+    }
+
+    private static final class Session {
+        final Context app;
+        final Bitmap source;
+        final BooleanSupplier cancelled;
+        final Callback callback;
+        final List<PassSpec> specs;
+        final CircleOcrIndex.Entry[] results;
+        final long started = android.os.SystemClock.uptimeMillis();
+
+        int remaining;
+        Throwable lastError;
+        boolean finished;
+
+        Session(Context app, Bitmap source, BooleanSupplier cancelled, Callback callback) {
+            this.app = app;
+            this.source = source;
+            this.cancelled = cancelled;
+            this.callback = callback;
+            this.specs = buildPasses(source.getWidth(), source.getHeight());
+            this.results = new CircleOcrIndex.Entry[specs.size()];
+            this.remaining = specs.size();
+        }
+
+        void start() {
+            if (isCancelled(cancelled)) {
+                failOnce(new CancellationException("Circle preindex cancelled before passes"),
+                        "before_passes");
+                return;
+            }
+            DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
+                    "start strategy=aks_full_plus_overlap_tiles"
+                            + " bitmap=" + source.getWidth() + "x" + source.getHeight()
+                            + " passes=" + specs.size()
+                            + " tileFraction=" + TILE_FRACTION
+                            + " parallel=true merge=false characterFusion=false"
+                            + " enginePolicy=follow_main_setting"
+                            + " workspaceCancellation=true");
+
+            for (int i = 0; i < specs.size(); i++) launchPass(i, specs.get(i));
+        }
+
+        private void launchPass(int index, PassSpec spec) {
+            if (finished) return;
+            if (isCancelled(cancelled)) {
+                failOnce(new CancellationException("Circle preindex cancelled before " + spec.source),
+                        "before_" + spec.source);
+                return;
+            }
+
+            final Bitmap input;
+            try {
+                input = spec.fullFrame ? source : Bitmap.createBitmap(source,
+                        spec.coverage.left, spec.coverage.top,
+                        spec.coverage.width(), spec.coverage.height());
+            } catch (Throwable t) {
+                completePass(index, spec, null, t, null);
+                return;
+            }
+
+            final long passStarted = android.os.SystemClock.uptimeMillis();
+            DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
+                    "pass start source=" + spec.source
+                            + " coverage=" + spec.coverage.toShortString()
+                            + " bitmap=" + input.getWidth() + "x" + input.getHeight());
+
+            OcrEngine.recognizeDocument(app, input, new OcrEngine.DocumentCallback() {
+                @Override public void onSuccess(OcrDocument document) {
+                    OcrDocument mapped = null;
+                    Throwable error = null;
+                    try {
+                        if (!isCancelled(cancelled)) {
+                            mapped = mapPassToFull(document, spec.coverage,
+                                    source.getWidth(), source.getHeight(), spec.source + "-");
+                            if (!usable(mapped)) {
+                                error = new IllegalStateException(spec.source + " OCR empty");
+                            }
+                        } else {
+                            error = new CancellationException(
+                                    "Circle preindex cancelled after " + spec.source);
+                        }
+                    } catch (Throwable t) {
+                        error = t;
+                    }
+                    completePass(index, spec, mapped, error,
+                            spec.fullFrame ? null : input);
+                    DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
+                            "pass done source=" + spec.source
+                                    + " usable=" + usable(mapped)
+                                    + " chars=" + (mapped == null ? 0 : mapped.chars().size())
+                                    + " lines=" + (mapped == null ? 0 : mapped.lines().size())
+                                    + " elapsedMs="
+                                    + (android.os.SystemClock.uptimeMillis() - passStarted));
+                }
+
+                @Override public void onFailure(Throwable error) {
+                    completePass(index, spec, null,
+                            error == null ? new IllegalStateException(spec.source + " OCR failed") : error,
+                            spec.fullFrame ? null : input);
+                    DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
+                            "pass failed source=" + spec.source
+                                    + " error=" + safe(error)
+                                    + " elapsedMs="
+                                    + (android.os.SystemClock.uptimeMillis() - passStarted));
+                }
+            });
+        }
+
+        private void completePass(int index, PassSpec spec, OcrDocument document,
+                                  Throwable error, Bitmap ownedInput) {
+            if (ownedInput != null && ownedInput != source && !ownedInput.isRecycled()) {
+                ownedInput.recycle();
+            }
+
+            CircleOcrIndex complete = null;
+            Throwable terminal = null;
+            synchronized (this) {
+                if (finished) return;
+                if (usable(document)) {
+                    results[index] = new CircleOcrIndex.Entry(
+                            spec.source, spec.fullFrame, spec.coverage, document);
+                }
+                if (error != null) lastError = error;
+                remaining--;
+                if (remaining > 0) return;
+
+                if (isCancelled(cancelled)) {
+                    finished = true;
+                    terminal = new CancellationException("Circle preindex cancelled at finish");
+                } else {
+                    ArrayList<CircleOcrIndex.Entry> entries = new ArrayList<>();
+                    for (CircleOcrIndex.Entry entry : results) if (entry != null) entries.add(entry);
+                    if (entries.isEmpty()) {
+                        finished = true;
+                        terminal = lastError == null
+                                ? new IllegalStateException("all Circle OCR passes empty") : lastError;
+                    } else {
+                        finished = true;
+                        complete = new CircleOcrIndex(entries);
+                    }
+                }
+            }
+
+            if (complete != null) {
+                DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
+                        "finish usable=true passes=" + complete.passCount()
+                                + " totalChars=" + complete.totalChars()
+                                + " merge=false characterFusion=false"
+                                + " elapsedMs="
+                                + (android.os.SystemClock.uptimeMillis() - started));
+                callback.onSuccess(complete);
+            } else if (terminal != null) {
+                DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
+                        "finish usable=false error=" + safe(terminal)
+                                + " elapsedMs="
+                                + (android.os.SystemClock.uptimeMillis() - started));
+                callback.onFailure(terminal);
+            }
+        }
+
+        private void failOnce(Throwable error, String stage) {
+            synchronized (this) {
+                if (finished) return;
+                finished = true;
+            }
+            DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
+                    "cancel stage=" + stage + " error=" + safe(error));
+            callback.onFailure(error);
+        }
     }
 
     static void recognize(Context context, Bitmap bitmap, Callback callback) {
@@ -30,78 +216,33 @@ final class CirclePreindexTiledOcr {
     static void recognize(Context context, Bitmap bitmap,
                           BooleanSupplier cancelled, Callback callback) {
         if (context == null || bitmap == null || bitmap.isRecycled() || callback == null) return;
-        Context app = context.getApplicationContext();
-        if (isCancelled(cancelled)) {
-            callback.onFailure(new CancellationException("Circle preindex cancelled before full pass"));
-            return;
-        }
-
-        final int width = bitmap.getWidth();
-        final int height = bitmap.getHeight();
-        final Rect coverage = new Rect(0, 0, width, height);
-        final long started = android.os.SystemClock.uptimeMillis();
-
-        DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
-                "start strategy=single_full_frame"
-                        + " bitmap=" + width + "x" + height
-                        + " passes=1"
-                        + " tiles=false merge=false"
-                        + " enginePolicy=follow_main_setting"
-                        + " workspaceCancellation=true");
-
-        OcrEngine.recognizeDocument(app, bitmap, new OcrEngine.DocumentCallback() {
-            @Override public void onSuccess(OcrDocument document) {
-                if (isCancelled(cancelled)) {
-                    DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
-                            "cancel stage=after_full elapsedMs="
-                                    + (android.os.SystemClock.uptimeMillis() - started));
-                    callback.onFailure(new CancellationException(
-                            "Circle preindex cancelled after full pass"));
-                    return;
-                }
-                try {
-                    OcrDocument normalized = normalizeFull(document, width, height);
-                    if (!usable(normalized)) {
-                        callback.onFailure(new IllegalStateException("full-frame preindex OCR empty"));
-                        return;
-                    }
-                    CircleOcrIndex result = new CircleOcrIndex(List.of(
-                            new CircleOcrIndex.Entry("full", true, coverage, normalized)));
-                    DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
-                            "finish usable=true passes=1"
-                                    + " chars=" + normalized.chars().size()
-                                    + " lines=" + normalized.lines().size()
-                                    + " engine=" + normalized.engine()
-                                    + " elapsedMs="
-                                    + (android.os.SystemClock.uptimeMillis() - started));
-                    callback.onSuccess(result);
-                } catch (Throwable t) {
-                    DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
-                            "finish usable=false error=" + safe(t));
-                    callback.onFailure(t);
-                }
-            }
-
-            @Override public void onFailure(Throwable error) {
-                DiagnosticLog.i(app, "G_CIRCLE_PREINDEX",
-                        "failed error=" + safe(error)
-                                + " elapsedMs="
-                                + (android.os.SystemClock.uptimeMillis() - started));
-                callback.onFailure(error == null
-                        ? new IllegalStateException("full-frame preindex OCR failed") : error);
-            }
-        });
+        new Session(context.getApplicationContext(), bitmap, cancelled, callback).start();
     }
 
-    private static OcrDocument normalizeFull(OcrDocument document, int width, int height) {
-        if (document == null) return null;
-        if (document.imageWidth() == width && document.imageHeight() == height) return document;
+    private static List<PassSpec> buildPasses(int width, int height) {
+        int w = Math.max(1, width);
+        int h = Math.max(1, height);
+        int tw = Math.max(1, Math.min(w, Math.round(w * TILE_FRACTION)));
+        int th = Math.max(1, Math.min(h, Math.round(h * TILE_FRACTION)));
+
+        ArrayList<PassSpec> out = new ArrayList<>(5);
+        out.add(new PassSpec("full", true, new Rect(0, 0, w, h)));
+        out.add(new PassSpec("tile-tl", false, new Rect(0, 0, tw, th)));
+        out.add(new PassSpec("tile-tr", false, new Rect(w - tw, 0, w, th)));
+        out.add(new PassSpec("tile-bl", false, new Rect(0, h - th, tw, h)));
+        out.add(new PassSpec("tile-br", false, new Rect(w - tw, h - th, w, h)));
+        return out;
+    }
+
+    private static OcrDocument mapPassToFull(OcrDocument document, Rect coverage,
+                                             int fullWidth, int fullHeight, String prefix) {
+        if (document == null || coverage == null || coverage.isEmpty()) return null;
         CoordinateMapper mapper = new CoordinateMapper(
                 new RectF(0f, 0f, Math.max(1, document.imageWidth()),
                         Math.max(1, document.imageHeight())),
-                new RectF(0f, 0f, Math.max(1, width), Math.max(1, height)));
+                new RectF(coverage.left, coverage.top, coverage.right, coverage.bottom));
         return mapper.mapDocument(document, false,
-                Math.max(1, width), Math.max(1, height), "full-");
+                Math.max(1, fullWidth), Math.max(1, fullHeight), prefix);
     }
 
     private static boolean usable(OcrDocument document) {
