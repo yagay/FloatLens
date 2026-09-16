@@ -61,6 +61,12 @@ class OCREngine(
         return runWithOwnedMat(srcMat)
     }
 
+    /** Run only the PP-OCR detector. Recognition is deliberately skipped. */
+    fun detect(bitmap: android.graphics.Bitmap): DetectionEngine.DetectionResult {
+        if (bitmap.width <= 0 || bitmap.height <= 0) throw OCRError.InvalidImage()
+        return detectionEngine.detect(bitmap)
+    }
+
     fun run(imageBytes: ByteArray): OCREngineResult {
         val srcMat = BitmapUtils.imdecodeBGR(imageBytes)
         if (srcMat.empty()) {
