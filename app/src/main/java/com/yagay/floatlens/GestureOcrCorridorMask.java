@@ -2,12 +2,14 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.Rect;
+import android.graphics.Shader;
 
 import java.util.List;
 
@@ -57,20 +59,16 @@ final class GestureOcrCorridorMask {
         float halfWidth = Math.max(1f, transform.screenDistanceToBitmap(screenHalfWidth));
         float strokeWidth = Math.max(2f, halfWidth * 2f);
 
-        Bitmap mask = null;
+        Bitmap original = null;
         try {
             int width = mutableCrop.getWidth();
             int height = mutableCrop.getHeight();
             if (width <= 0 || height <= 0) return new Result(false, points.size(), halfWidth);
 
-            mask = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-            Canvas maskCanvas = new Canvas(mask);
-            Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            strokePaint.setColor(Color.WHITE);
-            strokePaint.setStyle(Paint.Style.STROKE);
-            strokePaint.setStrokeWidth(strokeWidth);
-            strokePaint.setStrokeCap(Paint.Cap.ROUND);
-            strokePaint.setStrokeJoin(Paint.Join.ROUND);
+            // Keep one temporary copy instead of an ARGB mask plus two full-size int arrays. The
+            // shader paints original pixels back only along the anti-aliased gesture corridor.
+            original = mutableCrop.copy(Bitmap.Config.ARGB_8888, false);
+            if (original == null) return new Result(false, points.size(), halfWidth);
 
             Path path = new Path();
             PointF first = points.get(0);
@@ -80,39 +78,25 @@ final class GestureOcrCorridorMask {
                 if (point == null) continue;
                 path.lineTo(point.x - fullBitmapRoi.left, point.y - fullBitmapRoi.top);
             }
-            maskCanvas.drawPath(path, strokePaint);
 
             int background = sampleBorderColor(mutableCrop);
-            int[] pixels = new int[width * height];
-            int[] maskPixels = new int[width * height];
-            mutableCrop.getPixels(pixels, 0, width, 0, 0, width, height);
-            mask.getPixels(maskPixels, 0, width, 0, 0, width, height);
+            Canvas canvas = new Canvas(mutableCrop);
+            canvas.drawColor(background);
 
-            int bgA = Color.alpha(background);
-            int bgR = Color.red(background);
-            int bgG = Color.green(background);
-            int bgB = Color.blue(background);
-            for (int i = 0; i < pixels.length; i++) {
-                int keep = Color.alpha(maskPixels[i]);
-                if (keep >= 255) continue;
-                if (keep <= 0) {
-                    pixels[i] = background;
-                    continue;
-                }
-                int src = pixels[i];
-                int inv = 255 - keep;
-                pixels[i] = Color.argb(
-                        (Color.alpha(src) * keep + bgA * inv) / 255,
-                        (Color.red(src) * keep + bgR * inv) / 255,
-                        (Color.green(src) * keep + bgG * inv) / 255,
-                        (Color.blue(src) * keep + bgB * inv) / 255);
-            }
-            mutableCrop.setPixels(pixels, 0, width, 0, 0, width, height);
+            Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+            strokePaint.setStyle(Paint.Style.STROKE);
+            strokePaint.setStrokeWidth(strokeWidth);
+            strokePaint.setStrokeCap(Paint.Cap.ROUND);
+            strokePaint.setStrokeJoin(Paint.Join.ROUND);
+            strokePaint.setShader(new BitmapShader(original,
+                    Shader.TileMode.CLAMP, Shader.TileMode.CLAMP));
+            canvas.drawPath(path, strokePaint);
+            strokePaint.setShader(null);
             return new Result(true, points.size(), halfWidth);
         } catch (Throwable ignored) {
             return new Result(false, points.size(), halfWidth);
         } finally {
-            if (mask != null && !mask.isRecycled()) mask.recycle();
+            if (original != null && !original.isRecycled()) original.recycle();
         }
     }
 
