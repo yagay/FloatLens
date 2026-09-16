@@ -24,8 +24,8 @@ final class GoogleCircleController {
         DiagnosticLog.i(app, "G_CIRCLE", "start gen=" + gen
                 + " phase=capture_then_ocr_preindex"
                 + " textRecognition=ocr_only_full_then_local3"
-                + " classifier=full_ocr_then_local_three_variant"
-                + " viewText=false semanticLabels=false"
+                + " classifier=full_ocr_then_generic_image_quality_verify"
+                + " viewText=false semanticLabels=false contentHints=false"
                 + " gestureGeometry=exact_path"
                 + " circleMode=editable_screenshot autoExpand=false");
 
@@ -39,8 +39,8 @@ final class GoogleCircleController {
             }
 
             // Build one frozen full-screen OCR index immediately. Ordinary text is selected from
-            // that SCREEN-space document. Small image text/logos and genuine misses use only the
-            // user's tight local crop; Accessibility/View text never participates in Circle.
+            // that SCREEN-space document. Taps, low-quality small-pixel text and genuine misses use
+            // only the user's tight image crop; Accessibility/View text never participates.
             GoogleCircleTextResolver.preload(app, frame);
 
             boolean shown = GoogleCircleInlineOverlay.show(app, frame, () -> {
