@@ -5,13 +5,12 @@ import android.graphics.Bitmap;
 import android.graphics.RectF;
 
 /**
- * Gesture-scoped OCR fallback for image text/logos missed by the frozen full-frame OCR index.
+ * Gesture-scoped OCR fallback for image text/logos missed by the frozen multi-pass OCR index.
  *
- * <p>The fallback never forces PP-OCR. Every pass runs through the main OCR engine setting. Small
- * ROIs use multiscale whole-image recognition; larger ROIs can additionally use overlapping tiles.
- * All variant/tile geometry is normalized back to the original local crop with
- * {@link CoordinateMapper}, using the OCR document's actual dimensions rather than assuming the
- * requested scale was achieved.</p>
+ * <p>The fallback never forces PP-OCR. Every pass follows the main OCR engine setting. The complete
+ * local ROI is tried at multiple scales and normalized back to the original crop inside
+ * {@link CircleMultiScaleOcr}. Overlap tiles are recovery-only when every complete-ROI pass is
+ * empty, and tile results are never globally merged.</p>
  */
 final class CircleLocalOcrFallback {
     private CircleLocalOcrFallback() {}
@@ -21,28 +20,32 @@ final class CircleLocalOcrFallback {
         Context app = context.getApplicationContext();
 
         DiagnosticLog.i(app, "G_CIRCLE_LOCAL_OCR",
-                "start strategy=main_setting_multiscale_overlap_tiles"
+                "start strategy=main_setting_multiscale_consensus"
                         + " bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight()
-                        + " geometry=matrix_actual_document_size"
+                        + " tileRecovery=full_empty_only"
+                        + " tileMerge=false"
+                        + " geometry=normalized_once"
                         + " enginePolicy=follow_main_setting");
 
         CircleMultiScaleOcr.recognize(app, bitmap, new CircleMultiScaleOcr.Callback() {
             @Override public void onSuccess(OcrDocument document, float scaleX, float scaleY,
                                             String variant) {
                 try {
-                    OcrDocument mapped = mapToInput(document, bitmap.getWidth(), bitmap.getHeight(),
-                            variant);
+                    OcrDocument normalized = normalizeIfNeeded(document,
+                            bitmap.getWidth(), bitmap.getHeight(), variant);
                     DiagnosticLog.i(app, "G_CIRCLE_LOCAL_OCR",
                             "enhanced success variant=" + variant
-                                    + " engine=" + (mapped == null ? "none" : mapped.engine())
-                                    + " chars=" + (mapped == null ? 0 : mapped.chars().size())
+                                    + " engine=" + (normalized == null ? "none" : normalized.engine())
+                                    + " chars=" + (normalized == null ? 0 : normalized.chars().size())
                                     + " reportedScale=" + scaleX + "x" + scaleY
                                     + " sourceSize=" + (document == null ? "none"
-                                    : document.imageWidth() + "x" + document.imageHeight()));
-                    if (mapped == null || mapped.fullText().isBlank() || mapped.chars().isEmpty()) {
+                                    : document.imageWidth() + "x" + document.imageHeight())
+                                    + " remapped=" + (document != normalized));
+                    if (normalized == null || normalized.fullText().isBlank()
+                            || normalized.chars().isEmpty()) {
                         callback.onFailure(new IllegalStateException("enhanced local OCR empty"));
                     } else {
-                        callback.onSuccess(mapped);
+                        callback.onSuccess(normalized);
                     }
                 } catch (Throwable t) {
                     callback.onFailure(t);
@@ -58,17 +61,23 @@ final class CircleLocalOcrFallback {
         });
     }
 
-    private static OcrDocument mapToInput(OcrDocument source, int baseWidth, int baseHeight,
-                                          String variant) {
+    private static OcrDocument normalizeIfNeeded(OcrDocument source,
+                                                 int baseWidth, int baseHeight,
+                                                 String variant) {
         if (source == null) return null;
-        int sourceWidth = Math.max(1, source.imageWidth());
-        int sourceHeight = Math.max(1, source.imageHeight());
+        int width = Math.max(1, baseWidth);
+        int height = Math.max(1, baseHeight);
+        if (source.isBitmapSpace()
+                && source.imageWidth() == width && source.imageHeight() == height) {
+            return source;
+        }
+
         CoordinateMapper mapper = new CoordinateMapper(
-                new RectF(0f, 0f, sourceWidth, sourceHeight),
-                new RectF(0f, 0f, Math.max(1, baseWidth), Math.max(1, baseHeight)));
-        return mapper.mapDocument(source, false,
-                Math.max(1, baseWidth), Math.max(1, baseHeight),
-                "multiscale-" + (variant == null ? "unknown" : variant) + "-");
+                new RectF(0f, 0f, Math.max(1, source.imageWidth()),
+                        Math.max(1, source.imageHeight())),
+                new RectF(0f, 0f, width, height));
+        return mapper.mapDocument(source, false, width, height,
+                "fallback-normalize-" + (variant == null ? "unknown" : variant) + "-");
     }
 
     private static String safe(Throwable error) {
