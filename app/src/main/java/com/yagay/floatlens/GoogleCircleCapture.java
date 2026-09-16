@@ -9,52 +9,55 @@ import android.graphics.RectF;
 import java.util.function.Consumer;
 
 /**
- * Fresh capture boundary for the Google-style circle workflow.
+ * Fresh capture boundary for the Google-style Circle workflow.
  *
- * The legacy CircleSelect stack deliberately does not participate here. A Frame owns one frozen
- * screenshot plus the exact absolute-screen rectangle represented by that bitmap. Touch input is
- * converted into bitmap coordinates immediately and never mixed with screen coordinates again.
+ * <p>A Frame owns one frozen screenshot plus the exact absolute SCREEN rectangle represented by
+ * that bitmap. {@link ScreenBitmapTransform} is the only owner of coordinate conversion for the
+ * frame; overlays and OCR must not calculate screen/bitmap ratios or system-bar offsets directly.</p>
  */
 final class GoogleCircleCapture {
     static final class Frame {
         final Bitmap bitmap;
         final Rect screenBounds;
+        final ScreenBitmapTransform transform;
 
         Frame(Bitmap bitmap, Rect screenBounds) {
+            if (bitmap == null) throw new IllegalArgumentException("bitmap required");
             this.bitmap = bitmap;
-            this.screenBounds = new Rect(screenBounds);
+            Rect bounds = screenBounds == null ? new Rect() : new Rect(screenBounds);
+            if (bounds.isEmpty()) {
+                bounds.set(0, 0, Math.max(1, bitmap.getWidth()), Math.max(1, bitmap.getHeight()));
+            }
+            this.screenBounds = bounds;
+            transform = new ScreenBitmapTransform(bounds, bitmap.getWidth(), bitmap.getHeight());
         }
 
         PointF viewToBitmap(float x, float y, int viewWidth, int viewHeight) {
-            float vw = Math.max(1f, viewWidth);
-            float vh = Math.max(1f, viewHeight);
-            float bx = clamp(x * bitmap.getWidth() / vw, 0f, Math.max(0f, bitmap.getWidth() - 1f));
-            float by = clamp(y * bitmap.getHeight() / vh, 0f, Math.max(0f, bitmap.getHeight() - 1f));
-            return new PointF(bx, by);
+            return transform.viewToBitmap(x, y, viewWidth, viewHeight);
         }
 
         PointF bitmapToView(float x, float y, int viewWidth, int viewHeight) {
-            float bx = Math.max(1f, bitmap.getWidth());
-            float by = Math.max(1f, bitmap.getHeight());
-            return new PointF(x * viewWidth / bx, y * viewHeight / by);
+            return transform.bitmapToView(x, y, viewWidth, viewHeight);
         }
 
         RectF bitmapToView(RectF r, int viewWidth, int viewHeight) {
-            PointF a = bitmapToView(r.left, r.top, viewWidth, viewHeight);
-            PointF b = bitmapToView(r.right, r.bottom, viewWidth, viewHeight);
-            return new RectF(a.x, a.y, b.x, b.y);
+            return transform.bitmapToView(r, viewWidth, viewHeight);
         }
 
         Rect bitmapRectToScreen(Rect bitmapRect) {
-            float sx = screenBounds.width() / (float) Math.max(1, bitmap.getWidth());
-            float sy = screenBounds.height() / (float) Math.max(1, bitmap.getHeight());
-            int left = screenBounds.left + Math.round(bitmapRect.left * sx);
-            int top = screenBounds.top + Math.round(bitmapRect.top * sy);
-            int right = screenBounds.left + Math.round(bitmapRect.right * sx);
-            int bottom = screenBounds.top + Math.round(bitmapRect.bottom * sy);
-            Rect out = new Rect(left, top, right, bottom);
-            out.intersect(screenBounds);
-            return out;
+            return transform.bitmapToScreen(bitmapRect);
+        }
+
+        Rect screenRectToBitmap(Rect screenRect) {
+            return transform.screenToBitmap(screenRect);
+        }
+
+        PointF bitmapPointToScreen(float x, float y) {
+            return transform.bitmapToScreen(x, y);
+        }
+
+        PointF screenPointToBitmap(float x, float y) {
+            return transform.screenToBitmap(x, y);
         }
 
         void recycle() {
@@ -89,17 +92,13 @@ final class GoogleCircleCapture {
                         + " bitmap=" + frozen.getWidth() + "x" + frozen.getHeight()
                         + " keepStatusBar=" + settings.keepStatusBarInScreenshot()
                         + " keepNavigationBar=" + keepNavigation
-                        + " coordinateSpace=BITMAP_ONLY");
+                        + " coordinateSpace=SCREEN_WITH_MATRIX_BOUNDARY");
                 ok.accept(frame);
             } catch (Throwable t) {
                 if (!raw.isRecycled()) raw.recycle();
                 fail.accept(t);
             }
         }, fail);
-    }
-
-    private static float clamp(float value, float min, float max) {
-        return Math.max(min, Math.min(value, max));
     }
 
     private GoogleCircleCapture() {}
