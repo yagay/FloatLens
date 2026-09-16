@@ -16,7 +16,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.File
 
 /**
  * Detection-only PP-OCR bridge used by Google Circle's background TextMap.
@@ -91,10 +90,30 @@ object PaddleTextDetectorBridge {
         }
     }
 
+    /**
+     * TextMap only needs the detection ONNX file. Do not require the recognition model/yml to be
+     * installed just to build layout geometry. Prefer Small because its detector is far lighter;
+     * Medium is accepted only as a compatibility fallback when it is the only detector on disk.
+     */
     private fun preferredModel(context: Context): Int? {
-        if (OcrModelManager.isReady(context, OcrModelManager.SMALL)) return OcrModelManager.SMALL
-        if (OcrModelManager.isReady(context, OcrModelManager.MEDIUM)) return OcrModelManager.MEDIUM
+        if (detectorInstalled(context, OcrModelManager.SMALL, 9_000_000L)) {
+            return OcrModelManager.SMALL
+        }
+        if (detectorInstalled(context, OcrModelManager.MEDIUM, 60_000_000L)) {
+            DiagnosticLog.i(context, "TEXT_MAP_DETECTOR",
+                "small detector absent; using medium detection-only fallback")
+            return OcrModelManager.MEDIUM
+        }
         return null
+    }
+
+    private fun detectorInstalled(context: Context, model: Int, minBytes: Long): Boolean {
+        return try {
+            val file = OcrModelManager.detFile(context, model)
+            file.isFile && file.length() >= minBytes
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     private fun getOrCreate(context: Context, model: Int): Runtime {
