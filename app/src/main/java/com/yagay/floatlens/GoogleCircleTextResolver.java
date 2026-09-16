@@ -16,12 +16,12 @@ import java.util.concurrent.Executors;
 /**
  * Frozen-screen text index for the Google-style Circle workspace.
  *
- * <p>View text and full-frame OCR are prepared once when Circle opens. All OCR geometry is
- * normalized to absolute SCREEN coordinates through the capture frame's shared Matrix transform.
- * If the cached OCR misses the gesture, a tight pixel-only ROI is cropped once at native screenshot
- * resolution and the multi-scale OCR pipeline handles all enhancement internally. No package name,
- * Accessibility semantic label, contentDescription or nearby app caption is used as recognition
- * input.</p>
+ * <p>View text and a comprehensive full-screen OCR index are prepared once when Circle opens. OCR
+ * uses one full-frame pass plus overlapping tiles, then de-duplicates everything in bitmap space
+ * before the capture frame's shared Matrix normalizes it to absolute SCREEN coordinates. Gestures
+ * therefore hit the richer frozen index first; the tight local multi-scale OCR remains only as a
+ * final miss fallback. No package name, semantic label, contentDescription or nearby app caption is
+ * used as recognition input.</p>
  */
 final class GoogleCircleTextResolver {
     enum Source { VIEW, VIEW_OCR, IMAGE_OCR, NONE }
@@ -118,7 +118,7 @@ final class GoogleCircleTextResolver {
         long started = android.os.SystemClock.uptimeMillis();
         DiagnosticLog.i(app, "G_CIRCLE_TEXT_INDEX", "start generation=" + state.generation
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
-                + " strategy=frozen_view_plus_full_frame_ocr_once"
+                + " strategy=frozen_view_plus_full_and_overlap_tile_ocr"
                 + " fallback=cached_hit_else_local_pixel_ocr"
                 + " geometry=shared_matrix_transform"
                 + " localPixelOnly=true coordinateSpace=SCREEN");
@@ -202,9 +202,11 @@ final class GoogleCircleTextResolver {
 
         DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_INDEX", "ocr begin generation="
                 + state.generation + " bitmap=" + copy.getWidth() + "x" + copy.getHeight()
-                + " roi=full_frozen_frame requestsPerWorkspace=1");
+                + " roi=full_plus_overlap_tiles"
+                + " requestsPerWorkspace=1_full_plus_4_tiles"
+                + " enginePolicy=follow_main_setting");
 
-        OcrEngine.recognizeDocument(state.app, copy, new OcrEngine.DocumentCallback() {
+        CirclePreindexTiledOcr.recognize(state.app, copy, new CirclePreindexTiledOcr.Callback() {
             @Override public void onSuccess(OcrDocument document) {
                 OcrDocument screen = frame.transform.documentBitmapToScreen(document);
                 recycle(copy);
