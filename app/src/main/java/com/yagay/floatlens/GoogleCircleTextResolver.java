@@ -386,9 +386,10 @@ final class GoogleCircleTextResolver {
                 + " input=" + roi.width() + "x" + roi.height()
                 + " enlarged=" + enlarged.getWidth() + "x" + enlarged.getHeight()
                 + " scale=" + String.format(java.util.Locale.ROOT, "%.2fx%.2f", scaleX, scaleY)
+                + " enginePolicy=pp_first"
                 + " pixelOnly=true semanticLabels=false nearbyCaptionSearch=false");
 
-        OcrEngine.recognizeDocument(state.app, enlarged, new OcrEngine.DocumentCallback() {
+        CircleLocalOcrFallback.recognize(state.app, enlarged, new OcrEngine.DocumentCallback() {
             @Override public void onSuccess(OcrDocument document) {
                 if (!isCurrent(state, frame)) {
                     recycle(enlarged);
