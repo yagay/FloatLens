@@ -91,6 +91,7 @@ final class CircleMultiScaleOcr {
                             + " input=" + source.getWidth() + "x" + source.getHeight()
                             + " variants=upscale,contrast,adaptive-binary"
                             + " tiles=false merge=false scriptBias=false"
+                            + " structure=single_complete_document"
                             + " enginePolicy=follow_main_setting"
                             + " workspaceCancellation=true");
             runNext();
@@ -134,9 +135,7 @@ final class CircleMultiScaleOcr {
                             + " bitmap=" + input.getWidth() + "x" + input.getHeight()
                             + " scale=" + String.format(Locale.ROOT, "%.2fx%.2f", scaleX, scaleY));
 
-            // Stable document mode follows the user's OCR engine selection but, for ML Kit,
-            // chooses one complete recognizer result instead of fusing Chinese/Latin characters.
-            OcrEngine.recognizeDocumentStable(app, input, new OcrEngine.DocumentCallback() {
+            CircleStableOcr.recognize(app, input, new OcrEngine.DocumentCallback() {
                 @Override public void onSuccess(OcrDocument document) {
                     try {
                         if (finished) return;
@@ -307,11 +306,6 @@ final class CircleMultiScaleOcr {
         }
     }
 
-    /**
-     * Generic binary preprocessing. Otsu finds the luminance split and the dominant image luminance
-     * chooses polarity: dark ink on a light background stays dark; light ink on a dark background
-     * is inverted to dark ink on white. This is image-driven and has no language/content rules.
-     */
     private static Bitmap makeAdaptiveBinary(Bitmap scaled, Bitmap source) {
         Bitmap working = scaled;
         try {
@@ -348,10 +342,6 @@ final class CircleMultiScaleOcr {
                 pixels[i] = ink ? 0xff000000 : 0xffffffff;
             }
             working.setPixels(pixels, 0, width, 0, 0, width, height);
-            DiagnosticLog.i(null, "G_CIRCLE_MULTI_OCR",
-                    "adaptive-binary threshold=" + threshold
-                            + " mean=" + Math.round(mean)
-                            + " polarity=" + (lightBackground ? "dark_on_light" : "light_on_dark"));
             return working;
         } catch (Throwable t) {
             if (working != null && working != source && !working.isRecycled()) working.recycle();
@@ -401,7 +391,6 @@ final class CircleMultiScaleOcr {
                 && !document.lines().isEmpty() && !document.chars().isEmpty();
     }
 
-    /** Generic candidate score: no script, brand or language-specific preference. */
     private static double quality(OcrDocument document, String key, Variant variant) {
         if (document == null || key == null || key.isEmpty()) return Double.NEGATIVE_INFINITY;
         String text = document.fullText();
