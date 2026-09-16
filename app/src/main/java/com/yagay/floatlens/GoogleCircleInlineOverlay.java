@@ -117,6 +117,7 @@ final class GoogleCircleInlineOverlay {
         private final Runnable onClosed;
         private final ScreenBitmapTransform textTransform;
         private final CircleTextSelectionModel textSelection;
+        private final Runnable closeLongPressRunnable;
 
         private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private final Paint shadePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -156,19 +157,6 @@ final class GoogleCircleInlineOverlay {
         private boolean keyFocusEnabled;
         private String selectedTextSource = "";
 
-        private final Runnable closeLongPressRunnable = () -> {
-            if (closed || !closePressed) return;
-            closeDragging = true;
-            try {
-                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
-            } catch (Throwable ignored) {
-            }
-            DiagnosticLog.i(context, "G_CIRCLE_CANCEL",
-                    "long_press_drag_start center=" + Math.round(closeRect.centerX())
-                            + "," + Math.round(closeRect.centerY()));
-            invalidate();
-        };
-
         WorkspaceView(Context c, FlOverlayWindowHost host,
                       WindowManager.LayoutParams windowLayout,
                       GoogleCircleCapture.Frame frame,
@@ -180,6 +168,18 @@ final class GoogleCircleInlineOverlay {
             this.frame = frame;
             this.onClosed = onClosed;
             this.keyFocusEnabled = keyFocusEnabled;
+            closeLongPressRunnable = () -> {
+                if (closed || !closePressed) return;
+                closeDragging = true;
+                try {
+                    performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+                } catch (Throwable ignored) {
+                }
+                DiagnosticLog.i(context, "G_CIRCLE_CANCEL",
+                        "long_press_drag_start center=" + Math.round(closeRect.centerX())
+                                + "," + Math.round(closeRect.centerY()));
+                invalidate();
+            };
 
             textTransform = new ScreenBitmapTransform(frame.screenBounds,
                     frame.bitmap.getWidth(), frame.bitmap.getHeight());
