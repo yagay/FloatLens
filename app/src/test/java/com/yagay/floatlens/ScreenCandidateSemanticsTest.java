@@ -13,7 +13,6 @@ public class ScreenCandidateSemanticsTest {
         ScreenCandidate candidate = new ScreenCandidate(
                 new Rect(10, 20, 110, 80),
                 ScreenCandidate.Type.NON_TEXT,
-                ScreenCandidate.Source.ACCESSIBILITY,
                 "",
                 "Settings",
                 "android.widget.ImageView",
@@ -37,7 +36,6 @@ public class ScreenCandidateSemanticsTest {
         ScreenCandidate candidate = new ScreenCandidate(
                 new Rect(0, 0, 100, 40),
                 ScreenCandidate.Type.TEXT,
-                ScreenCandidate.Source.ACCESSIBILITY,
                 "Visible",
                 "Semantic",
                 "android.widget.TextView",
