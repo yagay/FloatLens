@@ -217,7 +217,7 @@ public class FloatIconView extends View {
         FloatService service = FloatService.get();
         positionMoveMode = service != null && service.isPositionMoveArmed();
         beginFlWindowTracking();
-        selectionEngine = positionMoveMode ? null : new ViewSelectionEngine(getContext(), this);
+        selectionEngine = positionMoveMode ? null : new ViewSelectionEngine(getContext());
         longPressPrimed = false;
         longPressActionTriggered = false;
         directSelectionActive = false;
