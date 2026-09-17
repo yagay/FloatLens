@@ -22,15 +22,16 @@ final class GoogleCircleController {
                 ScreenshotHideCoordinator.acquire(app, "google_circle_" + gen);
         pendingHideLease = hideLease;
         DiagnosticLog.i(app, "G_CIRCLE", "start gen=" + gen
-                + " phase=capture_then_textmap"
-                + " layoutDetection=downscaled_det_only"
-                + " paragraphStitching=geometry_reading_flow"
-                + " textRecognition=lazy_roi_mlkit"
-                + " regionCache=frozen_frame_lru"
-                + " backgroundOcr=false tileOcr=false fullFrameOcr=false"
-                + " preindexBlocking=false localFallback=true"
+                + " phase=capture_then_fullscreen_ocr"
+                + " layoutDetection=disabled"
+                + " paragraphStitching=disabled"
+                + " textRecognition=lazy_fullscreen_mlkit_once"
+                + " regionCache=full_frozen_frame"
+                + " backgroundOcr=false tileOcr=false fullFrameOcr=true"
+                + " preindexBlocking=false localFallback=last_resort_only"
                 + " viewText=false semanticLabels=false contentHints=false"
                 + " gestureGeometry=exact_path"
+                + " tapSelection=precise_char_or_latin_word"
                 + " circleMode=editable_screenshot autoExpand=false");
 
         GoogleCircleCapture.capture(app, frame -> {
@@ -42,8 +43,8 @@ final class GoogleCircleController {
                 }
             }
 
-            // Build only a lightweight detector TextMap in the background. Text recognition is
-            // deferred until a gesture hits a paragraph; detector misses use a tight local ROI.
+            // Initialize per-frame full-screen OCR state. Recognition itself starts on the first
+            // text gesture and is then reused for every later tap/highlight/scribble in this frame.
             GoogleCircleTextResolver.preload(app, frame);
 
             boolean shown = GoogleCircleInlineOverlay.show(app, frame, () -> {
