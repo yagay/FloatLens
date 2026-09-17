@@ -94,18 +94,25 @@ final class CircleGestureTextSelector {
         float corridor = Math.max(0f, corridorDp * ScreenGeometry.density(context));
         List<PointF> path = screenPath(frame, gesture);
         Rect fallback = gestureScreenBounds(frame, gesture);
-        ArrayList<GroupHit> selected = new ArrayList<>();
+        ArrayList<OcrDocument.CharUnit> touchedChars = new ArrayList<>();
         for (GroupHit group : groups) {
-            ArrayList<OcrDocument.CharUnit> touched = new ArrayList<>();
             for (OcrDocument.CharUnit unit : group.chars) {
                 Rect rect = unit.bounds();
-                if (pathHitsRect(path, rect, corridor, fallback)) touched.add(unit);
+                if (pathHitsRect(path, rect, corridor, fallback)) touchedChars.add(unit);
             }
-            GroupHit precise = fromChars(touched);
-            if (precise != null) selected.add(precise);
         }
-        selected.sort((a, b) -> compareVisual(a.bounds, b.bounds));
-        return List.copyOf(selected);
+        if (touchedChars.isEmpty()) return List.of();
+
+        // A highlight/scribble expresses a text range, not a sparse set of pixels. The gesture path
+        // determines the first and last touched character; fill every OCR character between those
+        // endpoints in stable OCR reading order so a fast diagonal/curved stroke cannot leave holes.
+        List<GroupHit> continuous = continuousRangeHits(document, touchedChars);
+        DiagnosticLog.i(context, "G_CIRCLE_GESTURE_RANGE",
+                "kind=" + gesture.kind
+                        + " touchedChars=" + touchedChars.size()
+                        + " continuousChars=" + countChars(continuous)
+                        + " policy=first_to_last_reading_order");
+        return continuous;
     }
 
     static OcrDocument selectDocument(Context context,
@@ -121,8 +128,8 @@ final class CircleGestureTextSelector {
     }
 
     /**
-     * Rebuild only the gesture-local result. A GroupHit may now contain only the characters actually
-     * touched by the gesture; adjacent hits on the same visual row are still emitted as one line.
+     * Rebuild only the gesture-local result. TAP remains character/word precise; highlight/scribble
+     * groups may contain continuity-filled characters between the first and last touched endpoint.
      */
     static OcrDocument documentFromGroups(List<GroupHit> groups,
                                           OcrDocument template,
@@ -269,6 +276,66 @@ final class CircleGestureTextSelector {
             hi++;
         }
         return fromChars(group.chars.subList(lo, hi + 1));
+    }
+
+    private static List<GroupHit> continuousRangeHits(OcrDocument document,
+                                                      List<OcrDocument.CharUnit> touchedChars) {
+        if (document == null || touchedChars == null || touchedChars.isEmpty()) return List.of();
+
+        ArrayList<OcrDocument.CharUnit> ordered = new ArrayList<>();
+        for (OcrDocument.Line line : document.lines()) {
+            if (line == null || line.chars().isEmpty()) continue;
+            ArrayList<OcrDocument.CharUnit> lineChars = new ArrayList<>();
+            for (OcrDocument.CharUnit unit : line.chars()) {
+                if (unit != null && !unit.text().isBlank() && !unit.bounds().isEmpty()) {
+                    lineChars.add(unit);
+                }
+            }
+            lineChars.sort((a, b) -> Integer.compare(a.order(), b.order()));
+            ordered.addAll(lineChars);
+        }
+        ordered.sort((a, b) -> Integer.compare(a.order(), b.order()));
+        if (ordered.isEmpty()) return List.of();
+
+        int first = Integer.MAX_VALUE;
+        int last = -1;
+        for (int i = 0; i < ordered.size(); i++) {
+            if (!touchedChars.contains(ordered.get(i))) continue;
+            first = Math.min(first, i);
+            last = Math.max(last, i);
+        }
+        if (last < 0 || first == Integer.MAX_VALUE || first > last) return List.of();
+
+        ArrayList<GroupHit> out = new ArrayList<>();
+        ArrayList<OcrDocument.CharUnit> bucket = new ArrayList<>();
+        int bucketLine = Integer.MIN_VALUE;
+        int bucketGroup = Integer.MIN_VALUE;
+        for (int i = first; i <= last; i++) {
+            OcrDocument.CharUnit unit = ordered.get(i);
+            if (!bucket.isEmpty() && (unit.line() != bucketLine || unit.group() != bucketGroup)) {
+                GroupHit hit = fromChars(bucket);
+                if (hit != null) out.add(hit);
+                bucket.clear();
+            }
+            if (bucket.isEmpty()) {
+                bucketLine = unit.line();
+                bucketGroup = unit.group();
+            }
+            bucket.add(unit);
+        }
+        GroupHit finalHit = fromChars(bucket);
+        if (finalHit != null) out.add(finalHit);
+        out.sort((a, b) -> compareVisual(a.bounds, b.bounds));
+        return List.copyOf(out);
+    }
+
+    private static int countChars(List<GroupHit> hits) {
+        if (hits == null || hits.isEmpty()) return 0;
+        int count = 0;
+        for (GroupHit hit : hits) {
+            if (hit != null) count += hit.chars.size();
+        }
+        return count;
     }
 
     private static boolean wordNeighbors(OcrDocument.CharUnit a, OcrDocument.CharUnit b) {
