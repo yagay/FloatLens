@@ -41,7 +41,7 @@ final class FloatVisibilityController {
 
     boolean wakeEdgesNeeded(FloatSettings settings) {
         return manualHidden && settings != null
-                && settings.prefs().getBoolean(FloatSettings.K_HIDE_MAIN_SWIPE, true)
+                && settings.edgeSwipeRecallEnabled()
                 && !screenshotHidden && !lockHidden;
     }
 
