@@ -15,13 +15,14 @@ import java.util.Set;
 /**
  * View-first text snapshot used by Circle full-screen ML Kit recognition.
  *
- * <p>Accessibility text is kept as the preferred text source, but the screenshot is never masked
- * by whole View bounds. A TextView can contain compound drawables/images and a custom View can mix
- * text with visual content, so erasing the whole View would hide pixels that ML Kit still needs.
- * Duplicate ML text is removed only when its text matches an overlapping Accessibility text line.</p>
+ * <p>Accessibility owns the preferred text content while ML Kit owns selectable geometry. The
+ * screenshot is never masked by whole View bounds. Approximate View rectangles are therefore only
+ * a temporary matching hint and are never allowed into the final selectable document unless ML Kit
+ * (or exact Accessibility geometry) has tightened every character in that line.</p>
  */
 final class CircleViewTextSnapshot {
     private static final float VIEW_GEOMETRY_CONFIDENCE = 0.92f;
+    private static final float SELECTABLE_GEOMETRY_CONFIDENCE = 0.965f;
 
     static final class Snapshot {
         private final OcrDocument viewDocument;
@@ -40,39 +41,50 @@ final class CircleViewTextSnapshot {
         int charCount() { return viewDocument == null ? 0 : viewDocument.chars().size(); }
         int maskCount() { return 0; }
 
-        /**
-         * Whole-View masking is intentionally disabled. ML Kit must always receive the complete
-         * screenshot so images/icons inside a text-bearing View remain visible to OCR.
-         */
+        /** Whole-View masking stays disabled so image+text Views remain fully visible to ML Kit. */
         int mask(Bitmap bitmap) { return 0; }
 
         /**
-         * Merges View text with ML Kit. ML text is dropped only when an overlapping View line has
-         * the same normalized text. Different text inside the same View bounds is preserved, which
-         * is essential for image+text compound Views.
+         * Refines View text with ML Kit geometry, then merges both sources. View lines that still
+         * contain approximate whole-View geometry are deliberately excluded from the selectable
+         * document; their ML counterpart remains instead. This prevents a tap on a short View text
+         * from highlighting the entire card/image/container rectangle.
          */
         OcrDocument merge(OcrDocument mlDocument, int width, int height) {
             if (viewDocument == null || viewDocument.chars().isEmpty()) return mlDocument;
-            if (mlDocument == null || mlDocument.chars().isEmpty()) return viewDocument;
+
+            if (mlDocument == null || mlDocument.chars().isEmpty()) {
+                return selectableViewDocument(viewDocument, width, height);
+            }
+
+            ViewTextGeometryRefiner.Result refinedResult =
+                    ViewTextGeometryRefiner.refine(viewDocument, mlDocument);
+            OcrDocument refinedView = refinedResult.document();
+            OcrDocument selectableView = selectableViewDocument(refinedView, width, height);
 
             ArrayList<OcrDocument.Line> lines = new ArrayList<>();
-            lines.addAll(viewDocument.lines());
+            if (selectableView != null) lines.addAll(selectableView.lines());
             for (OcrDocument.Line mlLine : mlDocument.lines()) {
                 if (mlLine == null || mlLine.chars().isEmpty() || mlLine.bounds().isEmpty()) continue;
-                if (duplicatesViewText(mlLine)) continue;
+                if (duplicatesViewText(mlLine, selectableView)) continue;
                 lines.add(mlLine);
             }
 
+            if (lines.isEmpty()) return null;
+            String prefix = selectableView == null || selectableView.chars().isEmpty()
+                    ? "mlkit-geometry-fallback+"
+                    : "view-accessibility-mlkit-geometry+";
             return rebuild(lines,
-                    "view-accessibility+" + mlDocument.engine(),
+                    prefix + mlDocument.engine(),
                     mlDocument.confidence(), mlDocument.score(), width, height);
         }
 
-        private boolean duplicatesViewText(OcrDocument.Line mlLine) {
+        private boolean duplicatesViewText(OcrDocument.Line mlLine, OcrDocument selectableView) {
+            if (selectableView == null || selectableView.lines().isEmpty()) return false;
             String ml = normalizeText(mlLine.text());
             if (ml.isEmpty()) return false;
             Rect mr = mlLine.bounds();
-            for (OcrDocument.Line viewLine : viewDocument.lines()) {
+            for (OcrDocument.Line viewLine : selectableView.lines()) {
                 if (viewLine == null || viewLine.bounds().isEmpty()) continue;
                 String view = normalizeText(viewLine.text());
                 if (view.isEmpty() || !view.equals(ml)) continue;
@@ -140,8 +152,28 @@ final class CircleViewTextSnapshot {
                 "capturedTextViews=" + textViews
                         + " chars=" + (document == null ? 0 : document.chars().size())
                         + " maskRects=0"
-                        + " policy=view_text_merge_no_pixel_mask_text_match_dedupe");
+                        + " policy=view_text_content_mlkit_geometry_no_whole_view_selection");
         return new Snapshot(document, textViews);
+    }
+
+    private static OcrDocument selectableViewDocument(OcrDocument document, int width, int height) {
+        if (document == null || document.lines().isEmpty()) return null;
+        ArrayList<OcrDocument.Line> lines = new ArrayList<>();
+        for (OcrDocument.Line line : document.lines()) {
+            if (line == null || line.chars().isEmpty() || line.bounds().isEmpty()) continue;
+            boolean precise = true;
+            for (OcrDocument.CharUnit c : line.chars()) {
+                if (c == null || c.text().isBlank()) continue;
+                if (c.bounds().isEmpty() || c.confidence() < SELECTABLE_GEOMETRY_CONFIDENCE) {
+                    precise = false;
+                    break;
+                }
+            }
+            if (precise) lines.add(line);
+        }
+        if (lines.isEmpty()) return null;
+        return rebuild(lines, "view-accessibility-refined", document.confidence(), document.score(),
+                width, height);
     }
 
     private static void appendTextLines(List<RawLine> out, String value, Rect bounds) {
