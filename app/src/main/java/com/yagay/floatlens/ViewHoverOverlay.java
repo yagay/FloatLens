@@ -192,8 +192,6 @@ public final class ViewHoverOverlay {
 
     private static final class HoverView extends View {
         private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint unusedBorder = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint labelUnused = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint label = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final int[] overlayLocation = new int[2];
         private ScreenCandidate candidate;
@@ -204,8 +202,8 @@ public final class ViewHoverOverlay {
         HoverView(Context c) {
             super(c);
             setBackgroundColor(Color.TRANSPARENT);
-            SelectionVisuals.configureFramePaints(c, border, unusedBorder, visualState);
-            SelectionVisuals.configureTextPaints(c, labelUnused, label, 14f);
+            SelectionVisuals.configureFramePaint(c, border, visualState);
+            SelectionVisuals.configureTextPaint(c, label, 14f);
         }
 
         void setVisualState(SelectionVisualState next) {
@@ -238,14 +236,14 @@ public final class ViewHoverOverlay {
             r.offset(-overlayLocation[0], -overlayLocation[1]);
             if (!Rect.intersects(localFrame, r)) return;
 
-            SelectionVisuals.drawFrame(canvas, r, border, unusedBorder);
+            SelectionVisuals.drawFrame(canvas, r, border);
             String text = (candidate.type() == ScreenCandidate.Type.ROOT || candidate.fullscreenLike())
                     ? "整屏 View" : candidate.label();
             float x = Math.max(dp(8), Math.min(r.left, getWidth() - dp(180)));
             float y = r.top > dp(28) ? r.top - dp(8)
                     : Math.min(getHeight() - dp(8), r.bottom + dp(20));
             if (text.length() > 90) text = text.substring(0, 90) + "…";
-            SelectionVisuals.drawText(canvas, text, x, y, labelUnused, label);
+            SelectionVisuals.drawText(canvas, text, x, y, label);
         }
 
         private float dp(float v) { return v * getResources().getDisplayMetrics().density; }
