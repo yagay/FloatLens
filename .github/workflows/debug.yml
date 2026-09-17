@@ -21,6 +21,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Reject legacy circle namespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          legacy_a='Google''Circle'
+          legacy_b='G_''CIRCLE'
+          legacy_c='google_''circle'
+          legacy_d='google-''circle'
+          pattern="${legacy_a}|${legacy_b}|${legacy_c}|${legacy_d}"
+          if git grep -n -E "$pattern" -- .; then
+            echo "Legacy FloatLens circle namespace found. Use FLCircle / FL_CIRCLE / fl_circle naming."
+            exit 1
+          fi
+          echo "Legacy circle namespace scan passed."
+
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
