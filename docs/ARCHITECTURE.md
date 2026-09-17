@@ -364,9 +364,9 @@ This View-text resolver is intentionally separate from Circle. Explicit region V
 ### `FloatSettings`
 Single normal preference read/write boundary. UI code should use typed getters/setters and compound operations rather than direct `SharedPreferences.Editor` calls.
 
-The deprecated `prefs()` escape hatch is reserved for migration, listener registration and truly atomic legacy cases.
+The backing `SharedPreferences` is not exposed. Migration and atomic compound writes live inside `FloatSettings`; infrastructure that must observe the preference file may bind to it only at its own infrastructure boundary.
 
-Compound state such as custom-icon URI + style and slideshow URI list + style is written atomically inside `FloatSettings`.
+Compound state such as custom-icon URI + style, slideshow URI list + style, Root authorization status, and Circle cancel-button coordinates is written atomically inside `FloatSettings`.
 
 ### `SettingsPageUi`
 Single reusable settings-control builder for switches, sliders, spinners, OCR models and language selection.
@@ -395,6 +395,8 @@ They may not:
 5. create a parallel capture policy.
 
 Disabling privileged providers must return to the same ordinary pipeline.
+
+The abandoned LSPosed View-content metadata/policy/preference-bridge experiment is removed; LSPosed currently provides the controlled runtime/status channel and secure-screenshot enhancement only.
 
 ## 17. Regression gates
 
