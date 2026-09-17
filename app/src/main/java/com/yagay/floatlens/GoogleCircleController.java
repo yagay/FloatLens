@@ -21,11 +21,13 @@ final class GoogleCircleController {
         ScreenshotHideCoordinator.Lease hideLease =
                 ScreenshotHideCoordinator.acquire(app, "google_circle_" + gen);
         pendingHideLease = hideLease;
+        int ocrEngineMode = new FloatSettings(app).ocrEngineMode();
         DiagnosticLog.i(app, "G_CIRCLE", "start gen=" + gen
                 + " phase=capture_then_fullscreen_ocr"
                 + " layoutDetection=disabled"
                 + " paragraphStitching=disabled"
-                + " textRecognition=lazy_fullscreen_mlkit_once"
+                + " textRecognition=settings_selected_fullscreen_once"
+                + " ocrEngineMode=" + ocrEngineMode
                 + " regionCache=full_frozen_frame"
                 + " backgroundOcr=false tileOcr=false fullFrameOcr=true"
                 + " preindexBlocking=false localFallback=last_resort_only"
@@ -44,7 +46,8 @@ final class GoogleCircleController {
             }
 
             // Initialize per-frame full-screen OCR state. Recognition itself starts on the first
-            // text gesture and is then reused for every later tap/highlight/scribble in this frame.
+            // text gesture, follows the OCR engine selected in Settings, and is then reused for
+            // every later tap/highlight/scribble in this frozen frame.
             GoogleCircleTextResolver.preload(app, frame);
 
             boolean shown = GoogleCircleInlineOverlay.show(app, frame, () -> {
