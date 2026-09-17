@@ -2,7 +2,7 @@
 
 FloatLens 是一个 Android 悬浮取词、View 选择、截图和 OCR 工具。
 
-项目以普通 Android / Accessibility 能力作为基础路径，并保留可选增强层。没有 Root、没有 LSPosed，或者用户关闭增强模式时，FloatLens 的普通悬浮、View 选择、截图与 OCR 路径仍可工作。
+项目以普通 Android / Accessibility 能力作为基础路径，并保留可选增强层。没有 Root、没有 LSPosed，或者用户关闭增强模式时，FloatLens 的普通悬浮、Direct View 选择、截图与 OCR 路径仍可工作。
 
 ## FV 对齐原则
 
@@ -34,9 +34,11 @@ GoogleCircleController
 
 进入圈画后先冻结当前截图。第一次文字手势触发所选“整屏识别引擎”建立完整 OCR 索引，并缓存到当前冻结截图会话；后续点击、划线和涂抹直接复用同一份索引。可选的 PP-OCRv6 Tiny / Small / Medium 局部校正只重新识别 `CircleSelectionPlanner` 计算出的手势附近 ROI，不能自行改变用户选择范围。
 
+`CircleSelectionPlanner` 是初始文字选择和校正 ROI 的唯一 owner。`GoogleCircleInlineOverlay` 只把 planner 返回的 `initialSelectionDocument` 映射进完整 OCR 文档，不再另外执行 tap hit、附近 snap 或 gesture-bounds intersect fallback；手柄拖动只负责用户之后的选区编辑。
+
 正式圈画链**不读取 Accessibility / View 文字作为内容来源**，不合并 View text，不遮罩 View 区域，也不维护第二套 detector-only TextMap。已经删除的旧实验路径包括 `CircleViewTextSnapshot`、`ViewTextOcrMask`、`ViewTextGeometryRefiner`、`CircleTextMap` 和 `PaddleTextDetectorBridge`。
 
-Direct / 显式 View 选择仍然可以使用 Accessibility 的真实 `node.getText()`；这是 View 提取功能，与普通 Circle OCR 路径分开。显式“区域 View 文字”由 `RegionContentResolver` 负责，也不会混入 Circle。
+Direct 仍然可以使用 Accessibility 的真实 `node.getText()`；这是 Direct View 提取功能，与普通 OCR / Circle OCR 路径分开。普通“OCR/提取文字”动作统一进入截图 OCR 区域选择器，不再维护第二套全屏 View picker。显式“区域 View 文字”只存在于区域编辑器，并由 `RegionContentResolver` 负责。
 
 ## 统一架构原则
 
@@ -50,6 +52,8 @@ Direct / 显式 View 选择仍然可以使用 Accessibility 的真实 `node.getT
 - 截图后端：`ScreenCaptureBackend`
 - OCR：`OcrEngine`
 - PP OCR 适配：`PaddleOcrBridge → OcrCanonicalGeometry`
+- 圈画初始选择 / correction ROI：`CircleSelectionPlanner`
+- 动作目录 / 执行：`ActionRegistry / ActionExecutor`
 - 识别状态：`RecognitionWorkflowState`
 - 结果：`ResultSession → ResultController → UnifiedResultDialogFragment / UnifiedResultPanel`
 - 浮动菜单视觉：`FloatingMenuUi`
@@ -101,7 +105,8 @@ PP-OCRv6 Tiny / Small / Medium 模型与 APK 分离。成功下载后 FloatLens 
 
 - ML Kit 输出由 `MlKitTextCore` 转换；
 - PP-OCR 输出由 `PaddleOcrBridge` 转换，并立即通过 `OcrCanonicalGeometry` 规范化；
-- 不再存在单独的 PP detector-only 应用链；
+- OCR 引擎设置只通过 `FloatSettings` 读取；
+- 不再存在单独的 PP detector-only、enhanced/mono preprocessing 或第二套 quality-policy 应用链；
 - Circle 可独立选择整屏识别引擎和局部校正引擎。
 
 ## Build / CI
