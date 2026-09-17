@@ -72,8 +72,8 @@ final class CircleGestureTextSelector {
     }
 
     static List<GroupHit> hitGroups(Context context,
-                                    GoogleCircleCapture.Frame frame,
-                                    GoogleCircleSelection.Selection gesture,
+                                    FLCircleCapture.Frame frame,
+                                    FLCircleSelection.Selection gesture,
                                     OcrDocument document,
                                     float tapToleranceDp,
                                     float corridorDp) {
@@ -84,7 +84,7 @@ final class CircleGestureTextSelector {
         List<GroupHit> groups = buildGroups(document);
         if (groups.isEmpty()) return List.of();
 
-        if (gesture.kind == GoogleCircleSelection.Kind.TAP) {
+        if (gesture.kind == FLCircleSelection.Kind.TAP) {
             PointF point = frame.bitmapPointToScreen(gesture.focus.x, gesture.focus.y);
             float tolerance = Math.max(0f, tapToleranceDp * ScreenGeometry.density(context));
             GroupHit precise = preciseTapHit(groups, point, tolerance);
@@ -107,7 +107,7 @@ final class CircleGestureTextSelector {
         // determines the first and last touched character; fill every OCR character between those
         // endpoints in stable OCR reading order so a fast diagonal/curved stroke cannot leave holes.
         List<GroupHit> continuous = continuousRangeHits(document, touchedChars);
-        DiagnosticLog.i(context, "G_CIRCLE_GESTURE_RANGE",
+        DiagnosticLog.i(context, "FL_CIRCLE_GESTURE_RANGE",
                 "kind=" + gesture.kind
                         + " touchedChars=" + touchedChars.size()
                         + " continuousChars=" + countChars(continuous)
@@ -116,8 +116,8 @@ final class CircleGestureTextSelector {
     }
 
     static OcrDocument selectDocument(Context context,
-                                      GoogleCircleCapture.Frame frame,
-                                      GoogleCircleSelection.Selection gesture,
+                                      FLCircleCapture.Frame frame,
+                                      FLCircleSelection.Selection gesture,
                                       OcrDocument document,
                                       float tapToleranceDp,
                                       float corridorDp,
@@ -415,8 +415,8 @@ final class CircleGestureTextSelector {
         return List.copyOf(out);
     }
 
-    private static List<PointF> screenPath(GoogleCircleCapture.Frame frame,
-                                           GoogleCircleSelection.Selection gesture) {
+    private static List<PointF> screenPath(FLCircleCapture.Frame frame,
+                                           FLCircleSelection.Selection gesture) {
         if (gesture.points == null || gesture.points.isEmpty()) return List.of();
         ArrayList<PointF> out = new ArrayList<>(gesture.points.size());
         for (PointF point : gesture.points) {
@@ -484,9 +484,9 @@ final class CircleGestureTextSelector {
         return (float) Math.hypot(dx, dy);
     }
 
-    private static Rect gestureScreenBounds(GoogleCircleCapture.Frame frame,
-                                            GoogleCircleSelection.Selection gesture) {
-        Rect bitmap = GoogleCircleSelection.exactRectAndClamp(gesture.bounds,
+    private static Rect gestureScreenBounds(FLCircleCapture.Frame frame,
+                                            FLCircleSelection.Selection gesture) {
+        Rect bitmap = FLCircleSelection.exactRectAndClamp(gesture.bounds,
                 frame.bitmap.getWidth(), frame.bitmap.getHeight());
         return bitmap.isEmpty() ? new Rect() : frame.bitmapRectToScreen(bitmap);
     }
