@@ -13,37 +13,38 @@ final class ResultSession implements AutoCloseable {
     private final Mode originMode;
     private Mode mode;
     private Bitmap image;
-    private final Rect anchor;
+    /** Original screen/capture source area. Never use this for result-dialog text-menu placement. */
+    private final Rect sourceBounds;
     private String text;
     private List<String> blocks;
     private final String meta;
     private boolean closed;
 
-    private ResultSession(Mode mode, Bitmap image, Rect anchor,
+    private ResultSession(Mode mode, Bitmap image, Rect sourceBounds,
                           String text, List<String> blocks, String meta) {
         this.originMode = mode;
         this.mode = mode;
         this.image = image;
-        this.anchor = anchor == null ? null : new Rect(anchor);
+        this.sourceBounds = sourceBounds == null ? null : new Rect(sourceBounds);
         this.text = safe(text);
         this.blocks = safeBlocks(blocks);
         this.meta = safe(meta);
     }
 
-    static ResultSession screenshot(Bitmap image, Rect anchor) {
-        return new ResultSession(Mode.SCREENSHOT, image, anchor, "", List.of(), "");
+    static ResultSession screenshot(Bitmap image, Rect sourceBounds) {
+        return new ResultSession(Mode.SCREENSHOT, image, sourceBounds, "", List.of(), "");
     }
 
-    static ResultSession viewText(String text, Bitmap image, Rect anchor) {
-        return new ResultSession(Mode.VIEW_TEXT, image, anchor, text, List.of(), "");
+    static ResultSession viewText(String text, Bitmap image, Rect sourceBounds) {
+        return new ResultSession(Mode.VIEW_TEXT, image, sourceBounds, text, List.of(), "");
     }
 
-    static ResultSession viewImage(Bitmap image, ViewNodeCandidate view, Rect anchor) {
-        return new ResultSession(Mode.VIEW_IMAGE, image, anchor, "", List.of(), buildViewMeta(view));
+    static ResultSession viewImage(Bitmap image, ViewNodeCandidate view, Rect sourceBounds) {
+        return new ResultSession(Mode.VIEW_IMAGE, image, sourceBounds, "", List.of(), buildViewMeta(view));
     }
 
-    static ResultSession ocr(String text, List<String> blocks, Bitmap image, Rect anchor) {
-        return new ResultSession(Mode.OCR, image, anchor, text, blocks, "");
+    static ResultSession ocr(String text, List<String> blocks, Bitmap image, Rect sourceBounds) {
+        return new ResultSession(Mode.OCR, image, sourceBounds, text, blocks, "");
     }
 
     void applyOcr(String text, List<String> blocks) {
@@ -55,7 +56,7 @@ final class ResultSession implements AutoCloseable {
     Mode originMode() { return originMode; }
     Mode mode() { return mode; }
     Bitmap image() { return image; }
-    Rect anchor() { return anchor == null ? null : new Rect(anchor); }
+    Rect sourceBounds() { return sourceBounds == null ? null : new Rect(sourceBounds); }
     String text() { return text; }
     List<String> blocks() { return new ArrayList<>(blocks); }
     String meta() { return meta; }
