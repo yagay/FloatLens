@@ -1,24 +1,80 @@
 # FloatLens Architecture
 
-FloatLens ordinary mode follows a **single-owner rule**: interaction surfaces may have different UI and lifetimes, but they must not reimplement the same semantics, capture, OCR parsing, overlay hosting, workflow state, system-panel handling, coordinate mapping, or result routing.
+FloatLens follows a **single-owner rule**: different interaction surfaces may have different UI and lifetimes, but the same low-level behavior must have one implementation and one policy owner.
 
-The ordinary pipeline is:
+The normal rule for future changes is simple:
+
+> **Extend the owner; do not clone the implementation.**
+
+Root and LSPosed are optional providers. They may enhance a backend, but they must not create another gesture, capture, OCR, selection, result, settings, or workflow pipeline.
+
+## 1. Core ownership map
 
 ```text
-Input
-  ↓
-Screen semantics / cached selection
-  ↓
-Capture or recognition
-  ↓
-ResultSession
-  ↓
-One ResultActivity / UnifiedResultDialogFragment
+Floating input
+  FloatIconView
+  GestureClassifier / GestureActionMapper / ActionRegistry
+  ViewSelectionEngine
+
+Screen semantics
+  AccessibilityNodeSemantics
+  AccessibilityCandidateCollector
+  ScreenSelectionModel
+
+Geometry
+  ScreenGeometry
+  AppSystemBarInsets
+  CoordinateMapper
+  ScreenBitmapTransform
+  ScreenshotGeometry
+  SelectionGeometry
+  CropMath + SelectionCropper
+
+Capture
+  ScreenshotHideCoordinator
+  ScreenshotCaptureSession
+  ScreenCaptureBackend
+  ScreenshotController
+
+OCR
+  MlKitTextCore
+  PaddleOcrBridge
+  OcrCanonicalGeometry
+  OcrEngine
+
+Circle
+  GoogleCircleController
+  GoogleCircleCapture
+  GoogleCircleInlineOverlay
+  GoogleCircleTextResolver
+  CircleStableOcr
+  CircleSelectionPlanner
+  CircleGestureTextSelector
+  CircleTextSelectionModel
+
+Results
+  ResultSession
+  ResultController
+  ResultSurfaceRouter
+  UnifiedResultDialogFragment
+  UnifiedResultPanel
+  TextSelectionSurface
+
+Menus
+  FloatingMenuUi
+  FloatingMenuPositioner
+  TextActionMenuController
+  FloatActionMenu / ImageActionMenu
+
+Settings
+  FloatSettings
+  SettingsPageUi
+
+Workflow state
+  RecognitionWorkflowState
 ```
 
-Root and LSPosed are optional providers. They may enhance a backend, but they must not create an alternate application flow.
-
-## 1. Floating input
+## 2. Floating input and gesture ownership
 
 ### `FloatIconView`
 Owns one touch stream only:
@@ -30,293 +86,340 @@ Owns one touch stream only:
 - Direct selection dwell;
 - explicit icon-position move.
 
-Direct uses the verified single dwell gate (~400 ms, ~3 dp re-arm). A long-press timer is armed only when a real long action is configured; `ActionId.NONE` must never steal Direct ownership.
-
-Do not add Accessibility traversal, screenshot backend selection, OCR parsing, result UI, or feature-specific Circle state here.
+It must not grow Accessibility traversal, screenshot backend selection, OCR parsing, result UI, or Circle recognition logic.
 
 ### `GestureClassifier` / `GestureActionMapper` / `ActionRegistry`
-Gesture classification, gesture-to-preference mapping, and action execution are separate layers. New actions belong in `ActionRegistry`; do not add feature-local action catalogs.
+These respectively own gesture classification, preference mapping, and action execution. New actions belong in `ActionRegistry`; do not create feature-local action catalogs.
 
 ### `FloatingIconLayoutPolicy` / `FloatVisibilityController`
-Layout/persistence and visibility reasons each have one owner. `FloatService` applies decisions; it should not grow duplicate position or hidden-state policy.
+Layout/persistence and visibility reasons remain separate owners. `FloatService` applies their decisions and must not reimplement their policies.
 
-## 2. Screen geometry and system bars
+## 3. Screen geometry
 
 ### `ScreenGeometry`
-Single owner of physical display bounds and density.
+Single owner of physical display bounds, usable system-bar-excluded bounds, density, dp conversion and integer clamping.
 
-### `CaptureSystemBarsPolicy`
-Single owner of status/navigation capture bounds. Screenshot, region capture and Circle use this same policy.
+Feature code must not call `WindowManager.getCurrentWindowMetrics()` merely to rediscover screen width/height.
 
-Absolute screen coordinates are canonical for View/Accessibility data. Convert to view/bitmap coordinates only at explicit transform/crop boundaries.
+### `AppSystemBarInsets`
+Owns Activity-content insets only. Android 15+ edge-to-edge Activity layout is a different boundary from screenshot/overlay geometry and must stay separate.
 
-## 3. Accessibility semantics
+### `CoordinateMapper`
+Generic Matrix-backed mapping between two rectangular coordinate spaces.
+
+### `ScreenBitmapTransform`
+Single frame-specific mapping owner between:
+
+- frozen screenshot bitmap pixels;
+- absolute SCREEN coordinates;
+- overlay View coordinates;
+- OCR document geometry.
+
+Callers must not manually add status-bar offsets or multiply screen/bitmap ratios.
+
+### `ScreenshotGeometry`
+Owns screen-rectangle screenshot cropping and system-bar-aware screenshot cropping. It delegates coordinate conversion to `ScreenBitmapTransform`.
+
+### `CropMath` / `SelectionCropper`
+`CropMath` is intentionally narrow: pure View-space -> bitmap-space rectangle math used by `SelectionCropper` only. It must not regain screen/bitmap mapping; that belongs to `CoordinateMapper` / `ScreenBitmapTransform`.
+
+`SelectionCropper` owns rectangle/freehand selection crop and masking plus independent result-bitmap ownership.
+
+### `SelectionGeometry`
+Single owner of text/View selection anchor geometry used by selection and menus. Do not reintroduce global menu-anchor state.
+
+## 4. Accessibility semantics
 
 ### `AccessibilityNodeSemantics`
 Single definition of what an Accessibility node means.
 
-Important rule:
+Rules:
 
-- `AccessibilityNodeInfo.getText()` = visible selectable View text.
-- `contentDescription`, hint and state description = semantic labels only.
-
-Semantic labels may describe a View or icon, but they must never be promoted to visible screen text.
-
-This class also owns normal image/View/fullscreen classification helpers.
+- `AccessibilityNodeInfo.getText()` is visible View text;
+- content description, hint and state description are semantic labels;
+- semantic labels must not silently become visually rendered text.
 
 ### `AccessibilityCandidateCollector`
-Single normal-mode Accessibility tree walker. It is interruption-aware and produces cached `ScreenCandidate` objects.
-
-Consumers include Direct selection, the explicit View picker, region View-text extraction, Circle snapshots, and compatibility point-picker APIs in `LensAccessibilityService`.
-
-`LensAccessibilityService.collectCandidatesAt/findViewAt` are compatibility delegates only. They must not regain their own recursive collector.
+Single ordinary Accessibility tree walker. It produces `ScreenCandidate` objects for Direct, explicit View picker and explicit region View-text extraction.
 
 ### `ScreenSelectionModel`
-Single cached candidate ranking/hit-test owner. MOVE-time selection performs geometry lookup only; it never walks live Accessibility nodes.
+Single cached candidate ranking/hit-test owner. MOVE-time Direct selection is geometry-only and must not repeatedly walk the live Accessibility tree.
 
-## 4. Direct selection
+## 5. Direct selection
 
 ### `ViewSelectionEngine`
-Owns Direct after the floating input dwell.
+Owns same-touch Direct selection after the dwell gate.
 
-Candidate preparation starts at touch start and is cancellable. The 400 ms dwell decides only when Direct owns the gesture; it does not start a second late tree scan.
-
-Routing semantics:
+Routing:
 
 - visible TEXT -> View text result;
-- VIEW / image -> View image result;
-- explicit dragged region -> region screenshot;
-- ROOT/fallback -> screenshot semantics only where explicitly intended.
-
-A cached candidate change after Direct activation never creates another dwell.
+- VIEW/image -> View image result;
+- dragged Direct region -> screenshot;
+- ROOT/fallback -> screenshot only where explicitly intended.
 
 ### `ViewHoverOverlay`
-Passive cached candidate highlight layer only.
+Passive cached-candidate highlight layer only.
 
 ### `ViewSelectionOverlay`
-Explicit full-screen View picker. Its lifetime differs from same-pointer Direct, but it consumes the same `AccessibilityCandidateCollector` and `ScreenSelectionModel` semantics. Its async tree task must be cancellable.
+Explicit full-screen View picker. Its lifetime differs from Direct, but it consumes the same Accessibility semantics/candidates.
 
-Native Accessibility text is a `VIEW_TEXT` result, not fake OCR.
+Native Accessibility text is a View-text result, not OCR.
 
-## 5. Overlay hosting
+## 6. Overlay hosting
 
 ### `FlOverlayWindowHost`
 Single owner of ordinary overlay add/update/remove/migration behavior.
 
-Normal feature overlays must not call `WindowManager.addView/removeView` directly unless an Android component has a documented token/window reason. Floating icon helpers, View picker, region selectors and Circle surfaces use this shared host.
+Feature controllers must not copy WindowManager hosting code. AccessibilityService may directly host accessibility overlays because it is one implementation used by this shared host.
 
-`LensAccessibilityService` may directly add/remove `TYPE_ACCESSIBILITY_OVERLAY` because it is one of the host implementations used by `FlOverlayWindowHost`; feature controllers must not copy that code.
-
-## 6. Screenshot lifecycle
+## 7. Screenshot lifecycle
 
 ### `ScreenCaptureBackend`
-Backend selector only. Ordinary Accessibility screenshot is the core path; optional providers may be selected only through their explicit gates.
+Backend selector only. Accessibility is the normal backend; Root/LSPosed alternatives are used only through explicit gates.
 
 ### `ScreenshotCaptureSession`
-Single ordinary capture lifecycle:
+Single normal capture lifecycle:
 
 ```text
-acquire hide leases
-  ↓
-settle
-  ↓
-ScreenCaptureBackend
-  ↓
-restore leases
+acquire hide lease(s)
+  -> settle
+  -> ScreenCaptureBackend
+  -> restore lease(s)
 ```
 
 ### `ScreenshotHideCoordinator`
-Reference-counted floating-icon hiding. Never replace this with a plain boolean; overlapping capture flows must not reveal FloatLens early.
+Reference-counted icon hiding. Never replace this with one boolean because overlapping capture flows must not reveal FloatLens early.
 
-### `ScreenshotGeometry` / `CropMath` / `SelectionCropper`
-`CropMath` owns pure coordinate mapping. `ScreenshotGeometry` delegates display bounds to `ScreenGeometry` and owns screen-rectangle screenshot cropping. `SelectionCropper` owns rectangle/freehand bitmap crop/masking and independent result-bitmap ownership.
-
-A successful bounds crop is independently owned. Once a feature has produced that crop and closes its source workspace, it must release the original full-screen bitmap.
+### `CaptureSystemBarsPolicy`
+Single status/navigation capture policy shared by screenshot and Circle.
 
 ### `ScreenshotController`
-Business routing only: full save, region editor, View capture, OCR capture and result delivery. It must not duplicate backend selection or result-window implementation.
+Business routing only:
 
-Circle’s initial frozen frame can use the raw backend only because `CircleSelectController` already owns its hide lease and frame lifetime.
+- full screenshot save;
+- region selector;
+- editable-region capture;
+- View capture;
+- OCR capture;
+- bounds crop delivery.
 
-## 7. OCR
+Screenshot region mode and OCR region mode share the same internal selector flow and differ only by mode.
+
+## 8. OCR
 
 ### `MlKitTextCore`
-Single ML Kit foundation:
+Single ML Kit parser/foundation:
 
-- Text block/line/element/symbol -> `OcrDocument` geometry;
-- shared character fallback splitting.
+- recognizer creation/selection;
+- Text block/line/element/symbol -> `OcrDocument`;
+- shared fallback character splitting.
 
 No feature may add another ML Kit -> `OcrDocument` parser.
 
-### `OcrEngine`
-Normal OCR strategy only:
+### `PaddleOcrBridge`
+Single PP-OCR adapter. It performs recognition and converts engine-native output to `OcrDocument`, then immediately normalizes through `OcrCanonicalGeometry`.
 
-- PP-OCR Small/Medium policy and escalation;
-- ML Kit multi-pass/preprocessing planning;
-- quality scoring/early stop;
+There is no separate detector-only application pipeline.
+
+### `OcrCanonicalGeometry`
+Single engine-neutral normalization contract. PP output is normalized to the same stable line/element/symbol ordering semantics used by the ML path without invoking ML Kit again.
+
+### `OcrEngine`
+Normal OCR strategy and lifecycle owner:
+
+- PP Small/Medium policy/escalation;
+- ML Kit script fusion;
+- quality selection;
 - UI/document generations;
+- UI recognition lifecycle notifications;
 - final dispatch.
 
-### `CircleRecognitionSession`
-Circle scheduling only:
+Region UI must submit a bitmap to `OcrEngine`; it must not separately maintain OCR-start/success/failure state.
 
-- frozen View snapshot;
-- fast full-frame ML Kit;
-- precise ROI ML Kit.
+## 9. Circle: one OCR-only pipeline
 
-It uses `MlKitTextCore`; it does not own a separate ML Kit parser. Circle may intentionally use a lighter recognition schedule than normal OCR without duplicating the parsing layer.
+Normal Circle is deliberately **OCR-only**. It does not traverse Accessibility Views for text, merge View text into OCR, mask View bounds, or run a parallel TextMap detector pipeline.
 
-### `CircleTextIndex`
-Circle merge policy only. Full-frame merge may prefer native View text, but an explicit user ROI refinement is authoritative inside that requested region so stale approximate View geometry cannot suppress the refinement.
+The only normal Circle chain is:
 
-## 8. Circle snapshots and UI
+```text
+GoogleCircleController
+  -> GoogleCircleCapture
+  -> GoogleCircleInlineOverlay
+  -> GoogleCircleTextResolver
+  -> CircleStableOcr
+  -> CircleSelectionPlanner
+  -> CircleGestureTextSelector
+  -> CircleTextSelectionModel
+```
 
-### `CircleViewTextSnapshot`
-Captures visible native View text before the Circle overlay exists. It uses shared Accessibility semantics and is interruption-aware so superseded scans stop promptly.
+### `GoogleCircleController`
+Owns Circle generation, frozen-workspace launch, screenshot-hide lease, border/shade lifecycle and close cleanup.
 
-When Android exposes exact character-location extra data, it is retained. Otherwise View character geometry is approximate and may be refined by ML Kit.
+### `GoogleCircleCapture`
+Owns the frozen `Frame`: bitmap + exact screen bounds + one `ScreenBitmapTransform`.
 
-### `CircleViewImageSnapshot`
-Uses ordinary `AccessibilityNodeSemantics.isImage()` in normal mode. It must not redefine image semantics or silently depend on LSPosed metadata.
+### `GoogleCircleInlineOverlay`
+Owns Circle UI/input only: tap, stroke/scribble, editable screenshot rectangle, selection handles, confirmation and close UI.
 
-### `CircleSelectController`
-The only ordinary Circle controller. It owns one generation, one cancellable View snapshot task and one screenshot-hide lease. A newer generation cancels/releases the older one.
+It must not create another OCR parser or capture backend.
 
-The old same-touch `CircleLiveController` path has been removed. Do not recreate a second Circle capture/controller pipeline.
+### `GoogleCircleTextResolver`
+Owns one cached full-screen OCR document per frozen frame and optional per-gesture correction scheduling.
 
-### `CircleSelectOverlay`
-Owns Circle UI/input only. It must not grow another Accessibility collector, OCR parser, capture backend, system-panel algorithm or result system.
+Full-screen OCR is single-flight/latest-pending and cached. Optional PP correction receives a planner-owned ROI; it cannot reinterpret the user's selection range.
 
-## 9. Recognition workflow state
+### `CircleStableOcr`
+Circle OCR-engine adapter only. Full-frame engine and correction engine are independently selectable. It returns `OcrDocument`; it does not own gesture semantics.
+
+### `CircleSelectionPlanner`
+Sole owner of Circle text selection semantics and correction ROI.
+
+### `CircleGestureTextSelector`
+Owns low-level OCR geometry hit/range mechanics used by the planner.
+
+### `CircleTextSelectionModel`
+Owns editable selected-text state and handles inside the Circle workspace.
+
+Removed experimental/legacy paths must not be reintroduced:
+
+- `CircleViewTextSnapshot`;
+- `ViewTextOcrMask`;
+- `ViewTextGeometryRefiner`;
+- `CircleTextMap`;
+- detector-only `PaddleTextDetectorBridge`;
+- `CircleSelectOverlay` compatibility shim.
+
+## 10. Recognition workflow state
 
 ### `RecognitionWorkflowState`
-Single recognition lifecycle owner:
+Single screenshot/OCR/recognition lifecycle state owner:
 
 ```text
 IDLE -> CAPTURING -> RECOGNIZING -> RESULTS -> IDLE
 ```
 
-Starting recognition/results directly from IDLE creates a generation; phase changes inside one workflow keep the generation.
+`FloatService` talks to this class directly. The old `CircleStateMachine` compatibility facade has been removed.
 
-### Temporary compatibility
-`CircleStateMachine` is deprecated and delegates to `RecognitionWorkflowState`. It contains no independent state or policy. Remove the facade after remaining service-facing call sites can be migrated safely; do not add behavior to it.
+A new generation begins only from IDLE; phase transitions inside the same workflow keep the generation.
 
-## 10. Results
+## 11. Results
 
 Every official screenshot, View and OCR result converges here:
 
 ```text
 ResultSession
-  ↓
-ResultController
-  ↓
-singleTop ResultActivity
-  ↓
-UnifiedResultDialogFragment
-  ↓
-UnifiedResultPanel / TextSelectionSurface
+  -> ResultController
+  -> singleTop ResultActivity
+  -> UnifiedResultDialogFragment
+  -> UnifiedResultPanel / TextSelectionSurface
 ```
 
 ### `ResultSession`
-Single business-state/bitmap-ownership object for screenshot, View text, View image and OCR.
+Single business state / bitmap-ownership object for screenshot, View text, View image and OCR.
 
 ### `ResultController`
-Single pending-token/Activity launch boundary.
+Single pending-token and Activity-launch boundary.
 
 ### `ResultSurfaceRouter`
-Thin result-construction facade only. It may create the proper `ResultSession` and delegate to `ResultController`; it must not host another result UI.
+Thin construction facade only. It creates the proper session and delegates to `ResultController`; it must not host another result UI.
 
-### `UnifiedResultDialogFragment`
-Single visible result lifecycle. Close button, outside-tap cancellation, dismiss and destruction all converge on one workflow teardown path.
-
-The old `ResultOverlay` compatibility class has been removed. Do not add another result Activity/overlay for a new capture/OCR feature.
+### `UnifiedResultDialogFragment` / `UnifiedResultPanel`
+Single visible result system. Close, outside tap, dismiss and destruction converge on one teardown path.
 
 ### `OcrResultDispatcher`
-One OCR output boundary: active inline sink when appropriate, otherwise the normal result pipeline.
+Single OCR output boundary: active inline sink when appropriate, otherwise the normal result system.
 
-## 11. Region selection
+## 12. Floating action menus
+
+### `FloatingMenuUi`
+Single visual owner for text and image floating menus: surface, text, ripple, rows and icon sizing.
+
+### `FloatingMenuPositioner`
+Single menu placement/clamp owner: around-anchor placement, fallback position and locked submenu row.
+
+### `TextActionMenuController`
+Single text-menu entry point from selection surfaces. It receives immutable `SelectionSnapshot` state.
+
+### `FloatActionMenu` / `ImageActionMenu`
+Own action-specific content only. They must not duplicate palette, ripple, screen-inset or placement algorithms.
+
+Global menu-anchor state has been removed; anchors are passed explicitly.
+
+## 13. Region selection
 
 ### `RegionOverlay`
-Simple region-selection interaction only. Capture, crop and result delivery stay in shared owners.
+Simple rectangle/freehand region interaction only.
 
 ### `EditableRegionOverlay`
-Editable rectangle interaction and AUTO/View/OCR choice only. It uses:
+Editable rectangle interaction and AUTO/View/OCR choice only.
 
-- `FlOverlayWindowHost` for hosting;
-- `AccessibilityCandidateCollector` for View text;
-- `ScreenshotGeometry` for screen-to-bitmap crop;
-- `OcrEngine` for OCR;
-- `ResultSurfaceRouter` for View results.
+### `RegionContentResolver`
+Single explicit-region View-text hit/filter/sort/dedupe owner.
 
-It must release the source full-screen bitmap after a successful independent crop is handed off.
+This View-text resolver is intentionally separate from Circle. Explicit region View extraction may use Accessibility; normal Circle may not.
 
-## 12. Notification shade / system panel
+## 14. Settings
+
+### `FloatSettings`
+Single normal preference read/write boundary. UI code should use typed getters/setters and compound operations rather than direct `SharedPreferences.Editor` calls.
+
+The deprecated `prefs()` escape hatch is reserved for migration, listener registration and truly atomic legacy cases.
+
+Compound state such as custom-icon URI + style and slideshow URI list + style is written atomically inside `FloatSettings`.
+
+### `SettingsPageUi`
+Single reusable settings-control builder for switches, sliders, spinners, OCR models and language selection.
+
+Feature pages declare settings; they do not reimplement storage listeners or common control construction.
+
+## 15. System panel / notification shade
 
 ### `FlSystemPanelController`
-Single owner of SystemUI notification-shade detection, dismissal, fallback, and overlay-ready completion/recheck timing.
-
-`CircleSelectController`, result flows and capture flows call this owner directly. The old `OverlayShadeCoordinator` compatibility class has been removed; do not recreate feature-local shade retry timers.
+Single owner of notification-shade detection, dismissal, fallback and overlay-ready timing.
 
 `ResultReadyCoordinator` only determines when a captured ResultActivity is visibly ready.
 
-## 13. Ordinary mode vs privileged providers
+## 16. Privileged providers
 
-Ordinary mode must remain complete using Accessibility + normal overlay permission.
+Ordinary mode remains complete with Accessibility + normal overlay permission.
 
-Privileged providers are optional adapters:
+Optional Root/LSPosed providers may enhance a backend only when explicitly enabled.
 
-- Root may provide an alternate capture backend when explicitly enabled.
-- LSPosed may provide secure-capture or other explicitly gated capabilities.
+They may not:
 
-Rules:
+1. redefine View/text semantics;
+2. create another result pipeline;
+3. fork gesture/Direct/Circle state machines;
+4. fork settings storage;
+5. create a parallel capture policy.
 
-1. provider code cannot redefine View/text semantics;
-2. provider code cannot create another result pipeline;
-3. provider code cannot fork gesture/Direct/Circle state machines;
-4. disabling providers must return to exactly the ordinary pipeline, not a separate fallback implementation.
+Disabling privileged providers must return to the same ordinary pipeline.
 
-Privileged-specific details live in `docs/PRIVILEGED_MODE.md` and `docs/SECURE_SCREENSHOT.md`.
+## 17. Regression gates
 
-## 14. Compatibility facades allowed temporarily
-
-Compatibility APIs may remain while callers migrate, but they must only delegate:
-
-- `CircleStateMachine` -> `RecognitionWorkflowState`;
-- `LensAccessibilityService.collectCandidatesAt/findViewAt` -> `AccessibilityCandidateCollector`;
-- `ResultSurfaceRouter` -> `ResultController`.
-
-Deleted compatibility layers such as `CircleLiveController`, `OverlayShadeCoordinator` and `ResultOverlay` must not be reintroduced.
-
-If a compatibility class starts accumulating business logic again, move that logic to the listed single owner instead.
-
-## 15. Regression gates
-
-`.github/workflows/debug.yml` is required after structural changes:
+`.github/workflows/debug.yml` must remain the structural-change gate:
 
 1. `testDebugUnitTest`;
 2. `lintDebug`;
 3. `assembleDebug`;
-4. upload the debug APK.
-
-Prefer pure Java policy/geometry tests over JVM tests that directly invoke Android framework methods.
+4. upload debug APK.
 
 Device validation after a large refactor should cover:
 
-- tap/double tap/long press;
-- directional gestures;
+- tap/double tap/long press and directional gestures;
 - temporary icon follow and explicit position move;
-- red probe -> 400 ms yellow Direct;
-- text/View/image Direct release;
+- Direct text/View/image and dragged region;
 - explicit View picker;
 - full/region screenshot and system-bar options;
-- editable region AUTO/View/OCR and repeated open/close ownership;
-- OCR and screenshot -> inline OCR;
+- editable-region AUTO/View/OCR;
+- normal OCR and result actions;
 - notification-shade capture;
-- Circle open/close/navigation, View text, image hit, fast OCR and ROI refinement;
-- rapid repeated Direct/View/Circle starts to verify stale async scans are cancelled.
+- Circle open/close, tap/range text selection, correction, screenshot rectangle and handles;
+- rapid repeated starts to verify stale async work is cancelled.
 
-## 16. Rule for future changes
+## 18. Future-change rule
 
-**Extend the owner; do not clone the implementation.**
+Before adding a helper, controller, state class, geometry function, menu style, settings writer or OCR wrapper, first check whether an owner above already exists.
 
-When two features need the same low-level behavior, the correct change is normally to extract or extend a shared core and leave feature-specific classes responsible only for scheduling/UI differences.
+If two features need the same low-level behavior, extract or extend the shared owner and leave feature classes responsible only for their true UI/scheduling differences.
