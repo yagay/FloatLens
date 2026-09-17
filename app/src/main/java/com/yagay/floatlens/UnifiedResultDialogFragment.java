@@ -143,8 +143,6 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
     private void beginInlineOcr() {
         if (ocrRunning || session == null || !session.canOcr() || panel == null) return;
         panel.clearSelection();
-        FloatActionMenu.dismiss();
-        FloatMenuAnchor.clear();
 
         long gen = ++ocrGeneration;
         ocrRunning = true;
@@ -239,8 +237,6 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
     @Override public void onDestroyView() {
         cancelCurrentOcr("destroy_view");
         if (panel != null) panel.clearSelection();
-        FloatActionMenu.dismiss();
-        FloatMenuAnchor.clear();
         panel = null;
         super.onDestroyView();
     }
