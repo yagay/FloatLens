@@ -2,13 +2,10 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.ViewOutlineProvider;
-import android.view.WindowInsets;
-import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -28,8 +25,7 @@ final class ResultUi {
         LinearLayout box = new LinearLayout(c);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(c, BOX_HPAD_DP), dp(c, 8), dp(c, BOX_HPAD_DP), dp(c, 8));
-        box.setBackground(popupBackground(c,
-                ThemeSettings.isDark(c) ? 0xF0202124 : 0xF8FFFFFF));
+        box.setBackground(popupBackground(c, UiTokens.resultSurface(c)));
         box.setElevation(dp(c, 10));
         final float radius = dp(c, POPUP_RADIUS_DP);
         box.setOutlineProvider(new ViewOutlineProvider() {
@@ -53,7 +49,7 @@ final class ResultUi {
     static TextView heading(Context c, String text) {
         TextView title = new TextView(c);
         title.setText(text == null ? "" : text);
-        title.setTextColor(ThemeSettings.isDark(c) ? Color.WHITE : 0xFF17191D);
+        title.setTextColor(UiTokens.textPrimary(c));
         title.setTextSize(17);
         title.setGravity(Gravity.CENTER_VERTICAL);
         return title;
@@ -77,21 +73,7 @@ final class ResultUi {
     }
 
     static Rect usableBounds(Context c) {
-        WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
-        try {
-            var metrics = wm.getCurrentWindowMetrics();
-            Rect r = new Rect(metrics.getBounds());
-            var insets = metrics.getWindowInsets()
-                    .getInsetsIgnoringVisibility(WindowInsets.Type.systemBars());
-            r.left += insets.left;
-            r.top += insets.top;
-            r.right -= insets.right;
-            r.bottom -= insets.bottom;
-            if (!r.isEmpty()) return r;
-        } catch (Throwable ignored) {}
-        return new Rect(0, 0,
-                c.getResources().getDisplayMetrics().widthPixels,
-                c.getResources().getDisplayMetrics().heightPixels);
+        return ScreenGeometry.usableBounds(c);
     }
 
     static int standardWidth(Context c, Rect usable) {
@@ -115,12 +97,11 @@ final class ResultUi {
     }
 
     static int dp(Context c, int v) {
-        return Math.round(v * c.getResources().getDisplayMetrics().density);
+        return UiTokens.dp(c, v);
     }
 
     static int clamp(int v, int min, int max) {
-        if (max < min) return min;
-        return Math.max(min, Math.min(v, max));
+        return ScreenGeometry.clamp(v, min, max);
     }
 
     private ResultUi() {}
