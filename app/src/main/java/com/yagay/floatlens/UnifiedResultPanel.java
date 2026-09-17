@@ -208,10 +208,16 @@ final class UnifiedResultPanel {
                 FloatMenuAnchor.clear();
             }
 
-            @Override public void onSelectionFinished(String selectedText, Rect anchorOnScreen) {
-                String value = selectedText == null ? "" : selectedText.trim();
-                if (value.isEmpty()) return;
-                FloatActionMenu.showTextAt(context, value, selection::selectAllText, anchorOnScreen);
+            @Override public void onSelectionFinished(SelectionSnapshot snapshot) {
+                if (snapshot == null || snapshot.text().isBlank()) return;
+                Rect anchor = snapshot.screenBounds();
+                FloatActionMenu.showTextAt(context, snapshot.text(), selection::selectAllText, anchor);
+                DiagnosticLog.i(context, "RESULT_TEXT_MENU",
+                        "show generation=" + snapshot.generation()
+                                + " range=" + snapshot.start() + "-" + snapshot.end()
+                                + " local=" + (snapshot.localBounds() == null
+                                ? "none" : snapshot.localBounds().toShortString())
+                                + " screen=" + (anchor == null ? "none" : anchor.toShortString()));
             }
         });
     }
