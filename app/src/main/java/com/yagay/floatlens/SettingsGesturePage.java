@@ -1,5 +1,7 @@
 package com.yagay.floatlens;
 
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 
@@ -48,9 +50,12 @@ final class SettingsGesturePage {
         lineColors.setHint("例如 #FFFFFF,#42A5F5");
         lineColors.setText(fs.lineColors());
         lineColors.setSingleLine(true);
-        lineColors.setOnFocusChangeListener((v, hasFocus) -> {
-            if (!hasFocus) fs.prefs().edit()
-                    .putString(FloatSettings.K_LINE_COLORS, lineColors.getText().toString()).apply();
+        lineColors.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                fs.setLineColors(s == null ? "" : s.toString());
+            }
+            @Override public void afterTextChanged(Editable s) { }
         });
         LinearLayout.LayoutParams colorLp = new LinearLayout.LayoutParams(-1, -2);
         colorLp.topMargin = AppUi.dp(activity, 7);
