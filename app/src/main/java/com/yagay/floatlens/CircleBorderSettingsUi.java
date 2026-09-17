@@ -25,7 +25,7 @@ final class CircleBorderSettingsUi {
                 "圈画激活时沿完整屏幕边缘显示提示；截图时自动隐藏，不会进入截图",
                 fs.circleBorderEnabled(),
                 (button, checked) -> {
-                    fs.prefs().edit().putBoolean(FloatSettings.K_CIRCLE_BORDER_ENABLED, checked).apply();
+                    fs.setBoolean(FloatSettings.K_CIRCLE_BORDER_ENABLED, checked);
                     CircleActiveBorderOverlay.refreshStyle(activity);
                 });
         AppUi.addRow(parent, AppUi.switchContainer(enabled));
@@ -39,7 +39,7 @@ final class CircleBorderSettingsUi {
                                                  int position, long id) {
                 int selected = COLOR_VALUES[Math.max(0, Math.min(COLOR_VALUES.length - 1, position))];
                 if (fs.circleBorderColor() == selected) return;
-                fs.prefs().edit().putInt(FloatSettings.K_CIRCLE_BORDER_COLOR, selected).apply();
+                fs.setInt(FloatSettings.K_CIRCLE_BORDER_COLOR, selected);
                 CircleActiveBorderOverlay.refreshStyle(activity);
             }
             @Override public void onNothingSelected(android.widget.AdapterView<?> p) { }
@@ -68,7 +68,7 @@ final class CircleBorderSettingsUi {
             if (!fromUser) return;
             int dp = Math.round(next);
             value.setText(dp + "dp");
-            fs.prefs().edit().putInt(FloatSettings.K_CIRCLE_BORDER_WIDTH_DP, dp).apply();
+            fs.setInt(FloatSettings.K_CIRCLE_BORDER_WIDTH_DP, dp);
             CircleActiveBorderOverlay.refreshStyle(activity);
         });
         LinearLayout.LayoutParams sliderLp = new LinearLayout.LayoutParams(-1, AppUi.dp(activity, 34));
