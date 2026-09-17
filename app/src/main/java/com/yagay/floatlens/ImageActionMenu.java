@@ -1,22 +1,17 @@
 package com.yagay.floatlens;
 
 import android.content.Context;
-import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
-import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
-import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.RippleDrawable;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-/** Lightweight image long-press menu. Window hosting is shared with the text action menu. */
+/** Lightweight image action menu using the shared FloatLens menu geometry/theme foundations. */
 public final class ImageActionMenu {
     private static FlOverlayWindowHost activeHost;
     private static View activeView;
@@ -30,19 +25,18 @@ public final class ImageActionMenu {
         if (wm == null) return;
         FlOverlayWindowHost host = new FlOverlayWindowHost(app);
 
-        Palette palette = Palette.from(app);
         LinearLayout root = new LinearLayout(app);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(app, 4), dp(app, 4), dp(app, 4), dp(app, 4));
-        root.setBackground(rounded(palette.surface, dp(app, 18)));
+        root.setBackground(AppUi.rounded(app, UiTokens.menuSurface(app), 18));
         root.setElevation(dp(app, 10));
         root.setClipToOutline(true);
         root.setClickable(true);
 
-        TextView copy = row(app, "复制图片", palette);
-        TextView share = row(app, "分享图片", palette);
-        TextView openWith = row(app, "打开方式", palette);
-        TextView save = row(app, "保存图片", palette);
+        TextView copy = row(app, "复制图片");
+        TextView share = row(app, "分享图片");
+        TextView openWith = row(app, "打开方式");
+        TextView save = row(app, "保存图片");
         root.addView(copy, new LinearLayout.LayoutParams(-1, dp(app, 48)));
         root.addView(share, new LinearLayout.LayoutParams(-1, dp(app, 48)));
         root.addView(openWith, new LinearLayout.LayoutParams(-1, dp(app, 48)));
@@ -56,7 +50,7 @@ public final class ImageActionMenu {
             return false;
         });
 
-        Rect usable = usableBounds(app, wm);
+        Rect usable = ScreenGeometry.usableBounds(app);
         int width = Math.min(dp(app, 176), Math.max(dp(app, 132), usable.width() - dp(app, 16)));
         int height = dp(app, 200);
         int[] pos = menuPosition(app, usable, anchor, width, height);
@@ -81,6 +75,7 @@ public final class ImageActionMenu {
                     + (anchor == null ? "none" : anchor.toShortString())
                     + " pos=" + lp.x + "," + lp.y
                     + " actions=copy/share/open/save"
+                    + " geometry=ScreenGeometry theme=UiTokens"
                     + " accessibilityHost=" + host.isAccessibilityHosted()
                     + " type=" + lp.type);
         } else {
@@ -114,14 +109,14 @@ public final class ImageActionMenu {
         if (view != null && host != null) host.remove(view, "image_action_menu");
     }
 
-    private static TextView row(Context c, String text, Palette palette) {
+    private static TextView row(Context c, String text) {
         TextView tv = new TextView(c);
         tv.setText(text);
-        tv.setTextColor(palette.primaryText);
+        tv.setTextColor(UiTokens.textPrimary(c));
         tv.setTextSize(14);
         tv.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         tv.setPadding(dp(c, 16), 0, dp(c, 16), 0);
-        tv.setBackground(ripple(palette.ripple));
+        tv.setBackground(AppUi.rowBackground(c));
         tv.setClickable(true);
         tv.setFocusable(true);
         return tv;
@@ -137,11 +132,11 @@ public final class ImageActionMenu {
 
         if (anchor == null || anchor.isEmpty()) {
             return new int[]{
-                    clamp(usable.centerX() - w / 2, minX, maxX),
-                    clamp(usable.centerY() - h / 2, minY, maxY)};
+                    ScreenGeometry.clamp(usable.centerX() - w / 2, minX, maxX),
+                    ScreenGeometry.clamp(usable.centerY() - h / 2, minY, maxY)};
         }
 
-        int x = clamp(anchor.centerX() - w / 2, minX, maxX);
+        int x = ScreenGeometry.clamp(anchor.centerX() - w / 2, minX, maxX);
         int above = anchor.top - gap - h;
         int below = anchor.bottom + gap;
         int y;
@@ -151,70 +146,14 @@ public final class ImageActionMenu {
             int roomAbove = Math.max(0, anchor.top - minY);
             int roomBelow = Math.max(0, usable.bottom - margin - anchor.bottom);
             y = roomBelow >= roomAbove
-                    ? clamp(below, minY, maxY)
-                    : clamp(above, minY, maxY);
+                    ? ScreenGeometry.clamp(below, minY, maxY)
+                    : ScreenGeometry.clamp(above, minY, maxY);
         }
         return new int[]{x, y};
     }
 
-    private static Rect usableBounds(Context c, WindowManager wm) {
-        try {
-            var metrics = wm.getCurrentWindowMetrics();
-            Rect r = new Rect(metrics.getBounds());
-            var insets = metrics.getWindowInsets()
-                    .getInsetsIgnoringVisibility(WindowInsets.Type.systemBars());
-            r.left += insets.left;
-            r.top += insets.top;
-            r.right -= insets.right;
-            r.bottom -= insets.bottom;
-            if (!r.isEmpty()) return r;
-        } catch (Throwable ignored) { }
-        return new Rect(0, 0,
-                c.getResources().getDisplayMetrics().widthPixels,
-                c.getResources().getDisplayMetrics().heightPixels);
-    }
-
-    private static android.graphics.drawable.Drawable rounded(int color, float radius) {
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(color);
-        gd.setCornerRadius(radius);
-        return gd;
-    }
-
-    private static android.graphics.drawable.Drawable ripple(int color) {
-        ColorStateList ripple = ColorStateList.valueOf(color);
-        GradientDrawable content = new GradientDrawable();
-        content.setColor(Color.TRANSPARENT);
-        content.setCornerRadius(999f);
-        return new RippleDrawable(ripple, content, null);
-    }
-
-    private static int clamp(int v, int min, int max) {
-        if (max < min) return min;
-        return Math.max(min, Math.min(max, v));
-    }
-
     private static int dp(Context c, int v) {
-        return Math.round(v * c.getResources().getDisplayMetrics().density);
-    }
-
-    private static final class Palette {
-        final int surface;
-        final int primaryText;
-        final int ripple;
-
-        Palette(int surface, int primaryText, int ripple) {
-            this.surface = surface;
-            this.primaryText = primaryText;
-            this.ripple = ripple;
-        }
-
-        static Palette from(Context c) {
-            boolean dark = ThemeSettings.isDark(c);
-            return dark
-                    ? new Palette(0xFF2B2B2B, 0xFFF5F5F5, 0x33FFFFFF)
-                    : new Palette(0xFFF8F8F8, 0xFF202124, 0x22000000);
-        }
+        return UiTokens.dp(c, v);
     }
 
     private ImageActionMenu() {}
