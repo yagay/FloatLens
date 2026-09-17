@@ -5,214 +5,129 @@ import android.graphics.Rect;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * Pure local OCR geometry normalizer inspired by ML-style text semantics.
+ * Converts any OCR engine output into the exact document semantics used by MlKitTextCore.
  *
- * <p>No ML recognizer is invoked here. Recognizers keep ownership of text while this class owns
- * stable reading order, tight row bands, character boxes and word/group boundaries.</p>
+ * <p>This does not invoke ML Kit. Recognition remains owned by the selected engine. Everything
+ * after recognition follows the ML pipeline contract: visual line ordering, element/group
+ * boundaries, symbol/character ordering, element fallback splitting and stable reading order.</p>
  */
 final class OcrCanonicalGeometry {
-    private static final float ROW_HEIGHT_SCALE = 0.78f;
-    private static final float LATIN_WORD_GAP_FACTOR = 0.52f;
-    private static final float CJK_WIDTH_FACTOR = 0.92f;
-
     static OcrDocument normalize(Context context, OcrDocument source) {
-        if (source == null || source.lines().isEmpty() || source.chars().isEmpty()) return source;
+        if (source == null || source.lines().isEmpty()) return source;
 
-        ArrayList<OcrDocument.Line> input = new ArrayList<>(source.lines());
-        input.sort(Comparator.comparingInt((OcrDocument.Line l) -> l.bounds().centerY())
+        ArrayList<OcrDocument.Line> rawLines = new ArrayList<>();
+        for (OcrDocument.Line line : source.lines()) {
+            if (line == null || line.text() == null || line.text().trim().isEmpty()
+                    || line.bounds().isEmpty()) continue;
+            rawLines.add(line);
+        }
+        if (rawLines.isEmpty()) return source;
+
+        // Same visual reading-order policy as MlKitTextCore.toDocument().
+        rawLines.sort(Comparator.comparingInt((OcrDocument.Line l) -> l.bounds().centerY())
                 .thenComparingInt(l -> l.bounds().left));
 
-        ArrayList<OcrDocument.Line> output = new ArrayList<>();
-        int order = 0;
+        ArrayList<OcrDocument.Line> lines = new ArrayList<>();
+        ArrayList<String> blocks = new ArrayList<>();
+        int lineId = 0;
         int nextGroup = 0;
+        int order = 0;
 
-        for (OcrDocument.Line rawLine : input) {
-            if (rawLine == null || rawLine.chars().isEmpty()) continue;
-            ArrayList<OcrDocument.CharUnit> rawChars = new ArrayList<>();
+        for (OcrDocument.Line rawLine : rawLines) {
+            ArrayList<OcrDocument.CharUnit> sourceChars = new ArrayList<>();
             for (OcrDocument.CharUnit c : rawLine.chars()) {
-                if (c == null || c.text().isBlank() || c.bounds().isEmpty()) continue;
-                rawChars.add(c);
+                if (c == null || c.text() == null || c.text().isBlank() || c.bounds().isEmpty()) continue;
+                sourceChars.add(c);
             }
-            if (rawChars.isEmpty()) continue;
-            rawChars.sort(Comparator.comparingInt((OcrDocument.CharUnit c) -> c.bounds().centerX())
-                    .thenComparingInt(c -> c.bounds().left));
+            sourceChars.sort(Comparator.comparingInt((OcrDocument.CharUnit c) -> c.bounds().left)
+                    .thenComparingInt(c -> c.bounds().top));
 
-            Rect rowBand = canonicalRowBand(rawLine, rawChars);
-            if (rowBand.isEmpty()) rowBand = rawLine.bounds();
-            int rowHeight = Math.max(1, rowBand.height());
-
-            ArrayList<Rect> boxes = canonicalCharBoxes(rawChars, rowBand);
             ArrayList<OcrDocument.CharUnit> chars = new ArrayList<>();
-            int currentGroup = nextGroup++;
-            OcrDocument.CharUnit previousRaw = null;
-            Rect previousBox = null;
-
-            for (int i = 0; i < rawChars.size(); i++) {
-                OcrDocument.CharUnit raw = rawChars.get(i);
-                Rect box = boxes.get(i);
-                if (box.isEmpty()) continue;
-
-                if (previousRaw != null && shouldBreakGroup(previousRaw, raw, previousBox, box, rowHeight)) {
-                    currentGroup = nextGroup++;
+            if (!sourceChars.isEmpty()) {
+                // Existing source groups are treated exactly like ML Text.Element boundaries.
+                // Paddle creates these groups from recognizer word/space segmentation. Every
+                // character inside one group is therefore equivalent to an ML Text.Symbol.
+                Map<Integer, ArrayList<OcrDocument.CharUnit>> elements = new LinkedHashMap<>();
+                for (OcrDocument.CharUnit c : sourceChars) {
+                    elements.computeIfAbsent(c.group(), ignored -> new ArrayList<>()).add(c);
                 }
-                chars.add(new OcrDocument.CharUnit(raw.text(), box, raw.confidence(),
-                        output.size(), currentGroup, order++));
-                previousRaw = raw;
-                previousBox = box;
+                for (ArrayList<OcrDocument.CharUnit> element : elements.values()) {
+                    element.sort(Comparator.comparingInt((OcrDocument.CharUnit c) -> c.bounds().left)
+                            .thenComparingInt(c -> c.bounds().top));
+                    int elementGroup = nextGroup++;
+                    for (OcrDocument.CharUnit symbol : element) {
+                        chars.add(new OcrDocument.CharUnit(symbol.text(), symbol.bounds(),
+                                symbol.confidence(), lineId, elementGroup, order++));
+                    }
+                }
+            }
+
+            // Same fallback as ML: if no symbol geometry exists, split the line box uniformly over
+            // visible code points. This keeps non-ML engines compatible with ML selection semantics.
+            if (chars.isEmpty()) {
+                int lineGroup = nextGroup++;
+                order += appendSplit(chars, rawLine.text(), rawLine.bounds(), rawLine.confidence(),
+                        lineId, lineGroup, order);
             }
             if (chars.isEmpty()) continue;
 
-            Rect lineBounds = union(chars, rowBand);
-            output.add(new OcrDocument.Line(rawLine.text(), lineBounds,
-                    rawLine.confidence(), chars));
-        }
-
-        if (output.isEmpty()) return source;
-        StringBuilder full = new StringBuilder();
-        ArrayList<String> blocks = new ArrayList<>();
-        for (OcrDocument.Line line : output) {
-            String text = line.text() == null ? "" : line.text().trim();
-            if (text.isEmpty()) continue;
-            if (full.length() > 0) full.append('\n');
-            full.append(text);
+            chars.sort(Comparator.comparingInt((OcrDocument.CharUnit c) -> c.bounds().left)
+                    .thenComparingInt(c -> c.bounds().top));
+            String text = rawLine.text().trim();
+            lines.add(new OcrDocument.Line(text, rawLine.bounds(), rawLine.confidence(), chars));
             blocks.add(text);
+            lineId++;
         }
 
-        OcrDocument result = new OcrDocument(full.toString(), blocks, output,
-                source.engine() + "+canonical-geometry", source.confidence(), source.score(),
+        if (lines.isEmpty()) return source;
+        lines.sort(Comparator.comparingInt((OcrDocument.Line l) -> l.bounds().centerY())
+                .thenComparingInt(l -> l.bounds().left));
+
+        StringBuilder full = new StringBuilder();
+        ArrayList<String> orderedBlocks = new ArrayList<>();
+        for (OcrDocument.Line line : lines) {
+            String value = line.text().trim();
+            if (value.isEmpty()) continue;
+            if (full.length() > 0) full.append('\n');
+            full.append(value);
+            orderedBlocks.add(value);
+        }
+        if (orderedBlocks.isEmpty()) orderedBlocks.addAll(blocks);
+
+        double score = lines.size() * 5d;
+        for (OcrDocument.Line line : lines) score += line.chars().size();
+        OcrDocument result = new OcrDocument(full.toString(), orderedBlocks, lines,
+                source.engine() + "+ml-semantics", source.confidence(), score,
                 source.imageWidth(), source.imageHeight(), source.coordinateSpace());
-        DiagnosticLog.i(context, "OCR_CANONICAL_GEOMETRY",
-                "engine=" + source.engine()
+        DiagnosticLog.i(context, "OCR_ML_SEMANTICS",
+                "recognizer=" + source.engine()
                         + " lines=" + source.lines().size() + "->" + result.lines().size()
                         + " chars=" + source.chars().size() + "->" + result.chars().size()
-                        + " policy=local_ml_style_no_ml_runtime");
+                        + " policy=ml_line_element_symbol_order_no_ml_runtime");
         return result;
     }
 
-    private static Rect canonicalRowBand(OcrDocument.Line line,
-                                         List<OcrDocument.CharUnit> chars) {
-        ArrayList<Integer> heights = new ArrayList<>();
-        ArrayList<Integer> centers = new ArrayList<>();
-        int left = Integer.MAX_VALUE;
-        int right = Integer.MIN_VALUE;
-        for (OcrDocument.CharUnit c : chars) {
-            Rect r = c.bounds();
-            if (r.isEmpty()) continue;
-            heights.add(r.height());
-            centers.add(r.centerY());
-            left = Math.min(left, r.left);
-            right = Math.max(right, r.right);
+    private static int appendSplit(List<OcrDocument.CharUnit> out, String value, Rect box,
+                                   float confidence, int line, int group, int startOrder) {
+        if (value == null || value.isEmpty() || box == null || box.isEmpty()) return 0;
+        int visible = MlKitTextCore.countVisible(value);
+        if (visible <= 0) return 0;
+        int index = 0;
+        for (int cp : value.codePoints().toArray()) {
+            if (Character.isWhitespace(cp)) continue;
+            int left = box.left + box.width() * index / visible;
+            int right = box.left + box.width() * (index + 1) / visible;
+            out.add(new OcrDocument.CharUnit(new String(Character.toChars(cp)),
+                    new Rect(left, box.top, Math.max(left + 1, right), box.bottom),
+                    confidence, line, group, startOrder + index));
+            index++;
         }
-        if (heights.isEmpty() || centers.isEmpty() || left >= right) return line.bounds();
-        heights.sort(Integer::compareTo);
-        centers.sort(Integer::compareTo);
-        int medianHeight = Math.max(1, heights.get(heights.size() / 2));
-        int centerY = centers.get(centers.size() / 2);
-        int targetHeight = Math.max(6, Math.round(medianHeight * ROW_HEIGHT_SCALE));
-        Rect lineBox = line.bounds();
-        if (!lineBox.isEmpty()) targetHeight = Math.min(Math.max(1, lineBox.height()), targetHeight);
-        int top = centerY - targetHeight / 2;
-        int bottom = top + targetHeight;
-        if (!lineBox.isEmpty()) {
-            if (top < lineBox.top) { bottom += lineBox.top - top; top = lineBox.top; }
-            if (bottom > lineBox.bottom) { top -= bottom - lineBox.bottom; bottom = lineBox.bottom; }
-        }
-        top = Math.max(0, top);
-        bottom = Math.max(top + 1, bottom);
-        return new Rect(left, top, right, bottom);
-    }
-
-    private static ArrayList<Rect> canonicalCharBoxes(List<OcrDocument.CharUnit> chars,
-                                                       Rect rowBand) {
-        ArrayList<Rect> out = new ArrayList<>();
-        int n = chars.size();
-        int[] centers = new int[n];
-        for (int i = 0; i < n; i++) centers[i] = chars.get(i).bounds().centerX();
-
-        for (int i = 0; i < n; i++) {
-            OcrDocument.CharUnit unit = chars.get(i);
-            Rect raw = unit.bounds();
-            int leftLimit = i == 0 ? rowBand.left : (centers[i - 1] + centers[i]) / 2;
-            int rightLimit = i == n - 1 ? rowBand.right : (centers[i] + centers[i + 1]) / 2;
-            int left = Math.max(leftLimit, raw.left);
-            int right = Math.min(rightLimit, raw.right);
-            if (right <= left) {
-                left = Math.max(rowBand.left, Math.min(rowBand.right - 1, centers[i] - 1));
-                right = Math.min(rowBand.right, Math.max(left + 1, centers[i] + 1));
-            }
-
-            if (isCjk(unit.text())) {
-                int maxWidth = Math.max(2, Math.round(rowBand.height() * CJK_WIDTH_FACTOR));
-                if (right - left > maxWidth) {
-                    int cx = centers[i];
-                    left = Math.max(leftLimit, cx - maxWidth / 2);
-                    right = Math.min(rightLimit, left + maxWidth);
-                    if (right <= left) right = Math.min(rowBand.right, left + 1);
-                }
-            }
-            out.add(new Rect(left, rowBand.top, right, rowBand.bottom));
-        }
-        return out;
-    }
-
-    private static boolean shouldBreakGroup(OcrDocument.CharUnit previous,
-                                            OcrDocument.CharUnit current,
-                                            Rect previousBox,
-                                            Rect currentBox,
-                                            int rowHeight) {
-        if (previous == null || current == null || previousBox == null || currentBox == null) return true;
-        String a = previous.text();
-        String b = current.text();
-        if (isCjk(a) || isCjk(b)) return true;
-        if (!isLatinWordToken(a) || !isLatinWordToken(b)) return true;
-        int gap = currentBox.left - previousBox.right;
-        return gap > Math.max(1, Math.round(rowHeight * LATIN_WORD_GAP_FACTOR));
-    }
-
-    private static boolean isLatinWordToken(String value) {
-        if (value == null || value.isBlank()) return false;
-        for (int offset = 0; offset < value.length();) {
-            int cp = value.codePointAt(offset);
-            offset += Character.charCount(cp);
-            if (isCjk(cp)) return false;
-            if (!Character.isLetterOrDigit(cp) && cp != '\'' && cp != 0x2019 && cp != '-' && cp != '_') {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean isCjk(String value) {
-        if (value == null || value.isBlank()) return false;
-        for (int offset = 0; offset < value.length();) {
-            int cp = value.codePointAt(offset);
-            offset += Character.charCount(cp);
-            if (isCjk(cp)) return true;
-        }
-        return false;
-    }
-
-    private static boolean isCjk(int cp) {
-        Character.UnicodeBlock block = Character.UnicodeBlock.of(cp);
-        return block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS
-                || block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A
-                || block == Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS
-                || block == Character.UnicodeBlock.HIRAGANA
-                || block == Character.UnicodeBlock.KATAKANA
-                || block == Character.UnicodeBlock.HANGUL_SYLLABLES;
-    }
-
-    private static Rect union(List<OcrDocument.CharUnit> chars, Rect fallback) {
-        Rect out = null;
-        for (OcrDocument.CharUnit c : chars) {
-            if (c == null || c.bounds().isEmpty()) continue;
-            Rect r = c.bounds();
-            if (out == null) out = new Rect(r); else out.union(r);
-        }
-        return out == null ? new Rect(fallback) : out;
+        return index;
     }
 
     private OcrCanonicalGeometry() {}
