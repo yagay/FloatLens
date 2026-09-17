@@ -6,7 +6,7 @@ import android.graphics.RectF;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Pure screen-space text selection state used by CircleSelectOverlay/GoogleCircleInlineOverlay. */
+/** Pure screen-space text selection state used by GoogleCircleInlineOverlay. */
 final class CircleTextSelectionModel {
     private final ScreenBitmapTransform transform;
     private List<OcrDocument.CharUnit> chars = List.of();
@@ -46,15 +46,6 @@ final class CircleTextSelectionModel {
         startIndex = endIndex = -1;
         explicitSelection = List.of();
         characterAdjustment = false;
-    }
-
-    /** Select the complete OCR semantic group containing index. Kept for explicit group callers. */
-    void selectGroup(int index) {
-        if (!validIndex(index)) return;
-        explicitSelection = List.of();
-        characterAdjustment = false;
-        startIndex = groupStart(index);
-        endIndex = groupEnd(index);
     }
 
     /**
@@ -198,10 +189,6 @@ final class CircleTextSelectionModel {
         return List.copyOf(out);
     }
 
-    int selectedGroupCount() {
-        return selectionGroupViewRects(1, 1).size();
-    }
-
     int findWordAt(float viewX, float viewY, int viewWidth, int viewHeight) {
         if (chars.isEmpty() || viewWidth <= 0 || viewHeight <= 0) return -1;
         int sx = transform.viewXToScreen(viewX, viewWidth);
@@ -314,20 +301,6 @@ final class CircleTextSelectionModel {
         startIndex = hit.get(0);
         endIndex = hit.get(hit.size() - 1);
         return true;
-    }
-
-    /** Replace stale characters in a screen-space refined region. */
-    void mergeRefinement(OcrDocument translatedPatch, Rect screenRect) {
-        if (translatedPatch == null || !translatedPatch.isScreenSpace()
-                || screenRect == null || screenRect.isEmpty()) return;
-        ArrayList<OcrDocument.CharUnit> merged = new ArrayList<>();
-        for (OcrDocument.CharUnit c : chars) {
-            Rect r = c.bounds();
-            if (!Rect.intersects(r, screenRect)) merged.add(c);
-        }
-        merged.addAll(translatedPatch.chars());
-        chars = normalize(merged);
-        clear();
     }
 
     String selectedText() {
