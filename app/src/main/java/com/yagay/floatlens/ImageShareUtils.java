@@ -29,7 +29,7 @@ public final class ImageShareUtils {
         view.setOnLongClickListener(null);
         view.setClickable(true);
         view.setOnClickListener(v -> {
-            Rect anchor = FloatMenuAnchor.forView(v);
+            Rect anchor = SelectionGeometry.forView(v);
             ImageActionMenu.show(c, image, anchor);
         });
     }
@@ -98,8 +98,6 @@ public final class ImageShareUtils {
             SharedImage shared = prepareSharedImage(app, image);
             Intent view = new Intent(Intent.ACTION_VIEW);
             view.setDataAndType(shared.uri, "image/png");
-            // Intent#setClipData returns void on Android, so keep the permission payload separate
-            // instead of chaining it after setDataAndType().
             view.setClipData(ClipData.newRawUri("FloatLens image", shared.uri));
             view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
