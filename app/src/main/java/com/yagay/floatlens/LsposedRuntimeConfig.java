@@ -9,7 +9,6 @@ public final class LsposedRuntimeConfig {
     public static final String K_ENHANCED_MODE = "enhanced_mode";
     public static final String K_LSPOSED_ENABLED = "lsposed_enabled";
     public static final String K_SECURE_SCREENSHOT_ENABLED = "secure_screenshot_enabled";
-    public static final String K_VIEW_CONTENT_ENABLED = "view_content_enabled";
     public static final String K_SECURE_CAPTURE_ARMED_UNTIL = "secure_capture_armed_until_elapsed";
     public static final String K_UPDATED_AT = "updated_at";
     public static final int SCHEMA_VERSION = 3;
@@ -30,11 +29,6 @@ public final class LsposedRuntimeConfig {
         return isEnabled(
                 preferences.getBoolean(K_ENHANCED_MODE, false),
                 preferences.getBoolean(K_LSPOSED_ENABLED, false));
-    }
-
-    public static boolean isViewContentEnabled(SharedPreferences preferences) {
-        return isEnabled(preferences)
-                && preferences.getBoolean(K_VIEW_CONTENT_ENABLED, false);
     }
 
     public static boolean isSecureCaptureActive(boolean enhancedMode,
