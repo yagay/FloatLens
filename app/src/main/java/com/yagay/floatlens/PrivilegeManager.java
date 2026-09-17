@@ -1,7 +1,6 @@
 package com.yagay.floatlens;
 
 import android.content.Context;
-import android.content.SharedPreferences;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -95,12 +94,8 @@ public final class PrivilegeManager {
         Context app = context.getApplicationContext();
         ROOT_IO.execute(() -> {
             RootStatus status = runRootCheck();
-            long now = System.currentTimeMillis();
-            app.getSharedPreferences(FloatSettings.PREF, Context.MODE_PRIVATE).edit()
-                    .putBoolean(FloatSettings.K_ROOT_LAST_GRANTED, status.granted)
-                    .putLong(FloatSettings.K_ROOT_LAST_CHECK, now)
-                    .putString(FloatSettings.K_ROOT_LAST_DETAIL, status.detail)
-                    .apply();
+            new FloatSettings(app).saveRootCheck(
+                    status.granted, System.currentTimeMillis(), status.detail);
             DiagnosticLog.i(app, "PRIVILEGE", "root check granted=" + status.granted
                     + " detail=" + status.detail);
             if (callback != null) app.getMainExecutor().execute(() -> callback.accept(status));
@@ -141,10 +136,8 @@ public final class PrivilegeManager {
 
     /** Human-readable stored Root test result; does not execute su. */
     public static String storedRootStatus(Context context) {
-        SharedPreferences p = context.getSharedPreferences(FloatSettings.PREF, Context.MODE_PRIVATE);
-        long at = p.getLong(FloatSettings.K_ROOT_LAST_CHECK, 0L);
-        if (at <= 0L) return "尚未检测";
-        boolean granted = p.getBoolean(FloatSettings.K_ROOT_LAST_GRANTED, false);
-        return granted ? "已授权" : "未授权 / 不可用";
+        FloatSettings settings = new FloatSettings(context);
+        if (settings.rootLastCheckMs() <= 0L) return "尚未检测";
+        return settings.rootLastGranted() ? "已授权" : "未授权 / 不可用";
     }
 }
