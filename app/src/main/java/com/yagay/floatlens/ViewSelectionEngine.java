@@ -53,10 +53,7 @@ public final class ViewSelectionEngine {
     private long targetGeneration;
     private Future<?> targetFuture;
 
-    public ViewSelectionEngine(Context c) { this(c, null); }
-
-    /** ownerIcon is retained for source compatibility; probe geometry owns pointer positioning. */
-    public ViewSelectionEngine(Context c, FloatIconView ownerIcon) {
+    public ViewSelectionEngine(Context c) {
         context = c.getApplicationContext();
         accessibility = LensAccessibilityService.get();
         FloatSettings fs = new FloatSettings(context);
