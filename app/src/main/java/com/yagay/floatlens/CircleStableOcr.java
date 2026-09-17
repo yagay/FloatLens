@@ -6,7 +6,13 @@ import android.graphics.Bitmap;
 import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.TextRecognizer;
 
-/** Circle OCR adapter with independently selectable full-screen and local correction engines. */
+/**
+ * Circle OCR adapter with independently selectable text engines.
+ *
+ * <p>ML Kit is the canonical geometry/line/group owner for the full-screen index. When a PP model
+ * is selected for full-screen text, PP still supplies the recognized text while a single ML pass
+ * supplies the visual structure used by Circle selection.</p>
+ */
 final class CircleStableOcr {
     static void recognizeFullScreenSelected(Context context, Bitmap bitmap,
                                             OcrEngine.DocumentCallback callback) {
@@ -24,7 +30,7 @@ final class CircleStableOcr {
             recognizeFullScreenMlKit(app, bitmap, callback);
             return;
         }
-        recognizePaddle(app, bitmap, model, "full_screen_index", callback);
+        recognizePaddleFullWithMlGeometry(app, bitmap, model, callback);
     }
 
     static void recognizeCorrectionSelected(Context context, Bitmap bitmap,
@@ -43,6 +49,45 @@ final class CircleStableOcr {
             return;
         }
         recognizePaddle(app, bitmap, model, "gesture_correction", callback);
+    }
+
+    private static void recognizePaddleFullWithMlGeometry(Context app,
+                                                           Bitmap bitmap,
+                                                           int model,
+                                                           OcrEngine.DocumentCallback callback) {
+        long started = android.os.SystemClock.uptimeMillis();
+        recognizePaddle(app, bitmap, model, "full_screen_index", new OcrEngine.DocumentCallback() {
+            @Override public void onSuccess(OcrDocument ppDocument) {
+                recognizeFullScreenMlKit(app, bitmap, new OcrEngine.DocumentCallback() {
+                    @Override public void onSuccess(OcrDocument mlDocument) {
+                        OcrDocument canonical = CircleMlGeometryCanonicalizer.canonicalize(
+                                app, ppDocument, mlDocument);
+                        DiagnosticLog.i(app, "G_CIRCLE_FULL_CANONICAL",
+                                "textEngine=" + ppDocument.engine()
+                                        + " geometryEngine=" + mlDocument.engine()
+                                        + " finalEngine=" + canonical.engine()
+                                        + " chars=" + canonical.chars().size()
+                                        + " lines=" + canonical.lines().size()
+                                        + " elapsedMs="
+                                        + (android.os.SystemClock.uptimeMillis() - started)
+                                        + " selectionLogic=mlkit");
+                        callback.onSuccess(canonical);
+                    }
+
+                    @Override public void onFailure(Throwable error) {
+                        DiagnosticLog.i(app, "G_CIRCLE_FULL_CANONICAL",
+                                "mlGeometryFailed=true fallback=pp"
+                                        + " textEngine=" + ppDocument.engine()
+                                        + " error=" + safe(error));
+                        callback.onSuccess(ppDocument);
+                    }
+                });
+            }
+
+            @Override public void onFailure(Throwable error) {
+                callback.onFailure(error);
+            }
+        });
     }
 
     static void recognizeFullScreenMlKit(Context context, Bitmap bitmap,
