@@ -21,16 +21,16 @@ final class GoogleCircleController {
         ScreenshotHideCoordinator.Lease hideLease =
                 ScreenshotHideCoordinator.acquire(app, "google_circle_" + gen);
         pendingHideLease = hideLease;
-        int ocrEngineMode = new FloatSettings(app).ocrEngineMode();
+        FloatSettings fs = new FloatSettings(app);
         DiagnosticLog.i(app, "G_CIRCLE", "start gen=" + gen
                 + " phase=capture_then_fullscreen_ocr"
-                + " layoutDetection=disabled"
-                + " paragraphStitching=disabled"
-                + " textRecognition=settings_selected_fullscreen_once"
-                + " ocrEngineMode=" + ocrEngineMode
-                + " regionCache=full_frozen_frame"
+                + " fullEngine=" + CircleStableOcr.fullModeLabel(app)
+                + " fullMode=" + fs.circleFullOcrEngine()
+                + " correctionEngine=" + CircleStableOcr.correctionModeLabel(app)
+                + " correctionMode=" + fs.circleCorrectionEngine()
+                + " textRecognition=full_once_plus_optional_per_gesture_correction"
+                + " layoutDetection=disabled paragraphStitching=disabled"
                 + " backgroundOcr=false tileOcr=false fullFrameOcr=true"
-                + " preindexBlocking=false localFallback=last_resort_only"
                 + " viewText=false semanticLabels=false contentHints=false"
                 + " gestureGeometry=exact_path"
                 + " tapSelection=precise_char_or_latin_word"
@@ -45,9 +45,8 @@ final class GoogleCircleController {
                 }
             }
 
-            // Initialize per-frame full-screen OCR state. Recognition itself starts on the first
-            // text gesture, follows the OCR engine selected in Settings, and is then reused for
-            // every later tap/highlight/scribble in this frozen frame.
+            // Initialize per-frame OCR state. Full-screen recognition starts on the first text
+            // gesture and is cached. Optional PP correction is then evaluated on every text gesture.
             GoogleCircleTextResolver.preload(app, frame);
 
             boolean shown = GoogleCircleInlineOverlay.show(app, frame, () -> {
@@ -64,8 +63,6 @@ final class GoogleCircleController {
                 return;
             }
 
-            // The edge indicator is added after the frozen frame and workspace are ready. Therefore
-            // it stays above the workspace but can never be captured into the frozen source bitmap.
             CircleActiveBorderOverlay.show(app);
 
             FlSystemPanelController.onOverlayReady(app, shadeState, "google_circle",
