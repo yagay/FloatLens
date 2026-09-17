@@ -171,6 +171,7 @@ public final class FloatSettings {
     public boolean imeAvoid() { return p.getBoolean(K_IME_AVOID, true); }
     public boolean defaultHideByApp() { return p.getBoolean(K_GLOBAL_DEFAULT_HIDE, false); }
     public boolean hideWithoutNotify() { return p.getBoolean(K_HIDE_ICON_NO_NOTIFY, false); }
+    public boolean edgeSwipeRecallEnabled() { return p.getBoolean(K_HIDE_MAIN_SWIPE, true); }
 
     public boolean enhancedMode() { return p.getBoolean(K_ENHANCED_MODE, false); }
     public boolean rootEnabled() { return p.getBoolean(K_ROOT_ENABLED, false); }
@@ -214,6 +215,7 @@ public final class FloatSettings {
     public String slidePics() { return p.getString(K_SLIDE_PICS, ""); }
     public int slideIntervalMs() { return clamp(p.getInt(K_SLIDE_INTERVAL, 3000), 500, 60000); }
     public String action(String key, String def) { return p.getString(key, def); }
+    public String hiddenPackagesRaw() { return p.getString(K_HIDE_PACKAGES, ""); }
 
     public void setBoolean(String key, boolean value) {
         if (key != null && !key.isBlank()) p.edit().putBoolean(key, value).apply();
@@ -227,12 +229,25 @@ public final class FloatSettings {
         if (key != null && !key.isBlank()) p.edit().putString(key, value == null ? "" : value).apply();
     }
 
-    /** Legacy escape hatch for atomic/batch migration code; normal UI should use typed accessors. */
+    public void setLineColors(String value) { setString(K_LINE_COLORS, value); }
+    public void setHiddenPackagesRaw(String value) { setString(K_HIDE_PACKAGES, value); }
+
+    /** Compound icon selection stays atomic so URI and style cannot drift apart. */
+    public void selectCustomIcon(String uri) {
+        p.edit().putString(K_CUSTOM_ICON, uri == null ? "" : uri).putInt(K_STYLE, 3).apply();
+    }
+
+    /** Compound slideshow selection stays atomic so URI list and style cannot drift apart. */
+    public void selectSlideIcons(String joinedUris) {
+        p.edit().putString(K_SLIDE_PICS, joinedUris == null ? "" : joinedUris).putInt(K_STYLE, 4).apply();
+    }
+
+    /** Legacy escape hatch for migration and state that genuinely requires one atomic editor. */
     @Deprecated
     public SharedPreferences prefs() { return p; }
 
     public Set<String> hiddenPackages() {
-        String raw = p.getString(K_HIDE_PACKAGES, "");
+        String raw = hiddenPackagesRaw();
         Set<String> out = new HashSet<>();
         if (raw == null || raw.isBlank()) return out;
         Arrays.stream(raw.split("[,\\n; ]+"))
