@@ -22,14 +22,14 @@ final class CircleSelectionPlanner {
 
     static final class Plan {
         final Mode mode;
-        final GoogleCircleSelection.Selection gesture;
+        final FLCircleSelection.Selection gesture;
         final OcrDocument baselineSelection;
         final List<Rect> rowBoundsScreen;
         final Rect selectionBoundsScreen;
         final Rect correctionBitmapRoi;
 
         Plan(Mode mode,
-             GoogleCircleSelection.Selection gesture,
+             FLCircleSelection.Selection gesture,
              OcrDocument baselineSelection,
              List<Rect> rowBoundsScreen,
              Rect selectionBoundsScreen,
@@ -59,8 +59,8 @@ final class CircleSelectionPlanner {
     private static final float ROW_MATCH_MIN_WIDTH_COVERAGE = 0.72f;
 
     static Plan plan(Context context,
-                     GoogleCircleCapture.Frame frame,
-                     GoogleCircleSelection.Selection gesture,
+                     FLCircleCapture.Frame frame,
+                     FLCircleSelection.Selection gesture,
                      OcrDocument document) {
         if (context == null || frame == null || gesture == null || !usable(document)) return null;
 
@@ -68,12 +68,12 @@ final class CircleSelectionPlanner {
                 context, frame, gesture, document, TAP_TOLERANCE_DP, RANGE_CORRIDOR_DP);
         if (hits.isEmpty()) return null;
 
-        Mode mode = gesture.kind == GoogleCircleSelection.Kind.TAP ? Mode.TAP : Mode.RANGE;
+        Mode mode = gesture.kind == FLCircleSelection.Kind.TAP ? Mode.TAP : Mode.RANGE;
         OcrDocument selection = CircleGestureTextSelector.documentFromGroups(
                 hits, document, "circle-plan-baseline");
         List<Rect> rows = lineBounds(selection);
 
-        if (gesture.kind != GoogleCircleSelection.Kind.TAP) {
+        if (gesture.kind != FLCircleSelection.Kind.TAP) {
             int minLine = Integer.MAX_VALUE;
             int maxLine = Integer.MIN_VALUE;
             Set<Integer> lineIds = new HashSet<>();
@@ -105,7 +105,7 @@ final class CircleSelectionPlanner {
         }
         Rect correctionRoi = correctionRoi(context, frame, gesture, selectionBounds);
 
-        DiagnosticLog.i(context, "G_CIRCLE_SELECTION_PLAN",
+        DiagnosticLog.i(context, "FL_CIRCLE_SELECTION_PLAN",
                 "kind=" + gesture.kind
                         + " mode=" + mode
                         + " rows=" + rows.size()
@@ -119,7 +119,7 @@ final class CircleSelectionPlanner {
     }
 
     static OcrDocument selectCorrection(Context context,
-                                        GoogleCircleCapture.Frame frame,
+                                        FLCircleCapture.Frame frame,
                                         Plan plan,
                                         OcrDocument correctionScreen) {
         if (context == null || frame == null || plan == null || !usable(correctionScreen)) {
@@ -153,7 +153,7 @@ final class CircleSelectionPlanner {
                     }
                 }
                 if (best == null) {
-                    DiagnosticLog.i(context, "G_CIRCLE_CORRECTION_PLAN",
+                    DiagnosticLog.i(context, "FL_CIRCLE_CORRECTION_PLAN",
                             "mode=FULL_LINES accepted=false reason=row_missing target="
                                     + targetRow.toShortString());
                     return null;
@@ -161,7 +161,7 @@ final class CircleSelectionPlanner {
                 Rect bestBounds = best.bounds();
                 float widthCoverage = horizontalCoverage(targetRow, bestBounds);
                 if (widthCoverage < ROW_MATCH_MIN_WIDTH_COVERAGE) {
-                    DiagnosticLog.i(context, "G_CIRCLE_CORRECTION_PLAN",
+                    DiagnosticLog.i(context, "FL_CIRCLE_CORRECTION_PLAN",
                             "mode=FULL_LINES accepted=false reason=row_width_coverage"
                                     + " coverage=" + widthCoverage
                                     + " target=" + targetRow.toShortString()
@@ -176,7 +176,7 @@ final class CircleSelectionPlanner {
             }
             OcrDocument selected = CircleGestureTextSelector.documentFromGroups(
                     matchedGroups, correctionScreen, "circle-plan-correction-full-lines");
-            DiagnosticLog.i(context, "G_CIRCLE_CORRECTION_PLAN",
+            DiagnosticLog.i(context, "FL_CIRCLE_CORRECTION_PLAN",
                     "mode=FULL_LINES accepted=" + usable(selected)
                             + " rows=" + matchedRows
                             + " groups=" + matchedGroups.size()
@@ -206,7 +206,7 @@ final class CircleSelectionPlanner {
         }
         OcrDocument selected = CircleGestureTextSelector.documentFromGroups(
                 groups, correctionScreen, "circle-plan-correction-range");
-        DiagnosticLog.i(context, "G_CIRCLE_CORRECTION_PLAN",
+        DiagnosticLog.i(context, "FL_CIRCLE_CORRECTION_PLAN",
                 "mode=RANGE accepted=" + usable(selected)
                         + " groups=" + groups.size()
                         + " chars=" + (selected == null ? 0 : selected.chars().size())
@@ -300,12 +300,12 @@ final class CircleSelectionPlanner {
     }
 
     private static Rect correctionRoi(Context app,
-                                      GoogleCircleCapture.Frame frame,
-                                      GoogleCircleSelection.Selection gesture,
+                                      FLCircleCapture.Frame frame,
+                                      FLCircleSelection.Selection gesture,
                                       Rect selectionBoundsScreen) {
         int width = frame.bitmap.getWidth();
         int height = frame.bitmap.getHeight();
-        if (gesture.kind == GoogleCircleSelection.Kind.TAP) {
+        if (gesture.kind == FLCircleSelection.Kind.TAP) {
             int halfW = bitmapPxForDp(app, frame, TAP_HALF_WIDTH_DP);
             int halfH = bitmapPxForDp(app, frame, TAP_HALF_HEIGHT_DP);
             int cx = Math.round(gesture.focus.x);
@@ -315,7 +315,7 @@ final class CircleSelectionPlanner {
         }
 
         Rect base = selectionBoundsScreen == null || selectionBoundsScreen.isEmpty()
-                ? GoogleCircleSelection.exactRectAndClamp(gesture.bounds, width, height)
+                ? FLCircleSelection.exactRectAndClamp(gesture.bounds, width, height)
                 : frame.screenRectToBitmap(selectionBoundsScreen);
         if (base.isEmpty()) return new Rect();
         int padX = bitmapPxForDp(app, frame, RANGE_PAD_X_DP);
@@ -345,7 +345,7 @@ final class CircleSelectionPlanner {
         return new Rect(left, top, right, bottom);
     }
 
-    private static int bitmapPxForDp(Context app, GoogleCircleCapture.Frame frame, float dp) {
+    private static int bitmapPxForDp(Context app, FLCircleCapture.Frame frame, float dp) {
         float density = app.getResources().getDisplayMetrics().density;
         return Math.max(1, Math.round(frame.transform.screenDistanceToBitmap(
                 Math.max(1f, dp * density))));
