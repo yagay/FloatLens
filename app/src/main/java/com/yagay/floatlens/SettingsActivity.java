@@ -3,7 +3,6 @@ package com.yagay.floatlens;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 
 import androidx.appcompat.app.AppCompatActivity;
@@ -24,7 +23,6 @@ public class SettingsActivity extends AppCompatActivity {
     static final int REQUEST_SLIDE_ICONS = 402;
 
     private FloatSettings fs;
-    private EditText hidePackagesEdit;
 
     public static Intent intent(Context c, int section) {
         return new Intent(c, SettingsActivity.class).putExtra(EXTRA_SECTION, section);
@@ -39,11 +37,7 @@ public class SettingsActivity extends AppCompatActivity {
             case SECTION_ICON -> root = SettingsIconPage.build(this, fs);
             case SECTION_GESTURE -> root = SettingsGesturePage.build(this, fs);
             case SECTION_CAPTURE -> root = SettingsCapturePage.build(this, fs);
-            case SECTION_ENVIRONMENT -> {
-                SettingsEnvironmentPage.Result result = SettingsEnvironmentPage.build(this, fs);
-                hidePackagesEdit = result.hidePackagesEdit;
-                root = result.root;
-            }
+            case SECTION_ENVIRONMENT -> root = SettingsEnvironmentPage.build(this, fs);
             case SECTION_ACTIONS -> root = SettingsActionsPage.build(this, fs);
             case SECTION_PRIVILEGE -> root = PrivilegeSettingsPanel.build(this, fs);
             default -> root = buildHomePage();
@@ -70,18 +64,6 @@ public class SettingsActivity extends AppCompatActivity {
                 () -> startActivity(intent(this, section))));
     }
 
-    @Override protected void onPause() {
-        saveHidePackages();
-        super.onPause();
-    }
-
-    private void saveHidePackages() {
-        if (hidePackagesEdit != null && fs != null) {
-            fs.prefs().edit().putString(FloatSettings.K_HIDE_PACKAGES,
-                    hidePackagesEdit.getText().toString()).apply();
-        }
-    }
-
     private void persistReadPermission(android.net.Uri uri) {
         if (uri == null) return;
         try {
@@ -95,8 +77,7 @@ public class SettingsActivity extends AppCompatActivity {
         if (requestCode == REQUEST_CUSTOM_ICON && resultCode == RESULT_OK
                 && data != null && data.getData() != null) {
             persistReadPermission(data.getData());
-            fs.prefs().edit().putString(FloatSettings.K_CUSTOM_ICON, data.getData().toString())
-                    .putInt(FloatSettings.K_STYLE, 3).apply();
+            fs.selectCustomIcon(data.getData().toString());
         } else if (requestCode == REQUEST_SLIDE_ICONS && resultCode == RESULT_OK && data != null) {
             java.util.ArrayList<String> uris = new java.util.ArrayList<>();
             if (data.getClipData() != null) {
@@ -110,10 +91,7 @@ public class SettingsActivity extends AppCompatActivity {
                 uris.add(data.getData().toString());
                 persistReadPermission(data.getData());
             }
-            if (!uris.isEmpty()) {
-                fs.prefs().edit().putString(FloatSettings.K_SLIDE_PICS, String.join("|", uris))
-                        .putInt(FloatSettings.K_STYLE, 4).apply();
-            }
+            if (!uris.isEmpty()) fs.selectSlideIcons(String.join("|", uris));
         }
     }
 }
