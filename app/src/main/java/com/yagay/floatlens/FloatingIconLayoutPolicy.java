@@ -13,12 +13,10 @@ import android.view.WindowManager;
  */
 final class FloatingIconLayoutPolicy {
     private final Context app;
-    private final WindowManager wm;
     private FloatSettings settings;
 
     FloatingIconLayoutPolicy(Context c, FloatSettings settings) {
         app = c.getApplicationContext();
-        wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
         this.settings = settings;
     }
 
@@ -29,7 +27,7 @@ final class FloatingIconLayoutPolicy {
     }
 
     int[] displaySize() {
-        Rect b = wm.getCurrentWindowMetrics().getBounds();
+        Rect b = ScreenGeometry.displayBounds(app);
         return new int[]{b.width(), b.height()};
     }
 
@@ -40,13 +38,10 @@ final class FloatingIconLayoutPolicy {
         int defaultY = wh[1] / 3;
         WindowManager.LayoutParams lp = baseLayout(px);
 
-        boolean hasSavedX = settings.prefs().contains(settings.posXKey())
-                || settings.prefs().contains(FloatSettings.K_POS_X);
-        int savedX = settings.prefs().getInt(settings.posXKey(),
-                settings.prefs().getInt(FloatSettings.K_POS_X, defaultX));
+        boolean hasSavedX = settings.hasSavedX();
+        int savedX = settings.savedX(defaultX);
         lp.x = savedX;
-        lp.y = settings.prefs().getInt(settings.posYKey(),
-                settings.prefs().getInt(FloatSettings.K_POS_Y, defaultY));
+        lp.y = settings.savedY(defaultY);
 
         // A persisted X coordinate is the most reliable source of truth for the side. Older builds
         // wrote gravity and X/Y using separate asynchronous apply() calls, so gravity could remain
@@ -138,11 +133,7 @@ final class FloatingIconLayoutPolicy {
 
         // Position commits are infrequent and user initiated. Persist side + X + Y atomically and
         // synchronously so a reboot cannot leave gravity and coordinates from different moves.
-        boolean saved = settings.prefs().edit()
-                .putInt(settings.gravityKey(), left ? 0 : 1)
-                .putInt(settings.posXKey(), primary.x)
-                .putInt(settings.posYKey(), primary.y)
-                .commit();
+        boolean saved = settings.savePosition(left, primary.x, primary.y);
         DiagnosticLog.i(app, "POSITION", "persist x=" + primary.x + " y=" + primary.y
                 + " side=" + (left ? "L" : "R")
                 + " landscape=" + settings.isLandscape()
