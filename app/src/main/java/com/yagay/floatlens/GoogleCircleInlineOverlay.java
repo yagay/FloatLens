@@ -21,12 +21,12 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Frozen-screen Circle workspace with TextMap-guided lazy OCR and editable screenshot selection.
+ * Frozen-screen Circle workspace with cached OCR text, gesture selection and editable screenshots.
  *
- * <p>TextMap supplies only a recognition context ROI. The resolver keeps the complete lazily OCR'd
- * context document loaded, while the actual tap/highlight/scribble gesture initializes the selected
- * range. Selection handles can then extend through the retained context. A closed CIRCLE remains an
- * exact editable screenshot rectangle and never becomes text OCR.</p>
+ * <p>The resolver retains the complete OCR context document for the frozen frame while the actual
+ * tap/highlight/scribble gesture initializes the selected range. Selection handles can then extend
+ * through that retained context. A closed CIRCLE remains an exact editable screenshot rectangle and
+ * never becomes text OCR.</p>
  */
 final class GoogleCircleInlineOverlay {
     private static WorkspaceView active;
@@ -63,8 +63,8 @@ final class GoogleCircleInlineOverlay {
         if (!shadeExpanded) view.promoteKeyFocus("initial");
         DiagnosticLog.i(app, "G_CIRCLE_INLINE", "overlay shown frame=" + bounds.toShortString()
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
-                + " textRecognition=textmap_lazy_roi_mlkit"
-                + " selectionModel=context_document_plus_gesture_range"
+                + " textRecognition=full_frame_cached_ocr"
+                + " selectionModel=cached_document_plus_gesture_range"
                 + " geometry=shared_frame_transform"
                 + " screenshotMode=circle_edit_confirm autoExpand=false");
         return true;
@@ -231,7 +231,7 @@ final class GoogleCircleInlineOverlay {
             confirmTextPaint.setTextAlign(Paint.Align.CENTER);
 
             DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT",
-                    "ready chars=0 recognition=textmap_lazy_roi selection=gesture_scoped_range");
+                    "ready chars=0 recognition=full_frame_cached_ocr selection=gesture_scoped_range");
         }
 
         void promoteKeyFocus(String reason) {
@@ -478,7 +478,6 @@ final class GoogleCircleInlineOverlay {
 
                     FloatActionMenu.dismiss();
                     ImageActionMenu.dismiss();
-                    FloatMenuAnchor.clear();
 
                     if (textSelection.hasSelection()) {
                         int textHandle = hitTextHandle(x, y);
@@ -612,7 +611,7 @@ final class GoogleCircleInlineOverlay {
                     + " bounds=" + gesture.bounds.toShortString()
                     + " points=" + gesture.points.size()
                     + " routing=" + (gesture.kind == GoogleCircleSelection.Kind.CIRCLE
-                    ? "editable_screenshot" : "textmap_lazy_roi")
+                    ? "editable_screenshot" : "cached_full_ocr")
                     + " autoExpand=false");
 
             if (gesture.kind == GoogleCircleSelection.Kind.CIRCLE) {
@@ -661,7 +660,7 @@ final class GoogleCircleInlineOverlay {
                 return;
             }
 
-            // Keep the complete lazy-OCR context document. Only the initial range comes from the
+            // Keep the complete cached OCR context document. Only the initial range comes from the
             // actual gesture-scoped hint returned by the resolver.
             textSelection.setDocument(result.document);
             boolean selected = selectFromResolvedDocument(gesture, result);
@@ -890,7 +889,6 @@ final class GoogleCircleInlineOverlay {
             resolvingText = false;
             FloatActionMenu.dismiss();
             ImageActionMenu.dismiss();
-            FloatMenuAnchor.clear();
             host.remove(this, "google_circle_inline");
             frame.recycle();
             GoogleCircleInlineOverlay.onClosed(this);
@@ -903,7 +901,7 @@ final class GoogleCircleInlineOverlay {
         }
 
         private float dp(float value) {
-            return value * getResources().getDisplayMetrics().density;
+            return ScreenGeometry.dp(context, value);
         }
 
         private float distance(float x1, float y1, float x2, float y2) {
