@@ -99,16 +99,23 @@ public final class SelectionPointTransformer {
         float helperInset = dp(FL_Y_HELPER_INSET_DP);
         float iconLeft = startIconLeft + (rawX - downRawX);
 
-        // FL X path: K(false) + rawX - downRawX - 25dp.
-        float x = iconLeft - dp(FL_X_PROBE_OFFSET_DP);
+        // The probe must lead away from the parked screen edge. Keep the existing right-side path,
+        // and mirror it around the icon bounds for a left-side icon so the probe stays on-screen.
+        float probeOffset = dp(FL_X_PROBE_OFFSET_DP);
+        float x = gestureLeftSide
+                ? iconLeft + iconWidth + probeOffset
+                : iconLeft - probeOffset;
         boolean rightCompensation = false;
         float rightThreshold = Float.NaN;
         if (!screen.isEmpty()) {
             float edgeX = rawX + lead;
             rightThreshold = screen.right - iconWidth - edgeSpan - lead;
-            if (edgeX > rightThreshold) {
+            if (!gestureLeftSide && edgeX > rightThreshold) {
                 x += edgeX - rightThreshold;
                 rightCompensation = true;
+            }
+            if (gestureLeftSide) {
+                x = Math.max(screen.left, Math.min(x, screen.right - 1f));
             }
         }
 
