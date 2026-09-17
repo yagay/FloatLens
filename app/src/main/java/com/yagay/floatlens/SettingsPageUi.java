@@ -151,6 +151,48 @@ final class SettingsPageUi {
         addSpinnerRow(parent, "OCR 引擎", spinner, true);
     }
 
+    void circleFullOcrEngineSpinner(LinearLayout parent) {
+        String[] labels = {
+                "ML Kit 快速",
+                "PP-OCRv6 Tiny 超轻量",
+                "PP-OCRv6 Small 平衡",
+                "PP-OCRv6 Medium 高精度"
+        };
+        Spinner spinner = new Spinner(activity);
+        spinner.setAdapter(new ArrayAdapter<>(activity,
+                android.R.layout.simple_spinner_dropdown_item, labels));
+        spinner.setSelection(fs.circleFullOcrEngine());
+        spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(android.widget.AdapterView<?> p, android.view.View v,
+                                                 int pos, long id) {
+                fs.prefs().edit().putInt(FloatSettings.K_CIRCLE_FULL_OCR_ENGINE, pos).apply();
+            }
+            @Override public void onNothingSelected(android.widget.AdapterView<?> p) {}
+        });
+        addSpinnerRow(parent, "整屏识别引擎", spinner, true);
+    }
+
+    void circleCorrectionEngineSpinner(LinearLayout parent) {
+        String[] labels = {
+                "关闭局部校正",
+                "PP-OCRv6 Tiny 超轻量",
+                "PP-OCRv6 Small 平衡",
+                "PP-OCRv6 Medium 高精度"
+        };
+        Spinner spinner = new Spinner(activity);
+        spinner.setAdapter(new ArrayAdapter<>(activity,
+                android.R.layout.simple_spinner_dropdown_item, labels));
+        spinner.setSelection(fs.circleCorrectionEngine());
+        spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(android.widget.AdapterView<?> p, android.view.View v,
+                                                 int pos, long id) {
+                fs.prefs().edit().putInt(FloatSettings.K_CIRCLE_CORRECTION_ENGINE, pos).apply();
+            }
+            @Override public void onNothingSelected(android.widget.AdapterView<?> p) {}
+        });
+        addSpinnerRow(parent, "局部校正引擎", spinner, true);
+    }
+
     void addSpinnerRow(LinearLayout parent, String label, Spinner spinner, boolean vertical) {
         LinearLayout block = AppUi.settingBlock(activity);
         if (vertical) {
