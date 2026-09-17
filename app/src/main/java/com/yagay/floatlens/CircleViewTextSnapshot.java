@@ -2,11 +2,9 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.Paint;
 import android.graphics.Rect;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -17,56 +15,41 @@ import java.util.Set;
 /**
  * View-first text snapshot used by Circle full-screen ML Kit recognition.
  *
- * <p>Only real Accessibility {@code getText()} candidates from clearly text-only View classes are
- * accepted for OCR exclusion. Mixed image+text Views, WebViews, containers, buttons and custom
- * Views stay untouched so ML Kit can still see any visual text inside them.</p>
+ * <p>Accessibility text is kept as the preferred text source, but the screenshot is never masked
+ * by whole View bounds. A TextView can contain compound drawables/images and a custom View can mix
+ * text with visual content, so erasing the whole View would hide pixels that ML Kit still needs.
+ * Duplicate ML text is removed only when its text matches an overlapping Accessibility text line.</p>
  */
 final class CircleViewTextSnapshot {
     private static final float VIEW_GEOMETRY_CONFIDENCE = 0.92f;
-    private static final int MAX_BORDER_SAMPLES_PER_EDGE = 12;
 
     static final class Snapshot {
         private final OcrDocument viewDocument;
-        private final List<Rect> maskRects;
         private final int viewCount;
 
-        Snapshot(OcrDocument viewDocument, List<Rect> maskRects, int viewCount) {
+        Snapshot(OcrDocument viewDocument, int viewCount) {
             this.viewDocument = viewDocument;
-            this.maskRects = maskRects == null ? List.of() : copyRects(maskRects);
             this.viewCount = Math.max(0, viewCount);
         }
 
         boolean isEmpty() {
-            return viewDocument == null || viewDocument.chars().isEmpty() || maskRects.isEmpty();
+            return viewDocument == null || viewDocument.chars().isEmpty();
         }
 
         int viewCount() { return viewCount; }
         int charCount() { return viewDocument == null ? 0 : viewDocument.chars().size(); }
-        int maskCount() { return maskRects.size(); }
-
-        /** Masks only accepted pure-text View bounds in-place using the surrounding background. */
-        int mask(Bitmap bitmap) {
-            if (bitmap == null || bitmap.isRecycled() || !bitmap.isMutable() || maskRects.isEmpty()) {
-                return 0;
-            }
-            Canvas canvas = new Canvas(bitmap);
-            Paint paint = new Paint();
-            paint.setStyle(Paint.Style.FILL);
-            Rect bitmapBounds = new Rect(0, 0, bitmap.getWidth(), bitmap.getHeight());
-            int count = 0;
-            for (Rect source : maskRects) {
-                Rect r = new Rect(source);
-                if (!r.intersect(bitmapBounds) || r.isEmpty()) continue;
-                paint.setColor(sampleBorderColor(bitmap, r));
-                canvas.drawRect(r, paint);
-                count++;
-            }
-            return count;
-        }
+        int maskCount() { return 0; }
 
         /**
-         * Merges direct View text with ML Kit output. Residual ML characters inside an actually
-         * masked pure-text View are discarded to avoid duplicates. Mixed Views are never in masks.
+         * Whole-View masking is intentionally disabled. ML Kit must always receive the complete
+         * screenshot so images/icons inside a text-bearing View remain visible to OCR.
+         */
+        int mask(Bitmap bitmap) { return 0; }
+
+        /**
+         * Merges View text with ML Kit. ML text is dropped only when an overlapping View line has
+         * the same normalized text. Different text inside the same View bounds is preserved, which
+         * is essential for image+text compound Views.
          */
         OcrDocument merge(OcrDocument mlDocument, int width, int height) {
             if (viewDocument == null || viewDocument.chars().isEmpty()) return mlDocument;
@@ -74,24 +57,10 @@ final class CircleViewTextSnapshot {
 
             ArrayList<OcrDocument.Line> lines = new ArrayList<>();
             lines.addAll(viewDocument.lines());
-            for (OcrDocument.Line line : mlDocument.lines()) {
-                if (line == null || line.chars().isEmpty()) continue;
-                ArrayList<OcrDocument.CharUnit> kept = new ArrayList<>();
-                Rect keptBounds = new Rect();
-                StringBuilder text = new StringBuilder();
-                for (OcrDocument.CharUnit c : line.chars()) {
-                    if (c == null || c.text().isBlank() || c.bounds().isEmpty()) continue;
-                    Rect b = c.bounds();
-                    if (insideAnyMask(b.centerX(), b.centerY())) continue;
-                    kept.add(c);
-                    if (keptBounds.isEmpty()) keptBounds.set(b); else keptBounds.union(b);
-                    text.append(c.text());
-                }
-                if (!kept.isEmpty() && !keptBounds.isEmpty()) {
-                    String lineText = text.toString().trim();
-                    if (lineText.isEmpty()) lineText = line.text();
-                    lines.add(new OcrDocument.Line(lineText, keptBounds, line.confidence(), kept));
-                }
+            for (OcrDocument.Line mlLine : mlDocument.lines()) {
+                if (mlLine == null || mlLine.chars().isEmpty() || mlLine.bounds().isEmpty()) continue;
+                if (duplicatesViewText(mlLine)) continue;
+                lines.add(mlLine);
             }
 
             return rebuild(lines,
@@ -99,9 +68,24 @@ final class CircleViewTextSnapshot {
                     mlDocument.confidence(), mlDocument.score(), width, height);
         }
 
-        private boolean insideAnyMask(int x, int y) {
-            for (Rect r : maskRects) {
-                if (r != null && r.contains(x, y)) return true;
+        private boolean duplicatesViewText(OcrDocument.Line mlLine) {
+            String ml = normalizeText(mlLine.text());
+            if (ml.isEmpty()) return false;
+            Rect mr = mlLine.bounds();
+            for (OcrDocument.Line viewLine : viewDocument.lines()) {
+                if (viewLine == null || viewLine.bounds().isEmpty()) continue;
+                String view = normalizeText(viewLine.text());
+                if (view.isEmpty() || !view.equals(ml)) continue;
+                Rect vr = viewLine.bounds();
+                Rect intersection = new Rect();
+                if (!intersection.setIntersect(mr, vr)) continue;
+                long overlap = (long) intersection.width() * intersection.height();
+                long smaller = Math.max(1L, Math.min(area(mr), area(vr)));
+                if (overlap >= smaller * 35L / 100L
+                        || vr.contains(mr.centerX(), mr.centerY())
+                        || mr.contains(vr.centerX(), vr.centerY())) {
+                    return true;
+                }
             }
             return false;
         }
@@ -126,10 +110,8 @@ final class CircleViewTextSnapshot {
         if (candidates == null || candidates.isEmpty()) return empty(bitmap);
 
         ArrayList<RawLine> rawLines = new ArrayList<>();
-        ArrayList<Rect> masks = new ArrayList<>();
         Set<String> seen = new HashSet<>();
-        int pureTextViews = 0;
-        int mixedTextViewsSkipped = 0;
+        int textViews = 0;
         for (ScreenCandidate candidate : candidates) {
             if (candidate == null
                     || candidate.source() != ScreenCandidate.Source.ACCESSIBILITY
@@ -140,11 +122,6 @@ final class CircleViewTextSnapshot {
             String value = candidate.text() == null ? "" : candidate.text().trim();
             if (value.isEmpty()) continue;
 
-            if (!isPureTextView(candidate)) {
-                mixedTextViewsSkipped++;
-                continue;
-            }
-
             Rect screenBounds = candidate.bounds();
             if (screenBounds.isEmpty()) continue;
             Rect bitmapBounds = transform.screenToBitmap(screenBounds);
@@ -154,49 +131,17 @@ final class CircleViewTextSnapshot {
 
             String key = value + "@" + bitmapBounds.flattenToString();
             if (!seen.add(key)) continue;
-            masks.add(new Rect(bitmapBounds));
             appendTextLines(rawLines, value, bitmapBounds);
-            pureTextViews++;
+            textViews++;
         }
 
         OcrDocument document = buildViewDocument(rawLines, bitmap.getWidth(), bitmap.getHeight());
         DiagnosticLog.i(app, "G_CIRCLE_VIEW_TEXT",
-                "capturedPureTextViews=" + pureTextViews
-                        + " skippedMixedTextViews=" + mixedTextViewsSkipped
+                "capturedTextViews=" + textViews
                         + " chars=" + (document == null ? 0 : document.chars().size())
-                        + " maskRects=" + masks.size()
-                        + " policy=pure_text_class_only_mixed_views_to_mlkit");
-        return new Snapshot(document, masks, pureTextViews);
-    }
-
-    /**
-     * Deliberately conservative: only classes whose Accessibility surface represents text itself
-     * are allowed to erase their whole bounds from the OCR bitmap. Anything that may contain an
-     * image or custom rendering is left for ML Kit.
-     */
-    private static boolean isPureTextView(ScreenCandidate candidate) {
-        if (candidate == null) return false;
-        String cls = candidate.className() == null
-                ? "" : candidate.className().trim().toLowerCase(Locale.ROOT);
-        if (cls.isEmpty()) return false;
-
-        if (cls.contains("webview") || cls.contains("image") || cls.contains("button")
-                || cls.contains("layout") || cls.contains("container") || cls.contains("compose")
-                || cls.contains("surface") || cls.contains("texture") || cls.endsWith(".view")
-                || cls.equals("android.view.view")) {
-            return false;
-        }
-
-        return cls.equals("android.widget.textview")
-                || cls.endsWith(".textview")
-                || cls.contains("appcompattextview")
-                || cls.contains("materialtextview")
-                || cls.equals("android.widget.edittext")
-                || cls.endsWith(".edittext")
-                || cls.contains("appcompatedittext")
-                || cls.contains("textinputedittext")
-                || cls.equals("android.widget.checkedtextview")
-                || cls.endsWith(".checkedtextview");
+                        + " maskRects=0"
+                        + " policy=view_text_merge_no_pixel_mask_text_match_dedupe");
+        return new Snapshot(document, textViews);
     }
 
     private static void appendTextLines(List<RawLine> out, String value, Rect bounds) {
@@ -290,66 +235,26 @@ final class CircleViewTextSnapshot {
                 confidence, score, Math.max(1, width), Math.max(1, height));
     }
 
-    private static int sampleBorderColor(Bitmap bitmap, Rect rect) {
-        long alpha = 0L, red = 0L, green = 0L, blue = 0L;
-        int count = 0;
-        int top = rect.top - 1;
-        int bottom = rect.bottom;
-        int left = rect.left - 1;
-        int right = rect.right;
+    private static String normalizeText(String value) {
+        if (value == null || value.isBlank()) return "";
+        String normalized = Normalizer.normalize(value, Normalizer.Form.NFKC)
+                .toLowerCase(Locale.ROOT);
+        StringBuilder out = new StringBuilder();
+        normalized.codePoints().forEach(cp -> {
+            if (!Character.isWhitespace(cp)) out.appendCodePoint(cp);
+        });
+        return out.toString();
+    }
 
-        int xStep = Math.max(1, rect.width() / MAX_BORDER_SAMPLES_PER_EDGE);
-        for (int x = rect.left; x < rect.right; x += xStep) {
-            if (top >= 0) {
-                int color = bitmap.getPixel(clamp(x, 0, bitmap.getWidth() - 1), top);
-                alpha += Color.alpha(color); red += Color.red(color);
-                green += Color.green(color); blue += Color.blue(color); count++;
-            }
-            if (bottom < bitmap.getHeight()) {
-                int color = bitmap.getPixel(clamp(x, 0, bitmap.getWidth() - 1), bottom);
-                alpha += Color.alpha(color); red += Color.red(color);
-                green += Color.green(color); blue += Color.blue(color); count++;
-            }
-        }
-
-        int yStep = Math.max(1, rect.height() / MAX_BORDER_SAMPLES_PER_EDGE);
-        for (int y = rect.top; y < rect.bottom; y += yStep) {
-            if (left >= 0) {
-                int color = bitmap.getPixel(left, clamp(y, 0, bitmap.getHeight() - 1));
-                alpha += Color.alpha(color); red += Color.red(color);
-                green += Color.green(color); blue += Color.blue(color); count++;
-            }
-            if (right < bitmap.getWidth()) {
-                int color = bitmap.getPixel(right, clamp(y, 0, bitmap.getHeight() - 1));
-                alpha += Color.alpha(color); red += Color.red(color);
-                green += Color.green(color); blue += Color.blue(color); count++;
-            }
-        }
-
-        if (count <= 0) {
-            int x = clamp(rect.centerX(), 0, bitmap.getWidth() - 1);
-            int y = clamp(rect.centerY(), 0, bitmap.getHeight() - 1);
-            return bitmap.getPixel(x, y);
-        }
-        return Color.argb((int) (alpha / count), (int) (red / count),
-                (int) (green / count), (int) (blue / count));
+    private static long area(Rect r) {
+        return r == null || r.isEmpty() ? 0L : (long) r.width() * r.height();
     }
 
     private static Snapshot empty(Bitmap bitmap) {
         int width = bitmap == null ? 1 : Math.max(1, bitmap.getWidth());
         int height = bitmap == null ? 1 : Math.max(1, bitmap.getHeight());
         return new Snapshot(new OcrDocument("", List.of(), List.of(),
-                "view-accessibility", 0f, 0d, width, height), List.of(), 0);
-    }
-
-    private static List<Rect> copyRects(List<Rect> source) {
-        ArrayList<Rect> out = new ArrayList<>();
-        for (Rect r : source) if (r != null && !r.isEmpty()) out.add(new Rect(r));
-        return List.copyOf(out);
-    }
-
-    private static int clamp(int value, int min, int max) {
-        return Math.max(min, Math.min(max, value));
+                "view-accessibility", 0f, 0d, width, height), 0);
     }
 
     private static final class RawLine {
