@@ -19,15 +19,10 @@ import kotlinx.coroutines.withContext
 import kotlin.math.max
 import kotlin.math.min
 
-/** PP-OCR adapter. Engine-specific output is normalized at this boundary. */
+/** PP-OCR adapter. Engine-specific output is normalized once at this boundary. */
 object PaddleOcrBridge {
     interface Callback {
         fun onSuccess(document: OcrDocument, totalMs: Long, lineCount: Int)
-        fun onFailure(message: String)
-    }
-
-    interface DetectionCallback {
-        fun onSuccess(regions: List<Rect>, totalMs: Long)
         fun onFailure(message: String)
     }
 
@@ -52,47 +47,15 @@ object PaddleOcrBridge {
                     ocr.recognize(bitmap)
                 }
                 val baseDocument = toDocument(app, result.results, bitmap.width, bitmap.height, model)
-                val geometryStarted = System.currentTimeMillis()
-                val document = OcrGeometryRefiner.refinePpWithUpscaledMlKit(app, bitmap, baseDocument)
-                val geometryMs = System.currentTimeMillis() - geometryStarted
+                val normalizeStarted = System.currentTimeMillis()
+                val document = OcrCanonicalGeometry.normalize(app, baseDocument)
+                val normalizeMs = System.currentTimeMillis() - normalizeStarted
                 withContext(Dispatchers.Main) {
-                    callback.onSuccess(document, result.totalTimeMs + geometryMs, document.lines().size)
+                    callback.onSuccess(document, result.totalTimeMs + normalizeMs, document.lines().size)
                 }
             } catch (t: Throwable) {
                 val msg = describeThrowable(t)
                 DiagnosticLog.i(app, "PPOCRV6_BRIDGE", "failure model=$model $msg")
-                withContext(Dispatchers.Main) { callback.onFailure(msg) }
-            }
-        }
-    }
-
-    /**
-     * Detection-only path. PP-OCR owns only localization; callers may use another recognizer for
-     * decoding. Rectangles remain in the original bitmap coordinate space.
-     */
-    @JvmStatic
-    fun detect(context: Context, bitmap: Bitmap, model: Int, callback: DetectionCallback) {
-        val app = context.applicationContext
-        scope.launch {
-            val started = System.currentTimeMillis()
-            try {
-                if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
-                    throw IllegalArgumentException("invalid bitmap")
-                }
-                if (!OcrModelManager.isReady(app, model)) throw IllegalStateException("model_not_downloaded")
-                val boxes = runMutex.withLock {
-                    val ocr = getOrCreate(app, model)
-                    ocr.detect(bitmap)
-                }
-                val regions = boxes.mapNotNull { boxRect(it, bitmap.width, bitmap.height) }
-                    .filter { !it.isEmpty }
-                val elapsed = System.currentTimeMillis() - started
-                DiagnosticLog.i(app, "PPOCRV6_DETECT",
-                    "success model=$model regions=${regions.size} elapsedMs=$elapsed")
-                withContext(Dispatchers.Main) { callback.onSuccess(regions, elapsed) }
-            } catch (t: Throwable) {
-                val msg = describeThrowable(t)
-                DiagnosticLog.i(app, "PPOCRV6_DETECT", "failure model=$model $msg")
                 withContext(Dispatchers.Main) { callback.onFailure(msg) }
             }
         }
@@ -172,15 +135,10 @@ object PaddleOcrBridge {
         )
     }
 
-    /**
-     * Paddle DB post-processing can return nested/near-identical contours for the same visual text.
-     * Keep exactly one logical OCR line before any ML Kit geometry rescue so selection never sees
-     * two overlapping copies of the same text.
-     */
+    /** Keep one logical OCR line when Paddle returns nested/near-identical contours. */
     private fun dedupeOverlappingLines(source: List<OcrDocument.Line>): List<OcrDocument.Line> {
         if (source.size < 2) return source
 
-        // Higher-confidence results win. For effectively equal confidence, the tighter box wins.
         val ranked = source.sortedWith(
             compareByDescending<OcrDocument.Line> { it.confidence() }
                 .thenBy { area(it.bounds()) }
@@ -305,8 +263,8 @@ object PaddleOcrBridge {
     @JvmStatic
     fun releaseModel(model: Int) {
         scope.launch {
-            // Same lock order as recognize()/detect(): run -> init. This guarantees no native ORT
-            // session is closed while inference is running or about to start.
+            // Same lock order as recognize(): run -> init. This guarantees no native ORT session is
+            // closed while inference is running or about to start.
             runMutex.withLock {
                 initMutex.withLock {
                     val old = synchronized(engines) { engines.remove(model) }
