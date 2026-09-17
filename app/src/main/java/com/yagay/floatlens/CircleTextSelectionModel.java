@@ -6,7 +6,7 @@ import android.graphics.RectF;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Pure screen-space text selection state used by GoogleCircleInlineOverlay. */
+/** Pure screen-space text selection state used by FLCircleInlineOverlay. */
 final class CircleTextSelectionModel {
     private final ScreenBitmapTransform transform;
     private List<OcrDocument.CharUnit> chars = List.of();
