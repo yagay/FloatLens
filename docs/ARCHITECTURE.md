@@ -13,7 +13,8 @@ Root and LSPosed are optional providers. They may enhance a backend, but they mu
 ```text
 Floating input
   FloatIconView
-  GestureClassifier / GestureActionMapper / ActionRegistry
+  GestureClassifier / GestureActionMapper
+  ActionRegistry / ActionExecutor
   ViewSelectionEngine
 
 Screen semantics
@@ -88,8 +89,14 @@ Owns one touch stream only:
 
 It must not grow Accessibility traversal, screenshot backend selection, OCR parsing, result UI, or Circle recognition logic.
 
-### `GestureClassifier` / `GestureActionMapper` / `ActionRegistry`
-These respectively own gesture classification, preference mapping, and action execution. New actions belong in `ActionRegistry`; do not create feature-local action catalogs.
+### `GestureClassifier` / `GestureActionMapper`
+Own gesture classification and gesture/preference -> `ActionId` mapping.
+
+### `ActionRegistry`
+Owns the action catalog only: IDs exposed to settings, labels and default preference mappings.
+
+### `ActionExecutor`
+Single owner of executing an already-resolved `ActionId`. New executable behavior belongs here; feature code must not add its own action switch.
 
 ### `FloatingIconLayoutPolicy` / `FloatVisibilityController`
 Layout/persistence and visibility reasons remain separate owners. `FloatService` applies their decisions and must not reimplement their policies.
@@ -140,10 +147,12 @@ Rules:
 - semantic labels must not silently become visually rendered text.
 
 ### `AccessibilityCandidateCollector`
-Single ordinary Accessibility tree walker. It produces `ScreenCandidate` objects for Direct, explicit View picker and explicit region View-text extraction.
+Single ordinary Accessibility tree walker. It produces Accessibility-only `ScreenCandidate` objects for Direct selection and explicit region View-text extraction.
+
+There is no second point-traversal or screenshot-derived visual-candidate collector. Direct snapshots the tree once at touch start; MOVE is cached geometry only.
 
 ### `ScreenSelectionModel`
-Single cached candidate ranking/hit-test owner. MOVE-time Direct selection is geometry-only and must not repeatedly walk the live Accessibility tree.
+Single cached Accessibility candidate ranking/hit-test owner. It has no parallel visual-candidate bucket.
 
 ## 5. Direct selection
 
@@ -160,10 +169,9 @@ Routing:
 ### `ViewHoverOverlay`
 Passive cached-candidate highlight layer only.
 
-### `ViewSelectionOverlay`
-Explicit full-screen View picker. Its lifetime differs from Direct, but it consumes the same Accessibility semantics/candidates.
+There is no independent full-screen `ViewSelectionOverlay`. Normal configurable OCR goes through the shared screenshot OCR-region selector. Explicit View text remains available only where the user deliberately chooses the region editor's View-text action.
 
-Native Accessibility text is a View-text result, not OCR.
+Native Accessibility text in Direct is a View-text result, not OCR.
 
 ## 6. Overlay hosting
 
@@ -234,6 +242,8 @@ Normal OCR strategy and lifecycle owner:
 - UI recognition lifecycle notifications;
 - final dispatch.
 
+It reads OCR configuration only through `FloatSettings`. The removed enhanced/mono preprocessing and separate quality-policy passes must not be reintroduced as parallel pipelines.
+
 Region UI must submit a bitmap to `OcrEngine`; it must not separately maintain OCR-start/success/failure state.
 
 ## 9. Circle: one OCR-only pipeline
@@ -262,24 +272,24 @@ Owns the frozen `Frame`: bitmap + exact screen bounds + one `ScreenBitmapTransfo
 ### `GoogleCircleInlineOverlay`
 Owns Circle UI/input only: tap, stroke/scribble, editable screenshot rectangle, selection handles, confirmation and close UI.
 
-It must not create another OCR parser or capture backend.
+Initial text selection is applied only from the planner-provided `initialSelectionDocument`. The UI does not perform a second tap hit-test, nearby snap or gesture-bounds intersection fallback. Handle dragging after initialization remains UI editing.
 
 ### `GoogleCircleTextResolver`
 Owns one cached full-screen OCR document per frozen frame and optional per-gesture correction scheduling.
 
-Full-screen OCR is single-flight/latest-pending and cached. Optional PP correction receives a planner-owned ROI; it cannot reinterpret the user's selection range.
+Full-screen OCR is single-flight/latest-pending and cached. Optional PP correction receives a planner-owned ROI; it cannot reinterpret the user's selection range or synthesize a fallback ROI.
 
 ### `CircleStableOcr`
 Circle OCR-engine adapter only. Full-frame engine and correction engine are independently selectable. It returns `OcrDocument`; it does not own gesture semantics.
 
 ### `CircleSelectionPlanner`
-Sole owner of Circle text selection semantics and correction ROI.
+Sole owner of Circle initial text selection semantics and correction ROI.
 
 ### `CircleGestureTextSelector`
 Owns low-level OCR geometry hit/range mechanics used by the planner.
 
 ### `CircleTextSelectionModel`
-Owns editable selected-text state and handles inside the Circle workspace.
+Owns retained full-document selection state and post-initialization handle editing. It maps planner hints into the context document; it does not invent another initial selection.
 
 Removed experimental/legacy paths must not be reintroduced:
 
@@ -357,12 +367,12 @@ Editable rectangle interaction and AUTO/View/OCR choice only.
 ### `RegionContentResolver`
 Single explicit-region View-text hit/filter/sort/dedupe owner.
 
-This View-text resolver is intentionally separate from Circle. Explicit region View extraction may use Accessibility; normal Circle may not.
+This View-text resolver is intentionally separate from Circle. Explicit region View extraction may use Accessibility; normal OCR and normal Circle may not.
 
 ## 14. Settings
 
 ### `FloatSettings`
-Single normal preference read/write boundary. UI code should use typed getters/setters and compound operations rather than direct `SharedPreferences.Editor` calls.
+Single normal preference read/write boundary. UI and OCR code use typed getters/setters and compound operations rather than direct `SharedPreferences.Editor` or raw preference reads.
 
 The backing `SharedPreferences` is not exposed. Migration and atomic compound writes live inside `FloatSettings`; infrastructure that must observe the preference file may bind to it only at its own infrastructure boundary.
 
@@ -412,12 +422,11 @@ Device validation after a large refactor should cover:
 - tap/double tap/long press and directional gestures;
 - temporary icon follow and explicit position move;
 - Direct text/View/image and dragged region;
-- explicit View picker;
 - full/region screenshot and system-bar options;
 - editable-region AUTO/View/OCR;
-- normal OCR and result actions;
+- normal OCR region selection and result actions;
 - notification-shade capture;
-- Circle open/close, tap/range text selection, correction, screenshot rectangle and handles;
+- Circle open/close, planner-owned tap/range text selection, correction, screenshot rectangle and handles;
 - rapid repeated starts to verify stale async work is cancelled.
 
 ## 18. Future-change rule
