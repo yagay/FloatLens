@@ -63,11 +63,11 @@ final class ActionRegistry {
             }
             case ActionId.OCR -> {
                 OcrEngine.invalidatePending(c, "action_ocr_selection");
-                ViewSelectionOverlay.show(c);
+                ScreenshotController.captureForOcr(c);
             }
             case ActionId.AI_SCREEN -> {
                 OcrEngine.invalidatePending(c, "action_google_circle");
-                DiagnosticLog.i(c, "AI_SCREEN", "enter TextMap lazy-recognition circle workspace");
+                DiagnosticLog.i(c, "AI_SCREEN", "enter cached-full-OCR circle workspace");
                 GoogleCircleController.show(c);
             }
             case ActionId.MOVE_ICON -> {
