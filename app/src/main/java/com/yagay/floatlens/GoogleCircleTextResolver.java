@@ -14,7 +14,7 @@ import java.lang.ref.WeakReference;
  * correction may refine text inside that plan, but it can never reinterpret the gesture or create
  * its own fallback ROI.</p>
  */
-final class GoogleCircleTextResolver {
+final class FLCircleTextResolver {
     enum Source { IMAGE_OCR, NONE }
 
     interface Callback {
@@ -45,11 +45,11 @@ final class GoogleCircleTextResolver {
     }
 
     private static final class PendingResolve {
-        final GoogleCircleSelection.Selection gesture;
+        final FLCircleSelection.Selection gesture;
         final Callback callback;
         final boolean replacedOlderPending;
 
-        PendingResolve(GoogleCircleSelection.Selection gesture, Callback callback,
+        PendingResolve(FLCircleSelection.Selection gesture, Callback callback,
                        boolean replacedOlderPending) {
             this.gesture = gesture;
             this.callback = callback;
@@ -60,14 +60,14 @@ final class GoogleCircleTextResolver {
     private static final class PreloadState {
         final long generation;
         final Context app;
-        final WeakReference<GoogleCircleCapture.Frame> frameRef;
+        final WeakReference<FLCircleCapture.Frame> frameRef;
         OcrDocument fullScreenDocument;
         boolean fullScreenOcrInFlight;
-        GoogleCircleSelection.Selection pendingGesture;
+        FLCircleSelection.Selection pendingGesture;
         Callback pendingCallback;
         boolean pendingReplaced;
 
-        PreloadState(long generation, Context app, GoogleCircleCapture.Frame frame) {
+        PreloadState(long generation, Context app, FLCircleCapture.Frame frame) {
             this.generation = generation;
             this.app = app;
             this.frameRef = new WeakReference<>(frame);
@@ -78,7 +78,7 @@ final class GoogleCircleTextResolver {
     private static long generation;
     private static PreloadState current;
 
-    static void preload(Context context, GoogleCircleCapture.Frame frame) {
+    static void preload(Context context, FLCircleCapture.Frame frame) {
         if (context == null || frame == null || frame.bitmap == null || frame.bitmap.isRecycled()) return;
         Context app = context.getApplicationContext();
         PreloadState created;
@@ -89,7 +89,7 @@ final class GoogleCircleTextResolver {
             current = created;
         }
         FloatSettings fs = new FloatSettings(app);
-        DiagnosticLog.i(app, "G_CIRCLE_OCR", "ready generation=" + created.generation
+        DiagnosticLog.i(app, "FL_CIRCLE_OCR", "ready generation=" + created.generation
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
                 + " fullEngine=" + CircleStableOcr.fullModeLabel(app)
                 + " correctionEngine=" + CircleStableOcr.correctionModeLabel(app)
@@ -103,8 +103,8 @@ final class GoogleCircleTextResolver {
                 + " viewText=false coordinateSpace=SCREEN");
     }
 
-    static void resolve(Context context, GoogleCircleCapture.Frame frame,
-                        GoogleCircleSelection.Selection gesture, Callback callback) {
+    static void resolve(Context context, FLCircleCapture.Frame frame,
+                        FLCircleSelection.Selection gesture, Callback callback) {
         if (context == null || frame == null || gesture == null || callback == null) return;
         Context app = context.getApplicationContext();
         preload(app, frame);
@@ -151,7 +151,7 @@ final class GoogleCircleTextResolver {
         }
 
         if (coalesced) {
-            DiagnosticLog.i(app, "G_CIRCLE_FULL_OCR", "coalesced gesture=" + gesture.kind
+            DiagnosticLog.i(app, "FL_CIRCLE_FULL_OCR", "coalesced gesture=" + gesture.kind
                     + " policy=latest_wins replacedPending=" + replaced
                     + " newBitmapCopy=false newOcrRequest=false");
             return;
@@ -159,7 +159,7 @@ final class GoogleCircleTextResolver {
         startFullScreenOcr(state, frame, gesture, callback);
     }
 
-    static void release(Context context, GoogleCircleCapture.Frame frame, String reason) {
+    static void release(Context context, FLCircleCapture.Frame frame, String reason) {
         if (frame == null) return;
         Context app = context == null ? null : context.getApplicationContext();
         PreloadState released;
@@ -170,14 +170,14 @@ final class GoogleCircleTextResolver {
             generation++;
             clearLocked(released);
         }
-        DiagnosticLog.i(app == null ? released.app : app, "G_CIRCLE_OCR",
+        DiagnosticLog.i(app == null ? released.app : app, "FL_CIRCLE_OCR",
                 "release generation=" + released.generation
                         + " reason=" + (reason == null ? "unknown" : reason));
     }
 
     private static void startFullScreenOcr(PreloadState state,
-                                           GoogleCircleCapture.Frame frame,
-                                           GoogleCircleSelection.Selection leaderGesture,
+                                           FLCircleCapture.Frame frame,
+                                           FLCircleSelection.Selection leaderGesture,
                                            Callback leaderCallback) {
         Rect fullRoi = fullBitmapRoi(frame);
         final Bitmap crop;
@@ -191,7 +191,7 @@ final class GoogleCircleTextResolver {
         }
 
         long started = android.os.SystemClock.uptimeMillis();
-        DiagnosticLog.i(state.app, "G_CIRCLE_FULL_OCR", "start gesture=" + leaderGesture.kind
+        DiagnosticLog.i(state.app, "FL_CIRCLE_FULL_OCR", "start gesture=" + leaderGesture.kind
                 + " roi=" + fullRoi.toShortString()
                 + " crop=" + crop.getWidth() + "x" + crop.getHeight()
                 + " engine=" + CircleStableOcr.fullModeLabel(state.app)
@@ -211,7 +211,7 @@ final class GoogleCircleTextResolver {
                     }
                     PendingResolve delivery = finishFullScreenFlight(
                             state, leaderGesture, leaderCallback);
-                    DiagnosticLog.i(state.app, "G_CIRCLE_FULL_OCR",
+                    DiagnosticLog.i(state.app, "FL_CIRCLE_FULL_OCR",
                             "complete leaderGesture=" + leaderGesture.kind
                                     + " deliveryGesture=" + delivery.gesture.kind
                                     + " deliveredLatest=" + (delivery.gesture != leaderGesture)
@@ -243,7 +243,7 @@ final class GoogleCircleTextResolver {
                 if (!isCurrent(state, frame)) return;
                 PendingResolve delivery = finishFullScreenFlight(
                         state, leaderGesture, leaderCallback);
-                DiagnosticLog.i(state.app, "G_CIRCLE_FULL_OCR", "failed gesture="
+                DiagnosticLog.i(state.app, "FL_CIRCLE_FULL_OCR", "failed gesture="
                         + delivery.gesture.kind + " engine="
                         + CircleStableOcr.fullModeLabel(state.app)
                         + " error=" + safe(error)
@@ -254,14 +254,14 @@ final class GoogleCircleTextResolver {
     }
 
     private static void resolveAgainstFullDocument(PreloadState state,
-                                                    GoogleCircleCapture.Frame frame,
-                                                    GoogleCircleSelection.Selection gesture,
+                                                    FLCircleCapture.Frame frame,
+                                                    FLCircleSelection.Selection gesture,
                                                     OcrDocument fullDocument,
                                                     Callback callback) {
         CircleSelectionPlanner.Plan plan = CircleSelectionPlanner.plan(
                 state.app, frame, gesture, fullDocument);
         if (plan == null || !usable(plan.baselineSelection)) {
-            DiagnosticLog.i(state.app, "G_CIRCLE_SELECTION_PLAN",
+            DiagnosticLog.i(state.app, "FL_CIRCLE_SELECTION_PLAN",
                     "kind=" + gesture.kind + " accepted=false fallback=none");
             callback.onResolved(failure(frame, gesture, fullBitmapRoi(frame),
                     new IllegalStateException("Circle selection plan miss"), false));
@@ -270,7 +270,7 @@ final class GoogleCircleTextResolver {
 
         OcrDocument fullSelection = plan.baselineSelection;
         if (new FloatSettings(state.app).circleCorrectionEngine() == 0) {
-            DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_COMPARE", "gesture=" + gesture.kind
+            DiagnosticLog.i(state.app, "FL_CIRCLE_TEXT_COMPARE", "gesture=" + gesture.kind
                     + " correction=off winner=full"
                     + " plan=" + plan.mode
                     + " selectedChars=" + fullSelection.chars().size());
@@ -282,7 +282,7 @@ final class GoogleCircleTextResolver {
     }
 
     private static void runCorrection(PreloadState state,
-                                      GoogleCircleCapture.Frame frame,
+                                      FLCircleCapture.Frame frame,
                                       OcrDocument fullDocument,
                                       CircleSelectionPlanner.Plan plan,
                                       Callback callback) {
@@ -304,7 +304,7 @@ final class GoogleCircleTextResolver {
         }
 
         long started = android.os.SystemClock.uptimeMillis();
-        DiagnosticLog.i(state.app, "G_CIRCLE_CORRECTION", "start gesture=" + plan.gesture.kind
+        DiagnosticLog.i(state.app, "FL_CIRCLE_CORRECTION", "start gesture=" + plan.gesture.kind
                 + " roi=" + roi.toShortString()
                 + " crop=" + crop.getWidth() + "x" + crop.getHeight()
                 + " engine=" + CircleStableOcr.correctionModeLabel(state.app)
@@ -327,7 +327,7 @@ final class GoogleCircleTextResolver {
                             state.app, frame, plan, localScreen);
 
                     if (!usable(correctionSelection)) {
-                        DiagnosticLog.i(state.app, "G_CIRCLE_CORRECTION",
+                        DiagnosticLog.i(state.app, "FL_CIRCLE_CORRECTION",
                                 "planned correction rejected -> keep full gesture=" + plan.gesture.kind
                                         + " plan=" + plan.mode);
                         deliverFull(frame, fullDocument, plan, callback,
@@ -338,7 +338,7 @@ final class GoogleCircleTextResolver {
                     String fullText = selectionText(fullSelection);
                     String correctionText = selectionText(correctionSelection);
                     boolean same = compact(fullText).equals(compact(correctionText));
-                    DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_COMPARE",
+                    DiagnosticLog.i(state.app, "FL_CIRCLE_TEXT_COMPARE",
                             "gesture=" + plan.gesture.kind
                                     + " plan=" + plan.mode
                                     + " same=" + same
@@ -372,7 +372,7 @@ final class GoogleCircleTextResolver {
             @Override public void onFailure(Throwable error) {
                 recycle(crop);
                 if (!isCurrent(state, frame)) return;
-                DiagnosticLog.i(state.app, "G_CIRCLE_CORRECTION", "failed gesture="
+                DiagnosticLog.i(state.app, "FL_CIRCLE_CORRECTION", "failed gesture="
                         + plan.gesture.kind + " engine="
                         + CircleStableOcr.correctionModeLabel(state.app)
                         + " plan=" + plan.mode
@@ -383,7 +383,7 @@ final class GoogleCircleTextResolver {
         });
     }
 
-    private static void deliverFull(GoogleCircleCapture.Frame frame,
+    private static void deliverFull(FLCircleCapture.Frame frame,
                                     OcrDocument fullDocument,
                                     CircleSelectionPlanner.Plan plan,
                                     Callback callback,
@@ -394,7 +394,7 @@ final class GoogleCircleTextResolver {
                     fullBitmapRoi(frame), correctionError, false));
             return;
         }
-        GoogleCircleSelection.Selection gesture = plan == null ? null : plan.gesture;
+        FLCircleSelection.Selection gesture = plan == null ? null : plan.gesture;
         if (gesture != null) {
             callback.onResolved(failure(frame, gesture,
                     plan.correctionBitmapRoi, correctionError, false));
@@ -402,7 +402,7 @@ final class GoogleCircleTextResolver {
     }
 
     private static PendingResolve finishFullScreenFlight(PreloadState state,
-                                                          GoogleCircleSelection.Selection originalGesture,
+                                                          FLCircleSelection.Selection originalGesture,
                                                           Callback originalCallback) {
         synchronized (STATE_LOCK) {
             if (current != state) {
@@ -410,7 +410,7 @@ final class GoogleCircleTextResolver {
             }
             state.fullScreenOcrInFlight = false;
             if (state.pendingGesture != null && state.pendingCallback != null) {
-                GoogleCircleSelection.Selection latestGesture = state.pendingGesture;
+                FLCircleSelection.Selection latestGesture = state.pendingGesture;
                 Callback latestCallback = state.pendingCallback;
                 boolean replaced = state.pendingReplaced;
                 state.pendingGesture = null;
@@ -425,7 +425,7 @@ final class GoogleCircleTextResolver {
         }
     }
 
-    private static Rect fullBitmapRoi(GoogleCircleCapture.Frame frame) {
+    private static Rect fullBitmapRoi(FLCircleCapture.Frame frame) {
         return new Rect(0, 0, frame.bitmap.getWidth(), frame.bitmap.getHeight());
     }
 
@@ -450,11 +450,11 @@ final class GoogleCircleTextResolver {
                 && !document.lines().isEmpty() && !document.chars().isEmpty();
     }
 
-    private static boolean sameFrame(PreloadState state, GoogleCircleCapture.Frame frame) {
+    private static boolean sameFrame(PreloadState state, FLCircleCapture.Frame frame) {
         return state != null && state.frameRef.get() == frame;
     }
 
-    private static boolean isCurrent(PreloadState state, GoogleCircleCapture.Frame frame) {
+    private static boolean isCurrent(PreloadState state, FLCircleCapture.Frame frame) {
         synchronized (STATE_LOCK) {
             return current == state && sameFrame(state, frame);
         }
@@ -468,15 +468,15 @@ final class GoogleCircleTextResolver {
         state.pendingReplaced = false;
     }
 
-    private static Rect gestureScreenBounds(GoogleCircleCapture.Frame frame,
-                                            GoogleCircleSelection.Selection gesture) {
-        Rect bitmap = GoogleCircleSelection.exactRectAndClamp(gesture.bounds,
+    private static Rect gestureScreenBounds(FLCircleCapture.Frame frame,
+                                            FLCircleSelection.Selection gesture) {
+        Rect bitmap = FLCircleSelection.exactRectAndClamp(gesture.bounds,
                 frame.bitmap.getWidth(), frame.bitmap.getHeight());
         return bitmap.isEmpty() ? new Rect() : frame.bitmapRectToScreen(bitmap);
     }
 
-    private static Result failure(GoogleCircleCapture.Frame frame,
-                                  GoogleCircleSelection.Selection gesture,
+    private static Result failure(FLCircleCapture.Frame frame,
+                                  FLCircleSelection.Selection gesture,
                                   Rect roi, Throwable error, boolean local) {
         return new Result(Source.NONE, null, null,
                 gestureScreenBounds(frame, gesture), roi, error, local);
@@ -493,5 +493,5 @@ final class GoogleCircleTextResolver {
         if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
     }
 
-    private GoogleCircleTextResolver() {}
+    private FLCircleTextResolver() {}
 }
