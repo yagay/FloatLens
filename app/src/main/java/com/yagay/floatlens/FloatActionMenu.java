@@ -6,12 +6,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
-import android.content.res.ColorStateList;
-import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
-import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.RippleDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
@@ -19,7 +15,6 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -31,7 +26,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** FloatLens-owned text action menu styled like Android's floating text toolbar. */
+/** FloatLens-owned text action menu using the shared floating-menu UI and positioning core. */
 public final class FloatActionMenu {
     private static final int MODE_MAIN = 0;
     private static final int MODE_SHARE = 1;
@@ -49,26 +44,23 @@ public final class FloatActionMenu {
 
     public static void showText(Context c, String value, Runnable selectAll) {
         resetLockedRow();
-        FloatMenuAnchor.clear();
-        show(c, value, selectAll, MODE_MAIN);
+        show(c, value, selectAll, MODE_MAIN, null);
     }
 
     public static void showTextAt(Context c, String value, Runnable selectAll, Rect anchor) {
         resetLockedRow();
-        FloatMenuAnchor.set(anchor);
-        show(c, value, selectAll, MODE_MAIN);
+        show(c, value, selectAll, MODE_MAIN,
+                anchor == null || anchor.isEmpty() ? null : new Rect(anchor));
     }
 
     public static void showShareTargets(Context c, String value) {
         resetLockedRow();
-        FloatMenuAnchor.clear();
-        show(c, value, null, MODE_SHARE);
+        show(c, value, null, MODE_SHARE, null);
     }
 
     public static void showProcessTargets(Context c, String value) {
         resetLockedRow();
-        FloatMenuAnchor.clear();
-        show(c, value, null, MODE_PROCESS);
+        show(c, value, null, MODE_PROCESS, null);
     }
 
     /** Keep submenus/back navigation attached to the row where the main toolbar first appeared. */
@@ -77,10 +69,11 @@ public final class FloatActionMenu {
             lockedCenterX = activeCenterX;
             lockedTopY = activeTopY;
         }
-        show(c, value, selectAll, mode);
+        show(c, value, selectAll, mode, null);
     }
 
-    private static synchronized void show(Context c, String value, Runnable selectAll, int mode) {
+    private static synchronized void show(Context c, String value, Runnable selectAll,
+                                          int mode, Rect anchor) {
         if (c == null) return;
         String text = value == null ? "" : value.trim();
         if (text.isEmpty()) return;
@@ -90,21 +83,15 @@ public final class FloatActionMenu {
         WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
         if (wm == null) return;
         FlOverlayWindowHost host = new FlOverlayWindowHost(app);
-        Palette palette = Palette.from(app);
 
-        LinearLayout root = new LinearLayout(app);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackground(rounded(palette.surface, dp(app, mode == MODE_MAIN ? 24 : 20)));
-        root.setElevation(dp(app, 10));
-        root.setClipToOutline(true);
-        root.setClickable(true);
+        LinearLayout root = FloatingMenuUi.root(app, mode == MODE_MAIN ? 24 : 20);
 
         if (mode == MODE_MAIN) {
-            buildMainToolbar(app, root, text, selectAll, palette);
+            buildMainToolbar(app, root, text, selectAll);
         } else if (mode == MODE_MORE) {
-            buildMoreMenu(app, root, text, selectAll, palette);
+            buildMoreMenu(app, root, text, selectAll);
         } else {
-            buildTargetMenu(app, root, text, selectAll, mode, palette);
+            buildTargetMenu(app, root, text, selectAll, mode);
         }
 
         root.setOnTouchListener((v, e) -> {
@@ -115,7 +102,7 @@ public final class FloatActionMenu {
             return false;
         });
 
-        Rect usable = usableBounds(app, wm);
+        Rect usable = ScreenGeometry.usableBounds(app);
         int maxPopupWidth = Math.max(dp(app, 120), usable.width() - dp(app, 16));
         int width = mode == MODE_MAIN
                 ? WindowManager.LayoutParams.WRAP_CONTENT
@@ -133,8 +120,10 @@ public final class FloatActionMenu {
         int menuHeight = Math.max(dp(app, 46), root.getMeasuredHeight());
 
         int[] pos = hasLockedRow()
-                ? lockedRowPosition(app, usable, menuWidth, menuHeight)
-                : menuPosition(app, usable, FloatMenuAnchor.current(), menuWidth, menuHeight);
+                ? FloatingMenuPositioner.lockedRow(app, usable, lockedCenterX, lockedTopY,
+                        menuWidth, menuHeight)
+                : FloatingMenuPositioner.aroundAnchor(app, usable, anchor,
+                        menuWidth, menuHeight, false);
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 width,
@@ -153,7 +142,6 @@ public final class FloatActionMenu {
             activeView = root;
             activeCenterX = lp.x + menuWidth / 2;
             activeTopY = lp.y;
-            Rect anchor = FloatMenuAnchor.current();
             DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "show system-style mode=" + mode
                     + " chars=" + text.length()
                     + " anchor=" + (anchor == null ? "none" : anchor.toShortString())
@@ -162,6 +150,7 @@ public final class FloatActionMenu {
                     + " height=" + menuHeight
                     + (mode == MODE_MAIN ? " mainItems=" + TextMenuSettings.mainItemCount(app) : "")
                     + " pos=" + lp.x + "," + lp.y
+                    + " ui=FloatingMenuUi positioner=FloatingMenuPositioner"
                     + " accessibilityHost=" + host.isAccessibilityHosted()
                     + " type=" + lp.type);
         } else {
@@ -171,16 +160,13 @@ public final class FloatActionMenu {
         }
     }
 
-    /**
-     * Match Android's compact popup feel: short menus stay narrow, longer labels grow only as needed.
-     * The old implementation forced every submenu to at least 270dp, which made even tiny menus wide.
-     */
+    /** Match Android's compact popup feel without forcing every submenu to a fixed wide size. */
     private static int contentAdaptiveWidth(Context app, View root, int mode, int screenMax) {
         int min = dp(app, mode == MODE_MORE ? 156 : 188);
         int cap = Math.min(screenMax, dp(app, mode == MODE_MORE ? 260 : 300));
         cap = Math.max(min, cap);
         int desired = widestTextRow(root) + root.getPaddingLeft() + root.getPaddingRight();
-        return clamp(Math.max(min, desired), min, cap);
+        return ScreenGeometry.clamp(Math.max(min, desired), min, cap);
     }
 
     private static int widestTextRow(View view) {
@@ -213,80 +199,36 @@ public final class FloatActionMenu {
         return best;
     }
 
-    private static int[] lockedRowPosition(Context app, Rect usable, int menuWidth, int menuHeight) {
-        int margin = dp(app, 8);
-        int minX = usable.left + margin;
-        int maxX = Math.max(minX, usable.right - margin - menuWidth);
-        int minY = usable.top + margin;
-        int maxY = Math.max(minY, usable.bottom - margin - menuHeight);
-        int x = clamp(lockedCenterX - menuWidth / 2, minX, maxX);
-        int y = clamp(lockedTopY, minY, maxY);
-        return new int[]{x, y};
-    }
-
-    private static int[] menuPosition(Context app, Rect usable, Rect anchor,
-                                      int menuWidth, int menuHeight) {
-        int margin = dp(app, 8);
-        int gap = dp(app, 8);
-        int minX = usable.left + margin;
-        int maxX = Math.max(minX, usable.right - margin - menuWidth);
-        int minY = usable.top + margin;
-        int maxY = Math.max(minY, usable.bottom - margin - menuHeight);
-
-        if (anchor == null || anchor.isEmpty()) {
-            int x = clamp(usable.centerX() - menuWidth / 2, minX, maxX);
-            int y = clamp(usable.top + dp(app, 52), minY, maxY);
-            return new int[]{x, y};
-        }
-
-        int x = clamp(anchor.centerX() - menuWidth / 2, minX, maxX);
-        int above = anchor.top - gap - menuHeight;
-        int below = anchor.bottom + gap;
-        int y;
-        if (above >= minY) {
-            y = above;
-        } else if (below <= maxY) {
-            y = below;
-        } else {
-            int roomAbove = Math.max(0, anchor.top - minY);
-            int roomBelow = Math.max(0, usable.bottom - margin - anchor.bottom);
-            y = roomBelow >= roomAbove
-                    ? clamp(below, minY, maxY)
-                    : clamp(above, minY, maxY);
-        }
-        return new int[]{x, y};
-    }
-
     private static void buildMainToolbar(Context app, LinearLayout root, String text,
-                                         Runnable selectAll, Palette palette) {
+                                         Runnable selectAll) {
         List<CustomMenuActionStore.Item> customs = CustomMenuActionStore.load(app);
         boolean hasSelectAll = selectAll != null;
         int customLimit = mainCustomCount(app, customs.size(), hasSelectAll);
 
         ArrayList<View> items = new ArrayList<>();
 
-        TextView copy = action(app, "复制", palette, 58);
+        TextView copy = FloatingMenuUi.action(app, "复制", 58);
         items.add(copy);
 
         TextView all = null;
         if (hasSelectAll) {
-            all = action(app, "全选", palette, 58);
+            all = FloatingMenuUi.action(app, "全选", 58);
             items.add(all);
         }
 
-        TextView share = action(app, "分享", palette, 58);
+        TextView share = FloatingMenuUi.action(app, "分享", 58);
         items.add(share);
 
         for (int i = 0; i < customLimit; i++) {
             CustomMenuActionStore.Item item = customs.get(i);
-            TextView custom = action(app, item.label, palette, 58);
+            TextView custom = FloatingMenuUi.action(app, item.label, 58);
             custom.setEllipsize(TextUtils.TruncateAt.END);
             custom.setSingleLine(true);
             custom.setOnClickListener(v -> launchCustom(app, item, text));
             items.add(custom);
         }
 
-        TextView more = action(app, "⋮", palette, 46);
+        TextView more = FloatingMenuUi.action(app, "⋮", 46);
         more.setTextSize(22);
         items.add(more);
 
@@ -305,18 +247,9 @@ public final class FloatActionMenu {
         share.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_SHARE));
         more.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_MORE));
 
-        int maxRowWidth = Math.max(dp(app, 180),
-                app.getResources().getDisplayMetrics().widthPixels - dp(app, 16));
-        WindowManager wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
-        if (wm != null) {
-            Rect usable = usableBounds(app, wm);
-            if (!usable.isEmpty()) {
-                maxRowWidth = Math.max(dp(app, 180), usable.width() - dp(app, 16));
-            }
-        }
+        Rect usable = ScreenGeometry.usableBounds(app);
+        int maxRowWidth = Math.max(dp(app, 180), usable.width() - dp(app, 16));
 
-        // The configured number is the TOTAL toolbar item count. Keep every item on one row and
-        // shrink slots as needed instead of silently wrapping into a second row.
         int slotWidth = Math.max(dp(app, 32),
                 Math.min(dp(app, 72), maxRowWidth / Math.max(1, items.size())));
         LinearLayout row = toolbarRow(app);
@@ -348,9 +281,9 @@ public final class FloatActionMenu {
     }
 
     private static void buildMoreMenu(Context app, LinearLayout root, String text,
-                                      Runnable selectAll, Palette palette) {
+                                      Runnable selectAll) {
         root.setPadding(dp(app, 4), dp(app, 4), dp(app, 4), dp(app, 4));
-        TextView back = menuRow(app, "‹   返回", null, palette);
+        TextView back = FloatingMenuUi.row(app, "‹   返回", null);
         root.addView(back, new LinearLayout.LayoutParams(-1, dp(app, 46)));
         back.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_MAIN));
 
@@ -361,12 +294,12 @@ public final class FloatActionMenu {
             Drawable icon = null;
             try { icon = app.getPackageManager().getApplicationIcon(item.packageName); }
             catch (Throwable ignored) {}
-            TextView custom = menuRow(app, item.label, icon, palette);
+            TextView custom = FloatingMenuUi.row(app, item.label, icon);
             root.addView(custom, new LinearLayout.LayoutParams(-1, dp(app, 48)));
             custom.setOnClickListener(v -> launchCustom(app, item, text));
         }
 
-        TextView process = menuRow(app, "打开 / 处理", null, palette);
+        TextView process = FloatingMenuUi.row(app, "打开 / 处理", null);
         root.addView(process, new LinearLayout.LayoutParams(-1, dp(app, 46)));
         process.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_PROCESS));
     }
@@ -376,12 +309,11 @@ public final class FloatActionMenu {
     }
 
     private static void buildTargetMenu(Context app, LinearLayout root, String text,
-                                        Runnable selectAll, int mode, Palette palette) {
+                                        Runnable selectAll, int mode) {
         root.setPadding(dp(app, 4), dp(app, 4), dp(app, 4), dp(app, 4));
 
-        TextView back = menuRow(app,
-                mode == MODE_SHARE ? "‹   分享到" : "‹   打开 / 处理",
-                null, palette);
+        TextView back = FloatingMenuUi.row(app,
+                mode == MODE_SHARE ? "‹   分享到" : "‹   打开 / 处理", null);
         back.setTypeface(back.getTypeface(), android.graphics.Typeface.BOLD);
         root.addView(back, new LinearLayout.LayoutParams(-1, dp(app, 46)));
         back.setOnClickListener(v -> showOnCurrentRow(app, text, selectAll, MODE_MAIN));
@@ -410,26 +342,24 @@ public final class FloatActionMenu {
         LinearLayout list = new LinearLayout(app);
         list.setOrientation(LinearLayout.VERTICAL);
         if (resolved.isEmpty()) {
-            TextView none = new TextView(app);
-            none.setText(mode == MODE_SHARE ? "当前没有已启用的分享应用" : "当前没有已启用的处理应用");
-            none.setTextColor(palette.secondaryText);
-            none.setTextSize(14);
+            TextView none = FloatingMenuUi.secondaryRow(app,
+                    mode == MODE_SHARE ? "当前没有已启用的分享应用" : "当前没有已启用的处理应用");
             none.setGravity(Gravity.CENTER_VERTICAL);
             none.setPadding(dp(app, 16), 0, dp(app, 16), 0);
             list.addView(none, new LinearLayout.LayoutParams(-1, dp(app, 48)));
         } else {
             for (ResolveInfo ri : resolved) {
                 CharSequence rawLabel;
-      try { rawLabel = ri.loadLabel(pm); }
-      catch (Throwable ignored) { rawLabel = ri.activityInfo.name; }
-      String fallbackLabel = rawLabel == null
-              ? ri.activityInfo.name : rawLabel.toString();
-      String displayLabel = TargetMenuStore.displayLabel(app, targetMode,
-              ri.activityInfo.packageName + "|" + ri.activityInfo.name, fallbackLabel);
-      Drawable icon = null;
-      try { icon = ri.loadIcon(pm); } catch (Throwable ignored) {}
-      TextView target = menuRow(app, displayLabel, icon, palette);
-                    target.setOnClickListener(v -> launchExplicit(app, base, ri));
+                try { rawLabel = ri.loadLabel(pm); }
+                catch (Throwable ignored) { rawLabel = ri.activityInfo.name; }
+                String fallbackLabel = rawLabel == null
+                        ? ri.activityInfo.name : rawLabel.toString();
+                String displayLabel = TargetMenuStore.displayLabel(app, targetMode,
+                        ri.activityInfo.packageName + "|" + ri.activityInfo.name, fallbackLabel);
+                Drawable icon = null;
+                try { icon = ri.loadIcon(pm); } catch (Throwable ignored) {}
+                TextView target = FloatingMenuUi.row(app, displayLabel, icon);
+                target.setOnClickListener(v -> launchExplicit(app, base, ri));
                 list.addView(target, new LinearLayout.LayoutParams(-1, dp(app, 50)));
             }
         }
@@ -437,9 +367,8 @@ public final class FloatActionMenu {
         int visibleRows = Math.min(Math.max(1, resolved.size()), 6);
         root.addView(scroll, new LinearLayout.LayoutParams(-1, dp(app, 50 * visibleRows)));
 
-        TextView moreApps = menuRow(app,
-                mode == MODE_SHARE ? "系统分享菜单…" : "更多处理应用…",
-                null, palette);
+        TextView moreApps = FloatingMenuUi.row(app,
+                mode == MODE_SHARE ? "系统分享菜单…" : "更多处理应用…", null);
         root.addView(moreApps, new LinearLayout.LayoutParams(-1, dp(app, 46)));
         moreApps.setOnClickListener(v -> {
             if (mode == MODE_SHARE) launchSystemShare(app, text);
@@ -474,56 +403,6 @@ public final class FloatActionMenu {
             if (ri != null) ordered.add(ri);
         }
         return ordered;
-    }
-
-    private static TextView action(Context c, String text, Palette palette, int minWidthDp) {
-        TextView tv = new TextView(c);
-        tv.setText(text);
-        tv.setTextColor(palette.primaryText);
-        tv.setTextSize(14);
-        tv.setGravity(Gravity.CENTER);
-        tv.setMinWidth(dp(c, minWidthDp));
-        tv.setPadding(dp(c, 10), 0, dp(c, 10), 0);
-        tv.setBackground(ripple(palette.ripple));
-        tv.setClickable(true);
-        tv.setFocusable(true);
-        return tv;
-    }
-
-    private static TextView menuRow(Context c, String text, Drawable icon, Palette palette) {
-        TextView tv = new TextView(c);
-        tv.setText(text);
-        tv.setTextColor(palette.primaryText);
-        tv.setTextSize(14);
-        tv.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-        tv.setPadding(dp(c, 14), 0, dp(c, 14), 0);
-        tv.setBackground(ripple(palette.ripple));
-        tv.setClickable(true);
-        tv.setFocusable(true);
-        tv.setSingleLine(true);
-        tv.setEllipsize(TextUtils.TruncateAt.END);
-        if (icon != null) {
-            int s = dp(c, 24);
-            icon.setBounds(0, 0, s, s);
-            tv.setCompoundDrawablePadding(dp(c, 12));
-            tv.setCompoundDrawables(icon, null, null, null);
-        }
-        return tv;
-    }
-
-    private static Drawable rounded(int color, float radius) {
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(color);
-        gd.setCornerRadius(radius);
-        return gd;
-    }
-
-    private static Drawable ripple(int color) {
-        ColorStateList ripple = ColorStateList.valueOf(color);
-        GradientDrawable content = new GradientDrawable();
-        content.setColor(Color.TRANSPARENT);
-        content.setCornerRadius(999f);
-        return new RippleDrawable(ripple, content, null);
     }
 
     private static void launchExplicit(Context app, Intent base, ResolveInfo ri) {
@@ -576,7 +455,6 @@ public final class FloatActionMenu {
      */
     private static void launchExternal(Context app, String reason, Runnable launch) {
         dismiss();
-        FloatMenuAnchor.clear();
         resetLockedRow();
         CircleSelectOverlay.dismissActive("external_text_action_" + reason);
         DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "external prepare reason=" + reason);
@@ -598,9 +476,7 @@ public final class FloatActionMenu {
         activeHost = null;
         activeCenterX = NO_POSITION;
         activeTopY = NO_POSITION;
-        if (v != null && host != null) {
-            host.remove(v, "float_action_menu");
-        }
+        if (v != null && host != null) host.remove(v, "float_action_menu");
     }
 
     private static boolean hasLockedRow() {
@@ -612,48 +488,8 @@ public final class FloatActionMenu {
         lockedTopY = NO_POSITION;
     }
 
-    private static Rect usableBounds(Context c, WindowManager wm) {
-        try {
-            var metrics = wm.getCurrentWindowMetrics();
-            Rect r = new Rect(metrics.getBounds());
-            var insets = metrics.getWindowInsets().getInsetsIgnoringVisibility(WindowInsets.Type.systemBars());
-            r.left += insets.left;
-            r.top += insets.top;
-            r.right -= insets.right;
-            r.bottom -= insets.bottom;
-            if (!r.isEmpty()) return r;
-        } catch (Throwable ignored) {}
-        return new Rect(0, 0, c.getResources().getDisplayMetrics().widthPixels,
-                c.getResources().getDisplayMetrics().heightPixels);
-    }
-
-    private static int clamp(int value, int min, int max) {
-        if (max < min) return min;
-        return Math.max(min, Math.min(max, value));
-    }
-
     private static int dp(Context c, int v) {
-        return Math.round(v * c.getResources().getDisplayMetrics().density);
-    }
-
-    private static final class Palette {
-        final int surface;
-        final int primaryText;
-        final int secondaryText;
-        final int ripple;
-
-        Palette(int surface, int primaryText, int secondaryText, int ripple) {
-            this.surface = surface;
-            this.primaryText = primaryText;
-            this.secondaryText = secondaryText;
-            this.ripple = ripple;
-        }
-
-        static Palette from(Context c) {
-            boolean dark = ThemeSettings.isDark(c);
-            if (dark) return new Palette(0xFF2B2B2B, 0xFFF5F5F5, 0xFFB8B8B8, 0x33FFFFFF);
-            return new Palette(0xFFF8F8F8, 0xFF202124, 0xFF5F6368, 0x22000000);
-        }
+        return FloatingMenuUi.dp(c, v);
     }
 
     private FloatActionMenu() {}
