@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 /** Preference model and single normal access boundary for FloatLens settings. */
@@ -231,6 +232,19 @@ public final class FloatSettings {
 
     public void setString(String key, String value) {
         if (key != null && !key.isBlank()) p.edit().putString(key, value == null ? "" : value).apply();
+    }
+
+    /** Migration-only helper: replace every stored action id without exposing SharedPreferences. */
+    void replaceActionValue(String oldValue, String replacement) {
+        if (oldValue == null || oldValue.isBlank()) return;
+        String next = replacement == null ? ActionId.NONE : replacement;
+        SharedPreferences.Editor editor = null;
+        for (Map.Entry<String, ?> entry : p.getAll().entrySet()) {
+            if (!(entry.getValue() instanceof String value) || !oldValue.equals(value)) continue;
+            if (editor == null) editor = p.edit();
+            editor.putString(entry.getKey(), next);
+        }
+        if (editor != null) editor.apply();
     }
 
     public void setLineColors(String value) { setString(K_LINE_COLORS, value); }
