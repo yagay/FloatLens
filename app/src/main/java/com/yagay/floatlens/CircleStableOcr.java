@@ -3,77 +3,86 @@ package com.yagay.floatlens;
 import android.content.Context;
 import android.graphics.Bitmap;
 
-import com.google.mlkit.vision.common.InputImage;
-import com.google.mlkit.vision.text.TextRecognition;
-import com.google.mlkit.vision.text.TextRecognizer;
-import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions;
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
-
-import java.util.Set;
-
 /**
- * Lazy ROI recognizer used by the Circle TextMap workflow.
+ * Circle OCR adapter.
  *
- * <p>Circle no longer follows the app's full-screen OCR engine setting. The background phase only
- * detects text geometry; when a gesture hits a TextMap paragraph (or detector fallback ROI), exactly
- * one ML Kit recognizer decodes that small screenshot crop and preserves its document geometry.</p>
+ * <p>Circle recognition follows the same OCR engine setting as normal OCR. The selected mode is
+ * resolved by {@link OcrEngine}: Auto, PP-OCRv6 Medium, PP-OCRv6 Small, or ML Kit. Circle still owns
+ * the frozen-screen cache and gesture-scoped selection; only recognition-engine choice is delegated
+ * to the shared OCR pipeline.</p>
  */
 final class CircleStableOcr {
-    private static final class ChineseHolder {
-        static final TextRecognizer INSTANCE = TextRecognition.getClient(
-                new ChineseTextRecognizerOptions.Builder().build());
-    }
-
-    private static final class LatinHolder {
-        static final TextRecognizer INSTANCE = TextRecognition.getClient(
-                TextRecognizerOptions.DEFAULT_OPTIONS);
-    }
-
-    /** Circle-only ML Kit path: one complete ROI document, never Chinese/Latin character fusion. */
+    /**
+     * Legacy method name retained for source compatibility. Recognition is no longer fixed to ML Kit;
+     * it delegates to the OCR engine selected in Settings -> Screenshot & OCR.
+     */
     static void recognizeMlKit(Context context, Bitmap bitmap, OcrEngine.DocumentCallback callback) {
-        if (context == null || bitmap == null || bitmap.isRecycled() || callback == null) return;
-        Context app = context.getApplicationContext();
-        boolean chinese = preferredChinese(app);
-        TextRecognizer recognizer = chinese ? ChineseHolder.INSTANCE : LatinHolder.INSTANCE;
-        String engine = chinese ? "mlkit-circle-zh" : "mlkit-circle-latin";
-        long started = android.os.SystemClock.uptimeMillis();
-        DiagnosticLog.i(app, "G_CIRCLE_LAZY_RECOGNIZER",
-                "start recognizer=" + (chinese ? "chinese" : "latin")
-                        + " scope=roi policy=single_document");
-        try {
-            recognizer.process(InputImage.fromBitmap(bitmap, 0))
-                    .addOnSuccessListener(text -> {
-                        try {
-                            OcrDocument document = MlKitTextCore.toDocument(text, engine,
-                                    bitmap.getWidth(), bitmap.getHeight(), 0f, null);
-                            if (document == null || document.fullText().isBlank()
-                                    || document.chars().isEmpty()) {
-                                callback.onFailure(new IllegalStateException("Circle lazy ML Kit empty"));
-                                return;
-                            }
-                            DiagnosticLog.i(app, "G_CIRCLE_LAZY_RECOGNIZER",
-                                    "success engine=" + engine
-                                            + " chars=" + document.chars().size()
-                                            + " lines=" + document.lines().size()
-                                            + " elapsedMs="
-                                            + (android.os.SystemClock.uptimeMillis() - started));
-                            callback.onSuccess(document);
-                        } catch (Throwable t) {
-                            callback.onFailure(t);
-                        }
-                    })
-                    .addOnFailureListener(callback::onFailure);
-        } catch (Throwable t) {
-            callback.onFailure(t);
-        }
+        recognizeConfigured(context, bitmap, callback);
     }
 
-    private static boolean preferredChinese(Context app) {
-        Set<String> languages = OcrLanguages.get(app);
-        boolean chinese = OcrLanguages.chineseEnabled(languages);
-        boolean english = OcrLanguages.englishEnabled(languages);
-        if (!chinese && !english) return true;
-        return chinese;
+    static void recognizeConfigured(Context context, Bitmap bitmap,
+                                    OcrEngine.DocumentCallback callback) {
+        if (callback == null) return;
+        if (context == null || bitmap == null || bitmap.isRecycled()
+                || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) {
+            callback.onFailure(new IllegalArgumentException("invalid Circle OCR bitmap"));
+            return;
+        }
+
+        Context app = context.getApplicationContext();
+        int mode = new FloatSettings(app).ocrEngineMode();
+        long started = android.os.SystemClock.uptimeMillis();
+        DiagnosticLog.i(app, "G_CIRCLE_OCR_ENGINE",
+                "start mode=" + mode
+                        + " selected=" + modeLabel(mode)
+                        + " source=settings"
+                        + " dispatcher=OcrEngine.recognizeDocument"
+                        + " bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight());
+
+        OcrEngine.recognizeDocument(app, bitmap, new OcrEngine.DocumentCallback() {
+            @Override public void onSuccess(OcrDocument document) {
+                if (document == null || document.fullText().isBlank() || document.chars().isEmpty()) {
+                    callback.onFailure(new IllegalStateException("configured Circle OCR empty"));
+                    return;
+                }
+                DiagnosticLog.i(app, "G_CIRCLE_OCR_ENGINE",
+                        "success mode=" + mode
+                                + " selected=" + modeLabel(mode)
+                                + " actualEngine=" + document.engine()
+                                + " chars=" + document.chars().size()
+                                + " lines=" + document.lines().size()
+                                + " elapsedMs="
+                                + (android.os.SystemClock.uptimeMillis() - started));
+                callback.onSuccess(document);
+            }
+
+            @Override public void onFailure(Throwable error) {
+                DiagnosticLog.i(app, "G_CIRCLE_OCR_ENGINE",
+                        "failed mode=" + mode
+                                + " selected=" + modeLabel(mode)
+                                + " error=" + safe(error)
+                                + " elapsedMs="
+                                + (android.os.SystemClock.uptimeMillis() - started));
+                callback.onFailure(error == null
+                        ? new IllegalStateException("configured Circle OCR failed") : error);
+            }
+        });
+    }
+
+    private static String modeLabel(int mode) {
+        return switch (mode) {
+            case 1 -> "ppocr_medium";
+            case 2 -> "ppocr_small";
+            case 3 -> "mlkit";
+            default -> "auto";
+        };
+    }
+
+    private static String safe(Throwable error) {
+        if (error == null) return "unknown";
+        String message = error.getMessage();
+        return message == null || message.isBlank()
+                ? error.getClass().getSimpleName() : message;
     }
 
     private CircleStableOcr() {}
