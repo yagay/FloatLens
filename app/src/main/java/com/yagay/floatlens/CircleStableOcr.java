@@ -6,16 +6,45 @@ import android.graphics.Bitmap;
 import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.TextRecognizer;
 
-/**
- * Circle OCR adapter for the hybrid frozen-screen workflow.
- *
- * <p>The complete frozen frame is indexed with ML Kit only. Every TAP / HIGHLIGHT / SCRIBBLE then
- * runs PP-OCR on a small gesture-local bitmap. The resolver compares the two gesture-scoped results
- * and keeps the ML selection when they agree, otherwise the PP result wins. When hybrid mode is
- * disabled, {@link #recognizeConfigured(Context, Bitmap, OcrEngine.DocumentCallback)} preserves the
- * previous Settings-selected OCR behavior.</p>
- */
+/** Circle OCR adapter with independently selectable full-screen and local correction engines. */
 final class CircleStableOcr {
+    static void recognizeFullScreenSelected(Context context, Bitmap bitmap,
+                                            OcrEngine.DocumentCallback callback) {
+        if (!valid(context, bitmap, callback)) return;
+        Context app = context.getApplicationContext();
+        int mode = new FloatSettings(app).circleFullOcrEngine();
+        if (mode == 0) {
+            recognizeFullScreenMlKit(app, bitmap, callback);
+            return;
+        }
+        int model = modelForCircleMode(mode);
+        if (!OcrModelManager.isReady(app, model)) {
+            DiagnosticLog.i(app, "G_CIRCLE_FULL_ENGINE",
+                    "selected=" + modeLabel(mode) + " modelMissing=true fallback=mlkit");
+            recognizeFullScreenMlKit(app, bitmap, callback);
+            return;
+        }
+        recognizePaddle(app, bitmap, model, "full_screen_index", callback);
+    }
+
+    static void recognizeCorrectionSelected(Context context, Bitmap bitmap,
+                                            OcrEngine.DocumentCallback callback) {
+        if (!valid(context, bitmap, callback)) return;
+        Context app = context.getApplicationContext();
+        int mode = new FloatSettings(app).circleCorrectionEngine();
+        if (mode == 0) {
+            callback.onFailure(new IllegalStateException("Circle correction disabled"));
+            return;
+        }
+        int model = modelForCircleMode(mode);
+        if (!OcrModelManager.isReady(app, model)) {
+            callback.onFailure(new IllegalStateException(
+                    OcrModelManager.displayName(model) + " not downloaded"));
+            return;
+        }
+        recognizePaddle(app, bitmap, model, "gesture_correction", callback);
+    }
+
     static void recognizeFullScreenMlKit(Context context, Bitmap bitmap,
                                          OcrEngine.DocumentCallback callback) {
         if (!valid(context, bitmap, callback)) return;
@@ -72,43 +101,23 @@ final class CircleStableOcr {
         }
     }
 
-    static void recognizePaddleRegion(Context context, Bitmap bitmap,
-                                      OcrEngine.DocumentCallback callback) {
-        if (!valid(context, bitmap, callback)) return;
-        Context app = context.getApplicationContext();
-        int mode = new FloatSettings(app).ocrEngineMode();
-        int model = chooseLocalPaddleModel(app, mode);
-        if (model == 0) {
-            callback.onFailure(new IllegalStateException("No PP-OCR model available for Circle region"));
-            return;
-        }
-        boolean autoEscalate = mode == 0 || mode == 3;
-        runPaddle(app, bitmap, callback, model, autoEscalate,
-                model == OcrModelManager.SMALL && OcrModelManager.isReady(app, OcrModelManager.MEDIUM));
-    }
-
-    private static void runPaddle(Context app, Bitmap bitmap, OcrEngine.DocumentCallback callback,
-                                  int model, boolean autoEscalate, boolean mediumAvailable) {
+    private static void recognizePaddle(Context app, Bitmap bitmap, int model, String role,
+                                        OcrEngine.DocumentCallback callback) {
         long started = android.os.SystemClock.uptimeMillis();
-        DiagnosticLog.i(app, "G_CIRCLE_PP_REGION",
+        DiagnosticLog.i(app, role.equals("gesture_correction")
+                        ? "G_CIRCLE_PP_REGION" : "G_CIRCLE_PP_INDEX",
                 "start model=" + model
                         + " modelName=" + OcrModelManager.displayName(model)
                         + " bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight()
-                        + " role=gesture_verifier"
-                        + " autoEscalate=" + autoEscalate);
+                        + " role=" + role);
         PaddleOcrBridge.recognize(app, bitmap, model, new PaddleOcrBridge.Callback() {
             @Override public void onSuccess(OcrDocument raw, long totalMs, int lineCount) {
                 if (raw == null || raw.fullText().isBlank() || raw.chars().isEmpty()) {
-                    if (autoEscalate && model == OcrModelManager.SMALL && mediumAvailable) {
-                        DiagnosticLog.i(app, "G_CIRCLE_PP_REGION",
-                                "small empty -> medium retry");
-                        runPaddle(app, bitmap, callback, OcrModelManager.MEDIUM, false, false);
-                        return;
-                    }
-                    callback.onFailure(new IllegalStateException("PP-OCR region empty"));
+                    callback.onFailure(new IllegalStateException("PP-OCR empty"));
                     return;
                 }
-                DiagnosticLog.i(app, "G_CIRCLE_PP_REGION",
+                DiagnosticLog.i(app, role.equals("gesture_correction")
+                                ? "G_CIRCLE_PP_REGION" : "G_CIRCLE_PP_INDEX",
                         "success model=" + model
                                 + " engine=" + raw.engine()
                                 + " chars=" + raw.chars().size()
@@ -119,36 +128,49 @@ final class CircleStableOcr {
             }
 
             @Override public void onFailure(String message) {
-                if (autoEscalate && model == OcrModelManager.SMALL && mediumAvailable) {
-                    DiagnosticLog.i(app, "G_CIRCLE_PP_REGION",
-                            "small failed -> medium retry error=" + message);
-                    runPaddle(app, bitmap, callback, OcrModelManager.MEDIUM, false, false);
-                    return;
-                }
                 callback.onFailure(new IllegalStateException(
-                        message == null || message.isBlank() ? "PP-OCR region failed" : message));
+                        message == null || message.isBlank() ? "PP-OCR failed" : message));
             }
         });
     }
 
-    private static int chooseLocalPaddleModel(Context app, int mode) {
-        if (mode == 1) {
-            return OcrModelManager.isReady(app, OcrModelManager.MEDIUM)
-                    ? OcrModelManager.MEDIUM : 0;
-        }
-        if (mode == 2) {
-            return OcrModelManager.isReady(app, OcrModelManager.SMALL)
-                    ? OcrModelManager.SMALL : 0;
-        }
-        if (OcrModelManager.isReady(app, OcrModelManager.SMALL)) return OcrModelManager.SMALL;
-        if (OcrModelManager.isReady(app, OcrModelManager.MEDIUM)) return OcrModelManager.MEDIUM;
-        return 0;
+    private static int modelForCircleMode(int mode) {
+        return switch (mode) {
+            case 1 -> OcrModelManager.TINY;
+            case 2 -> OcrModelManager.SMALL;
+            case 3 -> OcrModelManager.MEDIUM;
+            default -> throw new IllegalArgumentException("not a PP Circle mode=" + mode);
+        };
     }
 
+    static String fullModeLabel(Context context) {
+        return modeLabel(new FloatSettings(context.getApplicationContext()).circleFullOcrEngine());
+    }
+
+    static String correctionModeLabel(Context context) {
+        int mode = new FloatSettings(context.getApplicationContext()).circleCorrectionEngine();
+        return mode == 0 ? "off" : modeLabel(mode);
+    }
+
+    private static String modeLabel(int mode) {
+        return switch (mode) {
+            case 1 -> "ppocr_tiny";
+            case 2 -> "ppocr_small";
+            case 3 -> "ppocr_medium";
+            default -> "mlkit";
+        };
+    }
+
+    /** Normal/legacy OCR path retained for non-Circle callers. */
     static void recognizeConfigured(Context context, Bitmap bitmap,
                                     OcrEngine.DocumentCallback callback) {
         if (!valid(context, bitmap, callback)) return;
         OcrEngine.recognizeDocument(context.getApplicationContext(), bitmap, callback);
+    }
+
+    static void recognizePaddleRegion(Context context, Bitmap bitmap,
+                                      OcrEngine.DocumentCallback callback) {
+        recognizeCorrectionSelected(context, bitmap, callback);
     }
 
     static void recognizeMlKit(Context context, Bitmap bitmap, OcrEngine.DocumentCallback callback) {
