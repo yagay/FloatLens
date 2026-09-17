@@ -5,7 +5,9 @@ import android.graphics.Rect;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -101,7 +103,7 @@ final class CircleSelectionPlanner {
         if (selectionBounds.isEmpty() && usable(selection)) {
             selectionBounds = unionChars(selection.chars());
         }
-        Rect correctionRoi = correctionRoi(context, frame, gesture, mode, selectionBounds);
+        Rect correctionRoi = correctionRoi(context, frame, gesture, selectionBounds);
 
         DiagnosticLog.i(context, "G_CIRCLE_SELECTION_PLAN",
                 "kind=" + gesture.kind
@@ -131,8 +133,9 @@ final class CircleSelectionPlanner {
         }
 
         if (plan.mode == Mode.FULL_LINES) {
-            ArrayList<CircleGestureTextSelector.GroupHit> matched = new ArrayList<>();
+            ArrayList<CircleGestureTextSelector.GroupHit> matchedGroups = new ArrayList<>();
             ArrayList<OcrDocument.Line> used = new ArrayList<>();
+            int matchedRows = 0;
             for (Rect targetRow : plan.rowBoundsScreen) {
                 OcrDocument.Line best = null;
                 float bestScore = -1f;
@@ -166,17 +169,19 @@ final class CircleSelectionPlanner {
                     return null;
                 }
                 used.add(best);
-                CircleGestureTextSelector.GroupHit hit = groupFromLine(best);
-                if (hit == null) return null;
-                matched.add(hit);
+                List<CircleGestureTextSelector.GroupHit> lineGroups = groupsFromChars(best.chars());
+                if (lineGroups.isEmpty()) return null;
+                matchedGroups.addAll(lineGroups);
+                matchedRows++;
             }
             OcrDocument selected = CircleGestureTextSelector.documentFromGroups(
-                    matched, correctionScreen, "circle-plan-correction-full-lines");
+                    matchedGroups, correctionScreen, "circle-plan-correction-full-lines");
             DiagnosticLog.i(context, "G_CIRCLE_CORRECTION_PLAN",
                     "mode=FULL_LINES accepted=" + usable(selected)
-                            + " rows=" + matched.size()
+                            + " rows=" + matchedRows
+                            + " groups=" + matchedGroups.size()
                             + " chars=" + (selected == null ? 0 : selected.chars().size())
-                            + " policy=preserve_planned_rows");
+                            + " policy=preserve_planned_rows_and_groups");
             return selected;
         }
 
@@ -197,13 +202,13 @@ final class CircleSelectionPlanner {
                     chars.add(unit);
                 }
             }
-            CircleGestureTextSelector.GroupHit hit = groupFromChars(chars);
-            if (hit != null) groups.add(hit);
+            groups.addAll(groupsFromChars(chars));
         }
         OcrDocument selected = CircleGestureTextSelector.documentFromGroups(
                 groups, correctionScreen, "circle-plan-correction-range");
         DiagnosticLog.i(context, "G_CIRCLE_CORRECTION_PLAN",
                 "mode=RANGE accepted=" + usable(selected)
+                        + " groups=" + groups.size()
                         + " chars=" + (selected == null ? 0 : selected.chars().size())
                         + " policy=preserve_baseline_spatial_range");
         return selected;
@@ -220,17 +225,29 @@ final class CircleSelectionPlanner {
                 if (unit != null) lineId = Math.min(lineId, unit.line());
             }
             if (lineId < minLine || lineId > maxLine) continue;
-            CircleGestureTextSelector.GroupHit hit = groupFromLine(line);
+            out.addAll(groupsFromChars(line.chars()));
+        }
+        return List.copyOf(out);
+    }
+
+    private static List<CircleGestureTextSelector.GroupHit> groupsFromChars(
+            List<OcrDocument.CharUnit> chars) {
+        if (chars == null || chars.isEmpty()) return List.of();
+        Map<Integer, ArrayList<OcrDocument.CharUnit>> byGroup = new LinkedHashMap<>();
+        for (OcrDocument.CharUnit unit : chars) {
+            if (unit == null || unit.text().isBlank() || unit.bounds().isEmpty()) continue;
+            byGroup.computeIfAbsent(unit.group(), ignored -> new ArrayList<>()).add(unit);
+        }
+        ArrayList<CircleGestureTextSelector.GroupHit> out = new ArrayList<>();
+        for (ArrayList<OcrDocument.CharUnit> groupChars : byGroup.values()) {
+            CircleGestureTextSelector.GroupHit hit = groupFromChars(groupChars);
             if (hit != null) out.add(hit);
         }
         return List.copyOf(out);
     }
 
-    private static CircleGestureTextSelector.GroupHit groupFromLine(OcrDocument.Line line) {
-        return line == null ? null : groupFromChars(line.chars());
-    }
-
-    private static CircleGestureTextSelector.GroupHit groupFromChars(List<OcrDocument.CharUnit> chars) {
+    private static CircleGestureTextSelector.GroupHit groupFromChars(
+            ArrayList<OcrDocument.CharUnit> chars) {
         if (chars == null || chars.isEmpty()) return null;
         ArrayList<OcrDocument.CharUnit> clean = new ArrayList<>();
         StringBuilder text = new StringBuilder();
@@ -285,7 +302,6 @@ final class CircleSelectionPlanner {
     private static Rect correctionRoi(Context app,
                                       GoogleCircleCapture.Frame frame,
                                       GoogleCircleSelection.Selection gesture,
-                                      Mode mode,
                                       Rect selectionBoundsScreen) {
         int width = frame.bitmap.getWidth();
         int height = frame.bitmap.getHeight();
