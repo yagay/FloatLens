@@ -105,16 +105,8 @@ final class TextSelectionController {
         String value = textView.getText().subSequence(lo, hi).toString().trim();
         if (value.isEmpty()) return null;
 
-        Rect screen = FloatMenuAnchor.forTextSelection(textView);
-        Rect local = null;
-        if (screen != null && !screen.isEmpty()) {
-            try {
-                int[] loc = new int[2];
-                textView.getLocationOnScreen(loc);
-                local = new Rect(screen);
-                local.offset(-loc[0], -loc[1]);
-            } catch (Throwable ignored) { }
-        }
+        Rect screen = SelectionGeometry.forTextSelection(textView);
+        Rect local = SelectionGeometry.screenToLocal(textView, screen);
         return new SelectionSnapshot(value, lo, hi, local, screen, generation);
     }
 
@@ -171,7 +163,8 @@ final class TextSelectionController {
             DiagnosticLog.i(context, "TEXT_SELECT", "stable chars=" + snapshot.text().length()
                     + " range=" + snapshot.start() + "-" + snapshot.end()
                     + " generation=" + snapshot.generation()
-                    + " anchor=" + (anchor == null ? "none" : anchor.toShortString()));
+                    + " anchor=" + (anchor == null ? "none" : anchor.toShortString())
+                    + " geometry=SelectionGeometry");
         };
         if (stableDelayMs == 0L) textView.post(delayedStable);
         else textView.postDelayed(delayedStable, stableDelayMs);
