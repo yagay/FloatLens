@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * FL cached hit-test model.
+ * FL cached Accessibility hit-test model.
  *
  * Reverse engineering of fooView 1.6.4 shows that its selection overlay does not flatten every
  * Accessibility rectangle into one global depth-ranked list. FooAccessibilityService prepares
@@ -59,10 +59,6 @@ public final class ScreenSelectionModel {
         replacePrepared(view);
         replacePrepared(root);
 
-        // Matches FL semantic ordering for the normal selection
-        // path: usable text is resolved before ordinary non-text candidates. Empty editable nodes are
-        // kept as a separate fallback class, and FloatLens' generic VIEW extension remains behind FL
-        // semantic candidates instead of being allowed to hide them by depth.
         accessibility.addAll(text);
         accessibility.addAll(editable);
         accessibility.addAll(nonText);
@@ -70,15 +66,8 @@ public final class ScreenSelectionModel {
         accessibility.addAll(root);
     }
 
-    /** Kept for source compatibility; visual screenshot candidates are intentionally ignored. */
-    public void setVisual(List<ScreenCandidate> items) {}
-
     public List<ScreenCandidate> accessibilityCandidates() {
         return new ArrayList<>(accessibility);
-    }
-
-    public List<ScreenCandidate> visualCandidates() {
-        return new ArrayList<>();
     }
 
     public boolean isEmpty() { return accessibility.isEmpty(); }
@@ -96,10 +85,6 @@ public final class ScreenSelectionModel {
 
     public ScreenCandidate selectAt(float x, float y) {
         return selectAccessibilityAt(x, y);
-    }
-
-    public boolean needsVisualRefinement(float x, float y) {
-        return false;
     }
 
     private void replacePrepared(ArrayList<ScreenCandidate> bucket) {
