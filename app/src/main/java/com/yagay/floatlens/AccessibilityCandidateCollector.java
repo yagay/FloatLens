@@ -86,7 +86,7 @@ public final class AccessibilityCandidateCollector {
         else if (fullscreen) type = ScreenCandidate.Type.ROOT;
         else return;
 
-        out.add(new ScreenCandidate(bounds, type, ScreenCandidate.Source.ACCESSIBILITY,
+        out.add(new ScreenCandidate(bounds, type,
                 visibleText, semanticLabel,
                 AccessibilityNodeSemantics.className(node),
                 AccessibilityNodeSemantics.viewId(node),
