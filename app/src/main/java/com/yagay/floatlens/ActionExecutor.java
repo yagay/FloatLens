@@ -29,9 +29,9 @@ public final class ActionExecutor {
                 ScreenshotController.captureForOcr(c);
             }
             case ActionId.AI_SCREEN -> {
-                OcrEngine.invalidatePending(c, "action_google_circle");
+                OcrEngine.invalidatePending(c, "action_fl_circle");
                 DiagnosticLog.i(c, "AI_SCREEN", "enter cached-full-OCR circle workspace");
-                GoogleCircleController.show(c);
+                FLCircleController.show(c);
             }
             case ActionId.MOVE_ICON -> {
                 FloatService f = FloatService.get();
