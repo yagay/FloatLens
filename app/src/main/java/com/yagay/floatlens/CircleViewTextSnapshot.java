@@ -15,10 +15,10 @@ import java.util.Set;
 /**
  * View-first text snapshot used by Circle full-screen ML Kit recognition.
  *
- * <p>Accessibility owns the preferred text content while ML Kit owns selectable geometry. The
- * screenshot is never masked by whole View bounds. Approximate View rectangles are therefore only
- * a temporary matching hint and are never allowed into the final selectable document unless ML Kit
- * (or exact Accessibility geometry) has tightened every character in that line.</p>
+ * <p>Only conservative pure-text View candidates are allowed into the Accessibility text layer.
+ * Mixed or ambiguous Views are left entirely to ML Kit. Accessibility owns the preferred text
+ * content for accepted pure-text Views while ML Kit owns selectable geometry. The screenshot is
+ * never masked by whole View bounds.</p>
  */
 final class CircleViewTextSnapshot {
     private static final float VIEW_GEOMETRY_CONFIDENCE = 0.92f;
@@ -45,10 +45,9 @@ final class CircleViewTextSnapshot {
         int mask(Bitmap bitmap) { return 0; }
 
         /**
-         * Refines View text with ML Kit geometry, then merges both sources. View lines that still
-         * contain approximate whole-View geometry are deliberately excluded from the selectable
-         * document; their ML counterpart remains instead. This prevents a tap on a short View text
-         * from highlighting the entire card/image/container rectangle.
+         * Refines accepted pure-View text with ML Kit geometry, then merges both sources. View lines
+         * that still contain approximate whole-View geometry are deliberately excluded from the
+         * selectable document; their ML counterpart remains instead.
          */
         OcrDocument merge(OcrDocument mlDocument, int width, int height) {
             if (viewDocument == null || viewDocument.chars().isEmpty()) return mlDocument;
@@ -123,7 +122,8 @@ final class CircleViewTextSnapshot {
 
         ArrayList<RawLine> rawLines = new ArrayList<>();
         Set<String> seen = new HashSet<>();
-        int textViews = 0;
+        int pureTextViews = 0;
+        int skippedNonPureTextViews = 0;
         for (ScreenCandidate candidate : candidates) {
             if (candidate == null
                     || candidate.source() != ScreenCandidate.Source.ACCESSIBILITY
@@ -133,6 +133,11 @@ final class CircleViewTextSnapshot {
             }
             String value = candidate.text() == null ? "" : candidate.text().trim();
             if (value.isEmpty()) continue;
+
+            if (!isPureTextView(candidate)) {
+                skippedNonPureTextViews++;
+                continue;
+            }
 
             Rect screenBounds = candidate.bounds();
             if (screenBounds.isEmpty()) continue;
@@ -144,16 +149,73 @@ final class CircleViewTextSnapshot {
             String key = value + "@" + bitmapBounds.flattenToString();
             if (!seen.add(key)) continue;
             appendTextLines(rawLines, value, bitmapBounds);
-            textViews++;
+            pureTextViews++;
         }
 
         OcrDocument document = buildViewDocument(rawLines, bitmap.getWidth(), bitmap.getHeight());
         DiagnosticLog.i(app, "G_CIRCLE_VIEW_TEXT",
-                "capturedTextViews=" + textViews
+                "capturedPureTextViews=" + pureTextViews
+                        + " skippedNonPureTextViews=" + skippedNonPureTextViews
                         + " chars=" + (document == null ? 0 : document.chars().size())
                         + " maskRects=0"
-                        + " policy=view_text_content_mlkit_geometry_no_whole_view_selection");
-        return new Snapshot(document, textViews);
+                        + " policy=pure_text_view_only_other_views_mlkit");
+        return new Snapshot(document, pureTextViews);
+    }
+
+    /**
+     * Conservative pure-text classification for Circle. Only TextView-style classes are accepted.
+     * Anything that is commonly mixed with icons/images/content, editable, checked, web/custom,
+     * or explicitly image-like is left to ML Kit even if Accessibility exposes getText().
+     */
+    private static boolean isPureTextView(ScreenCandidate candidate) {
+        if (candidate == null || !candidate.hasText()) return false;
+        if (candidate.iconLike() || candidate.fullscreenLike() || candidate.editable()) return false;
+
+        String cls = candidate.className() == null
+                ? "" : candidate.className().trim().toLowerCase(Locale.ROOT);
+        if (cls.isEmpty()) return false;
+
+        if (cls.contains("button")
+                || cls.contains("checkedtextview")
+                || cls.contains("edittext")
+                || cls.contains("webview")
+                || cls.contains("image")
+                || cls.contains("layout")
+                || cls.contains("viewgroup")
+                || cls.contains("container")
+                || cls.contains("compose")
+                || cls.contains("surface")
+                || cls.contains("texture")
+                || cls.equals("android.view.view")) {
+            return false;
+        }
+
+        boolean textClass = cls.equals("android.widget.textview")
+                || cls.endsWith(".textview")
+                || cls.endsWith("textview")
+                || cls.contains("appcompattextview")
+                || cls.contains("materialtextview");
+        if (!textClass) return false;
+
+        String id = candidate.viewId() == null
+                ? "" : candidate.viewId().toLowerCase(Locale.ROOT);
+        if (containsVisualToken(id)) return false;
+
+        return true;
+    }
+
+    private static boolean containsVisualToken(String value) {
+        if (value == null || value.isEmpty()) return false;
+        return value.contains("icon")
+                || value.contains("image")
+                || value.contains("avatar")
+                || value.contains("thumbnail")
+                || value.contains("thumb")
+                || value.contains("photo")
+                || value.contains("picture")
+                || value.contains("cover")
+                || value.contains("media")
+                || value.contains("drawable");
     }
 
     private static OcrDocument selectableViewDocument(OcrDocument document, int width, int height) {
