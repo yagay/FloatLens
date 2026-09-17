@@ -9,10 +9,10 @@ import java.lang.ref.WeakReference;
 /**
  * Frozen-screen OCR resolver for Circle.
  *
- * <p>The selected full-screen engine recognizes the complete frozen frame once and caches a
- * SCREEN-space document. An optional independently selected PP-OCR correction engine then runs on a
- * tight ROI for every TAP / HIGHLIGHT / SCRIBBLE. If the gesture-scoped correction text matches the
- * full-screen selection, the full document is retained. If it differs, the local PP result wins.</p>
+ * <p>The selected full-screen OCR engine produces one cached SCREEN-space document. Selection
+ * semantics are owned only by {@link CircleSelectionPlanner}; an optional PP-OCR correction engine
+ * receives the planner's ROI and may refine text inside that plan, but it cannot reinterpret the
+ * user's gesture into a different selection range.</p>
  */
 final class GoogleCircleTextResolver {
     enum Source { IMAGE_OCR, NONE }
@@ -104,8 +104,9 @@ final class GoogleCircleTextResolver {
                 + " correctionEngine=" + CircleStableOcr.correctionModeLabel(app)
                 + " fullMode=" + fs.circleFullOcrEngine()
                 + " correctionMode=" + fs.circleCorrectionEngine()
-                + " strategy=full_screen_once_plus_per_gesture_correction"
-                + " correctionCompare=gesture_text_exact_compact"
+                + " strategy=full_screen_once_plus_planned_correction"
+                + " selectionOwner=CircleSelectionPlanner"
+                + " correctionPolicy=preserve_selection_plan"
                 + " pendingGesturePolicy=latest_wins"
                 + " viewText=false coordinateSpace=SCREEN");
     }
@@ -262,38 +263,50 @@ final class GoogleCircleTextResolver {
     }
 
     private static void resolveAgainstFullDocument(PreloadState state,
-                                                   GoogleCircleCapture.Frame frame,
-                                                   GoogleCircleSelection.Selection gesture,
-                                                   OcrDocument fullDocument,
-                                                   Callback callback) {
-        OcrDocument fullSelection = initialSelection(state.app, frame, gesture, fullDocument);
+                                                    GoogleCircleCapture.Frame frame,
+                                                    GoogleCircleSelection.Selection gesture,
+                                                    OcrDocument fullDocument,
+                                                    Callback callback) {
+        CircleSelectionPlanner.Plan plan = CircleSelectionPlanner.plan(
+                state.app, frame, gesture, fullDocument);
+        OcrDocument fullSelection = plan == null ? null : plan.baselineSelection;
+        if (!usable(fullSelection)) {
+            // Keep one compatibility fallback for malformed legacy OCR documents. Normal full-screen
+            // OCR should always be handled by CircleSelectionPlanner.
+            fullSelection = initialSelection(state.app, frame, gesture, fullDocument);
+        }
+
         int correctionMode = new FloatSettings(state.app).circleCorrectionEngine();
         if (correctionMode == 0) {
             if (usable(fullSelection)) {
                 DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_COMPARE", "gesture=" + gesture.kind
                         + " correction=off winner=full"
+                        + " plan=" + planMode(plan)
                         + " selectedChars=" + fullSelection.chars().size());
                 callback.onResolved(new Result(Source.IMAGE_OCR, fullDocument, fullSelection,
-                        gestureScreenBounds(frame, gesture), fullBitmapRoi(frame), null, false));
+                        selectionScreenBounds(plan, frame, gesture), fullBitmapRoi(frame),
+                        null, false));
             } else {
                 callback.onResolved(failure(frame, gesture, fullBitmapRoi(frame),
                         new IllegalStateException("full-screen OCR selection miss"), false));
             }
             return;
         }
-        runCorrection(state, frame, gesture, fullDocument, fullSelection, callback);
+        runCorrection(state, frame, gesture, fullDocument, fullSelection, plan, callback);
     }
 
     private static void resolveWithoutFullDocument(PreloadState state,
-                                                   GoogleCircleCapture.Frame frame,
-                                                   GoogleCircleSelection.Selection gesture,
-                                                   Callback callback,
-                                                   Throwable fullError) {
+                                                    GoogleCircleCapture.Frame frame,
+                                                    GoogleCircleSelection.Selection gesture,
+                                                    Callback callback,
+                                                    Throwable fullError) {
         if (new FloatSettings(state.app).circleCorrectionEngine() == 0) {
             callback.onResolved(failure(frame, gesture, fullBitmapRoi(frame), fullError, false));
             return;
         }
-        runCorrection(state, frame, gesture, null, null, callback);
+        // No baseline document means no SelectionPlan can be created. This remains a degraded
+        // compatibility path only; the normal flow always plans from the cached full-screen OCR.
+        runCorrection(state, frame, gesture, null, null, null, callback);
     }
 
     private static void runCorrection(PreloadState state,
@@ -301,11 +314,14 @@ final class GoogleCircleTextResolver {
                                       GoogleCircleSelection.Selection gesture,
                                       OcrDocument fullDocument,
                                       OcrDocument fullSelection,
+                                      CircleSelectionPlanner.Plan plan,
                                       Callback callback) {
         if (!isCurrent(state, frame)) return;
-        Rect roi = localBitmapRoi(state.app, frame, gesture);
+        Rect roi = plan != null && !plan.correctionBitmapRoi.isEmpty()
+                ? new Rect(plan.correctionBitmapRoi)
+                : localBitmapRoi(state.app, frame, gesture);
         if (roi.isEmpty()) {
-            deliverFullOrFailure(frame, gesture, fullDocument, fullSelection, roi, callback,
+            deliverFullOrFailure(frame, gesture, fullDocument, fullSelection, plan, roi, callback,
                     new IllegalStateException("empty correction ROI"));
             return;
         }
@@ -314,7 +330,7 @@ final class GoogleCircleTextResolver {
         try {
             crop = Bitmap.createBitmap(frame.bitmap, roi.left, roi.top, roi.width(), roi.height());
         } catch (Throwable t) {
-            deliverFullOrFailure(frame, gesture, fullDocument, fullSelection, roi, callback, t);
+            deliverFullOrFailure(frame, gesture, fullDocument, fullSelection, plan, roi, callback, t);
             return;
         }
 
@@ -323,6 +339,8 @@ final class GoogleCircleTextResolver {
                 + " roi=" + roi.toShortString()
                 + " crop=" + crop.getWidth() + "x" + crop.getHeight()
                 + " engine=" + CircleStableOcr.correctionModeLabel(state.app)
+                + " plan=" + planMode(plan)
+                + " planRows=" + (plan == null ? 0 : plan.rowCount())
                 + " fullSelectionChars=" + (fullSelection == null ? 0 : fullSelection.chars().size()));
 
         CircleStableOcr.recognizeCorrectionSelected(state.app, crop,
@@ -335,14 +353,17 @@ final class GoogleCircleTextResolver {
                                     frame.bitmap.getWidth(), frame.bitmap.getHeight());
                     OcrDocument localScreen = parent == null ? null
                             : frame.transform.documentBitmapToScreen(parent);
-                    OcrDocument correctionSelection = initialSelection(
-                            state.app, frame, gesture, localScreen);
+                    OcrDocument correctionSelection = plan == null
+                            ? initialSelection(state.app, frame, gesture, localScreen)
+                            : CircleSelectionPlanner.selectCorrection(
+                                    state.app, frame, plan, localScreen);
 
                     if (!usable(correctionSelection)) {
                         DiagnosticLog.i(state.app, "G_CIRCLE_CORRECTION",
-                                "no gesture selection -> keep full gesture=" + gesture.kind);
-                        deliverFullOrFailure(frame, gesture, fullDocument, fullSelection, roi,
-                                callback, new IllegalStateException("correction selection miss"));
+                                "planned correction rejected -> keep full gesture=" + gesture.kind
+                                        + " plan=" + planMode(plan));
+                        deliverFullOrFailure(frame, gesture, fullDocument, fullSelection, plan, roi,
+                                callback, new IllegalStateException("correction plan coverage miss"));
                         return;
                     }
 
@@ -353,30 +374,43 @@ final class GoogleCircleTextResolver {
                     String winner = same ? "full" : "correction";
                     DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_COMPARE",
                             "gesture=" + gesture.kind
+                                    + " plan=" + planMode(plan)
                                     + " same=" + same
                                     + " winner=" + winner
+                                    + " selectionOwner=CircleSelectionPlanner"
                                     + " fullEngine=" + (fullDocument == null
                                     ? "none" : fullDocument.engine())
-                                    + " correctionEngine=" + localBitmap.engine()
+                                    + " correctionEngine=" + (localBitmap == null
+                                    ? "none" : localBitmap.engine())
                                     + " fullChars=" + (fullSelection == null
                                     ? 0 : fullSelection.chars().size())
                                     + " correctionChars=" + correctionSelection.chars().size()
                                     + " elapsedMs="
                                     + (android.os.SystemClock.uptimeMillis() - started));
 
-                    if (same) {
-                        callback.onResolved(new Result(Source.IMAGE_OCR,
-                                fullDocument, fullSelection,
-                                gestureScreenBounds(frame, gesture), fullBitmapRoi(frame),
-                                null, false));
+                    if (same || !usable(fullSelection)) {
+                        if (same) {
+                            callback.onResolved(new Result(Source.IMAGE_OCR,
+                                    fullDocument, fullSelection,
+                                    selectionScreenBounds(plan, frame, gesture), fullBitmapRoi(frame),
+                                    null, false));
+                        } else {
+                            callback.onResolved(new Result(Source.IMAGE_OCR,
+                                    localScreen, correctionSelection,
+                                    selectionScreenBounds(plan, frame, gesture), roi,
+                                    null, true));
+                        }
                     } else {
+                        // PP may change recognized text, but correctionSelection was produced from the
+                        // existing SelectionPlan, so it cannot shrink a multi-line gesture back to a
+                        // diagonal strip or select a different set of rows.
                         callback.onResolved(new Result(Source.IMAGE_OCR,
                                 localScreen, correctionSelection,
-                                gestureScreenBounds(frame, gesture), roi,
+                                selectionScreenBounds(plan, frame, gesture), roi,
                                 null, true));
                     }
                 } catch (Throwable t) {
-                    deliverFullOrFailure(frame, gesture, fullDocument, fullSelection, roi,
+                    deliverFullOrFailure(frame, gesture, fullDocument, fullSelection, plan, roi,
                             callback, t);
                 } finally {
                     recycle(crop);
@@ -389,9 +423,10 @@ final class GoogleCircleTextResolver {
                 DiagnosticLog.i(state.app, "G_CIRCLE_CORRECTION", "failed gesture="
                         + gesture.kind + " engine="
                         + CircleStableOcr.correctionModeLabel(state.app)
+                        + " plan=" + planMode(plan)
                         + " error=" + safe(error)
                         + " fallback=" + (usable(fullSelection) ? "full" : "none"));
-                deliverFullOrFailure(frame, gesture, fullDocument, fullSelection, roi,
+                deliverFullOrFailure(frame, gesture, fullDocument, fullSelection, plan, roi,
                         callback, error);
             }
         });
@@ -401,12 +436,13 @@ final class GoogleCircleTextResolver {
                                              GoogleCircleSelection.Selection gesture,
                                              OcrDocument fullDocument,
                                              OcrDocument fullSelection,
+                                             CircleSelectionPlanner.Plan plan,
                                              Rect roi,
                                              Callback callback,
                                              Throwable error) {
         if (usable(fullDocument) && usable(fullSelection)) {
             callback.onResolved(new Result(Source.IMAGE_OCR, fullDocument, fullSelection,
-                    gestureScreenBounds(frame, gesture), fullBitmapRoi(frame), null, false));
+                    selectionScreenBounds(plan, frame, gesture), fullBitmapRoi(frame), null, false));
         } else {
             callback.onResolved(failure(frame, gesture, roi, error, true));
         }
@@ -445,6 +481,7 @@ final class GoogleCircleTextResolver {
                 "circle-gesture-selected");
     }
 
+    /** Degraded fallback used only when a full-screen baseline document could not be planned. */
     private static Rect localBitmapRoi(Context app, GoogleCircleCapture.Frame frame,
                                        GoogleCircleSelection.Selection gesture) {
         int width = frame.bitmap.getWidth();
@@ -496,6 +533,19 @@ final class GoogleCircleTextResolver {
 
     private static Rect fullBitmapRoi(GoogleCircleCapture.Frame frame) {
         return new Rect(0, 0, frame.bitmap.getWidth(), frame.bitmap.getHeight());
+    }
+
+    private static Rect selectionScreenBounds(CircleSelectionPlanner.Plan plan,
+                                              GoogleCircleCapture.Frame frame,
+                                              GoogleCircleSelection.Selection gesture) {
+        if (plan != null && !plan.selectionBoundsScreen.isEmpty()) {
+            return new Rect(plan.selectionBoundsScreen);
+        }
+        return gestureScreenBounds(frame, gesture);
+    }
+
+    private static String planMode(CircleSelectionPlanner.Plan plan) {
+        return plan == null ? "LEGACY_FALLBACK" : plan.mode.name();
     }
 
     private static String selectionText(OcrDocument document) {
