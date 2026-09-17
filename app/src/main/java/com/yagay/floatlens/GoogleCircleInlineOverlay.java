@@ -258,7 +258,7 @@ final class GoogleCircleInlineOverlay {
                 RectF selected = frame.bitmapToView(screenshotSelection.bounds,
                         getWidth(), getHeight());
                 drawOutsideShade(canvas, selected);
-                canvas.drawRoundRect(selected, dp(8), dp(8), screenshotFramePaint);
+                canvas.drawRect(selected, screenshotFramePaint);
                 drawScreenshotHandles(canvas, selected);
                 drawScreenshotConfirm(canvas, selected);
             } else {
@@ -854,10 +854,18 @@ final class GoogleCircleInlineOverlay {
                     + bitmapRect.toShortString()
                     + " crop=" + crop.getWidth() + "x" + crop.getHeight()
                     + " anchor=" + anchor.toShortString()
-                    + " autoExpand=false menu=image_action");
+                    + " autoExpand=false result=dialog");
 
             close("circle_screenshot_confirmed");
-            ImageActionMenu.show(context, crop, anchor);
+            boolean shown = ResultSurfaceRouter.showScreenshot(context, crop, anchor);
+            DiagnosticLog.i(context, "G_CIRCLE_SCREENSHOT_FRAME",
+                    "result_dialog shown=" + shown + " menu=image_action_bypassed");
+            if (!shown) {
+                ScreenshotController.save(context, crop);
+                if (!crop.isRecycled()) {
+                    try { crop.recycle(); } catch (Throwable ignored) { }
+                }
+            }
         }
 
         private boolean isScreenshotEditMode(int mode) {
