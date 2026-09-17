@@ -9,9 +9,9 @@ import com.google.mlkit.vision.text.TextRecognizer;
 /**
  * Circle OCR adapter with independently selectable recognition engines.
  *
- * <p>Recognition may come from ML Kit or PP-OCR. Document semantics after recognition are shared:
- * PP output is normalized into the same Line -> Element(group) -> Symbol(character) contract used
- * by MlKitTextCore, without invoking ML Kit as a second recognizer.</p>
+ * <p>Normal Circle mode is deliberately OCR-only: it never traverses Accessibility Views for
+ * text, never merges View text, and never masks View bounds. Root/LSPosed View extraction can be
+ * added later as a separate enhanced path without affecting this stable normal-mode pipeline.</p>
  */
 final class CircleStableOcr {
     static void recognizeFullScreenSelected(Context context, Bitmap bitmap,
@@ -51,57 +51,34 @@ final class CircleStableOcr {
         recognizePaddle(app, bitmap, model, "gesture_correction", callback);
     }
 
+    /** Normal mode: complete screenshot -> ML Kit only. No Accessibility/View text path. */
     static void recognizeFullScreenMlKit(Context context, Bitmap bitmap,
                                          OcrEngine.DocumentCallback callback) {
         if (!valid(context, bitmap, callback)) return;
         Context app = context.getApplicationContext();
         long started = android.os.SystemClock.uptimeMillis();
 
-        CircleViewTextSnapshot.Snapshot viewSnapshot = CircleViewTextSnapshot.capture(app, bitmap);
-        Bitmap prepared = bitmap;
-        int masked = 0;
-        if (!viewSnapshot.isEmpty()) {
-            try {
-                Bitmap copy = bitmap.copy(Bitmap.Config.ARGB_8888, true);
-                if (copy != null) {
-                    prepared = copy;
-                    masked = viewSnapshot.mask(copy);
-                }
-            } catch (Throwable t) {
-                DiagnosticLog.i(app, "G_CIRCLE_VIEW_TEXT",
-                        "mask copy failed; continue unmasked error=" + safe(t));
-            }
-        }
-        final Bitmap ocrBitmap = prepared;
-        final int maskedRects = masked;
-
         TextRecognizer recognizer;
         try {
             recognizer = MlKitTextCore.createPreferredRecognizer(app);
         } catch (Throwable t) {
-            recyclePrepared(bitmap, ocrBitmap);
-            OcrDocument viewOnly = viewSnapshot.merge(null, bitmap.getWidth(), bitmap.getHeight());
-            if (viewOnly != null && !viewOnly.chars().isEmpty()) callback.onSuccess(viewOnly);
-            else callback.onFailure(t);
+            callback.onFailure(t);
             return;
         }
 
         String engine = MlKitTextCore.preferredEngine("mlkit-circle-full", app);
         DiagnosticLog.i(app, "G_CIRCLE_ML_INDEX",
                 "start engine=" + engine
-                        + " bitmap=" + ocrBitmap.getWidth() + "x" + ocrBitmap.getHeight()
+                        + " bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight()
                         + " role=full_screen_index"
-                        + " viewTextViews=" + viewSnapshot.viewCount()
-                        + " viewTextChars=" + viewSnapshot.charCount()
-                        + " maskedViewBounds=" + maskedRects);
+                        + " mode=normal_ocr_only"
+                        + " viewText=false");
         try {
-            recognizer.process(InputImage.fromBitmap(ocrBitmap, 0))
+            recognizer.process(InputImage.fromBitmap(bitmap, 0))
                     .addOnSuccessListener(text -> {
                         try {
-                            OcrDocument mlDocument = MlKitTextCore.toDocument(text, engine,
-                                    ocrBitmap.getWidth(), ocrBitmap.getHeight(), 0f, null);
-                            OcrDocument document = viewSnapshot.merge(
-                                    mlDocument, bitmap.getWidth(), bitmap.getHeight());
+                            OcrDocument document = MlKitTextCore.toDocument(text, engine,
+                                    bitmap.getWidth(), bitmap.getHeight(), 0f, null);
                             if (document == null || document.fullText().isBlank()
                                     || document.chars().isEmpty()) {
                                 callback.onFailure(new IllegalStateException("ML Kit full-screen OCR empty"));
@@ -109,11 +86,10 @@ final class CircleStableOcr {
                             }
                             DiagnosticLog.i(app, "G_CIRCLE_ML_INDEX",
                                     "success engine=" + document.engine()
-                                            + " mlChars=" + (mlDocument == null ? 0 : mlDocument.chars().size())
-                                            + " viewChars=" + viewSnapshot.charCount()
-                                            + " mergedChars=" + document.chars().size()
+                                            + " chars=" + document.chars().size()
                                             + " lines=" + document.lines().size()
-                                            + " maskedViewBounds=" + maskedRects
+                                            + " mode=normal_ocr_only"
+                                            + " viewText=false"
                                             + " elapsedMs="
                                             + (android.os.SystemClock.uptimeMillis() - started));
                             callback.onSuccess(document);
@@ -121,29 +97,21 @@ final class CircleStableOcr {
                             callback.onFailure(t);
                         } finally {
                             try { recognizer.close(); } catch (Throwable ignored) {}
-                            recyclePrepared(bitmap, ocrBitmap);
                         }
                     })
                     .addOnFailureListener(error -> {
                         try { recognizer.close(); } catch (Throwable ignored) {}
-                        recyclePrepared(bitmap, ocrBitmap);
-                        OcrDocument viewOnly = viewSnapshot.merge(
-                                null, bitmap.getWidth(), bitmap.getHeight());
                         DiagnosticLog.i(app, "G_CIRCLE_ML_INDEX",
                                 "failed error=" + safe(error)
-                                        + " viewFallbackChars="
-                                        + (viewOnly == null ? 0 : viewOnly.chars().size())
+                                        + " mode=normal_ocr_only"
+                                        + " viewText=false"
                                         + " elapsedMs="
                                         + (android.os.SystemClock.uptimeMillis() - started));
-                        if (viewOnly != null && !viewOnly.chars().isEmpty()) callback.onSuccess(viewOnly);
-                        else callback.onFailure(error);
+                        callback.onFailure(error);
                     });
         } catch (Throwable t) {
             try { recognizer.close(); } catch (Throwable ignored) {}
-            recyclePrepared(bitmap, ocrBitmap);
-            OcrDocument viewOnly = viewSnapshot.merge(null, bitmap.getWidth(), bitmap.getHeight());
-            if (viewOnly != null && !viewOnly.chars().isEmpty()) callback.onSuccess(viewOnly);
-            else callback.onFailure(t);
+            callback.onFailure(t);
         }
     }
 
@@ -224,10 +192,6 @@ final class CircleStableOcr {
 
     static void recognizeMlKit(Context context, Bitmap bitmap, OcrEngine.DocumentCallback callback) {
         recognizeFullScreenMlKit(context, bitmap, callback);
-    }
-
-    private static void recyclePrepared(Bitmap original, Bitmap prepared) {
-        if (prepared != null && prepared != original && !prepared.isRecycled()) prepared.recycle();
     }
 
     private static boolean valid(Context context, Bitmap bitmap,
