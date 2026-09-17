@@ -135,7 +135,6 @@ public final class ViewHoverOverlay {
         current = null;
         visualState = SelectionVisualState.TRACKING;
         model.setAccessibility(Collections.emptyList());
-        model.setVisual(Collections.emptyList());
     }
 
     private void ensureView() {
