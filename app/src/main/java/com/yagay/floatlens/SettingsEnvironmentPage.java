@@ -1,22 +1,14 @@
 package com.yagay.floatlens;
 
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 
 /** Environment-driven visibility settings page. */
 final class SettingsEnvironmentPage {
-    static final class Result {
-        final LinearLayout root;
-        final EditText hidePackagesEdit;
-
-        Result(LinearLayout root, EditText hidePackagesEdit) {
-            this.root = root;
-            this.hidePackagesEdit = hidePackagesEdit;
-        }
-    }
-
-    static Result build(SettingsActivity activity, FloatSettings fs) {
+    static LinearLayout build(SettingsActivity activity, FloatSettings fs) {
         SettingsPageUi ui = new SettingsPageUi(activity, fs);
         LinearLayout root = AppUi.pageRoot(activity, "环境与显示",
                 "与当前应用、键盘和屏幕环境有关的行为。" );
@@ -33,19 +25,22 @@ final class SettingsEnvironmentPage {
         LinearLayout hideBlock = AppUi.settingBlock(activity);
         EditText edit = new EditText(activity);
         AppUi.styleInput(activity, edit);
-        edit.setText(fs.prefs().getString(FloatSettings.K_HIDE_PACKAGES, ""));
+        edit.setText(fs.hiddenPackagesRaw());
         edit.setHint("com.example.game\ncom.example.bank");
         edit.setSingleLine(false);
         edit.setGravity(Gravity.TOP | Gravity.START);
         edit.setMinHeight(AppUi.dp(activity, 110));
-        edit.setOnFocusChangeListener((v, hasFocus) -> {
-            if (!hasFocus) fs.prefs().edit()
-                    .putString(FloatSettings.K_HIDE_PACKAGES, edit.getText().toString()).apply();
+        edit.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                fs.setHiddenPackagesRaw(s == null ? "" : s.toString());
+            }
+            @Override public void afterTextChanged(Editable s) { }
         });
         hideBlock.addView(edit, new LinearLayout.LayoutParams(-1, -2));
         AppUi.addRow(hidden.body, hideBlock);
         AppUi.addSection(root, hidden);
-        return new Result(root, edit);
+        return root;
     }
 
     private SettingsEnvironmentPage() {}
