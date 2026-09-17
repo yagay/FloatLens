@@ -3,13 +3,7 @@ package com.yagay.floatlens;
 import android.content.Context;
 import android.graphics.Rect;
 
-/**
- * Single entry point for FloatLens text action menus.
- *
- * <p>Callers provide immutable SelectionSnapshot state. Menu content/behavior remains owned by
- * FloatActionMenu until that legacy class is split internally; callers never choose another menu
- * implementation.</p>
- */
+/** Single entry point for every FloatLens text action menu. */
 final class TextActionMenuController {
     private final Context context;
 
@@ -25,6 +19,5 @@ final class TextActionMenuController {
 
     void dismiss() {
         FloatActionMenu.dismiss();
-        FloatMenuAnchor.clear();
     }
 }
