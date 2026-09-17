@@ -104,10 +104,9 @@ final class GoogleCircleInlineOverlay {
         private static final float CLOSE_EDGE_MARGIN_DP = 14f;
         private static final float CLOSE_BOTTOM_GAP_DP = 18f;
         private static final long CLOSE_MOVE_LONG_PRESS_MS = 350L;
-        private static final String PREF_CLOSE_X_BP = "circle_cancel_x_bp_v1";
-        private static final String PREF_CLOSE_Y_BP = "circle_cancel_y_bp_v1";
 
         private final Context context;
+        private final FloatSettings settings;
         private final FlOverlayWindowHost host;
         private final WindowManager.LayoutParams windowLayout;
         private final GoogleCircleCapture.Frame frame;
@@ -159,6 +158,7 @@ final class GoogleCircleInlineOverlay {
                       Runnable onClosed, boolean keyFocusEnabled) {
             super(c);
             context = c;
+            settings = new FloatSettings(c);
             this.host = host;
             this.windowLayout = windowLayout;
             this.frame = frame;
@@ -357,15 +357,8 @@ final class GoogleCircleInlineOverlay {
             if (!Float.isNaN(closeCenterX) && !Float.isNaN(closeCenterY)) return;
             if (getWidth() <= 0 || getHeight() <= 0) return;
 
-            int xBp = -1;
-            int yBp = -1;
-            try {
-                var prefs = context.getSharedPreferences(FloatSettings.PREF, Context.MODE_PRIVATE);
-                xBp = prefs.getInt(PREF_CLOSE_X_BP, -1);
-                yBp = prefs.getInt(PREF_CLOSE_Y_BP, -1);
-            } catch (Throwable ignored) {
-            }
-
+            int xBp = settings.circleCancelXBp();
+            int yBp = settings.circleCancelYBp();
             if (xBp >= 0 && xBp <= 10000 && yBp >= 0 && yBp <= 10000) {
                 closeCenterX = getWidth() * (xBp / 10000f);
                 closeCenterY = getHeight() * (yBp / 10000f);
@@ -405,11 +398,7 @@ final class GoogleCircleInlineOverlay {
             int yBp = Math.max(0, Math.min(10000,
                     Math.round(closeCenterY * 10000f / getHeight())));
             try {
-                context.getSharedPreferences(FloatSettings.PREF, Context.MODE_PRIVATE)
-                        .edit()
-                        .putInt(PREF_CLOSE_X_BP, xBp)
-                        .putInt(PREF_CLOSE_Y_BP, yBp)
-                        .apply();
+                settings.saveCircleCancelPosition(xBp, yBp);
                 DiagnosticLog.i(context, "G_CIRCLE_CANCEL",
                         "position_saved xBp=" + xBp + " yBp=" + yBp);
             } catch (Throwable t) {
