@@ -27,7 +27,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private FloatingIconLayoutPolicy layout;
     private FloatSettings fs;
     private FloatVisibilityController visibility;
-    private CircleStateMachine circleState;
+    private RecognitionWorkflowState workflowState;
     private FloatIconView primary, secondary;
     private WindowManager.LayoutParams primaryLp, secondaryLp;
     private FloatIconTouchHandle primaryHandle, secondaryHandle;
@@ -49,7 +49,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
         instance = this;
         fs = new FloatSettings(this);
         visibility = new FloatVisibilityController();
-        circleState = new CircleStateMachine(this);
+        workflowState = new RecognitionWorkflowState(this);
         fs.prefs().registerOnSharedPreferenceChangeListener(this);
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         iconHost = new FlOverlayWindowHost(this);
@@ -273,8 +273,12 @@ public class FloatService extends Service implements android.content.SharedPrefe
 
     private void dispatchGesture(GestureDecision decision) {
         if (decision == null || decision.isNone()) return;
-        if (decision.code() == GestureCode.ENTER_CIRCLE) circleState.enter();
-        if (decision.code() == GestureCode.RECOGNIZE) circleState.recognizeStarted();
+        if (decision.code() == GestureCode.ENTER_CIRCLE && workflowState != null) {
+            workflowState.captureStarted("gesture_enter_circle");
+        }
+        if (decision.code() == GestureCode.RECOGNIZE && workflowState != null) {
+            workflowState.recognitionStarted("gesture_recognize");
+        }
         String action = GestureActionMapper.actionFor(fs, decision);
         DiagnosticLog.i(this, "GESTURE_LAYER", "code=" + decision.code()
                 + " label=" + GestureCode.label(decision.code())
@@ -293,12 +297,20 @@ public class FloatService extends Service implements android.content.SharedPrefe
     public boolean isPositionMoveArmed() { return positionMoveArmed; }
     public void cancelPositionMove() { positionMoveArmed = false; updateNotification(); }
 
-    public void onCircleCaptureStarted() { if (circleState != null) circleState.captureStarted(); }
-    public void onCircleRecognizeStarted() { if (circleState != null) circleState.recognizeStarted(); }
-    public void onOcrResults(int candidates) { if (circleState != null) circleState.resultsReady(candidates); }
-    public void onCircleFinished(String reason) { if (circleState != null) circleState.finish(reason); }
-    public CircleStateMachine.State circleState() {
-        return circleState == null ? CircleStateMachine.State.IDLE : circleState.state();
+    public void onCircleCaptureStarted() {
+        if (workflowState != null) workflowState.captureStarted("circle_capture");
+    }
+    public void onCircleRecognizeStarted() {
+        if (workflowState != null) workflowState.recognitionStarted("ocr_start");
+    }
+    public void onOcrResults(int candidates) {
+        if (workflowState != null) workflowState.resultsReady(candidates, "ocr_results");
+    }
+    public void onCircleFinished(String reason) {
+        if (workflowState != null) workflowState.finish(reason);
+    }
+    RecognitionWorkflowState.State recognitionState() {
+        return workflowState == null ? RecognitionWorkflowState.State.IDLE : workflowState.state();
     }
 
     private void syncMirrorPosition() {
@@ -363,8 +375,9 @@ public class FloatService extends Service implements android.content.SharedPrefe
     }
 
     private void positionTouchHandle(WindowManager.LayoutParams handleLp, WindowManager.LayoutParams iconLp) {
-        if (handleLp == null || iconLp == null || wm == null) return;
-        android.graphics.Rect bounds = wm.getCurrentWindowMetrics().getBounds();
+        if (handleLp == null || iconLp == null) return;
+        android.graphics.Rect bounds = ScreenGeometry.displayBounds(this);
+        if (bounds.isEmpty()) return;
         int screenWidth = bounds.width();
         int screenHeight = bounds.height();
         handleLp.x = layout.isLeft(iconLp) ? 0 : Math.max(0, screenWidth - handleLp.width);
@@ -694,7 +707,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
 
     @Override public void onDestroy() {
         layout.persist(primaryLp);
-        if (circleState != null) circleState.finish("service_destroy");
+        if (workflowState != null) workflowState.finish("service_destroy");
         removeIcons();
         try { fs.prefs().unregisterOnSharedPreferenceChangeListener(this); } catch (Throwable ignored) { }
         if (screenReceiver != null) try { unregisterReceiver(screenReceiver); } catch (Throwable ignored) { }
@@ -719,7 +732,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
                 : visibility.lockHidden() ? "锁屏隐藏"
                 : visibility.fullscreenHidden() ? "全屏应用隐藏"
                 : visibility.appHidden() ? "当前应用按规则隐藏"
-                : circleState != null && circleState.active() ? "Circle: " + circleState.state()
+                : workflowState != null && workflowState.active() ? "识别: " + workflowState.state()
                 : visibility.notificationExpanded() ? "通知栏已展开"
                 : "点击进入设置";
 
@@ -747,6 +760,6 @@ public class FloatService extends Service implements android.content.SharedPrefe
     }
 
     private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
+        return ScreenGeometry.dp(this, value);
     }
 }
