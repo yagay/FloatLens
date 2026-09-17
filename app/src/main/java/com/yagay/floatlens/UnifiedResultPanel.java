@@ -26,6 +26,7 @@ final class UnifiedResultPanel {
     private final ImageView imageView;
     private final LinearLayout textPanel;
     private final TextSelectionSurface selection;
+    private final TextActionMenuPresenter textMenuPresenter;
     private final Button ocrButton;
     private final Button copyButton;
     private final Button saveButton;
@@ -41,6 +42,7 @@ final class UnifiedResultPanel {
     UnifiedResultPanel(Context context, ResultSession initial) {
         this.context = context;
         this.settings = new FloatSettings(context.getApplicationContext());
+        this.textMenuPresenter = new OverlayTextActionMenuPresenter(context);
 
         Rect usable = ResultUi.usableBounds(context);
         width = ResultUi.standardWidth(context, usable);
@@ -100,8 +102,7 @@ final class UnifiedResultPanel {
         if (next == null) return;
         session = next;
         selection.clearSelection();
-        FloatActionMenu.dismiss();
-        FloatMenuAnchor.clear();
+        textMenuPresenter.dismiss();
 
         title.setText(next.title());
         boolean showImage = next.showImage(settings);
@@ -165,7 +166,10 @@ final class UnifiedResultPanel {
         updateActions();
     }
 
-    void clearSelection() { selection.clearSelection(); }
+    void clearSelection() {
+        selection.clearSelection();
+        textMenuPresenter.dismiss();
+    }
 
     private void updateActions() {
         ResultSession s = session;
@@ -199,25 +203,24 @@ final class UnifiedResultPanel {
     private void bindSelectionMenu() {
         selection.setListener(new TextSelectionSurface.Listener() {
             @Override public void onSelectionStarted() {
-                FloatActionMenu.dismiss();
-                FloatMenuAnchor.clear();
+                textMenuPresenter.dismiss();
             }
 
             @Override public void onSelectionChanging() {
-                FloatActionMenu.dismiss();
-                FloatMenuAnchor.clear();
+                textMenuPresenter.dismiss();
             }
 
             @Override public void onSelectionFinished(SelectionSnapshot snapshot) {
                 if (snapshot == null || snapshot.text().isBlank()) return;
+                textMenuPresenter.show(snapshot, selection::selectAllText);
                 Rect anchor = snapshot.screenBounds();
-                FloatActionMenu.showTextAt(context, snapshot.text(), selection::selectAllText, anchor);
                 DiagnosticLog.i(context, "RESULT_TEXT_MENU",
                         "show generation=" + snapshot.generation()
                                 + " range=" + snapshot.start() + "-" + snapshot.end()
                                 + " local=" + (snapshot.localBounds() == null
                                 ? "none" : snapshot.localBounds().toShortString())
-                                + " screen=" + (anchor == null ? "none" : anchor.toShortString()));
+                                + " screen=" + (anchor == null ? "none" : anchor.toShortString())
+                                + " presenter=overlay");
             }
         });
     }
