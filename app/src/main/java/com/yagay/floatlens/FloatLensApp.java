@@ -2,7 +2,6 @@ package com.yagay.floatlens;
 
 import android.app.Activity;
 import android.app.Application;
-import android.graphics.Rect;
 import android.os.Bundle;
 import android.view.View;
 import android.view.ViewGroup;
@@ -47,23 +46,21 @@ public final class FloatLensApp extends Application implements Application.Activ
             Object existing = tv.getTag(R.id.floatlens_text_selection_controller);
             if (!(existing instanceof TextSelectionController)) {
                 final TextSelectionController[] ref = new TextSelectionController[1];
+                TextActionMenuController menu = new TextActionMenuController(activity);
                 TextSelectionController controller = new TextSelectionController(activity, tv, 0L,
                         new TextSelectionController.Observer() {
                             @Override public void onStarted() {
-                                FloatActionMenu.dismiss();
-                                FloatMenuAnchor.clear();
+                                menu.dismiss();
                             }
 
                             @Override public void onChanging() {
-                                FloatActionMenu.dismiss();
-                                FloatMenuAnchor.clear();
+                                menu.dismiss();
                             }
 
-                            @Override public void onStable(String selectedText, Rect anchorOnScreen) {
-                                if (selectedText == null || selectedText.isBlank()) return;
+                            @Override public void onStable(SelectionSnapshot snapshot) {
+                                if (snapshot == null || snapshot.text().isBlank()) return;
                                 TextSelectionController current = ref[0];
-                                FloatActionMenu.showTextAt(activity, selectedText.trim(),
-                                        current == null ? null : current::selectAll, anchorOnScreen);
+                                menu.show(snapshot, current == null ? null : current::selectAll);
                             }
                         });
                 ref[0] = controller;
@@ -80,12 +77,10 @@ public final class FloatLensApp extends Application implements Application.Activ
 
     @Override public void onActivityPaused(Activity activity) {
         FloatActionMenu.dismiss();
-        FloatMenuAnchor.clear();
     }
 
     @Override public void onActivityDestroyed(Activity activity) {
         FloatActionMenu.dismiss();
-        FloatMenuAnchor.clear();
     }
 
     @Override public void onActivityCreated(Activity activity, Bundle state) {
