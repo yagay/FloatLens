@@ -16,10 +16,11 @@ import java.util.concurrent.Executors;
  *
  * <p>The frozen screenshot is the only content source. Background work performs detection only on a
  * downscaled copy, then geometry stitches detector boxes into paragraph-like TextMap nodes. No
- * background OCR is performed. TextMap decides only which context ROI is worth recognizing; the
- * user's actual gesture always decides the initial text selection. If detection is not ready or
- * misses, a tight gesture crop is OCR'd directly. Successful region OCR is cached only for the
- * lifetime of the frozen frame.</p>
+ * background OCR is performed. TextMap decides only which local reading-flow context ROI is worth
+ * recognizing; the user's actual gesture always decides the initial text selection. If detection is
+ * not ready, misses, or a context OCR succeeds but cannot map the gesture to selectable text, a
+ * tight gesture crop is OCR'd directly. Successful region OCR is cached only for the lifetime of the
+ * frozen frame.</p>
  */
 final class GoogleCircleTextResolver {
     enum Source { IMAGE_OCR, NONE }
@@ -91,7 +92,9 @@ final class GoogleCircleTextResolver {
     private static final Object STATE_LOCK = new Object();
     private static final int DETECTOR_MAX_LONG_SIDE = 1024;
     private static final int REGION_CACHE_MAX = 12;
-    private static final float REGION_CACHE_OVERLAP_MIN = 0.72f;
+    private static final float REGION_CACHE_DESIRED_COVERAGE_MIN = 0.96f;
+    private static final float REGION_CACHE_MIN_AREA_RATIO = 0.96f;
+    private static final float REGION_CACHE_GESTURE_COVERAGE_MIN = 0.98f;
     private static final float TEXT_MAP_HIT_PAD_DP = 14f;
     private static final float TEXT_MAP_ROI_PAD_X_DP = 14f;
     private static final float TEXT_MAP_ROI_PAD_Y_DP = 10f;
@@ -122,8 +125,8 @@ final class GoogleCircleTextResolver {
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
                 + " strategy=detector_textmap_then_lazy_ocr"
                 + " background=det_only_downscaled"
-                + " paragraphStitching=geometry"
-                + " lazyRecognition=true regionCache=frozen_frame"
+                + " paragraphStitching=geometry_local_reading_flow"
+                + " lazyRecognition=true regionCache=frozen_frame_strict_coverage"
                 + " backgroundOcr=false tileOcr=false fullFrameOcr=false"
                 + " preindexBlocking=false viewText=false coordinateSpace=BITMAP");
 
@@ -155,14 +158,15 @@ final class GoogleCircleTextResolver {
 
         int hitPad = bitmapPxForDp(state.app, frame, TEXT_MAP_HIT_PAD_DP);
         CircleTextMap.Target target = map == null ? null : map.targetFor(gesture, hitPad);
-        boolean paragraphTarget = target != null && !target.bounds.isEmpty();
+        boolean textMapTarget = target != null && !target.bounds.isEmpty();
         Rect desiredRoi;
-        if (paragraphTarget) {
+        if (textMapTarget) {
             desiredRoi = expandTextMapRoi(state.app, frame, target.bounds);
             DiagnosticLog.i(app, "G_CIRCLE_TEXT_MAP", "hit gesture=" + gesture.kind
                     + " paragraphs=" + target.idsForLog()
-                    + " lines=" + target.lineCount
+                    + " localFlowLines=" + target.lineCount
                     + " roi=" + desiredRoi.toShortString()
+                    + " context=gesture_anchored_local_reading_flow"
                     + " lazyRecognition=true selection=gesture_scoped");
         } else {
             desiredRoi = localBitmapRoi(state.app, frame, gesture);
@@ -179,19 +183,24 @@ final class GoogleCircleTextResolver {
             OcrDocument initial = initialSelection(state.app, frame, gesture, cached.screenDocument);
             if (usable(initial)) {
                 DiagnosticLog.i(app, "G_CIRCLE_LAZY_OCR", "cache hit gesture=" + gesture.kind
-                        + " source=" + (paragraphTarget ? "textmap_context" : "gesture_fallback")
-                        + " roi=" + cached.bitmapRoi.toShortString()
+                        + " source=" + (textMapTarget ? "textmap_context" : "gesture_fallback")
+                        + " desiredRoi=" + desiredRoi.toShortString()
+                        + " cachedRoi=" + cached.bitmapRoi.toShortString()
                         + " chars=" + cached.screenDocument.chars().size()
                         + " selectedChars=" + initial.chars().size()
-                        + " selection=gesture_scoped");
+                        + " strictCoverage=true selection=gesture_scoped");
                 callback.onResolved(new Result(Source.IMAGE_OCR, cached.screenDocument, initial,
                         gestureScreenBounds(frame, gesture), cached.bitmapRoi, null,
-                        !paragraphTarget));
+                        !textMapTarget));
+                return;
+            }
+            if (textMapTarget && tryTightFallback(state, frame, gesture, desiredRoi,
+                    "cache_selection_miss", callback)) {
                 return;
             }
         }
 
-        resolveLazyScreenshot(state, frame, gesture, desiredRoi, paragraphTarget, callback);
+        resolveLazyScreenshot(state, frame, gesture, desiredRoi, textMapTarget, callback);
     }
 
     static void release(Context context, GoogleCircleCapture.Frame frame, String reason) {
@@ -335,12 +344,12 @@ final class GoogleCircleTextResolver {
                                               GoogleCircleCapture.Frame frame,
                                               GoogleCircleSelection.Selection gesture,
                                               Rect bitmapRoi,
-                                              boolean paragraphTarget,
+                                              boolean textMapTarget,
                                               Callback callback) {
         Rect gestureScreen = gestureScreenBounds(frame, gesture);
         if (!isCurrent(state, frame) || bitmapRoi == null || bitmapRoi.isEmpty()) {
             callback.onResolved(new Result(Source.NONE, null, null, gestureScreen,
-                    bitmapRoi, new IllegalStateException("empty lazy OCR ROI"), !paragraphTarget));
+                    bitmapRoi, new IllegalStateException("empty lazy OCR ROI"), !textMapTarget));
             return;
         }
 
@@ -350,13 +359,13 @@ final class GoogleCircleTextResolver {
                     bitmapRoi.width(), bitmapRoi.height());
         } catch (Throwable t) {
             callback.onResolved(new Result(Source.NONE, null, null,
-                    gestureScreen, bitmapRoi, t, !paragraphTarget));
+                    gestureScreen, bitmapRoi, t, !textMapTarget));
             return;
         }
 
         long started = android.os.SystemClock.uptimeMillis();
         DiagnosticLog.i(state.app, "G_CIRCLE_LAZY_OCR", "start gesture=" + gesture.kind
-                + " source=" + (paragraphTarget ? "textmap_context" : "gesture_fallback")
+                + " source=" + (textMapTarget ? "textmap_context" : "gesture_fallback")
                 + " roi=" + bitmapRoi.toShortString()
                 + " crop=" + crop.getWidth() + "x" + crop.getHeight()
                 + " engine=direct_mlkit backgroundOcr=false");
@@ -370,19 +379,40 @@ final class GoogleCircleTextResolver {
                                     frame.bitmap.getWidth(), frame.bitmap.getHeight());
                     OcrDocument localScreen = parentBitmap == null ? null
                             : frame.transform.documentBitmapToScreen(parentBitmap);
-                    OcrDocument initial = initialSelection(state.app, frame, gesture, localScreen);
-                    if (!usable(localScreen) || !usable(initial)) {
+
+                    if (!usable(localScreen)) {
+                        if (textMapTarget && tryTightFallback(state, frame, gesture, bitmapRoi,
+                                "context_document_empty", callback)) {
+                            return;
+                        }
                         callback.onResolved(new Result(Source.NONE, null, null,
                                 gestureScreen, bitmapRoi,
                                 new IllegalStateException("lazy OCR has no selectable text"),
-                                !paragraphTarget));
+                                !textMapTarget));
+                        return;
+                    }
+
+                    OcrDocument initial = initialSelection(state.app, frame, gesture, localScreen);
+                    if (!usable(initial)) {
+                        // Keep the useful context OCR for future nearby gestures even when this
+                        // gesture cannot be mapped into it. The current gesture gets one tight,
+                        // independent OCR attempt instead of reporting a false miss immediately.
+                        cacheRegion(state, bitmapRoi, localScreen);
+                        if (textMapTarget && tryTightFallback(state, frame, gesture, bitmapRoi,
+                                "context_selection_miss", callback)) {
+                            return;
+                        }
+                        callback.onResolved(new Result(Source.NONE, null, null,
+                                gestureScreen, bitmapRoi,
+                                new IllegalStateException("lazy OCR has no selectable text"),
+                                !textMapTarget));
                         return;
                     }
 
                     cacheRegion(state, bitmapRoi, localScreen);
                     DiagnosticLog.i(state.app, "G_CIRCLE_LAZY_OCR", "success gesture="
                             + gesture.kind
-                            + " source=" + (paragraphTarget ? "textmap_context" : "gesture_fallback")
+                            + " source=" + (textMapTarget ? "textmap_context" : "gesture_fallback")
                             + " engine=" + localBitmap.engine()
                             + " documentChars=" + localScreen.chars().size()
                             + " selectedChars=" + initial.chars().size()
@@ -390,10 +420,10 @@ final class GoogleCircleTextResolver {
                             + " cacheStore=true elapsedMs="
                             + (android.os.SystemClock.uptimeMillis() - started));
                     callback.onResolved(new Result(Source.IMAGE_OCR, localScreen, initial,
-                            gestureScreen, bitmapRoi, null, !paragraphTarget));
+                            gestureScreen, bitmapRoi, null, !textMapTarget));
                 } catch (Throwable t) {
                     callback.onResolved(new Result(Source.NONE, null, null,
-                            gestureScreen, bitmapRoi, t, !paragraphTarget));
+                            gestureScreen, bitmapRoi, t, !textMapTarget));
                 } finally {
                     recycle(crop);
                 }
@@ -402,13 +432,50 @@ final class GoogleCircleTextResolver {
             @Override public void onFailure(Throwable error) {
                 recycle(crop);
                 if (!isCurrent(state, frame)) return;
+                if (textMapTarget && tryTightFallback(state, frame, gesture, bitmapRoi,
+                        "context_ocr_failed", callback)) {
+                    return;
+                }
                 DiagnosticLog.i(state.app, "G_CIRCLE_LAZY_OCR", "failed gesture="
                         + gesture.kind + " error=" + safe(error)
                         + " elapsedMs=" + (android.os.SystemClock.uptimeMillis() - started));
                 callback.onResolved(new Result(Source.NONE, null, null,
-                        gestureScreen, bitmapRoi, error, !paragraphTarget));
+                        gestureScreen, bitmapRoi, error, !textMapTarget));
             }
         });
+    }
+
+    private static boolean tryTightFallback(PreloadState state,
+                                            GoogleCircleCapture.Frame frame,
+                                            GoogleCircleSelection.Selection gesture,
+                                            Rect contextRoi,
+                                            String reason,
+                                            Callback callback) {
+        if (!isCurrent(state, frame)) return false;
+        Rect tightRoi = localBitmapRoi(state.app, frame, gesture);
+        if (tightRoi.isEmpty() || tightRoi.equals(contextRoi)) return false;
+
+        DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_FALLBACK", "start gesture=" + gesture.kind
+                + " reason=" + reason
+                + " contextRoi=" + (contextRoi == null ? "[]" : contextRoi.toShortString())
+                + " tightRoi=" + tightRoi.toShortString()
+                + " engine=direct_mlkit");
+        resolveLazyScreenshot(state, frame, gesture, tightRoi, false, result -> {
+            if (result != null && result.source == Source.IMAGE_OCR
+                    && usable(result.initialSelectionDocument)) {
+                DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_FALLBACK", "success gesture="
+                        + gesture.kind + " reason=" + reason
+                        + " selectedChars=" + result.initialSelectionDocument.chars().size()
+                        + " roi=" + tightRoi.toShortString());
+            } else {
+                DiagnosticLog.i(state.app, "G_CIRCLE_LOCAL_FALLBACK", "failed gesture="
+                        + gesture.kind + " reason=" + reason
+                        + " error=" + (result == null || result.error == null
+                        ? "no_selectable_text" : safe(result.error)));
+            }
+            callback.onResolved(result);
+        });
+        return true;
     }
 
     private static OcrDocument initialSelection(Context app, GoogleCircleCapture.Frame frame,
@@ -416,9 +483,6 @@ final class GoogleCircleTextResolver {
                                                 OcrDocument document) {
         if (!usable(document)) return null;
 
-        // TextMap provides OCR context only. Initial selection must always reflect the user's actual
-        // tap/highlight/scribble geometry; this prevents a short stroke from selecting a whole mapped
-        // paragraph merely because that paragraph was the recognition ROI.
         OcrDocument initial = selectGesture(app, frame, gesture, document);
         if (!usable(initial) && gesture.kind == GoogleCircleSelection.Kind.TAP) {
             initial = nearestGroupDocument(document,
@@ -440,11 +504,16 @@ final class GoogleCircleTextResolver {
             for (int i = state.regionCache.size() - 1; i >= 0; i--) {
                 CachedRegion entry = state.regionCache.get(i);
                 Rect cached = entry.bitmapRoi;
+                float desiredCoverage = overlapCoverage(desiredRoi, cached);
+                float areaRatio = rectArea(desiredRoi) <= 0L ? 0f
+                        : Math.min(1f, rectArea(cached) / (float) rectArea(desiredRoi));
                 boolean desiredCovered = cached.contains(desiredRoi)
-                        || overlapCoverage(desiredRoi, cached) >= REGION_CACHE_OVERLAP_MIN;
+                        || (desiredCoverage >= REGION_CACHE_DESIRED_COVERAGE_MIN
+                        && areaRatio >= REGION_CACHE_MIN_AREA_RATIO);
                 boolean gestureCovered = gesture.kind == GoogleCircleSelection.Kind.TAP
                         ? cached.contains(focusX, focusY)
-                        : overlapCoverage(gestureBitmap, cached) >= 0.90f;
+                        : overlapCoverage(gestureBitmap, cached)
+                        >= REGION_CACHE_GESTURE_COVERAGE_MIN;
                 if (desiredCovered && gestureCovered && usable(entry.screenDocument)) {
                     state.regionCache.remove(i);
                     state.regionCache.add(entry);
@@ -583,8 +652,13 @@ final class GoogleCircleTextResolver {
         int bottom = Math.min(target.bottom, cover.bottom);
         if (right <= left || bottom <= top) return 0f;
         long intersection = (long) (right - left) * (bottom - top);
-        long area = (long) target.width() * target.height();
+        long area = rectArea(target);
         return area <= 0L ? 0f : Math.min(1f, intersection / (float) area);
+    }
+
+    private static long rectArea(Rect rect) {
+        return rect == null ? 0L
+                : (long) Math.max(0, rect.width()) * Math.max(0, rect.height());
     }
 
     private static boolean usable(OcrDocument document) {
