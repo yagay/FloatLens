@@ -3,8 +3,8 @@ package com.yagay.floatlens;
 import android.content.Context;
 import android.widget.Toast;
 
-/** Entry point for the Google-style exact content-selection workflow. */
-final class GoogleCircleController {
+/** Entry point for the FloatLens exact content-selection workflow. */
+final class FLCircleController {
     private static long generation;
     private static ScreenshotHideCoordinator.Lease pendingHideLease;
 
@@ -12,17 +12,17 @@ final class GoogleCircleController {
         Context app = c.getApplicationContext();
         long gen = ++generation;
 
-        GoogleCircleInlineOverlay.dismissActive("restart");
+        FLCircleInlineOverlay.dismissActive("restart");
         CircleActiveBorderOverlay.hide(app, "restart");
         cancelPendingLocked(app);
 
         FlSystemPanelController.CaptureState shadeState =
-                FlSystemPanelController.beginCapture(app, "google_circle");
+                FlSystemPanelController.beginCapture(app, "fl_circle");
         ScreenshotHideCoordinator.Lease hideLease =
-                ScreenshotHideCoordinator.acquire(app, "google_circle_" + gen);
+                ScreenshotHideCoordinator.acquire(app, "fl_circle_" + gen);
         pendingHideLease = hideLease;
         FloatSettings fs = new FloatSettings(app);
-        DiagnosticLog.i(app, "G_CIRCLE", "start gen=" + gen
+        DiagnosticLog.i(app, "FL_CIRCLE", "start gen=" + gen
                 + " phase=capture_then_fullscreen_ocr"
                 + " fullEngine=" + CircleStableOcr.fullModeLabel(app)
                 + " fullMode=" + fs.circleFullOcrEngine()
@@ -36,8 +36,8 @@ final class GoogleCircleController {
                 + " tapSelection=precise_char_or_latin_word"
                 + " circleMode=editable_screenshot autoExpand=false");
 
-        GoogleCircleCapture.capture(app, frame -> {
-            synchronized (GoogleCircleController.class) {
+        FLCircleCapture.capture(app, frame -> {
+            synchronized (FLCircleController.class) {
                 if (gen != generation) {
                     frame.recycle();
                     hideLease.release(app);
@@ -47,15 +47,15 @@ final class GoogleCircleController {
 
             // Initialize per-frame OCR state. Full-screen recognition starts on the first text
             // gesture and is cached. Optional PP correction is then evaluated on every text gesture.
-            GoogleCircleTextResolver.preload(app, frame);
+            FLCircleTextResolver.preload(app, frame);
 
-            boolean shown = GoogleCircleInlineOverlay.show(app, frame, () -> {
-                GoogleCircleTextResolver.release(app, frame, "workspace_closed");
+            boolean shown = FLCircleInlineOverlay.show(app, frame, () -> {
+                FLCircleTextResolver.release(app, frame, "workspace_closed");
                 CircleActiveBorderOverlay.hide(app, "workspace_closed");
                 restore(app, hideLease, gen, "closed");
             });
             if (!shown) {
-                GoogleCircleTextResolver.release(app, frame, "overlay_failed");
+                FLCircleTextResolver.release(app, frame, "overlay_failed");
                 frame.recycle();
                 CircleActiveBorderOverlay.hide(app, "overlay_failed");
                 restore(app, hideLease, gen, "overlay_failed");
@@ -65,18 +65,18 @@ final class GoogleCircleController {
 
             CircleActiveBorderOverlay.show(app);
 
-            FlSystemPanelController.onOverlayReady(app, shadeState, "google_circle",
+            FlSystemPanelController.onOverlayReady(app, shadeState, "fl_circle",
                     collapsed -> {
-                        synchronized (GoogleCircleController.class) {
+                        synchronized (FLCircleController.class) {
                             if (gen != generation) return;
                         }
-                        DiagnosticLog.i(app, "G_CIRCLE", "shade cleanup collapsed="
+                        DiagnosticLog.i(app, "FL_CIRCLE", "shade cleanup collapsed="
                                 + collapsed + " gen=" + gen);
-                        GoogleCircleInlineOverlay.promoteActiveFocus(
+                        FLCircleInlineOverlay.promoteActiveFocus(
                                 collapsed ? "shade_collapsed" : "shade_cleanup_finished");
                     });
         }, error -> {
-            synchronized (GoogleCircleController.class) {
+            synchronized (FLCircleController.class) {
                 if (gen != generation) {
                     hideLease.release(app);
                     return;
@@ -84,7 +84,7 @@ final class GoogleCircleController {
             }
             CircleActiveBorderOverlay.hide(app, "capture_failed");
             restore(app, hideLease, gen, "capture_failed");
-            DiagnosticLog.i(app, "G_CIRCLE", "capture failed="
+            DiagnosticLog.i(app, "FL_CIRCLE", "capture failed="
                     + ScreenCaptureBackend.safeMessage(error));
             Toast.makeText(app, "圈画识别截图失败: "
                     + ScreenCaptureBackend.safeMessage(error), Toast.LENGTH_LONG).show();
@@ -94,11 +94,11 @@ final class GoogleCircleController {
     private static void restore(Context app, ScreenshotHideCoordinator.Lease lease,
                                 long gen, String reason) {
         lease.release(app);
-        synchronized (GoogleCircleController.class) {
+        synchronized (FLCircleController.class) {
             if (pendingHideLease == lease) pendingHideLease = null;
             if (gen != generation) return;
         }
-        DiagnosticLog.i(app, "G_CIRCLE", "finish gen=" + gen + " reason=" + reason);
+        DiagnosticLog.i(app, "FL_CIRCLE", "finish gen=" + gen + " reason=" + reason);
     }
 
     private static void cancelPendingLocked(Context app) {
@@ -107,5 +107,5 @@ final class GoogleCircleController {
         if (lease != null) lease.release(app);
     }
 
-    private GoogleCircleController() {}
+    private FLCircleController() {}
 }
