@@ -12,8 +12,9 @@ import java.util.List;
  *
  * <p>No recognized text lives here. Detector boxes are normalized into visual lines and then
  * stitched into paragraph-like reading-flow groups using geometry (row alignment, line gap,
- * indentation and column separation). Gestures hit this map first; only the resulting paragraph ROI
- * is sent to OCR.</p>
+ * indentation and column separation). Paragraphs are structural hints only: gesture targeting
+ * returns the touched line(s) plus a small amount of locally continuous reading context instead of
+ * blindly returning an entire paragraph. Only that local context ROI is sent to OCR.</p>
  */
 final class CircleTextMap {
     static final class Target {
@@ -52,6 +53,21 @@ final class CircleTextMap {
             return lines.get(lines.size() - 1);
         }
     }
+
+    private static final class ParagraphHit {
+        final Paragraph paragraph;
+        final ArrayList<Integer> lineIndexes = new ArrayList<>();
+
+        ParagraphHit(Paragraph paragraph) {
+            this.paragraph = paragraph;
+        }
+
+        void add(int index) {
+            if (!lineIndexes.contains(index)) lineIndexes.add(index);
+        }
+    }
+
+    private static final int LOCAL_CONTEXT_NEIGHBORS = 2;
 
     private final int width;
     private final int height;
@@ -96,31 +112,37 @@ final class CircleTextMap {
 
     private Target tapTarget(PointF point, int pad) {
         if (point == null) return null;
-        Paragraph best = null;
+        Paragraph bestParagraph = null;
+        int bestLine = -1;
         long bestDistance = Long.MAX_VALUE;
         for (Paragraph paragraph : paragraphs) {
-            long paragraphDistance = Long.MAX_VALUE;
-            for (Rect line : paragraph.lines) {
+            for (int i = 0; i < paragraph.lines.size(); i++) {
+                Rect line = paragraph.lines.get(i);
                 long distance = distanceSquared(point.x, point.y, line);
-                paragraphDistance = Math.min(paragraphDistance, distance);
-            }
-            if (paragraphDistance <= (long) pad * pad && paragraphDistance < bestDistance) {
-                best = paragraph;
-                bestDistance = paragraphDistance;
+                if (distance <= (long) pad * pad && distance < bestDistance) {
+                    bestParagraph = paragraph;
+                    bestLine = i;
+                    bestDistance = distance;
+                }
             }
         }
-        return best == null ? null : toTarget(List.of(best));
+        if (bestParagraph == null || bestLine < 0) return null;
+        ParagraphHit hit = new ParagraphHit(bestParagraph);
+        hit.add(bestLine);
+        return toLocalTarget(List.of(hit));
     }
 
     private Target strokeTarget(GoogleCircleSelection.Selection gesture, int pad) {
-        ArrayList<Paragraph> hit = new ArrayList<>();
+        ArrayList<ParagraphHit> hits = new ArrayList<>();
         Rect gestureRect = GoogleCircleSelection.exactRectAndClamp(gesture.bounds, width, height);
         List<PointF> points = gesture.points;
 
         for (Paragraph paragraph : paragraphs) {
-            boolean touched = false;
-            for (Rect line : paragraph.lines) {
+            ParagraphHit paragraphHit = null;
+            for (int lineIndex = 0; lineIndex < paragraph.lines.size(); lineIndex++) {
+                Rect line = paragraph.lines.get(lineIndex);
                 Rect expanded = expanded(line, pad, width, height);
+                boolean touched = false;
                 if (points != null && !points.isEmpty()) {
                     for (PointF point : points) {
                         if (point != null && expanded.contains(Math.round(point.x), Math.round(point.y))) {
@@ -139,33 +161,112 @@ final class CircleTextMap {
                         }
                     }
                 }
-                if (!touched && !gestureRect.isEmpty() && Rect.intersects(expanded, gestureRect)) {
+                if (!touched && (points == null || points.isEmpty())
+                        && !gestureRect.isEmpty() && Rect.intersects(expanded, gestureRect)) {
                     float overlap = overlapCoverage(gestureRect, expanded);
                     float reverse = overlapCoverage(expanded, gestureRect);
                     touched = Math.max(overlap, reverse) >= 0.08f;
                 }
-                if (touched) break;
+                if (touched) {
+                    if (paragraphHit == null) paragraphHit = new ParagraphHit(paragraph);
+                    paragraphHit.add(lineIndex);
+                }
             }
-            if (touched) hit.add(paragraph);
+            if (paragraphHit != null && !paragraphHit.lineIndexes.isEmpty()) hits.add(paragraphHit);
         }
 
-        if (hit.isEmpty()) return null;
-        hit.sort(Comparator
-                .comparingInt((Paragraph p) -> p.bounds.top)
-                .thenComparingInt(p -> p.bounds.left));
-        return toTarget(hit);
+        if (hits.isEmpty()) return null;
+        hits.sort(Comparator
+                .comparingInt((ParagraphHit hit) -> hit.paragraph.bounds.top)
+                .thenComparingInt(hit -> hit.paragraph.bounds.left));
+        return toLocalTarget(hits);
     }
 
-    private static Target toTarget(List<Paragraph> hit) {
+    /**
+     * Build OCR context around actual touched line(s). Paragraph membership is only a continuity
+     * hint. Up to two compatible neighbour lines on either side are retained so selection handles
+     * have useful nearby context without turning a small gesture into a near-full-screen OCR crop.
+     */
+    private Target toLocalTarget(List<ParagraphHit> hits) {
         Rect bounds = new Rect();
         ArrayList<Integer> ids = new ArrayList<>();
-        int lines = 0;
-        for (Paragraph paragraph : hit) {
-            if (bounds.isEmpty()) bounds.set(paragraph.bounds); else bounds.union(paragraph.bounds);
-            ids.add(paragraph.id);
-            lines += paragraph.lines.size();
+        int selectedLineCount = 0;
+
+        for (ParagraphHit hit : hits) {
+            Paragraph paragraph = hit.paragraph;
+            if (paragraph == null || paragraph.lines.isEmpty() || hit.lineIndexes.isEmpty()) continue;
+            hit.lineIndexes.sort(Integer::compareTo);
+            boolean[] include = new boolean[paragraph.lines.size()];
+            int first = paragraph.lines.size();
+            int last = -1;
+            for (int index : hit.lineIndexes) {
+                if (index < 0 || index >= paragraph.lines.size()) continue;
+                include[index] = true;
+                first = Math.min(first, index);
+                last = Math.max(last, index);
+            }
+            if (last < 0) continue;
+
+            int cursor = first;
+            for (int n = 0; n < LOCAL_CONTEXT_NEIGHBORS && cursor > 0; n++) {
+                int candidate = cursor - 1;
+                if (!localFlowCompatible(paragraph.lines.get(candidate),
+                        paragraph.lines.get(cursor), width)) break;
+                include[candidate] = true;
+                cursor = candidate;
+            }
+
+            cursor = last;
+            for (int n = 0; n < LOCAL_CONTEXT_NEIGHBORS
+                    && cursor + 1 < paragraph.lines.size(); n++) {
+                int candidate = cursor + 1;
+                if (!localFlowCompatible(paragraph.lines.get(cursor),
+                        paragraph.lines.get(candidate), width)) break;
+                include[candidate] = true;
+                cursor = candidate;
+            }
+
+            boolean paragraphUsed = false;
+            for (int i = 0; i < include.length; i++) {
+                if (!include[i]) continue;
+                Rect line = paragraph.lines.get(i);
+                if (bounds.isEmpty()) bounds.set(line); else bounds.union(line);
+                selectedLineCount++;
+                paragraphUsed = true;
+            }
+            if (paragraphUsed && !ids.contains(paragraph.id)) ids.add(paragraph.id);
         }
-        return bounds.isEmpty() ? null : new Target(bounds, ids, lines);
+
+        return bounds.isEmpty() ? null : new Target(bounds, ids, selectedLineCount);
+    }
+
+    private static boolean localFlowCompatible(Rect upper, Rect lower, int screenWidth) {
+        if (upper == null || lower == null || upper.isEmpty() || lower.isEmpty()) return false;
+        int maxHeight = Math.max(upper.height(), lower.height());
+        int minHeight = Math.max(1, Math.min(upper.height(), lower.height()));
+        float heightRatio = maxHeight / (float) minHeight;
+        if (heightRatio > 1.80f) return false;
+
+        int gap = Math.max(0, lower.top - upper.bottom);
+        if (gap > Math.max(10, Math.round(maxHeight * 1.15f))) return false;
+
+        float xOverlap = horizontalOverlapCoverage(upper, lower);
+        int leftDelta = Math.abs(upper.left - lower.left);
+        int alignLimit = Math.max(Math.round(maxHeight * 1.35f),
+                Math.round(screenWidth * 0.030f));
+        if (xOverlap < 0.24f && leftDelta > alignLimit) return false;
+
+        int wide = Math.max(upper.width(), lower.width());
+        int narrow = Math.max(1, Math.min(upper.width(), lower.width()));
+        if (wide > narrow * 3 && xOverlap < 0.55f) return false;
+
+        if (xOverlap <= 0f) {
+            int centerDelta = Math.abs(upper.centerX() - lower.centerX());
+            if (centerDelta > Math.max(maxHeight * 4, Math.round(screenWidth * 0.16f))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static ArrayList<Rect> cleanBoxes(List<Rect> source, int width, int height) {
@@ -252,8 +353,6 @@ final class CircleTextMap {
                 boolean aligned = xOverlap >= 0.20f || leftDelta <= alignLimit;
                 if (!aligned) continue;
 
-                // If two lines have no horizontal overlap, do not bridge distant columns merely
-                // because their Y positions are close.
                 if (xOverlap <= 0f) {
                     int centerDelta = Math.abs(previous.centerX() - line.centerX());
                     if (centerDelta > Math.max(referenceHeight * 5, Math.round(screenWidth * 0.22f))) {
