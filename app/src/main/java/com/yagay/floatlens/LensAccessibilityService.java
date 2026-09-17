@@ -30,8 +30,7 @@ import java.util.function.Consumer;
  *
  * This service owns Android capabilities only: overlay token, environment observation, global
  * actions, gestures and screenshot capture. Screen-candidate semantics live exclusively in
- * AccessibilityCandidateCollector/AccessibilityNodeSemantics; compatibility picker methods below
- * delegate to that one pipeline instead of maintaining a second tree walker.
+ * AccessibilityCandidateCollector/AccessibilityNodeSemantics.
  */
 public class LensAccessibilityService extends AccessibilityService {
     private static volatile LensAccessibilityService s;
@@ -276,19 +275,6 @@ public class LensAccessibilityService extends AccessibilityService {
         boolean fullscreen = !status && !shade && top != null && !top.isBlank();
         return new EnvironmentState(top == null ? "" : top,
                 ime, imeTop, status, shade, fullscreen);
-    }
-
-    /** Compatibility API: one point-scoped collector, shared with Direct and View picker. */
-    public List<ScreenCandidate> collectCandidatesAt(float x, float y) {
-        return AccessibilityCandidateCollector.collectAtPoint(this, x, y);
-    }
-
-    /** Compatibility API: selection ranking remains centralized in ScreenSelectionModel. */
-    public ViewNodeCandidate findViewAt(float x, float y) {
-        ScreenSelectionModel model = new ScreenSelectionModel();
-        model.setAccessibility(AccessibilityCandidateCollector.collectAtPoint(this, x, y));
-        ScreenCandidate selected = model.selectAt(x, y);
-        return selected == null ? null : selected.toViewNodeCandidate();
     }
 
     public Rect screenBounds() { return currentScreenBounds(); }
