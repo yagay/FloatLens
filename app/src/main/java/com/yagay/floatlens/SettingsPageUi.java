@@ -15,6 +15,7 @@ import com.google.android.material.switchmaterial.SwitchMaterial;
 
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.IntConsumer;
 
 /** Shared widgets for the focused settings pages. Keeps persistence behavior in one place. */
 final class SettingsPageUi {
@@ -84,113 +85,74 @@ final class SettingsPageUi {
             labels[i] = ActionId.label(actionIds[i]);
             if (actionIds[i].equals(now)) selected = i;
         }
-        Spinner spinner = new Spinner(activity);
-        spinner.setAdapter(new ArrayAdapter<>(activity,
-                android.R.layout.simple_spinner_dropdown_item, labels));
-        spinner.setSelection(selected);
-        spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(android.widget.AdapterView<?> parent, android.view.View view,
-                                                 int position, long id) {
-                fs.prefs().edit().putString(key, actionIds[position]).apply();
-            }
-            @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
-        });
-        addSpinnerRow(parent, label, spinner, false);
+        addPreferenceSpinner(parent, label, labels, selected, false,
+                position -> fs.prefs().edit().putString(key, actionIds[position]).apply());
     }
 
     void styleSpinner(LinearLayout parent) {
-        String[] labels = {"蓝色镜头", "深色镜头", "浅色镜头", "自定义图片 / GIF", "多图轮播"};
-        Spinner spinner = new Spinner(activity);
-        spinner.setAdapter(new ArrayAdapter<>(activity,
-                android.R.layout.simple_spinner_dropdown_item, labels));
-        spinner.setSelection(fs.style());
-        spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(android.widget.AdapterView<?> p, android.view.View v,
-                                                 int pos, long id) {
-                fs.prefs().edit().putInt(FloatSettings.K_STYLE, pos).apply();
-            }
-            @Override public void onNothingSelected(android.widget.AdapterView<?> p) {}
-        });
-        addSpinnerRow(parent, "图标样式", spinner, false);
+        addIntPreferenceSpinner(parent, "图标样式",
+                new String[]{"蓝色镜头", "深色镜头", "浅色镜头", "自定义图片 / GIF", "多图轮播"},
+                fs.style(), FloatSettings.K_STYLE, false);
     }
 
     void lineStyleSpinner(LinearLayout parent) {
-        String[] labels = {"圆角", "方形", "圆角增强"};
-        Spinner spinner = new Spinner(activity);
-        spinner.setAdapter(new ArrayAdapter<>(activity,
-                android.R.layout.simple_spinner_dropdown_item, labels));
-        spinner.setSelection(fs.lineStyle());
-        spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(android.widget.AdapterView<?> p, android.view.View v,
-                                                 int pos, long id) {
-                fs.prefs().edit().putInt(FloatSettings.K_LINE_STYLE, pos).apply();
-            }
-            @Override public void onNothingSelected(android.widget.AdapterView<?> p) {}
-        });
-        addSpinnerRow(parent, "轨迹样式", spinner, false);
+        addIntPreferenceSpinner(parent, "轨迹样式",
+                new String[]{"圆角", "方形", "圆角增强"},
+                fs.lineStyle(), FloatSettings.K_LINE_STYLE, false);
     }
 
     void ocrEngineSpinner(LinearLayout parent) {
-        String[] labels = {
+        addIntPreferenceSpinner(parent, "OCR 引擎", new String[]{
                 "自动：Small → Medium → ML Kit",
                 "PP-OCRv6 Medium 高精度",
                 "PP-OCRv6 Small 平衡",
                 "ML Kit 快速"
-        };
-        Spinner spinner = new Spinner(activity);
-        spinner.setAdapter(new ArrayAdapter<>(activity,
-                android.R.layout.simple_spinner_dropdown_item, labels));
-        spinner.setSelection(fs.ocrEngineMode());
-        spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(android.widget.AdapterView<?> p, android.view.View v,
-                                                 int pos, long id) {
-                fs.prefs().edit().putInt(FloatSettings.K_OCR_ENGINE, pos).apply();
-            }
-            @Override public void onNothingSelected(android.widget.AdapterView<?> p) {}
-        });
-        addSpinnerRow(parent, "OCR 引擎", spinner, true);
+        }, fs.ocrEngineMode(), FloatSettings.K_OCR_ENGINE, true);
     }
 
     void circleFullOcrEngineSpinner(LinearLayout parent) {
-        String[] labels = {
+        addIntPreferenceSpinner(parent, "整屏识别引擎", new String[]{
                 "ML Kit 快速",
                 "PP-OCRv6 Tiny 超轻量",
                 "PP-OCRv6 Small 平衡",
                 "PP-OCRv6 Medium 高精度"
-        };
-        Spinner spinner = new Spinner(activity);
-        spinner.setAdapter(new ArrayAdapter<>(activity,
-                android.R.layout.simple_spinner_dropdown_item, labels));
-        spinner.setSelection(fs.circleFullOcrEngine());
-        spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(android.widget.AdapterView<?> p, android.view.View v,
-                                                 int pos, long id) {
-                fs.prefs().edit().putInt(FloatSettings.K_CIRCLE_FULL_OCR_ENGINE, pos).apply();
-            }
-            @Override public void onNothingSelected(android.widget.AdapterView<?> p) {}
-        });
-        addSpinnerRow(parent, "整屏识别引擎", spinner, true);
+        }, fs.circleFullOcrEngine(), FloatSettings.K_CIRCLE_FULL_OCR_ENGINE, true);
     }
 
     void circleCorrectionEngineSpinner(LinearLayout parent) {
-        String[] labels = {
+        addIntPreferenceSpinner(parent, "局部校正引擎", new String[]{
                 "关闭局部校正",
                 "PP-OCRv6 Tiny 超轻量",
                 "PP-OCRv6 Small 平衡",
                 "PP-OCRv6 Medium 高精度"
-        };
+        }, fs.circleCorrectionEngine(), FloatSettings.K_CIRCLE_CORRECTION_ENGINE, true);
+    }
+
+    private void addIntPreferenceSpinner(LinearLayout parent, String label, String[] labels,
+                                         int selected, String key, boolean vertical) {
+        addPreferenceSpinner(parent, label, labels, selected, vertical,
+                position -> fs.prefs().edit().putInt(key, position).apply());
+    }
+
+    /** One Spinner construction/listener/layout path for every settings selector. */
+    private void addPreferenceSpinner(LinearLayout parent, String label, String[] labels,
+                                      int selected, boolean vertical, IntConsumer onSelected) {
+        String[] safeLabels = labels == null ? new String[0] : labels;
+        if (safeLabels.length == 0) return;
         Spinner spinner = new Spinner(activity);
         spinner.setAdapter(new ArrayAdapter<>(activity,
-                android.R.layout.simple_spinner_dropdown_item, labels));
-        spinner.setSelection(fs.circleCorrectionEngine());
+                android.R.layout.simple_spinner_dropdown_item, safeLabels));
+        spinner.setSelection(ScreenGeometry.clamp(selected, 0, safeLabels.length - 1));
         spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(android.widget.AdapterView<?> p, android.view.View v,
-                                                 int pos, long id) {
-                fs.prefs().edit().putInt(FloatSettings.K_CIRCLE_CORRECTION_ENGINE, pos).apply();
+            @Override public void onItemSelected(android.widget.AdapterView<?> parent,
+                                                 android.view.View view, int position, long id) {
+                if (onSelected != null && position >= 0 && position < safeLabels.length) {
+                    onSelected.accept(position);
+                }
             }
-            @Override public void onNothingSelected(android.widget.AdapterView<?> p) {}
+            @Override public void onNothingSelected(android.widget.AdapterView<?> parent) { }
         });
-        addSpinnerRow(parent, "局部校正引擎", spinner, true);
+        addSpinnerRow(parent, label, spinner, vertical);
     }
 
     void addSpinnerRow(LinearLayout parent, String label, Spinner spinner, boolean vertical) {
