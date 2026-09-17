@@ -14,7 +14,7 @@ final class TextSelectionController {
     interface Observer {
         void onStarted();
         void onChanging();
-        void onStable(String selectedText, Rect anchorOnScreen);
+        void onStable(SelectionSnapshot snapshot);
     }
 
     private final Context context;
@@ -92,8 +92,35 @@ final class TextSelectionController {
         return lo < hi ? textView.getText().subSequence(lo, hi).toString() : "";
     }
 
+    SelectionSnapshot snapshot() {
+        if (textView.getText() == null) return null;
+        int a = textView.getSelectionStart();
+        int b = textView.getSelectionEnd();
+        if (a < 0 || b < 0 || a == b) return null;
+
+        int lo = Math.max(0, Math.min(a, b));
+        int hi = Math.min(textView.length(), Math.max(a, b));
+        if (lo >= hi) return null;
+
+        String value = textView.getText().subSequence(lo, hi).toString().trim();
+        if (value.isEmpty()) return null;
+
+        Rect screen = FloatMenuAnchor.forTextSelection(textView);
+        Rect local = null;
+        if (screen != null && !screen.isEmpty()) {
+            try {
+                int[] loc = new int[2];
+                textView.getLocationOnScreen(loc);
+                local = new Rect(screen);
+                local.offset(-loc[0], -loc[1]);
+            } catch (Throwable ignored) { }
+        }
+        return new SelectionSnapshot(value, lo, hi, local, screen, generation);
+    }
+
     Rect anchor() {
-        return FloatMenuAnchor.forTextSelection(textView);
+        SelectionSnapshot snapshot = snapshot();
+        return snapshot == null ? null : snapshot.screenBounds();
     }
 
     void selectAll() {
@@ -137,11 +164,13 @@ final class TextSelectionController {
         cancelStable();
         delayedStable = () -> {
             if (actionMode == null || expected != generation) return;
-            String selected = selectedText().trim();
-            if (selected.isEmpty()) return;
-            Rect anchor = anchor();
-            if (observer != null) observer.onStable(selected, anchor);
-            DiagnosticLog.i(context, "TEXT_SELECT", "stable chars=" + selected.length()
+            SelectionSnapshot snapshot = snapshot();
+            if (snapshot == null || snapshot.generation() != expected) return;
+            if (observer != null) observer.onStable(snapshot);
+            Rect anchor = snapshot.screenBounds();
+            DiagnosticLog.i(context, "TEXT_SELECT", "stable chars=" + snapshot.text().length()
+                    + " range=" + snapshot.start() + "-" + snapshot.end()
+                    + " generation=" + snapshot.generation()
                     + " anchor=" + (anchor == null ? "none" : anchor.toShortString()));
         };
         if (stableDelayMs == 0L) textView.post(delayedStable);
