@@ -21,12 +21,12 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Frozen-screen Circle workflow with separate text-selection and screenshot-selection modes.
+ * Frozen-screen Circle workspace with TextMap-guided lazy OCR and editable screenshot selection.
  *
- * <p>Circle text comes from the pre-indexed ML Kit OCR passes. A gesture chooses one complete pass
- * and only initializes its selection range; the complete OCR document stays loaded so handles can
- * extend across words, lines and paragraphs. A closed CIRCLE remains an exact editable screenshot
- * rectangle and never becomes text OCR.</p>
+ * <p>TextMap supplies only a recognition context ROI. The resolver keeps the complete lazily OCR'd
+ * context document loaded, while the actual tap/highlight/scribble gesture initializes the selected
+ * range. Selection handles can then extend through the retained context. A closed CIRCLE remains an
+ * exact editable screenshot rectangle and never becomes text OCR.</p>
  */
 final class GoogleCircleInlineOverlay {
     private static WorkspaceView active;
@@ -63,8 +63,8 @@ final class GoogleCircleInlineOverlay {
         if (!shadeExpanded) view.promoteKeyFocus("initial");
         DiagnosticLog.i(app, "G_CIRCLE_INLINE", "overlay shown frame=" + bounds.toShortString()
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
-                + " textRecognition=preindexed_mlkit_aks5"
-                + " selectionModel=complete_pass_plus_range"
+                + " textRecognition=textmap_lazy_roi_mlkit"
+                + " selectionModel=context_document_plus_gesture_range"
                 + " geometry=shared_frame_transform"
                 + " screenshotMode=circle_edit_confirm autoExpand=false");
         return true;
@@ -231,7 +231,7 @@ final class GoogleCircleInlineOverlay {
             confirmTextPaint.setTextAlign(Paint.Align.CENTER);
 
             DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT",
-                    "ready chars=0 recognition=preindexed_mlkit selection=complete_pass_range");
+                    "ready chars=0 recognition=textmap_lazy_roi selection=gesture_scoped_range");
         }
 
         void promoteKeyFocus(String reason) {
@@ -423,7 +423,7 @@ final class GoogleCircleInlineOverlay {
             if (screenshotSelection != null) {
                 text = "调整截图窗口 · 调好后点完成";
             } else if (resolvingText) {
-                text = "正在匹配预识别文字";
+                text = "正在识别选区文字";
             } else if (textSelection.hasSelection()) {
                 text = "文字已选中 · 拖动手柄可跨行/段落调整";
             } else {
@@ -612,7 +612,7 @@ final class GoogleCircleInlineOverlay {
                     + " bounds=" + gesture.bounds.toShortString()
                     + " points=" + gesture.points.size()
                     + " routing=" + (gesture.kind == GoogleCircleSelection.Kind.CIRCLE
-                    ? "editable_screenshot" : "preindexed_mlkit_complete_pass")
+                    ? "editable_screenshot" : "textmap_lazy_roi")
                     + " autoExpand=false");
 
             if (gesture.kind == GoogleCircleSelection.Kind.CIRCLE) {
@@ -661,12 +661,16 @@ final class GoogleCircleInlineOverlay {
                 return;
             }
 
-            // Keep the complete pass loaded. Only the selection range is initialized from gesture.
+            // Keep the complete lazy-OCR context document. Only the initial range comes from the
+            // actual gesture-scoped hint returned by the resolver.
             textSelection.setDocument(result.document);
             boolean selected = selectFromResolvedDocument(gesture, result);
             if (!selected) {
                 textSelection.clear();
                 selectedTextSource = "";
+                DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT", "resolved=false gesture="
+                        + gesture.kind + " source=" + result.source
+                        + " reason=no_gesture_scoped_selection");
                 Toast.makeText(context, "当前位置未识别到可选文字", Toast.LENGTH_SHORT).show();
                 invalidate();
                 return;
@@ -678,8 +682,8 @@ final class GoogleCircleInlineOverlay {
                     + " documentChars=" + textSelection.size()
                     + " selectedChars=" + textSelection.selectionIndices().size()
                     + " textChars=" + textSelection.selectedText().length()
-                    + " completeDocumentRetained=true"
-                    + " paragraphExpansion=true coordinateSpace=SCREEN");
+                    + " contextDocumentRetained=true"
+                    + " gestureScopedSelection=true coordinateSpace=SCREEN");
             invalidate();
             post(this::showTextSelectionMenu);
         }
@@ -690,18 +694,33 @@ final class GoogleCircleInlineOverlay {
             if (gesture.kind == GoogleCircleSelection.Kind.TAP) {
                 PointF viewPoint = frame.bitmapToView(gesture.focus.x, gesture.focus.y,
                         getWidth(), getHeight());
+
+                // 1) Exact OCR geometry hit.
                 int hit = textSelection.findWordAt(viewPoint.x, viewPoint.y,
                         getWidth(), getHeight());
-                if (hit < 0) {
-                    hit = textSelection.findSelectionWord(viewPoint.x, viewPoint.y,
-                            getWidth(), getHeight(), dp(CACHED_TEXT_TAP_SNAP_DP));
+                if (hit >= 0) {
+                    textSelection.selectSingle(hit);
+                    return true;
                 }
+
+                // 2) Resolver already computed the nearest semantic group from the recognized ROI.
+                // Keep its original geometry instead of re-running the same tap hit test and losing
+                // a valid fallback result.
+                if (result.initialSelectionDocument != null
+                        && textSelection.selectHintDocument(result.initialSelectionDocument)) {
+                    return true;
+                }
+
+                // 3) Very small UI-level snap as the final convenience fallback.
+                hit = textSelection.findSelectionWord(viewPoint.x, viewPoint.y,
+                        getWidth(), getHeight(), dp(CACHED_TEXT_TAP_SNAP_DP));
                 if (hit < 0) return false;
                 textSelection.selectSingle(hit);
                 return true;
             }
 
-            // AKS-style model: OCR data remains complete; gesture-scoped data initializes range only.
+            // Highlight/scribble use the resolver's path-scoped hint while retaining the complete
+            // context document so selection handles can expand after the initial gesture.
             if (result.initialSelectionDocument != null
                     && textSelection.selectHintDocument(result.initialSelectionDocument)) {
                 return true;
