@@ -7,8 +7,8 @@ import android.graphics.RectF;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Exact gesture classification and geometry for the Google-style workflow. */
-final class GoogleCircleSelection {
+/** Exact gesture classification and geometry for the FloatLens Circle workflow. */
+final class FLCircleSelection {
     enum Kind { TAP, CIRCLE, HIGHLIGHT, SCRIBBLE }
 
     static final class Selection {
@@ -137,5 +137,5 @@ final class GoogleCircleSelection {
         return (float) Math.hypot(a.x - b.x, a.y - b.y);
     }
 
-    private GoogleCircleSelection() {}
+    private FLCircleSelection() {}
 }
