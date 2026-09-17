@@ -31,7 +31,7 @@ final class SettingsPageUi {
     void check(LinearLayout parent, String title, String subtitle,
                String key, boolean current) {
         SwitchMaterial toggle = AppUi.switchRow(activity, title, subtitle, current,
-                (button, checked) -> fs.prefs().edit().putBoolean(key, checked).apply());
+                (button, checked) -> fs.setBoolean(key, checked));
         AppUi.addRow(parent, AppUi.switchContainer(toggle));
     }
 
@@ -40,8 +40,7 @@ final class SettingsPageUi {
                 "全屏应用自动隐藏",
                 "进入全屏内容时自动隐藏悬浮图标",
                 fs.fullscreenHideMode() != 0,
-                (button, checked) -> fs.prefs().edit()
-                        .putInt(FloatSettings.K_HIDE_FULLSCREEN, checked ? 2 : 0).apply());
+                (button, checked) -> fs.setInt(FloatSettings.K_HIDE_FULLSCREEN, checked ? 2 : 0));
         AppUi.addRow(parent, AppUi.switchContainer(toggle));
     }
 
@@ -69,7 +68,7 @@ final class SettingsPageUi {
             if (!fromUser) return;
             int intValue = Math.round(next);
             value.setText(intValue + suffix);
-            fs.prefs().edit().putInt(key, intValue).apply();
+            fs.setInt(key, intValue);
         });
         LinearLayout.LayoutParams sliderLp = new LinearLayout.LayoutParams(-1, AppUi.dp(activity, 34));
         sliderLp.topMargin = AppUi.dp(activity, -1);
@@ -86,7 +85,7 @@ final class SettingsPageUi {
             if (actionIds[i].equals(now)) selected = i;
         }
         addPreferenceSpinner(parent, label, labels, selected, false,
-                position -> fs.prefs().edit().putString(key, actionIds[position]).apply());
+                position -> fs.setString(key, actionIds[position]));
     }
 
     void styleSpinner(LinearLayout parent) {
@@ -131,7 +130,7 @@ final class SettingsPageUi {
     private void addIntPreferenceSpinner(LinearLayout parent, String label, String[] labels,
                                          int selected, String key, boolean vertical) {
         addPreferenceSpinner(parent, label, labels, selected, vertical,
-                position -> fs.prefs().edit().putInt(key, position).apply());
+                position -> fs.setInt(key, position));
     }
 
     /** One Spinner construction/listener/layout path for every settings selector. */
