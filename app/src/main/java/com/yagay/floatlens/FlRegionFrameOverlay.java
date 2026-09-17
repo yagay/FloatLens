@@ -43,9 +43,6 @@ final class FlRegionFrameOverlay {
         frame.setScreenRect(screenRect);
     }
 
-    /** Compatibility only: region dragging does not participate in View TRACKING/READY colors. */
-    void setVisualState(SelectionVisualState ignored) { }
-
     void close() {
         if (!attached) {
             frame.clear();
