@@ -263,10 +263,6 @@ public final class FloatSettings {
         p.edit().putString(K_SLIDE_PICS, joinedUris == null ? "" : joinedUris).putInt(K_STYLE, 4).apply();
     }
 
-    /** Legacy escape hatch for migration and listener registration only. */
-    @Deprecated
-    public SharedPreferences prefs() { return p; }
-
     public Set<String> hiddenPackages() {
         String raw = hiddenPackagesRaw();
         Set<String> out = new HashSet<>();
