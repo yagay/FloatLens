@@ -27,10 +27,10 @@ import java.util.ArrayList;
  * then extend through that retained context. A closed CIRCLE remains an exact editable screenshot
  * rectangle and never becomes text OCR.</p>
  */
-final class GoogleCircleInlineOverlay {
+final class FLCircleInlineOverlay {
     private static WorkspaceView active;
 
-    static synchronized boolean show(Context c, GoogleCircleCapture.Frame frame, Runnable onClosed) {
+    static synchronized boolean show(Context c, FLCircleCapture.Frame frame, Runnable onClosed) {
         if (c == null || frame == null || frame.bitmap == null || frame.bitmap.isRecycled()) {
             return false;
         }
@@ -56,11 +56,11 @@ final class GoogleCircleInlineOverlay {
 
         WorkspaceView view = new WorkspaceView(app, host, lp, frame,
                 onClosed, !shadeExpanded);
-        if (!host.add(view, lp, "google_circle_inline")) return false;
+        if (!host.add(view, lp, "fl_circle_inline")) return false;
 
         active = view;
         if (!shadeExpanded) view.promoteKeyFocus("initial");
-        DiagnosticLog.i(app, "G_CIRCLE_INLINE", "overlay shown frame=" + bounds.toShortString()
+        DiagnosticLog.i(app, "FL_CIRCLE_INLINE", "overlay shown frame=" + bounds.toShortString()
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
                 + " textRecognition=full_frame_cached_ocr"
                 + " selectionOwner=CircleSelectionPlanner"
@@ -107,7 +107,7 @@ final class GoogleCircleInlineOverlay {
         private final FloatSettings settings;
         private final FlOverlayWindowHost host;
         private final WindowManager.LayoutParams windowLayout;
-        private final GoogleCircleCapture.Frame frame;
+        private final FLCircleCapture.Frame frame;
         private final Runnable onClosed;
         private final ScreenBitmapTransform textTransform;
         private final CircleTextSelectionModel textSelection;
@@ -133,7 +133,7 @@ final class GoogleCircleInlineOverlay {
         private final RectF closeRect = new RectF();
         private final RectF confirmRect = new RectF();
 
-        private GoogleCircleSelection.Selection screenshotSelection;
+        private FLCircleSelection.Selection screenshotSelection;
         private RectF editOrigin;
         private PointF editStart;
         private int editMode = MODE_NONE;
@@ -151,7 +151,7 @@ final class GoogleCircleInlineOverlay {
 
         WorkspaceView(Context c, FlOverlayWindowHost host,
                       WindowManager.LayoutParams windowLayout,
-                      GoogleCircleCapture.Frame frame,
+                      FLCircleCapture.Frame frame,
                       Runnable onClosed, boolean keyFocusEnabled) {
             super(c);
             context = c;
@@ -168,7 +168,7 @@ final class GoogleCircleInlineOverlay {
                     performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
                 } catch (Throwable ignored) {
                 }
-                DiagnosticLog.i(context, "G_CIRCLE_CANCEL",
+                DiagnosticLog.i(context, "FL_CIRCLE_CANCEL",
                         "long_press_drag_start center=" + Math.round(closeRect.centerX())
                                 + "," + Math.round(closeRect.centerY()));
                 invalidate();
@@ -227,7 +227,7 @@ final class GoogleCircleInlineOverlay {
             confirmTextPaint.setTextSize(dp(14));
             confirmTextPaint.setTextAlign(Paint.Align.CENTER);
 
-            DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT",
+            DiagnosticLog.i(context, "FL_CIRCLE_TEXT_SELECT",
                     "ready chars=0 recognition=full_frame_cached_ocr selectionOwner=CircleSelectionPlanner");
         }
 
@@ -235,13 +235,13 @@ final class GoogleCircleInlineOverlay {
             if (closed) return;
             if (!keyFocusEnabled) {
                 windowLayout.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
-                if (!host.update(this, windowLayout, "google_circle_inline_focus")) return;
+                if (!host.update(this, windowLayout, "fl_circle_inline_focus")) return;
                 keyFocusEnabled = true;
             }
             post(() -> {
                 if (!closed && isAttachedToWindow()) requestFocus();
             });
-            DiagnosticLog.i(context, "G_CIRCLE_INLINE", "focus promoted reason=" + reason);
+            DiagnosticLog.i(context, "FL_CIRCLE_INLINE", "focus promoted reason=" + reason);
         }
 
         @Override protected void onDraw(Canvas canvas) {
@@ -396,10 +396,10 @@ final class GoogleCircleInlineOverlay {
                     Math.round(closeCenterY * 10000f / getHeight())));
             try {
                 settings.saveCircleCancelPosition(xBp, yBp);
-                DiagnosticLog.i(context, "G_CIRCLE_CANCEL",
+                DiagnosticLog.i(context, "FL_CIRCLE_CANCEL",
                         "position_saved xBp=" + xBp + " yBp=" + yBp);
             } catch (Throwable t) {
-                DiagnosticLog.i(context, "G_CIRCLE_CANCEL", "position_save_failed="
+                DiagnosticLog.i(context, "FL_CIRCLE_CANCEL", "position_save_failed="
                         + ScreenCaptureBackend.safeMessage(t));
             }
         }
@@ -587,24 +587,24 @@ final class GoogleCircleInlineOverlay {
         private void finishStroke() {
             float tapSlop = bitmapPxForDp(12f);
             float minShape = bitmapPxForDp(34f);
-            GoogleCircleSelection.Selection gesture = GoogleCircleSelection.fromStroke(stroke,
+            FLCircleSelection.Selection gesture = FLCircleSelection.fromStroke(stroke,
                     frame.bitmap.getWidth(), frame.bitmap.getHeight(), tapSlop, minShape);
             stroke.clear();
             if (gesture == null) return;
 
-            DiagnosticLog.i(context, "G_CIRCLE_GESTURE", "kind=" + gesture.kind
+            DiagnosticLog.i(context, "FL_CIRCLE_GESTURE", "kind=" + gesture.kind
                     + " bounds=" + gesture.bounds.toShortString()
                     + " points=" + gesture.points.size()
-                    + " routing=" + (gesture.kind == GoogleCircleSelection.Kind.CIRCLE
+                    + " routing=" + (gesture.kind == FLCircleSelection.Kind.CIRCLE
                     ? "editable_screenshot" : "cached_full_ocr")
                     + " autoExpand=false");
 
-            if (gesture.kind == GoogleCircleSelection.Kind.CIRCLE) {
+            if (gesture.kind == FLCircleSelection.Kind.CIRCLE) {
                 cancelTextResolution("circle_gesture");
                 textSelection.clear();
                 FloatActionMenu.dismiss();
                 screenshotSelection = gesture;
-                DiagnosticLog.i(context, "G_CIRCLE_SCREENSHOT_FRAME", "created exact="
+                DiagnosticLog.i(context, "FL_CIRCLE_SCREENSHOT_FRAME", "created exact="
                         + gesture.bounds.toShortString() + " menu=wait_for_confirm autoExpand=false");
                 invalidate();
                 return;
@@ -614,26 +614,26 @@ final class GoogleCircleInlineOverlay {
             beginTextResolution(gesture);
         }
 
-        private void beginTextResolution(GoogleCircleSelection.Selection gesture) {
+        private void beginTextResolution(FLCircleSelection.Selection gesture) {
             final int generation = ++textResolutionGeneration;
             resolvingText = true;
             textSelection.clear();
             invalidate();
 
-            GoogleCircleTextResolver.resolve(context, frame, gesture,
+            FLCircleTextResolver.resolve(context, frame, gesture,
                     result -> post(() -> applyResolvedText(generation, gesture, result)));
         }
 
         private void applyResolvedText(int generation,
-                                       GoogleCircleSelection.Selection gesture,
-                                       GoogleCircleTextResolver.Result result) {
+                                       FLCircleSelection.Selection gesture,
+                                       FLCircleTextResolver.Result result) {
             if (closed || generation != textResolutionGeneration) return;
             resolvingText = false;
 
-            if (result == null || result.source == GoogleCircleTextResolver.Source.NONE
+            if (result == null || result.source == FLCircleTextResolver.Source.NONE
                     || result.document == null || result.document.chars().isEmpty()) {
                 textSelection.clear();
-                DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT", "resolved=false gesture="
+                DiagnosticLog.i(context, "FL_CIRCLE_TEXT_SELECT", "resolved=false gesture="
                         + gesture.kind + " source=" + (result == null ? "null" : result.source)
                         + " error=" + (result == null || result.error == null ? "none"
                         : ScreenCaptureBackend.safeMessage(result.error)));
@@ -648,7 +648,7 @@ final class GoogleCircleInlineOverlay {
             boolean selected = selectFromResolvedDocument(result);
             if (!selected) {
                 textSelection.clear();
-                DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT", "resolved=false gesture="
+                DiagnosticLog.i(context, "FL_CIRCLE_TEXT_SELECT", "resolved=false gesture="
                         + gesture.kind + " source=" + result.source
                         + " reason=planner_hint_unmappable");
                 Toast.makeText(context, "当前位置未识别到可选文字", Toast.LENGTH_SHORT).show();
@@ -656,7 +656,7 @@ final class GoogleCircleInlineOverlay {
                 return;
             }
 
-            DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT", "resolved=true gesture="
+            DiagnosticLog.i(context, "FL_CIRCLE_TEXT_SELECT", "resolved=true gesture="
                     + gesture.kind + " source=" + result.source
                     + " documentChars=" + textSelection.size()
                     + " selectedChars=" + textSelection.selectionIndices().size()
@@ -667,7 +667,7 @@ final class GoogleCircleInlineOverlay {
             post(this::showTextSelectionMenu);
         }
 
-        private boolean selectFromResolvedDocument(GoogleCircleTextResolver.Result result) {
+        private boolean selectFromResolvedDocument(FLCircleTextResolver.Result result) {
             return !textSelection.isEmpty()
                     && result != null
                     && result.initialSelectionDocument != null
@@ -681,7 +681,7 @@ final class GoogleCircleInlineOverlay {
             }
             textResolutionGeneration++;
             resolvingText = false;
-            DiagnosticLog.i(context, "G_CIRCLE_TEXT_RESOLVE", "ui generation cancelled reason="
+            DiagnosticLog.i(context, "FL_CIRCLE_TEXT_RESOLVE", "ui generation cancelled reason="
                     + reason + " generation=" + textResolutionGeneration);
         }
 
@@ -763,7 +763,7 @@ final class GoogleCircleInlineOverlay {
             }
 
             screenshotSelection = screenshotSelection.withBounds(
-                    GoogleCircleSelection.clampEditable(rect,
+                    FLCircleSelection.clampEditable(rect,
                             frame.bitmap.getWidth(), frame.bitmap.getHeight()));
         }
 
@@ -771,7 +771,7 @@ final class GoogleCircleInlineOverlay {
             if (closed || screenshotSelection == null || frame.bitmap == null
                     || frame.bitmap.isRecycled()) return;
 
-            Rect bitmapRect = GoogleCircleSelection.exactRectAndClamp(screenshotSelection.bounds,
+            Rect bitmapRect = FLCircleSelection.exactRectAndClamp(screenshotSelection.bounds,
                     frame.bitmap.getWidth(), frame.bitmap.getHeight());
             if (bitmapRect.isEmpty()) {
                 Toast.makeText(context, "截图范围无效", Toast.LENGTH_SHORT).show();
@@ -789,14 +789,14 @@ final class GoogleCircleInlineOverlay {
                 }
                 crop = made;
             } catch (Throwable t) {
-                DiagnosticLog.i(context, "G_CIRCLE_SCREENSHOT_FRAME", "crop failed="
+                DiagnosticLog.i(context, "FL_CIRCLE_SCREENSHOT_FRAME", "crop failed="
                         + ScreenCaptureBackend.safeMessage(t));
                 Toast.makeText(context, "圈画截图失败", Toast.LENGTH_SHORT).show();
                 return;
             }
 
             Rect anchor = frame.bitmapRectToScreen(bitmapRect);
-            DiagnosticLog.i(context, "G_CIRCLE_SCREENSHOT_FRAME", "confirmed bitmap="
+            DiagnosticLog.i(context, "FL_CIRCLE_SCREENSHOT_FRAME", "confirmed bitmap="
                     + bitmapRect.toShortString()
                     + " crop=" + crop.getWidth() + "x" + crop.getHeight()
                     + " anchor=" + anchor.toShortString()
@@ -804,7 +804,7 @@ final class GoogleCircleInlineOverlay {
 
             close("circle_screenshot_confirmed");
             boolean shown = ResultSurfaceRouter.showScreenshot(context, crop, anchor);
-            DiagnosticLog.i(context, "G_CIRCLE_SCREENSHOT_FRAME",
+            DiagnosticLog.i(context, "FL_CIRCLE_SCREENSHOT_FRAME",
                     "result_dialog shown=" + shown + " menu=image_action_bypassed");
             if (!shown) {
                 ScreenshotController.save(context, crop);
@@ -836,11 +836,11 @@ final class GoogleCircleInlineOverlay {
             resolvingText = false;
             FloatActionMenu.dismiss();
             ImageActionMenu.dismiss();
-            host.remove(this, "google_circle_inline");
+            host.remove(this, "fl_circle_inline");
             frame.recycle();
-            GoogleCircleInlineOverlay.onClosed(this);
+            FLCircleInlineOverlay.onClosed(this);
             if (onClosed != null) onClosed.run();
-            DiagnosticLog.i(context, "G_CIRCLE_INLINE", "closed reason=" + reason);
+            DiagnosticLog.i(context, "FL_CIRCLE_INLINE", "closed reason=" + reason);
         }
 
         private float bitmapPxForDp(float value) {
@@ -856,5 +856,5 @@ final class GoogleCircleInlineOverlay {
         }
     }
 
-    private GoogleCircleInlineOverlay() {}
+    private FLCircleInlineOverlay() {}
 }
