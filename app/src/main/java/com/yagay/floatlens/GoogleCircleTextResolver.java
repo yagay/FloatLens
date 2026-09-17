@@ -16,9 +16,10 @@ import java.util.concurrent.Executors;
  *
  * <p>The frozen screenshot is the only content source. Background work performs detection only on a
  * downscaled copy, then geometry stitches detector boxes into paragraph-like TextMap nodes. No
- * background OCR is performed. A gesture first hits that map and lazily OCRs only the corresponding
- * paragraph ROI. If the detector is not ready or misses the gesture, a tight gesture crop is OCR'd
- * directly. Successful region OCR is cached only for the lifetime of the frozen frame.</p>
+ * background OCR is performed. TextMap decides only which context ROI is worth recognizing; the
+ * user's actual gesture always decides the initial text selection. If detection is not ready or
+ * misses, a tight gesture crop is OCR'd directly. Successful region OCR is cached only for the
+ * lifetime of the frozen frame.</p>
  */
 final class GoogleCircleTextResolver {
     enum Source { IMAGE_OCR, NONE }
@@ -29,9 +30,9 @@ final class GoogleCircleTextResolver {
 
     static final class Result {
         final Source source;
-        /** SCREEN-space OCR document for the lazily recognized ROI. */
+        /** SCREEN-space OCR document for the lazily recognized context ROI. */
         final OcrDocument document;
-        /** Gesture/paragraph scoped subset used to initialize the selection. */
+        /** Gesture-scoped subset used only to initialize the selection range. */
         final OcrDocument initialSelectionDocument;
         final Rect gestureScreenBounds;
         final Rect ocrBitmapRoi;
@@ -162,7 +163,7 @@ final class GoogleCircleTextResolver {
                     + " paragraphs=" + target.idsForLog()
                     + " lines=" + target.lineCount
                     + " roi=" + desiredRoi.toShortString()
-                    + " lazyRecognition=true");
+                    + " lazyRecognition=true selection=gesture_scoped");
         } else {
             desiredRoi = localBitmapRoi(state.app, frame, gesture);
             DiagnosticLog.i(app, "G_CIRCLE_TEXT_MAP", "miss gesture=" + gesture.kind
@@ -175,14 +176,14 @@ final class GoogleCircleTextResolver {
 
         CachedRegion cached = findCachedRegion(state, desiredRoi, frame, gesture);
         if (cached != null) {
-            OcrDocument initial = initialSelection(state.app, frame, gesture,
-                    cached.screenDocument, paragraphTarget);
+            OcrDocument initial = initialSelection(state.app, frame, gesture, cached.screenDocument);
             if (usable(initial)) {
                 DiagnosticLog.i(app, "G_CIRCLE_LAZY_OCR", "cache hit gesture=" + gesture.kind
-                        + " source=" + (paragraphTarget ? "textmap_paragraph" : "gesture_fallback")
+                        + " source=" + (paragraphTarget ? "textmap_context" : "gesture_fallback")
                         + " roi=" + cached.bitmapRoi.toShortString()
                         + " chars=" + cached.screenDocument.chars().size()
-                        + " selectedChars=" + initial.chars().size());
+                        + " selectedChars=" + initial.chars().size()
+                        + " selection=gesture_scoped");
                 callback.onResolved(new Result(Source.IMAGE_OCR, cached.screenDocument, initial,
                         gestureScreenBounds(frame, gesture), cached.bitmapRoi, null,
                         !paragraphTarget));
@@ -290,8 +291,7 @@ final class GoogleCircleTextResolver {
                     @Override public void onFailure(String message) {
                         try {
                             if (isCurrent(state, frame)) {
-                                finishTextMapFailure(state, frame,
-                                        new IllegalStateException(message));
+                                finishTextMapFailure(state, frame, new IllegalStateException(message));
                             }
                         } finally {
                             recycle(detectorBitmap);
@@ -310,8 +310,7 @@ final class GoogleCircleTextResolver {
             state.textMap = null;
         }
         DiagnosticLog.i(state.app, "G_CIRCLE_TEXT_MAP", "failed generation=" + state.generation
-                + " error=" + safe(error)
-                + " fallback=gesture_local_ocr");
+                + " error=" + safe(error) + " fallback=gesture_local_ocr");
     }
 
     private static ArrayList<Rect> mapRegionsToOriginal(List<Rect> source,
@@ -325,10 +324,8 @@ final class GoogleCircleTextResolver {
             if (rect == null || rect.isEmpty()) continue;
             int left = Math.max(0, Math.min(originalWidth - 1, Math.round(rect.left * sx)));
             int top = Math.max(0, Math.min(originalHeight - 1, Math.round(rect.top * sy)));
-            int right = Math.max(left + 1,
-                    Math.min(originalWidth, Math.round(rect.right * sx)));
-            int bottom = Math.max(top + 1,
-                    Math.min(originalHeight, Math.round(rect.bottom * sy)));
+            int right = Math.max(left + 1, Math.min(originalWidth, Math.round(rect.right * sx)));
+            int bottom = Math.max(top + 1, Math.min(originalHeight, Math.round(rect.bottom * sy)));
             out.add(new Rect(left, top, right, bottom));
         }
         return out;
@@ -359,7 +356,7 @@ final class GoogleCircleTextResolver {
 
         long started = android.os.SystemClock.uptimeMillis();
         DiagnosticLog.i(state.app, "G_CIRCLE_LAZY_OCR", "start gesture=" + gesture.kind
-                + " source=" + (paragraphTarget ? "textmap_paragraph" : "gesture_fallback")
+                + " source=" + (paragraphTarget ? "textmap_context" : "gesture_fallback")
                 + " roi=" + bitmapRoi.toShortString()
                 + " crop=" + crop.getWidth() + "x" + crop.getHeight()
                 + " engine=direct_mlkit backgroundOcr=false");
@@ -373,8 +370,7 @@ final class GoogleCircleTextResolver {
                                     frame.bitmap.getWidth(), frame.bitmap.getHeight());
                     OcrDocument localScreen = parentBitmap == null ? null
                             : frame.transform.documentBitmapToScreen(parentBitmap);
-                    OcrDocument initial = initialSelection(state.app, frame, gesture,
-                            localScreen, paragraphTarget);
+                    OcrDocument initial = initialSelection(state.app, frame, gesture, localScreen);
                     if (!usable(localScreen) || !usable(initial)) {
                         callback.onResolved(new Result(Source.NONE, null, null,
                                 gestureScreen, bitmapRoi,
@@ -386,10 +382,11 @@ final class GoogleCircleTextResolver {
                     cacheRegion(state, bitmapRoi, localScreen);
                     DiagnosticLog.i(state.app, "G_CIRCLE_LAZY_OCR", "success gesture="
                             + gesture.kind
-                            + " source=" + (paragraphTarget ? "textmap_paragraph" : "gesture_fallback")
+                            + " source=" + (paragraphTarget ? "textmap_context" : "gesture_fallback")
                             + " engine=" + localBitmap.engine()
                             + " documentChars=" + localScreen.chars().size()
                             + " selectedChars=" + initial.chars().size()
+                            + " selection=gesture_scoped"
                             + " cacheStore=true elapsedMs="
                             + (android.os.SystemClock.uptimeMillis() - started));
                     callback.onResolved(new Result(Source.IMAGE_OCR, localScreen, initial,
@@ -416,13 +413,12 @@ final class GoogleCircleTextResolver {
 
     private static OcrDocument initialSelection(Context app, GoogleCircleCapture.Frame frame,
                                                 GoogleCircleSelection.Selection gesture,
-                                                OcrDocument document,
-                                                boolean paragraphTarget) {
+                                                OcrDocument document) {
         if (!usable(document)) return null;
-        // For stroke/highlight hits the TextMap already resolved the natural reading-flow paragraph,
-        // so initialize the selection with the complete lazily recognized paragraph instead of the
-        // stroke's dead rectangular corridor. TAP keeps word-level precision.
-        if (paragraphTarget && gesture.kind != GoogleCircleSelection.Kind.TAP) return document;
+
+        // TextMap provides OCR context only. Initial selection must always reflect the user's actual
+        // tap/highlight/scribble geometry; this prevents a short stroke from selecting a whole mapped
+        // paragraph merely because that paragraph was the recognition ROI.
         OcrDocument initial = selectGesture(app, frame, gesture, document);
         if (!usable(initial) && gesture.kind == GoogleCircleSelection.Kind.TAP) {
             initial = nearestGroupDocument(document,
