@@ -234,6 +234,15 @@ public final class FloatSettings {
         if (key != null && !key.isBlank()) p.edit().putString(key, value == null ? "" : value).apply();
     }
 
+    /** Observe settings changes without exposing the backing SharedPreferences object. */
+    public void registerChangeListener(SharedPreferences.OnSharedPreferenceChangeListener listener) {
+        if (listener != null) p.registerOnSharedPreferenceChangeListener(listener);
+    }
+
+    public void unregisterChangeListener(SharedPreferences.OnSharedPreferenceChangeListener listener) {
+        if (listener != null) p.unregisterOnSharedPreferenceChangeListener(listener);
+    }
+
     /** Migration-only helper: replace every stored action id without exposing SharedPreferences. */
     void replaceActionValue(String oldValue, String replacement) {
         if (oldValue == null || oldValue.isBlank()) return;
@@ -299,8 +308,20 @@ public final class FloatSettings {
     public String posXKey() { return isLandscape() ? K_POS_X_LANDSCAPE : K_POS_X_PORTRAIT; }
     public String posYKey() { return isLandscape() ? K_POS_Y_LANDSCAPE : K_POS_Y_PORTRAIT; }
     public String gravityKey() { return isLandscape() ? K_GRAVITY_LAND : K_GRAVITY; }
+    public boolean hasSavedX() { return p.contains(posXKey()) || p.contains(K_POS_X); }
+    public int savedX(int def) { return p.getInt(posXKey(), p.getInt(K_POS_X, def)); }
+    public int savedY(int def) { return p.getInt(posYKey(), p.getInt(K_POS_Y, def)); }
     public int savedSide(int def) { return p.getInt(gravityKey(), def); }
     public void saveSide(boolean left) { setInt(gravityKey(), left ? 0 : 1); }
+
+    /** Position moves are user initiated; persist side and orientation-specific coordinates atomically. */
+    public boolean savePosition(boolean left, int x, int y) {
+        return p.edit()
+                .putInt(gravityKey(), left ? 0 : 1)
+                .putInt(posXKey(), x)
+                .putInt(posYKey(), y)
+                .commit();
+    }
 
     private static int clamp(int v, int min, int max) { return Math.max(min, Math.min(max, v)); }
 }
