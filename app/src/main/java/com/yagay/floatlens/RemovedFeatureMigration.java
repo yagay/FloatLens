@@ -7,7 +7,6 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
-import java.util.Map;
 
 /** One-time cleanup after removing the built-in AI assistant and dictionary features. */
 final class RemovedFeatureMigration {
@@ -85,16 +84,7 @@ final class RemovedFeatureMigration {
     }
 
     private static void removeLegacyGestureActions(Context c) {
-        SharedPreferences p = c.getSharedPreferences(FloatSettings.PREF, Context.MODE_PRIVATE);
-        SharedPreferences.Editor e = null;
-        for (Map.Entry<String, ?> entry : p.getAll().entrySet()) {
-            Object value = entry.getValue();
-            if (value instanceof String && "ai_chat".equals(value)) {
-                if (e == null) e = p.edit();
-                e.putString(entry.getKey(), ActionId.NONE);
-            }
-        }
-        if (e != null) e.apply();
+        new FloatSettings(c).replaceActionValue("ai_chat", ActionId.NONE);
     }
 
     private static void deleteRecursively(File file) {
