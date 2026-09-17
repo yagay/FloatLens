@@ -15,7 +15,7 @@ public class TextSelectionSurface extends FrameLayout {
     public interface Listener {
         void onSelectionStarted();
         void onSelectionChanging();
-        void onSelectionFinished(String selectedText, Rect anchorOnScreen);
+        void onSelectionFinished(SelectionSnapshot snapshot);
     }
 
     private static final long RESHOW_DELAY_MS = 220L;
@@ -65,8 +65,8 @@ public class TextSelectionSurface extends FrameLayout {
                         if (listener != null) listener.onSelectionChanging();
                     }
 
-                    @Override public void onStable(String selectedText, Rect anchorOnScreen) {
-                        if (listener != null) listener.onSelectionFinished(selectedText, anchorOnScreen);
+                    @Override public void onStable(SelectionSnapshot snapshot) {
+                        if (listener != null) listener.onSelectionFinished(snapshot);
                     }
                 });
         controller.install();
@@ -81,7 +81,11 @@ public class TextSelectionSurface extends FrameLayout {
     }
 
     public String getSelectedText() { return controller.selectedText(); }
-    public Rect getSelectionAnchorOnScreen() { return controller.anchor(); }
+    public SelectionSnapshot getSelectionSnapshot() { return controller.snapshot(); }
+    public Rect getSelectionAnchorOnScreen() {
+        SelectionSnapshot snapshot = controller.snapshot();
+        return snapshot == null ? null : snapshot.screenBounds();
+    }
     public void selectAllText() { controller.selectAll(); }
     public void clearSelection() { controller.clearSelection(); }
     public EditText editor() { return textView; }
