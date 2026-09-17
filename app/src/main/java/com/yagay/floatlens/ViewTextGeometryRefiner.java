@@ -4,13 +4,16 @@ import android.graphics.Rect;
 
 import java.text.Normalizer;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 
 /**
  * Borrows ML Kit rectangles for approximate Accessibility/View characters while preserving the
  * original View text. Exact Accessibility character rectangles (confidence ~= 1) are never moved.
+ *
+ * <p>The View and ML documents may be either BITMAP or SCREEN space, but they must already share
+ * the same coordinate space. Circle full-screen OCR refines them while both are still in bitmap
+ * space; other callers may refine after screen mapping.</p>
  */
 final class ViewTextGeometryRefiner {
     private static final float EXACT_VIEW_CONFIDENCE = 0.995f;
@@ -21,8 +24,8 @@ final class ViewTextGeometryRefiner {
         if (view == null || mlKit == null || view.lines().isEmpty() || mlKit.lines().isEmpty()) {
             return new Result(view, 0, countApproximate(view));
         }
-        if (!view.isScreenSpace() || !mlKit.isScreenSpace()) {
-            throw new IllegalArgumentException("View geometry refinement requires SCREEN coordinates");
+        if (view.coordinateSpace() != mlKit.coordinateSpace()) {
+            throw new IllegalArgumentException("View geometry refinement requires matching coordinates");
         }
 
         ArrayList<OcrDocument.Line> out = new ArrayList<>();
@@ -39,7 +42,7 @@ final class ViewTextGeometryRefiner {
             }
 
             List<Glyph> viewGlyphs = viewGlyphs(viewLine.chars());
-            List<Glyph> mlGlyphs = mlGlyphsNear(viewLine.bounds(), mlKit.lines());
+            List<Glyph> mlGlyphs = mlGlyphsForLine(viewLine, mlKit.lines());
             Alignment alignment = align(viewGlyphs, mlGlyphs);
             if (!alignment.accepted(viewGlyphs.size())) {
                 out.add(viewLine);
@@ -74,10 +77,10 @@ final class ViewTextGeometryRefiner {
         }
 
         if (refinedChars == 0) return new Result(view, 0, approximateChars);
-        OcrDocument refined = OcrDocument.screenSpace(
+        OcrDocument refined = new OcrDocument(
                 view.fullText(), view.blocks(), out,
                 "view-snapshot+mlkit-geometry", view.confidence(), view.score(),
-                view.imageWidth(), view.imageHeight());
+                view.imageWidth(), view.imageHeight(), view.coordinateSpace());
         return new Result(refined, refinedChars, approximateChars);
     }
 
@@ -89,6 +92,53 @@ final class ViewTextGeometryRefiner {
             out.add(new Glyph(normalize(c.text()), c.bounds(), i));
         }
         return out;
+    }
+
+    /**
+     * Prefer one ML line whose normalized text exactly matches the View line and sits inside or
+     * overlaps the View bounds. This avoids borrowing characters from unrelated image text that
+     * happens to live in the same large compound View. Fall back to the older local LCS pool only
+     * when ML split/merged the line differently.
+     */
+    private static List<Glyph> mlGlyphsForLine(OcrDocument.Line viewLine,
+                                                List<OcrDocument.Line> lines) {
+        String target = normalize(viewLine == null ? "" : viewLine.text());
+        Rect viewBounds = viewLine == null ? new Rect() : viewLine.bounds();
+        OcrDocument.Line best = null;
+        long bestOverlap = -1L;
+        long bestDistance = Long.MAX_VALUE;
+
+        if (!target.isEmpty() && !viewBounds.isEmpty()) {
+            for (OcrDocument.Line line : lines) {
+                if (line == null || line.bounds().isEmpty() || line.chars().isEmpty()) continue;
+                if (!target.equals(normalize(line.text()))) continue;
+                Rect r = line.bounds();
+                Rect intersection = new Rect();
+                long overlap = intersection.setIntersect(viewBounds, r)
+                        ? (long) intersection.width() * intersection.height() : 0L;
+                boolean related = overlap > 0L
+                        || viewBounds.contains(r.centerX(), r.centerY())
+                        || r.contains(viewBounds.centerX(), viewBounds.centerY());
+                if (!related) continue;
+                long dx = (long) r.centerX() - viewBounds.centerX();
+                long dy = (long) r.centerY() - viewBounds.centerY();
+                long distance = dx * dx + dy * dy;
+                if (overlap > bestOverlap || (overlap == bestOverlap && distance < bestDistance)) {
+                    best = line;
+                    bestOverlap = overlap;
+                    bestDistance = distance;
+                }
+            }
+        }
+
+        if (best != null) {
+            ArrayList<Glyph> out = new ArrayList<>();
+            for (OcrDocument.CharUnit c : best.chars()) {
+                if (c != null && !c.text().isBlank() && !c.bounds().isEmpty()) appendSplitGlyphs(out, c);
+            }
+            if (!out.isEmpty()) return out;
+        }
+        return mlGlyphsNear(viewBounds, lines);
     }
 
     private static List<Glyph> mlGlyphsNear(Rect viewBounds, List<OcrDocument.Line> lines) {
