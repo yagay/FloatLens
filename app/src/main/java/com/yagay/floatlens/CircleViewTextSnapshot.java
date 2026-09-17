@@ -11,15 +11,15 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
  * View-first text snapshot used by Circle full-screen ML Kit recognition.
  *
- * <p>Only real Accessibility {@code getText()} candidates are accepted. Empty-text Views,
- * content descriptions, hints and semantic labels are never promoted to text. Each accepted
- * text View owns its whole visible bounds for OCR exclusion, so ML Kit is reserved for the
- * remaining pixels that Accessibility cannot already describe.</p>
+ * <p>Only real Accessibility {@code getText()} candidates from clearly text-only View classes are
+ * accepted for OCR exclusion. Mixed image+text Views, WebViews, containers, buttons and custom
+ * Views stay untouched so ML Kit can still see any visual text inside them.</p>
  */
 final class CircleViewTextSnapshot {
     private static final float VIEW_GEOMETRY_CONFIDENCE = 0.92f;
@@ -44,7 +44,7 @@ final class CircleViewTextSnapshot {
         int charCount() { return viewDocument == null ? 0 : viewDocument.chars().size(); }
         int maskCount() { return maskRects.size(); }
 
-        /** Masks entire accepted text-View bounds in-place using the surrounding background color. */
+        /** Masks only accepted pure-text View bounds in-place using the surrounding background. */
         int mask(Bitmap bitmap) {
             if (bitmap == null || bitmap.isRecycled() || !bitmap.isMutable() || maskRects.isEmpty()) {
                 return 0;
@@ -65,8 +65,8 @@ final class CircleViewTextSnapshot {
         }
 
         /**
-         * Merges direct View text with ML Kit output. Any residual ML character whose centre lands
-         * inside an excluded View rectangle is discarded so masked View text cannot be duplicated.
+         * Merges direct View text with ML Kit output. Residual ML characters inside an actually
+         * masked pure-text View are discarded to avoid duplicates. Mixed Views are never in masks.
          */
         OcrDocument merge(OcrDocument mlDocument, int width, int height) {
             if (viewDocument == null || viewDocument.chars().isEmpty()) return mlDocument;
@@ -128,7 +128,8 @@ final class CircleViewTextSnapshot {
         ArrayList<RawLine> rawLines = new ArrayList<>();
         ArrayList<Rect> masks = new ArrayList<>();
         Set<String> seen = new HashSet<>();
-        int views = 0;
+        int pureTextViews = 0;
+        int mixedTextViewsSkipped = 0;
         for (ScreenCandidate candidate : candidates) {
             if (candidate == null
                     || candidate.source() != ScreenCandidate.Source.ACCESSIBILITY
@@ -138,6 +139,11 @@ final class CircleViewTextSnapshot {
             }
             String value = candidate.text() == null ? "" : candidate.text().trim();
             if (value.isEmpty()) continue;
+
+            if (!isPureTextView(candidate)) {
+                mixedTextViewsSkipped++;
+                continue;
+            }
 
             Rect screenBounds = candidate.bounds();
             if (screenBounds.isEmpty()) continue;
@@ -150,16 +156,47 @@ final class CircleViewTextSnapshot {
             if (!seen.add(key)) continue;
             masks.add(new Rect(bitmapBounds));
             appendTextLines(rawLines, value, bitmapBounds);
-            views++;
+            pureTextViews++;
         }
 
         OcrDocument document = buildViewDocument(rawLines, bitmap.getWidth(), bitmap.getHeight());
         DiagnosticLog.i(app, "G_CIRCLE_VIEW_TEXT",
-                "captured views=" + views
+                "capturedPureTextViews=" + pureTextViews
+                        + " skippedMixedTextViews=" + mixedTextViewsSkipped
                         + " chars=" + (document == null ? 0 : document.chars().size())
                         + " maskRects=" + masks.size()
-                        + " policy=getText_nonempty_whole_view_bounds");
-        return new Snapshot(document, masks, views);
+                        + " policy=pure_text_class_only_mixed_views_to_mlkit");
+        return new Snapshot(document, masks, pureTextViews);
+    }
+
+    /**
+     * Deliberately conservative: only classes whose Accessibility surface represents text itself
+     * are allowed to erase their whole bounds from the OCR bitmap. Anything that may contain an
+     * image or custom rendering is left for ML Kit.
+     */
+    private static boolean isPureTextView(ScreenCandidate candidate) {
+        if (candidate == null) return false;
+        String cls = candidate.className() == null
+                ? "" : candidate.className().trim().toLowerCase(Locale.ROOT);
+        if (cls.isEmpty()) return false;
+
+        if (cls.contains("webview") || cls.contains("image") || cls.contains("button")
+                || cls.contains("layout") || cls.contains("container") || cls.contains("compose")
+                || cls.contains("surface") || cls.contains("texture") || cls.endsWith(".view")
+                || cls.equals("android.view.view")) {
+            return false;
+        }
+
+        return cls.equals("android.widget.textview")
+                || cls.endsWith(".textview")
+                || cls.contains("appcompattextview")
+                || cls.contains("materialtextview")
+                || cls.equals("android.widget.edittext")
+                || cls.endsWith(".edittext")
+                || cls.contains("appcompatedittext")
+                || cls.contains("textinputedittext")
+                || cls.equals("android.widget.checkedtextview")
+                || cls.endsWith(".checkedtextview");
     }
 
     private static void appendTextLines(List<RawLine> out, String value, Rect bounds) {
