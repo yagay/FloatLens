@@ -28,6 +28,7 @@ public final class FloatSettings {
     public static final String K_CIRCLE_BORDER_ENABLED = "circle_active_border_enabled_v1";
     public static final String K_CIRCLE_BORDER_COLOR = "circle_active_border_color_v1";
     public static final String K_CIRCLE_BORDER_WIDTH_DP = "circle_active_border_width_dp_v1";
+    public static final String K_CIRCLE_HYBRID_OCR = "circle_hybrid_ocr_v1";
     public static final int DEFAULT_CIRCLE_BORDER_COLOR = 0xFF4285F4;
     public static final String K_STYLE = "float_icon_style";
     public static final String K_GRAVITY = "float_gravity";
@@ -145,6 +146,7 @@ public final class FloatSettings {
     public boolean circleBorderEnabled() { return p.getBoolean(K_CIRCLE_BORDER_ENABLED, true); }
     public int circleBorderColor() { return p.getInt(K_CIRCLE_BORDER_COLOR, DEFAULT_CIRCLE_BORDER_COLOR); }
     public int circleBorderWidthDp() { return clamp(p.getInt(K_CIRCLE_BORDER_WIDTH_DP, 3), 1, 8); }
+    public boolean circleHybridOcr() { return p.getBoolean(K_CIRCLE_HYBRID_OCR, true); }
     public boolean rootScreenshot() { return p.getBoolean(K_ROOT_SCREENSHOT, false); }
     public boolean longPressDragEnabled() { return p.getBoolean(K_LONG_PRESS_DRAG, true); }
     public boolean quickMoveEnabled() { return p.getBoolean(K_QUICK_MOVE, true); }
