@@ -19,13 +19,15 @@ FV 只决定已经实测确认的交互、时序和窗口行为。截图后端�
 
 ## 圈画识别：单一 OCR-only 主链
 
+当前圈画是 **FloatLens 自研圈画**，内部统一使用 `FLCircle*` 命名；它与 Google Circle to Search 无关。以后如果加入 Google 圈画接管，会使用独立的 Google CTS 命名与调用链，不复用当前 `FLCircle*` 名称。
+
 圈画识别只有一条正式主链：
 
 ```text
-GoogleCircleController
-  → GoogleCircleCapture
-  → GoogleCircleInlineOverlay
-  → GoogleCircleTextResolver
+FLCircleController
+  → FLCircleCapture
+  → FLCircleInlineOverlay
+  → FLCircleTextResolver
   → CircleStableOcr
   → CircleSelectionPlanner
   → CircleGestureTextSelector
@@ -34,7 +36,7 @@ GoogleCircleController
 
 进入圈画后先冻结当前截图。第一次文字手势触发所选“整屏识别引擎”建立完整 OCR 索引，并缓存到当前冻结截图会话；后续点击、划线和涂抹直接复用同一份索引。可选的 PP-OCRv6 Tiny / Small / Medium 局部校正只重新识别 `CircleSelectionPlanner` 计算出的手势附近 ROI，不能自行改变用户选择范围。
 
-`CircleSelectionPlanner` 是初始文字选择和校正 ROI 的唯一 owner。`GoogleCircleInlineOverlay` 只把 planner 返回的 `initialSelectionDocument` 映射进完整 OCR 文档，不再另外执行 tap hit、附近 snap 或 gesture-bounds intersect fallback；手柄拖动只负责用户之后的选区编辑。
+`CircleSelectionPlanner` 是初始文字选择和校正 ROI 的唯一 owner。`FLCircleInlineOverlay` 只把 planner 返回的 `initialSelectionDocument` 映射进完整 OCR 文档，不再另外执行 tap hit、附近 snap 或 gesture-bounds intersect fallback；手柄拖动只负责用户之后的选区编辑。
 
 正式圈画链**不读取 Accessibility / View 文字作为内容来源**，不合并 View text，不遮罩 View 区域，也不维护第二套 detector-only TextMap。已经删除的旧实验路径包括 `CircleViewTextSnapshot`、`ViewTextOcrMask`、`ViewTextGeometryRefiner`、`CircleTextMap` 和 `PaddleTextDetectorBridge`。
 
