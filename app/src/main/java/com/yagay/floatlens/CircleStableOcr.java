@@ -11,7 +11,9 @@ import com.google.mlkit.vision.text.TextRecognizer;
  *
  * <p>The complete frozen frame is indexed with ML Kit only. Every TAP / HIGHLIGHT / SCRIBBLE then
  * runs PP-OCR on a small gesture-local bitmap. The resolver compares the two gesture-scoped results
- * and keeps the ML selection when they agree, otherwise the PP result wins.</p>
+ * and keeps the ML selection when they agree, otherwise the PP result wins. When hybrid mode is
+ * disabled, {@link #recognizeConfigured(Context, Bitmap, OcrEngine.DocumentCallback)} preserves the
+ * previous Settings-selected OCR behavior.</p>
  */
 final class CircleStableOcr {
     static void recognizeFullScreenMlKit(Context context, Bitmap bitmap,
@@ -143,10 +145,10 @@ final class CircleStableOcr {
         return 0;
     }
 
-    /** Retained for source compatibility; Circle no longer uses one configured engine for both jobs. */
     static void recognizeConfigured(Context context, Bitmap bitmap,
                                     OcrEngine.DocumentCallback callback) {
-        recognizeFullScreenMlKit(context, bitmap, callback);
+        if (!valid(context, bitmap, callback)) return;
+        OcrEngine.recognizeDocument(context.getApplicationContext(), bitmap, callback);
     }
 
     static void recognizeMlKit(Context context, Bitmap bitmap, OcrEngine.DocumentCallback callback) {
