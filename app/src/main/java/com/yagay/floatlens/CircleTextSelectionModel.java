@@ -12,7 +12,7 @@ final class CircleTextSelectionModel {
     private List<OcrDocument.CharUnit> chars = List.of();
     private int startIndex = -1;
     private int endIndex = -1;
-    /** Non-contiguous initial selection before a handle is dragged. May be character precise. */
+    /** Non-contiguous planner selection before a handle is dragged. May be character precise. */
     private List<Integer> explicitSelection = List.of();
     /** True when drawing must preserve exact selected characters instead of whole OCR groups. */
     private boolean characterAdjustment;
@@ -30,11 +30,6 @@ final class CircleTextSelectionModel {
         clear();
     }
 
-    void setChars(List<OcrDocument.CharUnit> value) {
-        chars = normalize(value == null ? List.of() : value);
-        clear();
-    }
-
     List<OcrDocument.CharUnit> chars() { return chars; }
     int size() { return chars.size(); }
     boolean isEmpty() { return chars.isEmpty(); }
@@ -46,31 +41,6 @@ final class CircleTextSelectionModel {
         startIndex = endIndex = -1;
         explicitSelection = List.of();
         characterAdjustment = false;
-    }
-
-    /**
-     * Precise TAP behavior: CJK/punctuation selects the hit CharUnit; Latin letters/digits expand
-     * only through tightly connected neighbours inside the same OCR group to form one word.
-     */
-    void selectSingle(int index) {
-        if (!validIndex(index)) return;
-        int lo = index;
-        int hi = index;
-        if (isLatinWordUnit(chars.get(index))) {
-            while (lo > 0 && sameGroup(chars.get(lo - 1), chars.get(index))
-                    && isLatinWordUnit(chars.get(lo - 1))
-                    && wordNeighbors(chars.get(lo - 1), chars.get(lo))) {
-                lo--;
-            }
-            while (hi + 1 < chars.size() && sameGroup(chars.get(hi + 1), chars.get(index))
-                    && isLatinWordUnit(chars.get(hi + 1))
-                    && wordNeighbors(chars.get(hi), chars.get(hi + 1))) {
-                hi++;
-            }
-        }
-        boolean[] selected = new boolean[chars.size()];
-        for (int i = lo; i <= hi; i++) selected[i] = true;
-        applyBooleanSelection(selected, true);
     }
 
     void selectAll() {
@@ -95,9 +65,7 @@ final class CircleTextSelectionModel {
         endIndex = index;
     }
 
-    boolean hasSelection() {
-        return !selectionIndices().isEmpty();
-    }
+    boolean hasSelection() { return !selectionIndices().isEmpty(); }
 
     int low() {
         List<Integer> indexes = selectionIndices();
@@ -168,10 +136,7 @@ final class CircleTextSelectionModel {
         ArrayList<RectF> out = new ArrayList<>();
         for (int position = 0; position < indexes.size();) {
             int first = indexes.get(position);
-            if (!validIndex(first)) {
-                position++;
-                continue;
-            }
+            if (!validIndex(first)) { position++; continue; }
             Rect union = new Rect(chars.get(first).bounds());
             int previous = first;
             int nextPosition = position + 1;
@@ -187,21 +152,6 @@ final class CircleTextSelectionModel {
             position = nextPosition;
         }
         return List.copyOf(out);
-    }
-
-    int findWordAt(float viewX, float viewY, int viewWidth, int viewHeight) {
-        if (chars.isEmpty() || viewWidth <= 0 || viewHeight <= 0) return -1;
-        int sx = transform.viewXToScreen(viewX, viewWidth);
-        int sy = transform.viewYToScreen(viewY, viewHeight);
-        int best = -1;
-        long bestArea = Long.MAX_VALUE;
-        for (int i = 0; i < chars.size(); i++) {
-            Rect r = chars.get(i).bounds();
-            if (!r.contains(sx, sy)) continue;
-            long area = Math.max(1L, (long) r.width() * r.height());
-            if (area < bestArea) { bestArea = area; best = i; }
-        }
-        return best;
     }
 
     int findSelectionWord(float viewX, float viewY, int viewWidth, int viewHeight,
@@ -221,38 +171,13 @@ final class CircleTextSelectionModel {
                     Math.min(maxDistancePx * 0.48f, r.height() * 2.15f));
             if (dy > rowGate) continue;
             float score = dx * dx + dy * dy * 3.25f;
-            if (score < bestScore) {
-                bestScore = score;
-                best = i;
-            }
+            if (score < bestScore) { bestScore = score; best = i; }
         }
         if (best < 0 || bestScore > maxDistancePx * maxDistancePx) return -1;
         return best;
     }
 
-    /** Precise fallback selection for characters materially intersecting the screen rectangle. */
-    boolean selectIntersecting(Rect screenRect) {
-        if (screenRect == null || screenRect.isEmpty() || chars.isEmpty()) return false;
-        boolean[] selected = new boolean[chars.size()];
-        boolean found = false;
-        for (int i = 0; i < chars.size(); i++) {
-            Rect r = chars.get(i).bounds();
-            Rect intersection = new Rect();
-            if (!intersection.setIntersect(r, screenRect)) continue;
-            long overlap = (long) intersection.width() * intersection.height();
-            long area = Math.max(1L, (long) r.width() * r.height());
-            boolean centerInside = screenRect.contains(r.centerX(), r.centerY());
-            if (!centerInside && overlap < area * 0.28f) continue;
-            found = true;
-            selected[i] = true;
-        }
-        return found && applyBooleanSelection(selected, true);
-    }
-
-    /**
-     * Initialize from the resolver's precise gesture hint while retaining the full OCR document.
-     * Matching characters are selected exactly; they are never expanded back to their whole group.
-     */
+    /** Map the planner's precise hint into the retained full OCR context document. */
     boolean selectHintDocument(OcrDocument hint) {
         if (hint == null || !hint.isScreenSpace() || hint.chars().isEmpty() || chars.isEmpty()) {
             return false;
@@ -279,16 +204,28 @@ final class CircleTextSelectionModel {
                 float denom = Math.max(1f, Math.min(
                         (float) hr.width() * hr.height(), (float) cr.width() * cr.height()));
                 float score = overlap / denom;
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = i;
-                }
+                if (score > bestScore) { bestScore = score; best = i; }
             }
             if (best < 0 || bestScore < 0.55f) continue;
             found = true;
             selected[best] = true;
         }
         return found && applyBooleanSelection(selected, true);
+    }
+
+    private int findWordAt(float viewX, float viewY, int viewWidth, int viewHeight) {
+        if (chars.isEmpty() || viewWidth <= 0 || viewHeight <= 0) return -1;
+        int sx = transform.viewXToScreen(viewX, viewWidth);
+        int sy = transform.viewYToScreen(viewY, viewHeight);
+        int best = -1;
+        long bestArea = Long.MAX_VALUE;
+        for (int i = 0; i < chars.size(); i++) {
+            Rect r = chars.get(i).bounds();
+            if (!r.contains(sx, sy)) continue;
+            long area = Math.max(1L, (long) r.width() * r.height());
+            if (area < bestArea) { bestArea = area; best = i; }
+        }
+        return best;
     }
 
     private boolean applyBooleanSelection(boolean[] selected, boolean precise) {
@@ -337,11 +274,6 @@ final class CircleTextSelectionModel {
             if (union == null) union = new Rect(r); else union.union(r);
         }
         return union == null || union.isEmpty() ? null : union;
-    }
-
-    RectF selectionViewBounds(int viewWidth, int viewHeight) {
-        Rect screen = selectionScreenBounds();
-        return screen == null ? null : transform.screenToView(screen, viewWidth, viewHeight);
     }
 
     private Rect groupScreenBounds(int index) {
@@ -433,32 +365,6 @@ final class CircleTextSelectionModel {
             previousSourceGroup = c.group();
         }
         return List.copyOf(out);
-    }
-
-    private static boolean isLatinWordUnit(OcrDocument.CharUnit unit) {
-        if (unit == null || unit.text() == null || unit.text().isBlank()) return false;
-        String text = unit.text();
-        for (int offset = 0; offset < text.length();) {
-            int cp = text.codePointAt(offset);
-            if (isCjk(cp)) return false;
-            if (!Character.isLetterOrDigit(cp) && cp != '\'' && cp != 0x2019
-                    && cp != '-' && cp != '_') return false;
-            offset += Character.charCount(cp);
-        }
-        return true;
-    }
-
-    private static boolean wordNeighbors(OcrDocument.CharUnit a, OcrDocument.CharUnit b) {
-        if (a == null || b == null) return false;
-        Rect ar = a.bounds();
-        Rect br = b.bounds();
-        if (ar.isEmpty() || br.isEmpty()) return false;
-        int overlap = Math.max(0, Math.min(ar.bottom, br.bottom) - Math.max(ar.top, br.top));
-        int minHeight = Math.max(1, Math.min(ar.height(), br.height()));
-        if (overlap / (float) minHeight < 0.45f) return false;
-        int gap = br.left - ar.right;
-        float refHeight = Math.max(1f, Math.min(ar.height(), br.height()));
-        return gap <= refHeight * 0.55f;
     }
 
     private static boolean noSpaceBetween(String a, String b) {
