@@ -114,7 +114,7 @@ public class LensAccessibilityService extends AccessibilityService {
                 String cls = eventClass(event);
                 DiagnosticLog.i(this, "CIRCLE_SELECT",
                         "system navigation event pkg=" + pkg + " cls=" + cls);
-                GoogleCircleInlineOverlay.dismissActive("system_navigation");
+                FLCircleInlineOverlay.dismissActive("system_navigation");
             }
 
             String oldTop = env.topPackage();
