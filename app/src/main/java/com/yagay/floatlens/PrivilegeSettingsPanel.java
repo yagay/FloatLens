@@ -153,7 +153,7 @@ public final class PrivilegeSettingsPanel {
                                                     String title, String subtitle,
                                                     String key, boolean current, Runnable changed) {
         return AppUi.switchRow(activity, title, subtitle, current, (button, checked) -> {
-            fs.prefs().edit().putBoolean(key, checked).apply();
+            fs.setBoolean(key, checked);
             DiagnosticLog.i(activity, "PRIVILEGE", "setting " + key + "=" + checked);
             if (changed != null) changed.run();
         });
