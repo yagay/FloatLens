@@ -31,7 +31,13 @@ final class ResultUi {
         box.setBackground(popupBackground(c,
                 ThemeSettings.isDark(c) ? 0xF0202124 : 0xF8FFFFFF));
         box.setElevation(dp(c, 10));
-        box.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
+        final float radius = dp(c, POPUP_RADIUS_DP);
+        box.setOutlineProvider(new ViewOutlineProvider() {
+            @Override public void getOutline(android.view.View view, android.graphics.Outline outline) {
+                if (view.getWidth() <= 0 || view.getHeight() <= 0) return;
+                outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radius);
+            }
+        });
         box.setClipToOutline(true);
         return box;
     }
