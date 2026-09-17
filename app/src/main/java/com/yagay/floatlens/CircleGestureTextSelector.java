@@ -10,7 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Selects semantic OCR/View groups using the user's actual Circle gesture path in SCREEN space. */
+/** Selects OCR characters/words using the user's actual Circle gesture path in SCREEN space. */
 final class CircleGestureTextSelector {
     static final class GroupHit {
         final String text;
@@ -87,40 +87,8 @@ final class CircleGestureTextSelector {
         if (gesture.kind == GoogleCircleSelection.Kind.TAP) {
             PointF point = frame.bitmapPointToScreen(gesture.focus.x, gesture.focus.y);
             float tolerance = Math.max(0f, tapToleranceDp * ScreenGeometry.density(context));
-            GroupHit exact = null;
-            long exactArea = Long.MAX_VALUE;
-            GroupHit nearest = null;
-            float nearestDistance = Float.MAX_VALUE;
-            long nearestArea = Long.MAX_VALUE;
-
-            for (GroupHit group : groups) {
-                boolean contains = false;
-                float distance = Float.MAX_VALUE;
-                long area = area(group.bounds);
-                for (OcrDocument.CharUnit unit : group.chars) {
-                    Rect r = unit.bounds();
-                    if (r.contains(Math.round(point.x), Math.round(point.y))) {
-                        contains = true;
-                        distance = 0f;
-                        break;
-                    }
-                    distance = Math.min(distance, pointDistanceToRect(point, r));
-                }
-                if (contains) {
-                    if (exact == null || area < exactArea) {
-                        exact = group;
-                        exactArea = area;
-                    }
-                } else if (tolerance > 0f && distance <= tolerance
-                        && (distance < nearestDistance
-                        || (Math.abs(distance - nearestDistance) < 0.5f && area < nearestArea))) {
-                    nearest = group;
-                    nearestDistance = distance;
-                    nearestArea = area;
-                }
-            }
-            if (exact != null) return List.of(exact);
-            return nearest == null ? List.of() : List.of(nearest);
+            GroupHit precise = preciseTapHit(groups, point, tolerance);
+            return precise == null ? List.of() : List.of(precise);
         }
 
         float corridor = Math.max(0f, corridorDp * ScreenGeometry.density(context));
@@ -128,15 +96,13 @@ final class CircleGestureTextSelector {
         Rect fallback = gestureScreenBounds(frame, gesture);
         ArrayList<GroupHit> selected = new ArrayList<>();
         for (GroupHit group : groups) {
-            boolean hit = false;
+            ArrayList<OcrDocument.CharUnit> touched = new ArrayList<>();
             for (OcrDocument.CharUnit unit : group.chars) {
                 Rect rect = unit.bounds();
-                if (pathHitsRect(path, rect, corridor, fallback)) {
-                    hit = true;
-                    break;
-                }
+                if (pathHitsRect(path, rect, corridor, fallback)) touched.add(unit);
             }
-            if (hit) selected.add(group);
+            GroupHit precise = fromChars(touched);
+            if (precise != null) selected.add(precise);
         }
         selected.sort((a, b) -> compareVisual(a.bounds, b.bounds));
         return List.copyOf(selected);
@@ -155,9 +121,8 @@ final class CircleGestureTextSelector {
     }
 
     /**
-     * Rebuild only the small gesture-local result. Groups retain their original character geometry,
-     * while spatially adjacent groups on the same visual row remain one output line. This avoids
-     * turning every English word into a separate newline without reintroducing a global OCR merge.
+     * Rebuild only the gesture-local result. A GroupHit may now contain only the characters actually
+     * touched by the gesture; adjacent hits on the same visual row are still emitted as one line.
      */
     static OcrDocument documentFromGroups(List<GroupHit> groups,
                                           OcrDocument template,
@@ -254,6 +219,102 @@ final class CircleGestureTextSelector {
                 confidence, template.score(), template.imageWidth(), template.imageHeight());
     }
 
+    private static GroupHit preciseTapHit(List<GroupHit> groups, PointF point, float tolerance) {
+        if (point == null) return null;
+        GroupHit bestGroup = null;
+        int bestIndex = -1;
+        boolean bestExact = false;
+        float bestDistance = Float.MAX_VALUE;
+        long bestArea = Long.MAX_VALUE;
+
+        for (GroupHit group : groups) {
+            for (int i = 0; i < group.chars.size(); i++) {
+                OcrDocument.CharUnit unit = group.chars.get(i);
+                if (unit == null || unit.bounds().isEmpty() || unit.text().isBlank()) continue;
+                Rect r = unit.bounds();
+                boolean exact = r.contains(Math.round(point.x), Math.round(point.y));
+                float distance = exact ? 0f : pointDistanceToRect(point, r);
+                if (!exact && (tolerance <= 0f || distance > tolerance)) continue;
+                long unitArea = Math.max(1L, (long) r.width() * r.height());
+                boolean better = bestIndex < 0
+                        || (exact && !bestExact)
+                        || (exact == bestExact && (distance < bestDistance - 0.5f
+                        || (Math.abs(distance - bestDistance) < 0.5f && unitArea < bestArea)));
+                if (better) {
+                    bestGroup = group;
+                    bestIndex = i;
+                    bestExact = exact;
+                    bestDistance = distance;
+                    bestArea = unitArea;
+                }
+            }
+        }
+        if (bestGroup == null || bestIndex < 0) return null;
+        return tapWordSlice(bestGroup, bestIndex);
+    }
+
+    private static GroupHit tapWordSlice(GroupHit group, int index) {
+        if (group == null || index < 0 || index >= group.chars.size()) return null;
+        OcrDocument.CharUnit pivot = group.chars.get(index);
+        if (!isLatinWordUnit(pivot)) return fromChars(List.of(pivot));
+
+        int lo = index;
+        int hi = index;
+        while (lo > 0 && isLatinWordUnit(group.chars.get(lo - 1))
+                && wordNeighbors(group.chars.get(lo - 1), group.chars.get(lo))) {
+            lo--;
+        }
+        while (hi + 1 < group.chars.size() && isLatinWordUnit(group.chars.get(hi + 1))
+                && wordNeighbors(group.chars.get(hi), group.chars.get(hi + 1))) {
+            hi++;
+        }
+        return fromChars(group.chars.subList(lo, hi + 1));
+    }
+
+    private static boolean wordNeighbors(OcrDocument.CharUnit a, OcrDocument.CharUnit b) {
+        if (a == null || b == null) return false;
+        Rect ar = a.bounds();
+        Rect br = b.bounds();
+        if (ar.isEmpty() || br.isEmpty()) return false;
+        float vertical = axisOverlapRatio(ar.top, ar.bottom, br.top, br.bottom);
+        if (vertical < 0.45f) return false;
+        int gap = br.left - ar.right;
+        float height = Math.max(1f, Math.min(ar.height(), br.height()));
+        return gap <= height * 0.55f;
+    }
+
+    private static boolean isLatinWordUnit(OcrDocument.CharUnit unit) {
+        if (unit == null) return false;
+        String text = unit.text();
+        if (text == null || text.isBlank()) return false;
+        for (int offset = 0; offset < text.length();) {
+            int cp = text.codePointAt(offset);
+            if (isCjk(cp)) return false;
+            if (!Character.isLetterOrDigit(cp) && cp != '\'' && cp != 0x2019
+                    && cp != '-' && cp != '_') return false;
+            offset += Character.charCount(cp);
+        }
+        return true;
+    }
+
+    private static GroupHit fromChars(List<OcrDocument.CharUnit> chars) {
+        if (chars == null || chars.isEmpty()) return null;
+        ArrayList<OcrDocument.CharUnit> clean = new ArrayList<>();
+        StringBuilder text = new StringBuilder();
+        Rect union = null;
+        float confidence = 0f;
+        for (OcrDocument.CharUnit unit : chars) {
+            if (unit == null || unit.text().isBlank() || unit.bounds().isEmpty()) continue;
+            clean.add(unit);
+            text.append(unit.text());
+            Rect r = unit.bounds();
+            if (union == null) union = new Rect(r); else union.union(r);
+            confidence += unit.confidence();
+        }
+        if (clean.isEmpty() || union == null || union.isEmpty()) return null;
+        return new GroupHit(text.toString(), union, clean, confidence / clean.size());
+    }
+
     private static boolean shouldInsertSpace(GroupHit previous, GroupHit current) {
         if (previous == null || current == null) return false;
         String a = previous.text == null ? "" : previous.text;
@@ -280,18 +341,8 @@ final class CircleGestureTextSelector {
                 byGroup.computeIfAbsent(unit.group(), ignored -> new ArrayList<>()).add(unit);
             }
             for (ArrayList<OcrDocument.CharUnit> chars : byGroup.values()) {
-                if (chars.isEmpty()) continue;
-                StringBuilder text = new StringBuilder();
-                Rect union = null;
-                float confidence = 0f;
-                for (OcrDocument.CharUnit unit : chars) {
-                    text.append(unit.text());
-                    Rect r = unit.bounds();
-                    if (union == null) union = new Rect(r); else union.union(r);
-                    confidence += unit.confidence();
-                }
-                if (union == null || union.isEmpty()) continue;
-                out.add(new GroupHit(text.toString(), union, chars, confidence / chars.size()));
+                GroupHit hit = fromChars(chars);
+                if (hit != null) out.add(hit);
             }
         }
         return List.copyOf(out);
@@ -403,11 +454,6 @@ final class CircleGestureTextSelector {
     private static boolean isOpeningPunctuation(int cp) {
         return cp == '(' || cp == '[' || cp == '{' || cp == 0x3008 || cp == 0x300A
                 || cp == 0x300C || cp == 0x300E || cp == 0x3010;
-    }
-
-    private static long area(Rect rect) {
-        return rect == null || rect.isEmpty() ? Long.MAX_VALUE
-                : Math.max(1L, (long) rect.width() * rect.height());
     }
 
     private static boolean usable(OcrDocument document) {
