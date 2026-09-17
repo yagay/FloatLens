@@ -455,7 +455,7 @@ public final class FloatActionMenu {
     private static void launchExternal(Context app, String reason, Runnable launch) {
         dismiss();
         resetLockedRow();
-        GoogleCircleInlineOverlay.dismissActive("external_text_action_" + reason);
+        FLCircleInlineOverlay.dismissActive("external_text_action_" + reason);
         DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "external prepare reason=" + reason);
         MAIN.post(() -> {
             try {
