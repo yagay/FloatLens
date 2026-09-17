@@ -17,43 +17,54 @@ import java.util.function.Consumer;
 /** Business routing for screenshot, region, View and OCR capture operations. */
 public final class ScreenshotController {
     public static void capture(Context c, boolean region) {
+        if (region) {
+            captureRegionSelector(c, false);
+            return;
+        }
+
         Context app = c.getApplicationContext();
         final FlSystemPanelController.CaptureState shadeState = FlSystemPanelController.beginCapture(
-                app, region ? "screenshot_region" : "screenshot_full");
+                app, "screenshot_full");
         getBitmap(app, b -> {
             try {
-                if (region) RegionOverlay.show(app, b, false);
-                else {
-                    save(app, b);
-                    recycle(b);
-                }
-                FlSystemPanelController.onResultReady(
-                        app, shadeState, region ? "region_overlay_shown" : "screenshot_saved");
-                DiagnosticLog.i(app, "SCREENSHOT_FLOW", "full result region=" + region
-                        + " bitmap=" + bitmapSize(b));
+                save(app, b);
+                recycle(b);
+                FlSystemPanelController.onResultReady(app, shadeState, "screenshot_saved");
+                DiagnosticLog.i(app, "SCREENSHOT_FLOW", "full result region=false bitmap=" + bitmapSize(b));
             } catch (Throwable t) {
-                if (!region) recycle(b);
-                DiagnosticLog.i(app, "SCREENSHOT_FLOW", "full result failed region=" + region
-                        + " error=" + ScreenCaptureBackend.safeMessage(t));
-                Toast.makeText(app, region ? "区域选择器启动失败" : "截图结果处理失败",
-                        Toast.LENGTH_LONG).show();
+                recycle(b);
+                DiagnosticLog.i(app, "SCREENSHOT_FLOW", "full result failed region=false error="
+                        + ScreenCaptureBackend.safeMessage(t));
+                Toast.makeText(app, "截图结果处理失败", Toast.LENGTH_LONG).show();
             }
         });
     }
 
     public static void captureForOcr(Context c) {
+        captureRegionSelector(c, true);
+    }
+
+    /** One screenshot-to-region-selector path for both screenshot and OCR selection modes. */
+    private static void captureRegionSelector(Context c, boolean ocr) {
         Context app = c.getApplicationContext();
-        final FlSystemPanelController.CaptureState shadeState = FlSystemPanelController.beginCapture(
-                app, "ocr_region_capture");
+        String captureReason = ocr ? "ocr_region_capture" : "screenshot_region";
+        String readyReason = ocr ? "ocr_region_overlay_shown" : "region_overlay_shown";
+        final FlSystemPanelController.CaptureState shadeState =
+                FlSystemPanelController.beginCapture(app, captureReason);
         getBitmap(app, b -> {
             try {
-                RegionOverlay.show(app, b, true);
-                FlSystemPanelController.onResultReady(app, shadeState, "ocr_region_overlay_shown");
+                RegionOverlay.show(app, b, ocr);
+                FlSystemPanelController.onResultReady(app, shadeState, readyReason);
+                DiagnosticLog.i(app, "SCREENSHOT_FLOW", "region selector shown mode="
+                        + (ocr ? "ocr" : "screenshot") + " bitmap=" + bitmapSize(b));
             } catch (Throwable t) {
                 recycle(b);
-                DiagnosticLog.i(app, "SCREENSHOT_FLOW", "ocr region result failed error="
+                DiagnosticLog.i(app, "SCREENSHOT_FLOW", "region selector failed mode="
+                        + (ocr ? "ocr" : "screenshot") + " error="
                         + ScreenCaptureBackend.safeMessage(t));
-                Toast.makeText(app, "OCR 区域选择器启动失败", Toast.LENGTH_LONG).show();
+                Toast.makeText(app,
+                        ocr ? "OCR 区域选择器启动失败" : "区域选择器启动失败",
+                        Toast.LENGTH_LONG).show();
             }
         });
     }
@@ -100,9 +111,9 @@ public final class ScreenshotController {
         Context app = c.getApplicationContext();
         final FlSystemPanelController.CaptureState shadeState = FlSystemPanelController.beginCapture(
                 app, "view_ocr_capture");
-        Rect anchor = new Rect(screenBounds);
-        captureBounds(app, anchor, crop -> {
-            OcrEngine.recognize(app, crop, anchor);
+        Rect sourceBounds = new Rect(screenBounds);
+        captureBounds(app, sourceBounds, crop -> {
+            OcrEngine.recognize(app, crop, sourceBounds);
             FlSystemPanelController.onResultReady(app, shadeState, "view_ocr_capture_ready");
         }, "View OCR", true);
     }
@@ -195,8 +206,6 @@ public final class ScreenshotController {
                 DiagnosticLog.i(app, "SCREENSHOT_CROP", "success label=" + label
                         + " raw=" + bitmapSize(raw) + " requested=" + screenBounds
                         + " crop=" + bitmapSize(crop));
-                // cropScreenBounds guarantees a distinct Bitmap, so the full-screen capture is no
-                // longer needed once the requested bounds have been copied out.
                 recycle(raw);
             } catch (Throwable t) {
                 recycle(raw);
