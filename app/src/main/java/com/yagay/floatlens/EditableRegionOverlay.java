@@ -287,8 +287,6 @@ public final class EditableRegionOverlay {
 
             if (action == A_OCR) {
                 close();
-                FloatService service = FloatService.get();
-                if (service != null) service.onCircleRecognizeStarted();
                 OcrEngine.recognize(context, crop, screenRect);
                 DiagnosticLog.i(context, "REGION_EDIT", "OCR bounds=" + screenRect);
                 return;
@@ -316,8 +314,6 @@ public final class EditableRegionOverlay {
                         + " bounds=" + screenRect);
             } else {
                 close();
-                FloatService service = FloatService.get();
-                if (service != null) service.onCircleRecognizeStarted();
                 OcrEngine.recognize(context, crop, screenRect);
                 DiagnosticLog.i(context, "REGION_EDIT", "AUTO=ocr bounds=" + screenRect);
             }
