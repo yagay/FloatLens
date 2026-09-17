@@ -18,15 +18,14 @@ import android.view.WindowManager;
 import android.widget.Toast;
 
 import java.util.ArrayList;
-import java.util.List;
 
 /**
  * Frozen-screen Circle workspace with cached OCR text, gesture selection and editable screenshots.
  *
- * <p>The resolver retains the complete OCR context document for the frozen frame while the actual
- * tap/highlight/scribble gesture initializes the selected range. Selection handles can then extend
- * through that retained context. A closed CIRCLE remains an exact editable screenshot rectangle and
- * never becomes text OCR.</p>
+ * <p>The resolver retains the complete OCR context document for the frozen frame while
+ * {@link CircleSelectionPlanner} alone defines the initial selected range. Selection handles can
+ * then extend through that retained context. A closed CIRCLE remains an exact editable screenshot
+ * rectangle and never becomes text OCR.</p>
  */
 final class GoogleCircleInlineOverlay {
     private static WorkspaceView active;
@@ -64,7 +63,7 @@ final class GoogleCircleInlineOverlay {
         DiagnosticLog.i(app, "G_CIRCLE_INLINE", "overlay shown frame=" + bounds.toShortString()
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
                 + " textRecognition=full_frame_cached_ocr"
-                + " selectionModel=cached_document_plus_gesture_range"
+                + " selectionOwner=CircleSelectionPlanner"
                 + " geometry=shared_frame_transform"
                 + " screenshotMode=circle_edit_confirm autoExpand=false");
         return true;
@@ -96,7 +95,6 @@ final class GoogleCircleInlineOverlay {
         private static final int MODE_TEXT_START = 7;
         private static final int MODE_TEXT_END = 8;
 
-        private static final float CACHED_TEXT_TAP_SNAP_DP = 4f;
         private static final float TEXT_HANDLE_HIT_DP = 28f;
         private static final float TEXT_HANDLE_SNAP_DP = 96f;
 
@@ -150,7 +148,6 @@ final class GoogleCircleInlineOverlay {
         private float closeCenterY = Float.NaN;
         private boolean confirmPressed;
         private boolean keyFocusEnabled;
-        private String selectedTextSource = "";
 
         WorkspaceView(Context c, FlOverlayWindowHost host,
                       WindowManager.LayoutParams windowLayout,
@@ -179,7 +176,7 @@ final class GoogleCircleInlineOverlay {
 
             textTransform = frame.transform;
             textSelection = new CircleTextSelectionModel(textTransform);
-            textSelection.setChars(List.of());
+            textSelection.setDocument(null);
 
             setClickable(true);
             setFocusable(true);
@@ -231,7 +228,7 @@ final class GoogleCircleInlineOverlay {
             confirmTextPaint.setTextAlign(Paint.Align.CENTER);
 
             DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT",
-                    "ready chars=0 recognition=full_frame_cached_ocr selection=gesture_scoped_range");
+                    "ready chars=0 recognition=full_frame_cached_ocr selectionOwner=CircleSelectionPlanner");
         }
 
         void promoteKeyFocus(String reason) {
@@ -491,7 +488,6 @@ final class GoogleCircleInlineOverlay {
                     cancelTextResolution("new_gesture");
                     screenshotSelection = null;
                     textSelection.clear();
-                    selectedTextSource = "";
                     confirmRect.setEmpty();
                     stroke.clear();
                     stroke.add(bitmapPoint);
@@ -606,7 +602,6 @@ final class GoogleCircleInlineOverlay {
             if (gesture.kind == GoogleCircleSelection.Kind.CIRCLE) {
                 cancelTextResolution("circle_gesture");
                 textSelection.clear();
-                selectedTextSource = "";
                 FloatActionMenu.dismiss();
                 screenshotSelection = gesture;
                 DiagnosticLog.i(context, "G_CIRCLE_SCREENSHOT_FRAME", "created exact="
@@ -622,7 +617,6 @@ final class GoogleCircleInlineOverlay {
         private void beginTextResolution(GoogleCircleSelection.Selection gesture) {
             final int generation = ++textResolutionGeneration;
             resolvingText = true;
-            selectedTextSource = "";
             textSelection.clear();
             invalidate();
 
@@ -639,7 +633,6 @@ final class GoogleCircleInlineOverlay {
             if (result == null || result.source == GoogleCircleTextResolver.Source.NONE
                     || result.document == null || result.document.chars().isEmpty()) {
                 textSelection.clear();
-                selectedTextSource = "";
                 DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT", "resolved=false gesture="
                         + gesture.kind + " source=" + (result == null ? "null" : result.source)
                         + " error=" + (result == null || result.error == null ? "none"
@@ -649,71 +642,36 @@ final class GoogleCircleInlineOverlay {
                 return;
             }
 
-            // Keep the complete cached OCR context document. Only the initial range comes from the
-            // actual gesture-scoped hint returned by the resolver.
+            // Retain the full OCR document for later handle edits. The planner's hint is the only
+            // authority allowed to initialize the selection.
             textSelection.setDocument(result.document);
-            boolean selected = selectFromResolvedDocument(gesture, result);
+            boolean selected = selectFromResolvedDocument(result);
             if (!selected) {
                 textSelection.clear();
-                selectedTextSource = "";
                 DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT", "resolved=false gesture="
                         + gesture.kind + " source=" + result.source
-                        + " reason=no_gesture_scoped_selection");
+                        + " reason=planner_hint_unmappable");
                 Toast.makeText(context, "当前位置未识别到可选文字", Toast.LENGTH_SHORT).show();
                 invalidate();
                 return;
             }
 
-            selectedTextSource = result.source.name();
             DiagnosticLog.i(context, "G_CIRCLE_TEXT_SELECT", "resolved=true gesture="
                     + gesture.kind + " source=" + result.source
                     + " documentChars=" + textSelection.size()
                     + " selectedChars=" + textSelection.selectionIndices().size()
                     + " textChars=" + textSelection.selectedText().length()
                     + " contextDocumentRetained=true"
-                    + " gestureScopedSelection=true coordinateSpace=SCREEN");
+                    + " selectionOwner=CircleSelectionPlanner coordinateSpace=SCREEN");
             invalidate();
             post(this::showTextSelectionMenu);
         }
 
-        private boolean selectFromResolvedDocument(GoogleCircleSelection.Selection gesture,
-                                                    GoogleCircleTextResolver.Result result) {
-            if (textSelection.isEmpty() || result == null) return false;
-            if (gesture.kind == GoogleCircleSelection.Kind.TAP) {
-                PointF viewPoint = frame.bitmapToView(gesture.focus.x, gesture.focus.y,
-                        getWidth(), getHeight());
-
-                // 1) Exact OCR geometry hit.
-                int hit = textSelection.findWordAt(viewPoint.x, viewPoint.y,
-                        getWidth(), getHeight());
-                if (hit >= 0) {
-                    textSelection.selectSingle(hit);
-                    return true;
-                }
-
-                // 2) Resolver already computed the nearest semantic group from the recognized ROI.
-                // Keep its original geometry instead of re-running the same tap hit test and losing
-                // a valid fallback result.
-                if (result.initialSelectionDocument != null
-                        && textSelection.selectHintDocument(result.initialSelectionDocument)) {
-                    return true;
-                }
-
-                // 3) Very small UI-level snap as the final convenience fallback.
-                hit = textSelection.findSelectionWord(viewPoint.x, viewPoint.y,
-                        getWidth(), getHeight(), dp(CACHED_TEXT_TAP_SNAP_DP));
-                if (hit < 0) return false;
-                textSelection.selectSingle(hit);
-                return true;
-            }
-
-            // Highlight/scribble use the resolver's path-scoped hint while retaining the complete
-            // context document so selection handles can expand after the initial gesture.
-            if (result.initialSelectionDocument != null
-                    && textSelection.selectHintDocument(result.initialSelectionDocument)) {
-                return true;
-            }
-            return textSelection.selectIntersecting(result.gestureScreenBounds);
+        private boolean selectFromResolvedDocument(GoogleCircleTextResolver.Result result) {
+            return !textSelection.isEmpty()
+                    && result != null
+                    && result.initialSelectionDocument != null
+                    && textSelection.selectHintDocument(result.initialSelectionDocument);
         }
 
         private void cancelTextResolution(String reason) {
