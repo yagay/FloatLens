@@ -44,10 +44,10 @@ OCR
   OcrEngine
 
 Circle
-  GoogleCircleController
-  GoogleCircleCapture
-  GoogleCircleInlineOverlay
-  GoogleCircleTextResolver
+  FLCircleController
+  FLCircleCapture
+  FLCircleInlineOverlay
+  FLCircleTextResolver
   CircleStableOcr
   CircleSelectionPlanner
   CircleGestureTextSelector
@@ -248,33 +248,35 @@ Region UI must submit a bitmap to `OcrEngine`; it must not separately maintain O
 
 ## 9. Circle: one OCR-only pipeline
 
+Current Circle is the **FloatLens-native Circle implementation**. Its private source namespace is `FLCircle*`; it is not Google Circle to Search. A future Google CTS integration must live in a separate Google CTS namespace and must not reuse or overload the `FLCircle*` classes.
+
 Normal Circle is deliberately **OCR-only**. It does not traverse Accessibility Views for text, merge View text into OCR, mask View bounds, or run a parallel TextMap detector pipeline.
 
 The only normal Circle chain is:
 
 ```text
-GoogleCircleController
-  -> GoogleCircleCapture
-  -> GoogleCircleInlineOverlay
-  -> GoogleCircleTextResolver
+FLCircleController
+  -> FLCircleCapture
+  -> FLCircleInlineOverlay
+  -> FLCircleTextResolver
   -> CircleStableOcr
   -> CircleSelectionPlanner
   -> CircleGestureTextSelector
   -> CircleTextSelectionModel
 ```
 
-### `GoogleCircleController`
+### `FLCircleController`
 Owns Circle generation, frozen-workspace launch, screenshot-hide lease, border/shade lifecycle and close cleanup.
 
-### `GoogleCircleCapture`
+### `FLCircleCapture`
 Owns the frozen `Frame`: bitmap + exact screen bounds + one `ScreenBitmapTransform`.
 
-### `GoogleCircleInlineOverlay`
+### `FLCircleInlineOverlay`
 Owns Circle UI/input only: tap, stroke/scribble, editable screenshot rectangle, selection handles, confirmation and close UI.
 
 Initial text selection is applied only from the planner-provided `initialSelectionDocument`. The UI does not perform a second tap hit-test, nearby snap or gesture-bounds intersection fallback. Handle dragging after initialization remains UI editing.
 
-### `GoogleCircleTextResolver`
+### `FLCircleTextResolver`
 Owns one cached full-screen OCR document per frozen frame and optional per-gesture correction scheduling.
 
 Full-screen OCR is single-flight/latest-pending and cached. Optional PP correction receives a planner-owned ROI; it cannot reinterpret the user's selection range or synthesize a fallback ROI.
