@@ -2,7 +2,6 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.graphics.Color;
-import android.graphics.Rect;
 import android.text.InputType;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -82,13 +81,6 @@ public class TextSelectionSurface extends FrameLayout {
 
     public String getSelectedText() { return controller.selectedText(); }
     public SelectionSnapshot getSelectionSnapshot() { return controller.snapshot(); }
-
-    /** Legacy accessor; new menu code consumes SelectionSnapshot directly. */
-    @Deprecated
-    public Rect getSelectionAnchorOnScreen() {
-        SelectionSnapshot snapshot = controller.snapshot();
-        return snapshot == null ? null : snapshot.screenBounds();
-    }
 
     public void selectAllText() { controller.selectAll(); }
     public void clearSelection() { controller.clearSelection(); }
