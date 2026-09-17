@@ -8,7 +8,7 @@ final class SettingsCapturePage {
     static LinearLayout build(SettingsActivity activity, FloatSettings fs) {
         SettingsPageUi ui = new SettingsPageUi(activity, fs);
         LinearLayout root = AppUi.pageRoot(activity, "截图与 OCR",
-                "普通截图仍按 OCR 引擎设置执行；圈画可单独开启“ML 全屏 + PP 局部校正”的混合 OCR。圈画只读取冻结截图，不读取 Accessibility / View 文字。Root / LSPosed 增强开关统一放在“高级权限”中。" );
+                "普通截图 OCR 与圈画 OCR 分开设置。圈画可以独立选择整屏识别引擎和局部校正引擎；只读取冻结截图，不读取 Accessibility / View 文字。Root / LSPosed 增强开关统一放在“高级权限”中。" );
 
         AppUi.Section capture = AppUi.section(activity, "截图",
                 "状态栏与导航栏范围同时作用于普通截图、OCR 区域截图和圈画模式。" );
@@ -32,14 +32,13 @@ final class SettingsCapturePage {
         AppUi.addSection(root, circleBorder);
 
         AppUi.Section circleOcr = AppUi.section(activity, "圈画 OCR",
-                "混合模式开启后：整张冻结截图先用 ML Kit 建立文字索引；每次 TAP / 划线 / 涂抹再用 PP-OCR 实时识别手势附近区域。两者结果一致时保留 ML，不一致时采用 PP 的局部结果。" );
-        ui.check(circleOcr.body, "圈画混合 OCR（ML 全屏 + PP 局部校正）",
-                "默认开启。关闭后圈画恢复为按下方 OCR 引擎设置直接识别。",
-                FloatSettings.K_CIRCLE_HYBRID_OCR, fs.circleHybridOcr());
+                "整屏识别负责建立冻结画面的完整文字索引；局部校正会在每次 TAP / 划线 / 涂抹时重新识别手势附近区域。两者结果一致时继续使用整屏结果，不一致时采用局部校正结果。" );
+        ui.circleFullOcrEngineSpinner(circleOcr.body);
+        ui.circleCorrectionEngineSpinner(circleOcr.body);
         AppUi.addSection(root, circleOcr);
 
         AppUi.Section result = AppUi.section(activity, "OCR / OCR 结果",
-                "OCR 引擎用于普通截图 OCR；圈画混合模式关闭时也直接使用它。混合模式开启时，Medium / Small 选项会作为局部 PP 校正的模型偏好；自动或 ML Kit 会优先使用已下载的 Small，其次 Medium。" );
+                "这里的 OCR 引擎只控制普通截图 OCR，不再控制圈画模式。" );
         ui.check(result.body, "显示原选区图片", null,
                 FloatSettings.K_OCR_SHOW_IMAGE, fs.ocrShowImage());
         ui.check(result.body, "显示文字", null,
@@ -50,8 +49,9 @@ final class SettingsCapturePage {
         AppUi.addSection(root, result);
 
         AppUi.Section models = AppUi.section(activity, "本地 PP-OCRv6 模型",
-                "圈画混合 OCR 的局部校正需要至少一个 PP-OCRv6 模型。Small 更快，Medium 更精确；如果指定的模型未下载，局部校正会保留 ML 结果而不会中断选择。Small 约 32 MB；Medium 约 139 MB。" );
+                "Tiny 适合整屏快速索引或轻量校正，Small 更均衡，Medium 精度最高但更慢。选择 PP 模型作为圈画整屏或校正引擎前，请先下载对应模型。Tiny 约 7 MB；Small 约 32 MB；Medium 约 139 MB。" );
         try {
+            ui.addOcrModelRow(models.body, OcrModelManager.TINY);
             ui.addOcrModelRow(models.body, OcrModelManager.SMALL);
             ui.addOcrModelRow(models.body, OcrModelManager.MEDIUM);
         } catch (Throwable t) {
