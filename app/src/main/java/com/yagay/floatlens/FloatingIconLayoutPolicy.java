@@ -39,13 +39,26 @@ final class FloatingIconLayoutPolicy {
         int defaultX = wh[0] - px;
         int defaultY = wh[1] / 3;
         WindowManager.LayoutParams lp = baseLayout(px);
-        lp.x = settings.prefs().getInt(settings.posXKey(),
+
+        boolean hasSavedX = settings.prefs().contains(settings.posXKey());
+        int savedX = settings.prefs().getInt(settings.posXKey(),
                 settings.prefs().getInt(FloatSettings.K_POS_X, defaultX));
+        lp.x = savedX;
         lp.y = settings.prefs().getInt(settings.posYKey(),
                 settings.prefs().getInt(FloatSettings.K_POS_Y, defaultY));
-        int side = settings.savedSide(lp.x + px / 2 < wh[0] / 2 ? 0 : 1);
+
+        // A persisted X coordinate is the most reliable source of truth for the side. Older builds
+        // wrote gravity and X/Y using separate asynchronous apply() calls, so gravity could remain
+        // stale (for example L) while X had already been saved on the right. Prefer the explicit
+        // per-orientation X whenever it exists and keep gravity only as a legacy fallback.
+        int inferredSide = savedX + px / 2 < wh[0] / 2 ? 0 : 1;
+        int side = hasSavedX ? inferredSide : settings.savedSide(inferredSide);
         lp.x = side == 0 ? 0 : wh[0] - px;
         clamp(lp, false);
+        DiagnosticLog.i(app, "POSITION", "restore x=" + savedX + " y=" + lp.y
+                + " side=" + (side == 0 ? "L" : "R")
+                + " source=" + (hasSavedX ? "saved_x" : "gravity_fallback")
+                + " landscape=" + settings.isLandscape());
         return lp;
     }
 
@@ -121,12 +134,17 @@ final class FloatingIconLayoutPolicy {
     void persist(WindowManager.LayoutParams primary) {
         if (primary == null) return;
         boolean left = isLeft(primary);
-        DiagnosticLog.i(app, "POSITION", "persist x=" + primary.x + " y=" + primary.y
-                + " side=" + (left ? "L" : "R") + " landscape=" + settings.isLandscape());
-        settings.saveSide(left);
-        settings.prefs().edit()
+
+        // Position commits are infrequent and user initiated. Persist side + X + Y atomically and
+        // synchronously so a reboot cannot leave gravity and coordinates from different moves.
+        boolean saved = settings.prefs().edit()
+                .putInt(settings.gravityKey(), left ? 0 : 1)
                 .putInt(settings.posXKey(), primary.x)
                 .putInt(settings.posYKey(), primary.y)
-                .apply();
+                .commit();
+        DiagnosticLog.i(app, "POSITION", "persist x=" + primary.x + " y=" + primary.y
+                + " side=" + (left ? "L" : "R")
+                + " landscape=" + settings.isLandscape()
+                + " saved=" + saved);
     }
 }
