@@ -19,7 +19,12 @@ final class UiTokens {
     static int accent(Context c) { return dark(c) ? 0xFF9CC2FF : 0xFF285FBE; }
     static int ripple(Context c) { return dark(c) ? 0x22FFFFFF : 0x12000000; }
 
+    /** One palette for every floating text/image action menu. */
     static int menuSurface(Context c) { return dark(c) ? 0xFF2B2B2B : 0xFFF8F8F8; }
+    static int menuPrimaryText(Context c) { return dark(c) ? 0xFFF5F5F5 : 0xFF202124; }
+    static int menuSecondaryText(Context c) { return dark(c) ? 0xFFB8B8B8 : 0xFF5F6368; }
+    static int menuRipple(Context c) { return dark(c) ? 0x33FFFFFF : 0x22000000; }
+
     static int resultSurface(Context c) { return dark(c) ? 0xF0202124 : 0xF8FFFFFF; }
 
     static int dp(Context c, float value) { return ScreenGeometry.dp(c, value); }
