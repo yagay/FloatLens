@@ -79,6 +79,8 @@ public final class FloatSettings {
     public static final String K_ROOT_LAST_DETAIL = "privilege_root_last_detail_v1";
 
     private static final String K_MIGRATE_LONG_PRESS_CONFIG_V1 = "migrate_long_press_config_v1";
+    private static final String K_CIRCLE_CANCEL_X_BP = "circle_cancel_x_bp_v1";
+    private static final String K_CIRCLE_CANCEL_Y_BP = "circle_cancel_y_bp_v1";
 
     public static final String K_POS_X_PORTRAIT = "float_pos_x_portrait";
     public static final String K_POS_Y_PORTRAIT = "float_pos_y_portrait";
@@ -216,6 +218,8 @@ public final class FloatSettings {
     public int slideIntervalMs() { return clamp(p.getInt(K_SLIDE_INTERVAL, 3000), 500, 60000); }
     public String action(String key, String def) { return p.getString(key, def); }
     public String hiddenPackagesRaw() { return p.getString(K_HIDE_PACKAGES, ""); }
+    public int circleCancelXBp() { return p.getInt(K_CIRCLE_CANCEL_X_BP, -1); }
+    public int circleCancelYBp() { return p.getInt(K_CIRCLE_CANCEL_Y_BP, -1); }
 
     public void setBoolean(String key, boolean value) {
         if (key != null && !key.isBlank()) p.edit().putBoolean(key, value).apply();
@@ -232,6 +236,23 @@ public final class FloatSettings {
     public void setLineColors(String value) { setString(K_LINE_COLORS, value); }
     public void setHiddenPackagesRaw(String value) { setString(K_HIDE_PACKAGES, value); }
 
+    /** Root authorization result is one logical state and is committed atomically. */
+    public void saveRootCheck(boolean granted, long checkedAt, String detail) {
+        p.edit()
+                .putBoolean(K_ROOT_LAST_GRANTED, granted)
+                .putLong(K_ROOT_LAST_CHECK, Math.max(0L, checkedAt))
+                .putString(K_ROOT_LAST_DETAIL, detail == null ? "" : detail)
+                .apply();
+    }
+
+    /** Circle close-button position is one logical x/y state and is committed atomically. */
+    public void saveCircleCancelPosition(int xBp, int yBp) {
+        p.edit()
+                .putInt(K_CIRCLE_CANCEL_X_BP, clamp(xBp, 0, 10000))
+                .putInt(K_CIRCLE_CANCEL_Y_BP, clamp(yBp, 0, 10000))
+                .apply();
+    }
+
     /** Compound icon selection stays atomic so URI and style cannot drift apart. */
     public void selectCustomIcon(String uri) {
         p.edit().putString(K_CUSTOM_ICON, uri == null ? "" : uri).putInt(K_STYLE, 3).apply();
@@ -242,7 +263,7 @@ public final class FloatSettings {
         p.edit().putString(K_SLIDE_PICS, joinedUris == null ? "" : joinedUris).putInt(K_STYLE, 4).apply();
     }
 
-    /** Legacy escape hatch for migration and state that genuinely requires one atomic editor. */
+    /** Legacy escape hatch for migration and listener registration only. */
     @Deprecated
     public SharedPreferences prefs() { return p; }
 
