@@ -25,7 +25,7 @@ final class CircleStableOcr {
         }
         int model = modelForCircleMode(mode);
         if (!OcrModelManager.isReady(app, model)) {
-            DiagnosticLog.i(app, "G_CIRCLE_FULL_ENGINE",
+            DiagnosticLog.i(app, "FL_CIRCLE_FULL_ENGINE",
                     "selected=" + modeLabel(mode) + " modelMissing=true fallback=mlkit");
             recognizeFullScreenMlKit(app, bitmap, callback);
             return;
@@ -67,7 +67,7 @@ final class CircleStableOcr {
         }
 
         String engine = MlKitTextCore.preferredEngine("mlkit-circle-full", app);
-        DiagnosticLog.i(app, "G_CIRCLE_ML_INDEX",
+        DiagnosticLog.i(app, "FL_CIRCLE_ML_INDEX",
                 "start engine=" + engine
                         + " bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight()
                         + " role=full_screen_index"
@@ -84,7 +84,7 @@ final class CircleStableOcr {
                                 callback.onFailure(new IllegalStateException("ML Kit full-screen OCR empty"));
                                 return;
                             }
-                            DiagnosticLog.i(app, "G_CIRCLE_ML_INDEX",
+                            DiagnosticLog.i(app, "FL_CIRCLE_ML_INDEX",
                                     "success engine=" + document.engine()
                                             + " chars=" + document.chars().size()
                                             + " lines=" + document.lines().size()
@@ -101,7 +101,7 @@ final class CircleStableOcr {
                     })
                     .addOnFailureListener(error -> {
                         try { recognizer.close(); } catch (Throwable ignored) {}
-                        DiagnosticLog.i(app, "G_CIRCLE_ML_INDEX",
+                        DiagnosticLog.i(app, "FL_CIRCLE_ML_INDEX",
                                 "failed error=" + safe(error)
                                         + " mode=normal_ocr_only"
                                         + " viewText=false"
@@ -119,7 +119,7 @@ final class CircleStableOcr {
                                         OcrEngine.DocumentCallback callback) {
         long started = android.os.SystemClock.uptimeMillis();
         DiagnosticLog.i(app, role.equals("gesture_correction")
-                        ? "G_CIRCLE_PP_REGION" : "G_CIRCLE_PP_INDEX",
+                        ? "FL_CIRCLE_PP_REGION" : "FL_CIRCLE_PP_INDEX",
                 "start model=" + model
                         + " modelName=" + OcrModelManager.displayName(model)
                         + " bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight()
@@ -133,7 +133,7 @@ final class CircleStableOcr {
                 }
                 // PaddleOcrBridge already normalizes PP output through OcrCanonicalGeometry.
                 DiagnosticLog.i(app, role.equals("gesture_correction")
-                                ? "G_CIRCLE_PP_REGION" : "G_CIRCLE_PP_INDEX",
+                                ? "FL_CIRCLE_PP_REGION" : "FL_CIRCLE_PP_INDEX",
                         "success model=" + model
                                 + " engine=" + raw.engine()
                                 + " chars=" + raw.chars().size()
