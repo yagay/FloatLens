@@ -19,7 +19,8 @@ Do **not** add `Fl` mechanically to every business class. Shared owners should u
 Use one stable feature family for each real workflow:
 
 - ordinary floating/Direct selection: `FloatIcon*`, `ViewSelection*`;
-- current Circle workflow: `GoogleCircle*` for the frozen Circle workspace boundary, with shared `Circle*` selection/OCR helpers only where they are genuinely Circle-specific;
+- FloatLens-owned Circle workflow: `FLCircle*` for the frozen Circle workspace boundary, with shared `Circle*` selection/OCR helpers only where they are genuinely Circle-specific;
+- future real Google Circle to Search integration: reserve a separate `GoogleCts*` family so Google-owned behavior is never confused with FloatLens-owned Circle behavior;
 - results: `Result*` / `UnifiedResult*`;
 - settings: `FloatSettings`, `Settings*`;
 - shared OCR: `Ocr*`, `MlKitTextCore`, `PaddleOcrBridge`.
