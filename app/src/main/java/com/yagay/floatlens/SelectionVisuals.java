@@ -22,26 +22,17 @@ final class SelectionVisuals {
         return Math.max(1, Math.round(dp(c, 2f)));
     }
 
-    /**
-     * Kept with the old two-Paint signature so callers stay simple, but only one Paint is drawn.
-     * FL intentionally uses one STROKE Paint rather than a double outline.
-     */
-    static void configureFramePaints(Context c, Paint frame, Paint unused, SelectionVisualState state) {
+    static void configureFramePaint(Context c, Paint frame, SelectionVisualState state) {
+        frame.reset();
         frame.setAntiAlias(true);
         frame.setStyle(Paint.Style.STROKE);
         frame.setColor(frameColor(state));
         frame.setStrokeWidth(dp(c, 2f));
         frame.setStrokeJoin(Paint.Join.MITER);
-
-        if (unused != null) {
-            unused.reset();
-            unused.setColor(Color.TRANSPARENT);
-        }
     }
 
     /** Labels are FloatLens-only helpers; keep them single-layer and unobtrusive. */
-    static void configureTextPaints(Context c, Paint unusedOutline, Paint text, float sp) {
-        if (unusedOutline != null) unusedOutline.reset();
+    static void configureTextPaint(Context c, Paint text, float sp) {
         text.reset();
         text.setAntiAlias(true);
         text.setStyle(Paint.Style.FILL);
@@ -49,25 +40,21 @@ final class SelectionVisuals {
         text.setTextSize(sp * c.getResources().getDisplayMetrics().scaledDensity);
     }
 
-    static void drawFrame(Canvas c, Rect rect, Paint frame, Paint unused) {
+    static void drawFrame(Canvas c, Rect rect, Paint frame) {
         if (c == null || rect == null || rect.isEmpty()) return;
         c.drawRect(rect, frame);
     }
 
-    static void drawText(Canvas c, String text, float x, float y, Paint unusedOutline, Paint fill) {
+    static void drawText(Canvas c, String text, float x, float y, Paint fill) {
         if (c == null || text == null || text.isEmpty()) return;
         c.drawText(text, x, y, fill);
     }
 
-    static void configureEdgePaints(Paint frame, Paint unused, SelectionVisualState state) {
+    static void configureEdgePaint(Paint frame, SelectionVisualState state) {
         frame.reset();
         frame.setAntiAlias(false);
         frame.setStyle(Paint.Style.FILL);
         frame.setColor(frameColor(state));
-        if (unused != null) {
-            unused.reset();
-            unused.setColor(Color.TRANSPARENT);
-        }
     }
 
     static void drawEdge(Canvas c, int width, int height, Paint frame) {
