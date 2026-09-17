@@ -449,14 +449,13 @@ public final class FloatActionMenu {
     }
 
     /**
-     * Accessibility overlays stay above normal activities. Remove the action menu and any active
-     * Circle Select workspace first, then launch the target on the next main-loop turn so the new
-     * activity can become visible immediately instead of being hidden under the frozen 2032 layer.
+     * Accessibility overlays stay above normal activities. Remove the action menu and active
+     * Circle workspace first, then launch the target on the next main-loop turn.
      */
     private static void launchExternal(Context app, String reason, Runnable launch) {
         dismiss();
         resetLockedRow();
-        CircleSelectOverlay.dismissActive("external_text_action_" + reason);
+        GoogleCircleInlineOverlay.dismissActive("external_text_action_" + reason);
         DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "external prepare reason=" + reason);
         MAIN.post(() -> {
             try {
