@@ -40,7 +40,8 @@ final class FloatingIconLayoutPolicy {
         int defaultY = wh[1] / 3;
         WindowManager.LayoutParams lp = baseLayout(px);
 
-        boolean hasSavedX = settings.prefs().contains(settings.posXKey());
+        boolean hasSavedX = settings.prefs().contains(settings.posXKey())
+                || settings.prefs().contains(FloatSettings.K_POS_X);
         int savedX = settings.prefs().getInt(settings.posXKey(),
                 settings.prefs().getInt(FloatSettings.K_POS_X, defaultX));
         lp.x = savedX;
@@ -49,8 +50,8 @@ final class FloatingIconLayoutPolicy {
 
         // A persisted X coordinate is the most reliable source of truth for the side. Older builds
         // wrote gravity and X/Y using separate asynchronous apply() calls, so gravity could remain
-        // stale (for example L) while X had already been saved on the right. Prefer the explicit
-        // per-orientation X whenever it exists and keep gravity only as a legacy fallback.
+        // stale (for example L) while X had already been saved on the right. Prefer any explicit
+        // saved X (including the legacy global key) and keep gravity only as a fallback.
         int inferredSide = savedX + px / 2 < wh[0] / 2 ? 0 : 1;
         int side = hasSavedX ? inferredSide : settings.savedSide(inferredSide);
         lp.x = side == 0 ? 0 : wh[0] - px;
