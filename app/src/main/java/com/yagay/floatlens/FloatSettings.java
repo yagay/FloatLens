@@ -7,7 +7,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
-/** Preference model for FloatLens' floating icon and feature settings. */
+/** Preference model and single normal access boundary for FloatLens settings. */
 public final class FloatSettings {
     public static final String PREF = "floatlens_float";
 
@@ -162,7 +162,6 @@ public final class FloatSettings {
         Object raw = p.getAll().get(K_CIRCLE_CORRECTION_ENGINE);
         if (raw instanceof Number n) return clamp(n.intValue(), 0, 3);
         if (raw instanceof String v) { try { return clamp(Integer.parseInt(v.trim()), 0, 3); } catch (Throwable ignored) {} }
-        // Migrate the previous hybrid switch without rewriting preferences during construction.
         return p.getBoolean(K_CIRCLE_HYBRID_OCR, true) ? 2 : 0;
     }
     public boolean rootScreenshot() { return p.getBoolean(K_ROOT_SCREENSHOT, false); }
@@ -215,6 +214,21 @@ public final class FloatSettings {
     public String slidePics() { return p.getString(K_SLIDE_PICS, ""); }
     public int slideIntervalMs() { return clamp(p.getInt(K_SLIDE_INTERVAL, 3000), 500, 60000); }
     public String action(String key, String def) { return p.getString(key, def); }
+
+    public void setBoolean(String key, boolean value) {
+        if (key != null && !key.isBlank()) p.edit().putBoolean(key, value).apply();
+    }
+
+    public void setInt(String key, int value) {
+        if (key != null && !key.isBlank()) p.edit().putInt(key, value).apply();
+    }
+
+    public void setString(String key, String value) {
+        if (key != null && !key.isBlank()) p.edit().putString(key, value == null ? "" : value).apply();
+    }
+
+    /** Legacy escape hatch for atomic/batch migration code; normal UI should use typed accessors. */
+    @Deprecated
     public SharedPreferences prefs() { return p; }
 
     public Set<String> hiddenPackages() {
@@ -240,7 +254,7 @@ public final class FloatSettings {
     public String posYKey() { return isLandscape() ? K_POS_Y_LANDSCAPE : K_POS_Y_PORTRAIT; }
     public String gravityKey() { return isLandscape() ? K_GRAVITY_LAND : K_GRAVITY; }
     public int savedSide(int def) { return p.getInt(gravityKey(), def); }
-    public void saveSide(boolean left) { p.edit().putInt(gravityKey(), left ? 0 : 1).apply(); }
+    public void saveSide(boolean left) { setInt(gravityKey(), left ? 0 : 1); }
 
     private static int clamp(int v, int min, int max) { return Math.max(min, Math.min(max, v)); }
 }
