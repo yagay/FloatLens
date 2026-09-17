@@ -115,7 +115,7 @@ public class LensAccessibilityService extends AccessibilityService {
                 String cls = eventClass(event);
                 DiagnosticLog.i(this, "CIRCLE_SELECT",
                         "system navigation event pkg=" + pkg + " cls=" + cls);
-                CircleSelectOverlay.dismissActive("system_navigation");
+                GoogleCircleInlineOverlay.dismissActive("system_navigation");
             }
 
             String oldTop = env.topPackage();
@@ -244,11 +244,8 @@ public class LensAccessibilityService extends AccessibilityService {
         boolean status = false;
         boolean shade = false;
         int imeTop = 0;
-        int screenHeight = 1;
-        try {
-            screenHeight = ((WindowManager) getSystemService(WINDOW_SERVICE))
-                    .getCurrentWindowMetrics().getBounds().height();
-        } catch (Throwable ignored) {}
+        Rect display = ScreenGeometry.displayBounds(this);
+        int screenHeight = display.isEmpty() ? 1 : display.height();
         try {
             List<AccessibilityWindowInfo> windows = getWindows();
             if (windows != null) {
@@ -297,12 +294,10 @@ public class LensAccessibilityService extends AccessibilityService {
     public Rect screenBounds() { return currentScreenBounds(); }
 
     private Rect currentScreenBounds() {
-        try {
-            return new Rect(((WindowManager) getSystemService(WINDOW_SERVICE))
-                    .getCurrentWindowMetrics().getBounds());
-        } catch (Throwable t) {
-            return new Rect(0, 0, Integer.MAX_VALUE / 4, Integer.MAX_VALUE / 4);
-        }
+        Rect bounds = ScreenGeometry.displayBounds(this);
+        return bounds.isEmpty()
+                ? new Rect(0, 0, Integer.MAX_VALUE / 4, Integer.MAX_VALUE / 4)
+                : bounds;
     }
 
     private String nodePackage(AccessibilityNodeInfo node) {
