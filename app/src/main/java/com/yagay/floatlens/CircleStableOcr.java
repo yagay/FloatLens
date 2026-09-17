@@ -178,22 +178,6 @@ final class CircleStableOcr {
         };
     }
 
-    /** Normal/legacy OCR path retained for non-Circle callers. */
-    static void recognizeConfigured(Context context, Bitmap bitmap,
-                                    OcrEngine.DocumentCallback callback) {
-        if (!valid(context, bitmap, callback)) return;
-        OcrEngine.recognizeDocument(context.getApplicationContext(), bitmap, callback);
-    }
-
-    static void recognizePaddleRegion(Context context, Bitmap bitmap,
-                                      OcrEngine.DocumentCallback callback) {
-        recognizeCorrectionSelected(context, bitmap, callback);
-    }
-
-    static void recognizeMlKit(Context context, Bitmap bitmap, OcrEngine.DocumentCallback callback) {
-        recognizeFullScreenMlKit(context, bitmap, callback);
-    }
-
     private static boolean valid(Context context, Bitmap bitmap,
                                  OcrEngine.DocumentCallback callback) {
         if (callback == null) return false;
