@@ -159,7 +159,7 @@ public final class RegionOverlay {
             int viewHeight = getHeight();
             int[] origin = new int[2];
             getLocationOnScreen(origin);
-            Rect anchor = new Rect(
+            Rect sourceBounds = new Rect(
                     Math.round(selected.left) + origin[0],
                     Math.round(selected.top) + origin[1],
                     Math.round(selected.right) + origin[0],
@@ -182,13 +182,11 @@ public final class RegionOverlay {
                 if (crop == null) throw new IllegalStateException("empty selection crop");
                 close(true);
                 if (ocr) {
-                    FloatService service = FloatService.get();
-                    if (service != null) service.onCircleRecognizeStarted();
-                    OcrEngine.recognize(getContext(), crop, anchor);
+                    OcrEngine.recognize(getContext(), crop, sourceBounds);
                 } else {
-                    boolean shown = ResultSurfaceRouter.showScreenshot(getContext(), crop, anchor);
+                    boolean shown = ResultSurfaceRouter.showScreenshot(getContext(), crop, sourceBounds);
                     DiagnosticLog.i(getContext(), "REGION_SCREENSHOT",
-                            "result shown=" + shown + " bounds=" + anchor.toShortString());
+                            "result shown=" + shown + " bounds=" + sourceBounds.toShortString());
                     if (!shown) {
                         DiagnosticLog.i(getContext(), "REGION_SCREENSHOT",
                                 "result surface failed; save crop as fallback");
@@ -218,7 +216,7 @@ public final class RegionOverlay {
         }
 
         private float dp(float v) {
-            return v * getResources().getDisplayMetrics().density;
+            return v * ScreenGeometry.density(getContext());
         }
     }
 
