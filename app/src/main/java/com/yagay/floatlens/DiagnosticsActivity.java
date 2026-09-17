@@ -30,8 +30,7 @@ public final class DiagnosticsActivity extends AppCompatActivity {
                 "记录诊断日志",
                 "关闭时不会持续写入 FloatLens 诊断日志",
                 fs.diagnosticLogging(),
-                (button, checked) -> fs.prefs().edit()
-                        .putBoolean(FloatSettings.K_DIAGNOSTIC, checked).apply());
+                (button, checked) -> fs.setBoolean(FloatSettings.K_DIAGNOSTIC, checked));
         AppUi.addRow(logging.body, AppUi.switchContainer(loggingSwitch));
         addButtonPair(logging.body,
                 button("导出诊断日志", this::exportDiagnostic),
