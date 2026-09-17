@@ -150,7 +150,7 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
         ocrRunning = true;
         panel.setOcrRunning(true);
         Bitmap image = session.image();
-        Rect anchor = session.anchor();
+        Rect sourceBounds = session.sourceBounds();
         OcrResultDispatcher.register(image, (text, blocks) -> {
             if (panel == null) return;
             panel.root().post(() -> applyInlineOcr(gen, text, blocks));
@@ -167,8 +167,9 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
         }, OCR_TIMEOUT_MS);
 
         DiagnosticLog.i(requireContext(), "RESULT_DIALOG", "OCR_INLINE_BEGIN gen=" + gen
-                + " sameSession=true mode=" + session.mode());
-        OcrEngine.recognize(requireContext().getApplicationContext(), image, anchor);
+                + " sameSession=true mode=" + session.mode()
+                + " sourceBounds=" + (sourceBounds == null ? "none" : sourceBounds.toShortString()));
+        OcrEngine.recognize(requireContext().getApplicationContext(), image, sourceBounds);
     }
 
     private void applyInlineOcr(long gen, String text, List<String> blocks) {
