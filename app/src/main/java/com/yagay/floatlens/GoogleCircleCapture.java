@@ -9,13 +9,13 @@ import android.graphics.RectF;
 import java.util.function.Consumer;
 
 /**
- * Fresh capture boundary for the Google-style Circle workflow.
+ * Fresh capture boundary for the FloatLens Circle workflow.
  *
  * <p>A Frame owns one frozen screenshot plus the exact absolute SCREEN rectangle represented by
  * that bitmap. {@link ScreenBitmapTransform} is the only owner of coordinate conversion for the
  * frame; overlays and OCR must not calculate screen/bitmap ratios or system-bar offsets directly.</p>
  */
-final class GoogleCircleCapture {
+final class FLCircleCapture {
     static final class Frame {
         final Bitmap bitmap;
         final Rect screenBounds;
@@ -69,7 +69,7 @@ final class GoogleCircleCapture {
         Context app = c.getApplicationContext();
         ScreenshotController.captureRawFrame(app, raw -> {
             if (raw == null || raw.isRecycled() || raw.getWidth() <= 0 || raw.getHeight() <= 0) {
-                fail.accept(new IllegalArgumentException("invalid google-circle capture"));
+                fail.accept(new IllegalArgumentException("invalid fl-circle capture"));
                 return;
             }
 
@@ -87,7 +87,7 @@ final class GoogleCircleCapture {
                     if (frozen != raw && !raw.isRecycled()) raw.recycle();
                 }
                 Frame frame = new Frame(frozen, workspace);
-                DiagnosticLog.i(app, "G_CIRCLE_CAPTURE", "ready display=" + display.toShortString()
+                DiagnosticLog.i(app, "FL_CIRCLE_CAPTURE", "ready display=" + display.toShortString()
                         + " workspace=" + workspace.toShortString()
                         + " bitmap=" + frozen.getWidth() + "x" + frozen.getHeight()
                         + " keepStatusBar=" + settings.keepStatusBarInScreenshot()
@@ -101,5 +101,5 @@ final class GoogleCircleCapture {
         }, fail);
     }
 
-    private GoogleCircleCapture() {}
+    private FLCircleCapture() {}
 }
