@@ -1,7 +1,6 @@
 package com.yagay.floatlens;
 
 import android.content.Context;
-import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.os.Handler;
@@ -40,7 +39,6 @@ public final class OcrEngine {
     private static final AtomicLong DOCUMENT_EPOCH = new AtomicLong(0L);
     private static final AtomicLong DOCUMENT_REQUEST_SEQUENCE = new AtomicLong(0L);
 
-    /** Per-request staleness token. Document requests no longer invalidate one another. */
     private static final class RequestToken {
         final boolean ui;
         final long requestId;
@@ -66,13 +64,8 @@ public final class OcrEngine {
             return ui ? requestId == UI_GENERATION.get() : epoch == DOCUMENT_EPOCH.get();
         }
 
-        long currentMarker() {
-            return ui ? UI_GENERATION.get() : DOCUMENT_EPOCH.get();
-        }
-
-        String lane() {
-            return ui ? "ui" : "document";
-        }
+        long currentMarker() { return ui ? UI_GENERATION.get() : DOCUMENT_EPOCH.get(); }
+        String lane() { return ui ? "ui" : "document"; }
     }
 
     public static void invalidatePending(Context c, String reason) {
@@ -188,8 +181,7 @@ public final class OcrEngine {
 
                 if (now.fullText().isBlank()) {
                     if (previous != null && !previous.fullText().isBlank()) {
-                        deliver(app, service, source, anchor, callback, deliverUi,
-                                previous, request);
+                        deliver(app, service, source, anchor, callback, deliverUi, previous, request);
                     } else if (auto) {
                         startMlKitPipeline(app, service, source, anchor, callback, deliverUi,
                                 "ppocr_empty", request);
@@ -214,8 +206,7 @@ public final class OcrEngine {
             @Override public void onFailure(String message) {
                 if (stale(app, request, "paddle_failure")) return;
                 if (previous != null && !previous.fullText().isBlank()) {
-                    deliver(app, service, source, anchor, callback, deliverUi,
-                            previous, request);
+                    deliver(app, service, source, anchor, callback, deliverUi, previous, request);
                 } else if (auto) {
                     startMlKitPipeline(app, service, source, anchor, callback, deliverUi,
                             "ppocr_failure:" + message, request);
@@ -250,10 +241,6 @@ public final class OcrEngine {
         return confidence * 1000.0 + Math.min(300, length) + Math.min(12, blocks) * 5.0;
     }
 
-    /**
-     * Fast ML Kit mode: run the Chinese (Hans/Hant) and Latin recognizers on the original bitmap in
-     * parallel, then fuse their character geometry. No enhanced/mono preprocessing passes are used.
-     */
     private static void startMlKitPipeline(Context app, FloatService service, Bitmap source, Rect anchor,
                                            DocumentCallback callback, boolean deliverUi,
                                            String reason, RequestToken request) {
@@ -278,7 +265,6 @@ public final class OcrEngine {
         }
     }
 
-    /** App-lifetime recognizers avoid model/client setup on every gesture. */
     private static final class MlChineseHolder {
         static final TextRecognizer INSTANCE = TextRecognition.getClient(
                 new ChineseTextRecognizerOptions.Builder().build());
@@ -349,14 +335,10 @@ public final class OcrEngine {
                             OcrDocument doc = null;
                             Throwable error = null;
                             try {
-                                if (!stale(app, request,
-                                        "mlkit_parallel_success_" + name)) {
-                                    doc = mlOriginalDocument(name, text,
-                                            source.getWidth(), source.getHeight());
+                                if (!stale(app, request, "mlkit_parallel_success_" + name)) {
+                                    doc = mlOriginalDocument(name, text, source.getWidth(), source.getHeight());
                                 }
-                            } catch (Throwable t) {
-                                error = t;
-                            }
+                            } catch (Throwable t) { error = t; }
                             complete(chinese, doc, error,
                                     android.os.SystemClock.uptimeMillis() - passStarted);
                         })
@@ -451,11 +433,6 @@ public final class OcrEngine {
         }
     }
 
-    /**
-     * Fuse the two recognizers at character geometry level. Chinese-script glyphs prefer the
-     * Chinese recognizer; Latin letters/digits prefer the Latin recognizer. Overlapping duplicates
-     * are removed before rebuilding stable line/group metadata for Circle selection.
-     */
     private static OcrDocument fuseMlKitDocuments(OcrDocument chinese, OcrDocument latin,
                                                   int imageWidth, int imageHeight) {
         boolean zhEmpty = chinese == null || chinese.chars().isEmpty();
@@ -507,8 +484,7 @@ public final class OcrEngine {
                 OcrDocument.CharUnit c = fc.unit;
                 String value = c.text();
                 if (value == null || value.isBlank() || c.bounds().isEmpty()) continue;
-                String groupKey = (fc.chineseSource ? "z:" : "l:")
-                        + c.line() + ':' + c.group();
+                String groupKey = (fc.chineseSource ? "z:" : "l:") + c.line() + ':' + c.group();
                 boolean sameGroup = groupKey.equals(previousGroupKey);
                 if (!sameGroup) {
                     nextGroup++;
@@ -526,9 +502,7 @@ public final class OcrEngine {
             }
 
             String rowText = lineText.toString().trim();
-            if (outChars.isEmpty() || lineBounds == null || lineBounds.isEmpty() || rowText.isEmpty()) {
-                continue;
-            }
+            if (outChars.isEmpty() || lineBounds == null || lineBounds.isEmpty() || rowText.isEmpty()) continue;
             OcrDocument.Line line = new OcrDocument.Line(rowText, lineBounds, 0f, outChars);
             outLines.add(line);
             blocks.add(rowText);
@@ -540,8 +514,7 @@ public final class OcrEngine {
         if (outLines.isEmpty()) return chooseBetter(chinese, latin);
         double score = textScore(full.toString(), blocks.size(), outLines.size(), order);
         return new OcrDocument(full.toString(), blocks, outLines,
-                "mlkit-fused-zh-hans-hant+latin-en", 0f, score,
-                imageWidth, imageHeight);
+                "mlkit-fused-zh-hans-hant+latin-en", 0f, score, imageWidth, imageHeight);
     }
 
     private static void addFusionChar(List<FusionChar> merged, FusionChar candidate) {
@@ -577,9 +550,7 @@ public final class OcrEngine {
 
         boolean aLatin = containsLatinOrDigit(a.unit.text());
         boolean bLatin = containsLatinOrDigit(b.unit.text());
-        if (aLatin && bLatin && a.chineseSource != b.chineseSource) {
-            return b.chineseSource ? a : b;
-        }
+        if (aLatin && bLatin && a.chineseSource != b.chineseSource) return b.chineseSource ? a : b;
         if (aLatin != bLatin) return bLatin ? b : a;
         return a;
     }
@@ -624,22 +595,16 @@ public final class OcrEngine {
     private static void deliver(Context app, FloatService service, Bitmap source, Rect anchor,
                                 DocumentCallback callback, boolean deliverUi,
                                 OcrDocument document, RequestToken request) {
-        if (document == null || document.fullText().isBlank()
-                || stale(app, request, "deliver")) return;
+        if (document == null || document.fullText().isBlank() || stale(app, request, "deliver")) return;
         MAIN.post(() -> {
             if (stale(app, request, "deliver_main")) return;
             if (callback != null) {
-                try {
-                    callback.onSuccess(document);
-                } catch (Throwable t) {
-                    DiagnosticLog.i(app, "OCR_DISPATCH",
-                            "success callback failed=" + safe(t));
-                    try {
-                        callback.onFailure(new IllegalStateException(
-                                "OCR success callback failed", t));
-                    } catch (Throwable failureError) {
-                        DiagnosticLog.i(app, "OCR_DISPATCH",
-                                "failure callback also failed=" + safe(failureError));
+                try { callback.onSuccess(document); }
+                catch (Throwable t) {
+                    DiagnosticLog.i(app, "OCR_DISPATCH", "success callback failed=" + safe(t));
+                    try { callback.onFailure(new IllegalStateException("OCR success callback failed", t)); }
+                    catch (Throwable failureError) {
+                        DiagnosticLog.i(app, "OCR_DISPATCH", "failure callback also failed=" + safe(failureError));
                     }
                 }
                 return;
@@ -684,16 +649,11 @@ public final class OcrEngine {
     }
 
     private static int readOcrEngineModeSafely(Context app) {
-        try {
-            SharedPreferences p = app.getSharedPreferences(FloatSettings.PREF, Context.MODE_PRIVATE);
-            Object raw = p.getAll().get(FloatSettings.K_OCR_ENGINE);
-            if (raw instanceof Number n) return Math.max(0, Math.min(3, n.intValue()));
-            if (raw instanceof String s) {
-                try { return Math.max(0, Math.min(3, Integer.parseInt(s.trim()))); }
-                catch (Throwable ignored) { return 0; }
-            }
-        } catch (Throwable t) { DiagnosticLog.i(app, "OCR_ENGINE", "read fallback=" + safe(t)); }
-        return 0;
+        try { return new FloatSettings(app).ocrEngineMode(); }
+        catch (Throwable t) {
+            DiagnosticLog.i(app, "OCR_ENGINE", "read fallback=" + safe(t));
+            return 0;
+        }
     }
 
     private static double textScore(String value, int blocks, int lines, int elements) {
