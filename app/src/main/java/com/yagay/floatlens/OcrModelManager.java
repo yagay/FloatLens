@@ -21,6 +21,7 @@ import java.util.concurrent.Executors;
 public final class OcrModelManager {
     public static final int SMALL = 1;
     public static final int MEDIUM = 2;
+    public static final int TINY = 3;
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final ExecutorService IO = Executors.newSingleThreadExecutor(r -> {
@@ -61,23 +62,35 @@ public final class OcrModelManager {
     }
 
     private static Spec spec(int model) {
+        if (model == TINY) return new Spec(
+                "PP-OCRv6 Tiny",
+                "https://huggingface.co/PaddlePaddle/PP-OCRv6_tiny_det_onnx/resolve/main/inference.onnx?download=true",
+                "https://huggingface.co/PaddlePaddle/PP-OCRv6_tiny_rec_onnx/resolve/main/inference.onnx?download=true",
+                "https://huggingface.co/PaddlePaddle/PP-OCRv6_tiny_rec_onnx/resolve/main/inference.yml?download=true",
+                1_500_000L, 4_000_000L, 7_000_000L);
         if (model == MEDIUM) return new Spec(
                 "PP-OCRv6 Medium",
                 "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx/resolve/main/inference.onnx?download=true",
                 "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/main/inference.onnx?download=true",
                 "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/main/inference.yml?download=true",
                 60_000_000L, 74_000_000L, 139_000_000L);
-        return new Spec(
+        if (model == SMALL) return new Spec(
                 "PP-OCRv6 Small",
                 "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/main/inference.onnx?download=true",
                 "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/main/inference.onnx?download=true",
                 "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/main/inference.yml?download=true",
                 9_000_000L, 20_000_000L, 32_000_000L);
+        throw new IllegalArgumentException("unknown OCR model=" + model);
     }
 
     public static File dir(Context c, int model) {
-        return new File(c.getApplicationContext().getFilesDir(),
-                "ocr_models/" + (model == MEDIUM ? "ppocrv6_medium" : "ppocrv6_small"));
+        String name = switch (model) {
+            case TINY -> "ppocrv6_tiny";
+            case MEDIUM -> "ppocrv6_medium";
+            case SMALL -> "ppocrv6_small";
+            default -> throw new IllegalArgumentException("unknown OCR model=" + model);
+        };
+        return new File(c.getApplicationContext().getFilesDir(), "ocr_models/" + name);
     }
     public static File detFile(Context c, int model) { return new File(dir(c, model), "det/inference.onnx"); }
     public static File recFile(Context c, int model) { return new File(dir(c, model), "rec/inference.onnx"); }
@@ -169,13 +182,9 @@ public final class OcrModelManager {
                 downloadOne(sp.ymlUrl, ymlFile(app, model), 4_000L, doneBase, total, "字符配置", cb);
                 if (!isReady(app, model)) throw new IllegalStateException("下载完成但模型大小校验失败");
                 writeIntegrityManifest(app, model);
-                // Internal post-download verification must run while DOWNLOADING is still true so no
-                // other cold load can race a not-yet-validated model into memory.
                 if (!verifyIntegrityFiles(app, model, false)) {
                     throw new IllegalStateException("下载完成但 SHA-256 校验失败");
                 }
-                // A previous engine may still map the old model files. Invalidate it after all new
-                // files have been atomically moved into place so the next OCR run reloads them.
                 PaddleOcrBridge.releaseModel(model);
                 DiagnosticLog.i(app, "OCR_MODEL", "download success model=" + model
                         + " bytes=" + installedBytes(app, model) + " integrity=sha256 runtimeReload=true");
@@ -285,8 +294,6 @@ public final class OcrModelManager {
     public static void delete(Context c, int model) {
         Context app = c.getApplicationContext();
         try {
-            // Release/make-stale the runtime as well as deleting its backing files. releaseModel()
-            // is serialized with inference, so native ORT sessions are never closed mid-run.
             PaddleOcrBridge.releaseModel(model);
             deleteRecursively(dir(app, model));
             DiagnosticLog.i(app, "OCR_MODEL", "deleted model=" + model + " runtimeRelease=true");
