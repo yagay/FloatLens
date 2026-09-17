@@ -113,7 +113,6 @@ public final class ViewHoverOverlay {
 
         if (next != null) {
             DiagnosticLog.i(context, "VIEW_HOVER", "candidate_changed state=" + visualState
-                    + " source=" + next.source()
                     + " type=" + next.type() + " screenBounds=" + next.bounds()
                     + " depth=" + next.depth() + " textLen=" + next.text().length()
                     + " class=" + next.className() + " id=" + next.viewId()
