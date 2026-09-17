@@ -52,8 +52,7 @@ final class SettingsIconPage {
                 FloatSettings.K_SNAP, fs.snap());
         ui.fullscreenModeCheck(position.body);
         ui.check(position.body, "边缘滑入唤回", "隐藏后可从屏幕边缘滑入恢复",
-                FloatSettings.K_HIDE_MAIN_SWIPE,
-                fs.prefs().getBoolean(FloatSettings.K_HIDE_MAIN_SWIPE, true));
+                FloatSettings.K_HIDE_MAIN_SWIPE, fs.edgeSwipeRecallEnabled());
         ui.check(position.body, "锁屏仍显示", null,
                 FloatSettings.K_SHOW_ON_LOCK, fs.showOnLock());
         ui.check(position.body, "点击图标时点击下方屏幕", "用于需要穿透式点击的场景",
