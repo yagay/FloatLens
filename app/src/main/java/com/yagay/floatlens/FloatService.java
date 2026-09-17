@@ -50,7 +50,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
         fs = new FloatSettings(this);
         visibility = new FloatVisibilityController();
         workflowState = new RecognitionWorkflowState(this);
-        fs.prefs().registerOnSharedPreferenceChangeListener(this);
+        fs.registerChangeListener(this);
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         iconHost = new FlOverlayWindowHost(this);
         layout = new FloatingIconLayoutPolicy(this, fs);
@@ -709,7 +709,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
         layout.persist(primaryLp);
         if (workflowState != null) workflowState.finish("service_destroy");
         removeIcons();
-        try { fs.prefs().unregisterOnSharedPreferenceChangeListener(this); } catch (Throwable ignored) { }
+        try { fs.unregisterChangeListener(this); } catch (Throwable ignored) { }
         if (screenReceiver != null) try { unregisterReceiver(screenReceiver); } catch (Throwable ignored) { }
         if (instance == this) instance = null;
         super.onDestroy();
