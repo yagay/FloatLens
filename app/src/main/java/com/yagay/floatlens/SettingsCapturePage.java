@@ -8,7 +8,7 @@ final class SettingsCapturePage {
     static LinearLayout build(SettingsActivity activity, FloatSettings fs) {
         SettingsPageUi ui = new SettingsPageUi(activity, fs);
         LinearLayout root = AppUi.pageRoot(activity, "截图与 OCR",
-                "普通截图 OCR 使用所选 OCR 引擎；圈画模式只用冻结截图建立轻量文字区域地图，用户触碰文字后再按需识别对应区域，不读取 Accessibility / View 文字。Root / LSPosed 增强开关统一放在“高级权限”中。" );
+                "普通截图 OCR 与圈画文字识别共用下面选择的 OCR 引擎和识别语言。圈画首次文字手势会识别整张冻结截图，并在当前圈画工作区内复用完整识别结果；不读取 Accessibility / View 文字。Root / LSPosed 增强开关统一放在“高级权限”中。" );
 
         AppUi.Section capture = AppUi.section(activity, "截图",
                 "状态栏与导航栏范围同时作用于普通截图、OCR 区域截图和圈画模式。" );
@@ -32,7 +32,7 @@ final class SettingsCapturePage {
         AppUi.addSection(root, circleBorder);
 
         AppUi.Section result = AppUi.section(activity, "OCR / OCR 结果",
-                "普通截图按下面选择的 OCR 引擎执行；圈画的文字内容识别采用快速局部 ML Kit，并复用同一冻结截图内已经识别过的区域缓存。" );
+                "下面选择的 OCR 引擎同时控制普通截图 OCR 和圈画文字识别。圈画对整张冻结截图识别一次并缓存结果，TAP / 划线 / 涂抹只负责从完整识别结果中精确选择文字。" );
         ui.check(result.body, "显示原选区图片", null,
                 FloatSettings.K_OCR_SHOW_IMAGE, fs.ocrShowImage());
         ui.check(result.body, "显示文字", null,
@@ -43,7 +43,7 @@ final class SettingsCapturePage {
         AppUi.addSection(root, result);
 
         AppUi.Section models = AppUi.section(activity, "本地 PP-OCRv6 模型",
-                "普通截图可使用完整 PP-OCRv6 模型；圈画 TextMap 只加载检测模型部分，不会在后台加载识别模型。Small 约 32 MB；Medium 约 139 MB。优先使用 Small 的检测模型。" );
+                "选择 PP-OCRv6 Medium / Small 时，普通截图与圈画都会使用对应本地模型；选择“自动”时按 Small → Medium → ML Kit 的现有策略选择可用引擎。Small 约 32 MB；Medium 约 139 MB。" );
         try {
             ui.addOcrModelRow(models.body, OcrModelManager.SMALL);
             ui.addOcrModelRow(models.body, OcrModelManager.MEDIUM);
@@ -59,7 +59,7 @@ final class SettingsCapturePage {
         AppUi.addSection(root, models);
 
         AppUi.Section languages = AppUi.section(activity, "识别语言",
-                "普通截图 OCR 与圈画的按需文字识别共用语言选择；简体和繁體共用中文识别器，至少保留一种语言。" );
+                "普通截图 OCR 与圈画文字识别共用语言选择；ML Kit 会按启用语言选择识别器，简体和繁體共用中文识别支持，至少保留一种语言。" );
         ui.addOcrLanguageChecks(languages.body);
         AppUi.addSection(root, languages);
         return root;
