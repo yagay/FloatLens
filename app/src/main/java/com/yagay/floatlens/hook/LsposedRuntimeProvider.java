@@ -12,8 +12,6 @@ import io.github.libxposed.api.XposedModule;
 /** Process-local LSPosed provider gate backed by framework Remote Preferences. */
 final class LsposedRuntimeProvider {
     private static final String TAG = "FloatLens-LSPosed";
-    private static final int MAX_CTS_TRACE_CHARS = 120_000;
-    private final Object ctsTraceLock = new Object();
 
     private final XposedModule module;
     private final String processName;
@@ -63,42 +61,6 @@ final class LsposedRuntimeProvider {
 
     boolean isActive() {
         return active;
-    }
-
-    void resetGoogleCtsTrace(String header) {
-        if (preferences == null) return;
-        synchronized (ctsTraceLock) {
-            String text = header == null ? "" : header;
-            try {
-                preferences.edit()
-                        .putString(LsposedRuntimeConfig.K_GOOGLE_CTS_TRACE, text)
-                        .putLong(LsposedRuntimeConfig.K_GOOGLE_CTS_TRACE_SEQ,
-                                preferences.getLong(LsposedRuntimeConfig.K_GOOGLE_CTS_TRACE_SEQ, 0L) + 1L)
-                        .commit();
-            } catch (Throwable t) {
-                module.log(Log.ERROR, TAG, "Failed to reset Google CTS trace", t);
-            }
-        }
-    }
-
-    void appendGoogleCtsTrace(String line) {
-        if (preferences == null || line == null || line.isBlank()) return;
-        synchronized (ctsTraceLock) {
-            try {
-                String old = preferences.getString(LsposedRuntimeConfig.K_GOOGLE_CTS_TRACE, "");
-                String next = old.isEmpty() ? line : old + "\n" + line;
-                if (next.length() > MAX_CTS_TRACE_CHARS) {
-                    next = next.substring(next.length() - MAX_CTS_TRACE_CHARS);
-                }
-                preferences.edit()
-                        .putString(LsposedRuntimeConfig.K_GOOGLE_CTS_TRACE, next)
-                        .putLong(LsposedRuntimeConfig.K_GOOGLE_CTS_TRACE_SEQ,
-                                preferences.getLong(LsposedRuntimeConfig.K_GOOGLE_CTS_TRACE_SEQ, 0L) + 1L)
-                        .commit();
-            } catch (Throwable t) {
-                module.log(Log.ERROR, TAG, "Failed to append Google CTS trace", t);
-            }
-        }
     }
 
     /** Read live Remote Preferences on every capture call so lease expiry never depends on listener timing. */

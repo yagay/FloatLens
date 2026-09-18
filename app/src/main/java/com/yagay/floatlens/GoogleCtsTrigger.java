@@ -31,7 +31,9 @@ final class GoogleCtsTrigger {
 
         Bundle args = new Bundle();
         String token = UUID.randomUUID().toString();
-        args.putLong(GoogleCtsContract.K_INVOCATION_TIME, SystemClock.elapsedRealtime());
+        long nowElapsed = SystemClock.elapsedRealtime();
+        fs.armGoogleCtsSession(token, nowElapsed + GoogleCtsContract.TRACE_SESSION_TTL_MS);
+        args.putLong(GoogleCtsContract.K_INVOCATION_TIME, nowElapsed);
         args.putInt(GoogleCtsContract.K_OMNI_ENTRY_POINT, 1);
         args.putBoolean(GoogleCtsContract.K_TRIGGER, true);
         args.putString(GoogleCtsContract.K_SESSION_TOKEN, token);
@@ -61,9 +63,13 @@ final class GoogleCtsTrigger {
             DiagnosticLog.i(app, "GOOGLE_CTS_TRIGGER",
                     "result=" + ok + " session=" + token.substring(0, 8)
                             + " entryPoint=1 flags=" + CTS_SHOW_FLAGS);
-            if (!ok) Toast.makeText(app, "Google 圈画启动失败", Toast.LENGTH_SHORT).show();
+            if (!ok) {
+                fs.clearGoogleCtsSession();
+                Toast.makeText(app, "Google 圈画启动失败", Toast.LENGTH_SHORT).show();
+            }
             return ok;
         } catch (Throwable t) {
+            fs.clearGoogleCtsSession();
             DiagnosticLog.i(app, "GOOGLE_CTS_TRIGGER",
                     "failed=" + t.getClass().getSimpleName() + ":" + String.valueOf(t.getMessage()));
             Toast.makeText(app, "Google 圈画启动失败: " + t.getClass().getSimpleName(),

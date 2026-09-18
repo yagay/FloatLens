@@ -11,8 +11,6 @@ public final class LsposedRuntimeConfig {
     public static final String K_SECURE_SCREENSHOT_ENABLED = "secure_screenshot_enabled";
     public static final String K_SECURE_CAPTURE_ARMED_UNTIL = "secure_capture_armed_until_elapsed";
     public static final String K_UPDATED_AT = "updated_at";
-    public static final String K_GOOGLE_CTS_TRACE = "google_cts_trace_v1";
-    public static final String K_GOOGLE_CTS_TRACE_SEQ = "google_cts_trace_seq_v1";
     public static final int SCHEMA_VERSION = 4;
 
     /** Short lease: never leave secure capture armed after a stalled/aborted capture. */

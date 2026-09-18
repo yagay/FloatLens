@@ -72,20 +72,22 @@ public final class DiagnosticsActivity extends AppCompatActivity {
 
     private void exportDiagnostic() {
         String appText = DiagnosticLog.read(this);
-        LsposedStatusManager.readGoogleCtsTraceAsync(ctsTrace -> {
-            StringBuilder combined = new StringBuilder();
-            if (!appText.isBlank()) combined.append(appText.trim()).append("\n");
-            if (ctsTrace != null && !ctsTrace.isBlank()) {
-                combined.append("\n===== LSPosed / Google CTS trace =====\n")
-                        .append(ctsTrace.trim()).append("\n");
-            }
-            if (combined.length() == 0) {
-                Toast.makeText(this, "暂无诊断日志，请先开启记录并操作一次 FloatLens",
-                        Toast.LENGTH_LONG).show();
-                return;
-            }
-            saveDiagnosticText(combined.toString());
-        });
+        StringBuilder combined = new StringBuilder();
+        if (!appText.isBlank()) combined.append(appText.trim()).append("\n");
+
+        LsposedStatusManager.Snapshot s = LsposedStatusManager.snapshot();
+        combined.append("\n===== LSPosed status =====\n")
+                .append("serviceConnected=").append(s.serviceConnected)
+                .append(" framework=").append(s.frameworkName)
+                .append(" version=").append(s.frameworkVersion)
+                .append(" api=").append(s.apiVersion).append("\n")
+                .append("remoteConfigReady=").append(s.remoteConfigReady)
+                .append(" provider=").append(s.remoteProviderEnabled()).append("\n")
+                .append("scope=").append(s.scope).append("\n")
+                .append("runningProcesses=").append(s.runningProcesses).append("\n");
+        if (!s.detail.isBlank()) combined.append("detail=").append(s.detail).append("\n");
+
+        saveDiagnosticText(combined.toString());
     }
 
     private void saveDiagnosticText(String text) {

@@ -290,14 +290,18 @@ final class GoogleCtsRuntimeInspector {
                 + " session=" + shortToken(sessionToken)
                 + " showId=" + showSessionId
                 + " atElapsed=" + SystemClock.elapsedRealtime();
-        provider.resetGoogleCtsTrace(header);
+        sendTrace("=== Google CTS marked session ===");
+        sendTrace("ACTIVE path=" + path
+                + " session=" + shortToken(sessionToken)
+                + " showId=" + showSessionId
+                + " atElapsed=" + SystemClock.elapsedRealtime());
         module.log(Log.INFO, TAG, header.replace("\n", " | "));
     }
 
     private synchronized void clear(String reason) {
         String end = "END session=" + shortToken(sessionToken)
                 + " reason=" + reason + " events=" + eventCount.get();
-        provider.appendGoogleCtsTrace(end);
+        sendTrace(end);
         module.log(Log.INFO, TAG, end);
         activeUntil = 0L;
         sessionToken = "";
@@ -318,8 +322,35 @@ final class GoogleCtsRuntimeInspector {
         if (n > MAX_EVENT_LOGS) return;
         String line = "#" + n + " " + event + " session="
                 + shortToken(sessionToken) + " " + safe(message);
-        provider.appendGoogleCtsTrace(line);
+        sendTrace(line);
         module.log(Log.INFO, TAG, line);
+    }
+
+    private void sendTrace(String line) {
+        if (line == null || line.isBlank() || sessionToken.isBlank()) return;
+        try {
+            Context context = currentApplicationContext();
+            if (context == null) return;
+            Intent intent = new Intent(GoogleCtsContract.ACTION_TRACE)
+                    .setClassName("com.yagay.floatlens", GoogleCtsContract.TRACE_RECEIVER_CLASS)
+                    .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+                    .putExtra(GoogleCtsContract.EXTRA_TRACE_SESSION, sessionToken)
+                    .putExtra(GoogleCtsContract.EXTRA_TRACE_LINE,
+                            line.length() > 8000 ? line.substring(0, 8000) : line);
+            context.sendBroadcast(intent);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "CTS trace broadcast failed", t);
+        }
+    }
+
+    private Context currentApplicationContext() {
+        try {
+            Class<?> activityThread = Class.forName("android.app.ActivityThread");
+            Object value = HiddenApiBypass.invoke(activityThread, null, "currentApplication");
+            if (value instanceof Context context) return context.getApplicationContext();
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     private void dumpClassStructure(Class<?> cls, String reason) {

@@ -71,6 +71,8 @@ public final class FloatSettings {
     public static final String K_IME_AVOID = "ime_avoid_icon";
     public static final String K_QUICK_MOVE = "quickMoveIcon";
     public static final String K_DIAGNOSTIC = "diagnostic_logging";
+    public static final String K_GOOGLE_CTS_ACTIVE_SESSION = "google_cts_active_session_v1";
+    public static final String K_GOOGLE_CTS_ACTIVE_UNTIL = "google_cts_active_until_elapsed_v1";
 
     public static final String K_ENHANCED_MODE = "privilege_enhanced_mode_v1";
     public static final String K_ROOT_ENABLED = "privilege_root_enabled_v1";
@@ -224,6 +226,20 @@ public final class FloatSettings {
     public String hiddenPackagesRaw() { return p.getString(K_HIDE_PACKAGES, ""); }
     public int circleCancelXBp() { return p.getInt(K_CIRCLE_CANCEL_X_BP, -1); }
     public int circleCancelYBp() { return p.getInt(K_CIRCLE_CANCEL_Y_BP, -1); }
+
+    public void armGoogleCtsSession(String token, long untilElapsed) {
+        p.edit()
+                .putString(K_GOOGLE_CTS_ACTIVE_SESSION, token == null ? "" : token)
+                .putLong(K_GOOGLE_CTS_ACTIVE_UNTIL, Math.max(0L, untilElapsed))
+                .commit();
+    }
+
+    public void clearGoogleCtsSession() {
+        p.edit()
+                .remove(K_GOOGLE_CTS_ACTIVE_SESSION)
+                .remove(K_GOOGLE_CTS_ACTIVE_UNTIL)
+                .apply();
+    }
 
     public void setBoolean(String key, boolean value) {
         if (key != null && !key.isBlank()) p.edit().putBoolean(key, value).apply();

@@ -76,6 +76,9 @@
         <service android:name=".FloatService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Persistent user-controlled floating gesture button" />
         </service>
+        <receiver
+            android:name=".GoogleCtsTraceReceiver"
+            android:exported="true" />
         <receiver android:name=".FloatServiceBootReceiver" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
