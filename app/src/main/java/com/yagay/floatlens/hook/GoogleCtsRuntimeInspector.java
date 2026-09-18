@@ -79,6 +79,7 @@ final class GoogleCtsRuntimeInspector {
     private volatile Rect bridgeSelectionBounds;
     private volatile boolean presentationAlreadyAbsentReported;
     private volatile WeakReference<Activity> markedActivity = new WeakReference<>(null);
+    private final GoogleLensUiSanitizer uiSanitizer;
 
     GoogleCtsRuntimeInspector(XposedModule module,
                               LsposedRuntimeProvider provider,
@@ -86,6 +87,9 @@ final class GoogleCtsRuntimeInspector {
         this.module = module;
         this.provider = provider;
         this.classLoader = classLoader;
+        this.uiSanitizer = new GoogleLensUiSanitizer(
+                () -> active() && bridgeSelectionSeen,
+                this::report);
     }
 
     void install() {
@@ -93,10 +97,11 @@ final class GoogleCtsRuntimeInspector {
         hooks += hookGoogle1758OmnientBoundary();
         hooks += hookGoogleNativeRenderedPresentationData();
         hooks += hookGoogleInteractionPresentationResult();
+        // Stable View sanitizer is now the primary post-selection UI suppression path.
+        // Keep 17.58 controller/chip hooks for one transition release as fail-soft fallback.
         hooks += hookGoogleFixedSelectionChips();
         hooks += hookGoogleLensActionMenuController();
         hooks += hookGoogleLensInfoPanelController();
-        hooks += hookGoogleLensChromeVisibility();
         hooks += hookGoogleFrozenImageAutoFocus();
         hooks += hookGoogle1758LensSelectionBoundary();
         // v169 device/APK analysis proved the visible menu is Lens' own ActionMenuView,
@@ -127,7 +132,8 @@ final class GoogleCtsRuntimeInspector {
                 if (!(executable instanceof Method method)) continue;
                 Class<?>[] p = method.getParameterTypes();
 
-                if ("f".equals(method.getName()) && p.length == 3 && p[1] == Bundle.class) {
+                if (p.length == 3 && p[1] == Bundle.class
+                        && method.getReturnType() == void.class) {
                     module.hook(method).intercept(chain -> {
                         Bundle args = (Bundle) chain.getArg(1);
                         correlateGoogleBoundary(args, null, "OMNIENT_VIS");
@@ -141,7 +147,8 @@ final class GoogleCtsRuntimeInspector {
                     continue;
                 }
 
-                if ("c".equals(method.getName()) && p.length == 3 && p[1] == Intent.class) {
+                if (p.length == 3 && p[1] == Intent.class
+                        && method.getReturnType() == void.class) {
                     module.hook(method).intercept(chain -> {
                         Intent intent = (Intent) chain.getArg(1);
                         correlateGoogleBoundary(intent == null ? null : intent.getExtras(),
@@ -153,7 +160,7 @@ final class GoogleCtsRuntimeInspector {
                     continue;
                 }
 
-                if ("a".equals(method.getName()) && p.length == 3
+                if (p.length == 3
                         && p[1] == Bitmap.class && p[2] == Intent.class
                         && method.getReturnType() == Intent.class) {
                     module.hook(method).intercept(chain -> {
@@ -998,8 +1005,9 @@ final class GoogleCtsRuntimeInspector {
             if (!profileError.isBlank()) {
                 module.log(Log.WARN, TAG,
                         "Google " + GoogleLens1758Profile.NAME
-                                + " Lens profile rejected: " + profileError);
-                return 0;
+                                + " Lens profile rejected: " + profileError
+                                + "; trying dynamic structural selection resolver");
+                return hookDynamicLensSelectionBoundary(profileError);
             }
 
             Class<?> controller = Class.forName(
@@ -1038,7 +1046,7 @@ final class GoogleCtsRuntimeInspector {
                         Object result = chain.proceed();
 
                         if (active() && bridgeSelectionSeen) {
-                            hideGoogleLensShellViewsNow();
+                            uiSanitizer.sanitizeNow();
                         }
 
                         if (directRegionCommit && active() && !bridgeCommitted) {
@@ -1055,8 +1063,10 @@ final class GoogleCtsRuntimeInspector {
                         if (active() && bridgeSelectionSeen
                                 && bridgeSelectionText != null
                                 && !bridgeSelectionText.isBlank()) {
+                            uiSanitizer.sanitizeNow();
+                            // Keep the old decor traversal only as a short transition fallback for
+                            // Material toolbar implementations that live outside the known Lens views.
                             hideGoogleMaterialFloatingToolbarSoon();
-                            hideGoogleLensShellViewsSoon();
                             inspectGoogleSelectionViewsSoon();
                         }
                         return result;
@@ -1230,6 +1240,79 @@ final class GoogleCtsRuntimeInspector {
         }
     }
 
+    private int hookDynamicLensSelectionBoundary(String profileError) {
+        GoogleLensDynamicResolver.SelectionBinding binding =
+                GoogleLensDynamicResolver.discoverSelection(classLoader);
+        if (!binding.available()) {
+            module.log(Log.WARN, TAG,
+                    "Dynamic Google Lens selection resolver unavailable: "
+                            + binding.detail() + " profileError=" + profileError);
+            return 0;
+        }
+
+        module.log(Log.INFO, TAG,
+                "Dynamic Google Lens selection hook accepted confidence="
+                        + binding.confidence() + " " + binding.detail());
+        try {
+            module.hook(binding.method()).intercept(chain -> {
+                GoogleLensDynamicResolver.DynamicSelectionSnapshot selection = null;
+                Rect selectionBounds = null;
+                if (active()) {
+                    selection = binding.snapshot(chain.getArg(0));
+                    selectionBounds = dynamicSelectionBoundsForDisplay(selection.rawBounds());
+                    bridgeSelectionSeen = true;
+                    bridgeSelectionText = selection.text();
+                    if (selectionBounds != null && !selectionBounds.isEmpty()) {
+                        bridgeSelectionBounds = selectionBounds;
+                    }
+                    Rect effectiveBounds = bridgeSelectionBounds == null
+                            ? null : new Rect(bridgeSelectionBounds);
+                    String detail = selection.detail()
+                            + " resolver=" + binding.detail()
+                            + " pixelBounds=" + String.valueOf(selectionBounds)
+                            + " effectiveBounds=" + String.valueOf(effectiveBounds)
+                            + " primary=" + chain.getArg(1);
+                    report("USER_SELECTION_DYNAMIC", detail);
+                    sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
+                            selection.text(), detail, effectiveBounds);
+                }
+
+                boolean directRegionCommit = active()
+                        && selection != null
+                        && selection.directRegionLike()
+                        && selectionBounds != null
+                        && !selectionBounds.isEmpty();
+                Object result = chain.proceed();
+
+                if (active() && bridgeSelectionSeen) {
+                    uiSanitizer.sanitizeNow();
+                }
+
+                if (directRegionCommit && active() && !bridgeCommitted) {
+                    report("LENS_REGION_SELECTION_COMMIT_DYNAMIC",
+                            "class=" + selection.selectionClass()
+                                    + " confidence=" + binding.confidence()
+                                    + " bounds=" + String.valueOf(bridgeSelectionBounds));
+                    commitBridgeResult("", selection.detail(),
+                            "dynamic_region_selection");
+                }
+
+                if (active() && bridgeSelectionSeen
+                        && bridgeSelectionText != null
+                        && !bridgeSelectionText.isBlank()) {
+                    uiSanitizer.sanitizeNow();
+                    inspectGoogleSelectionViewsSoon();
+                }
+                return result;
+            });
+            return 1;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Dynamic Google Lens selection hook install failed", t);
+            return 0;
+        }
+    }
+
     private synchronized boolean suppressBridgeTextPresentation(String detail) {
         if (!active() || !bridgeSelectionSeen
                 || bridgeSelectionText == null || bridgeSelectionText.isBlank()) {
@@ -1290,7 +1373,7 @@ final class GoogleCtsRuntimeInspector {
                 if (stillOwned && elapsed < RESULT_HANDOFF_TIMEOUT_MS) {
                     // Google remains the stable frozen-image backdrop while FloatLens' translucent
                     // result host is being created. Keep its own chrome suppressed during the gap.
-                    if (active()) hideGoogleLensShellViewsNow();
+                    if (active()) uiSanitizer.sanitizeNow();
                     mainHandler.postDelayed(this, RESULT_HANDOFF_POLL_MS);
                     return;
                 }
@@ -1338,13 +1421,38 @@ final class GoogleCtsRuntimeInspector {
         }
     }
 
+    private Rect dynamicSelectionBoundsForDisplay(RectF rawBounds) {
+        if (rawBounds == null || rawBounds.width() <= 0f || rawBounds.height() <= 0f) return null;
+        RectF working = new RectF(rawBounds);
+        boolean normalized = working.left >= -0.05f && working.top >= -0.05f
+                && working.right <= 1.05f && working.bottom <= 1.05f;
+        if (normalized) {
+            try {
+                Context context = currentApplicationContext();
+                if (context == null) return null;
+                android.util.DisplayMetrics metrics = context.getResources().getDisplayMetrics();
+                working.set(
+                        working.left * metrics.widthPixels,
+                        working.top * metrics.heightPixels,
+                        working.right * metrics.widthPixels,
+                        working.bottom * metrics.heightPixels);
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+        Rect out = new Rect();
+        working.roundOut(out);
+        return out.isEmpty() ? null : out;
+    }
+
     private void rememberMarkedActivity(Object value) {
         if (!(value instanceof Activity activity)) return;
         String name = activity.getClass().getName();
         Activity current = markedActivity.get();
         if (name.endsWith(".LensientActivity") || current == null || current.isFinishing()) {
             markedActivity = new WeakReference<>(activity);
-            report("GOOGLE_UI_OWNER", "activity=" + name);
+            uiSanitizer.attach(activity);
+            report("GOOGLE_UI_OWNER", "activity=" + name + " sanitizer=attached");
         }
     }
 
@@ -1778,6 +1886,7 @@ final class GoogleCtsRuntimeInspector {
         activeUntil = SystemClock.elapsedRealtime() + SESSION_TTL_MS;
         sessionToken = nextToken;
         if (newBridgeSession) {
+            uiSanitizer.detach();
             bridgeFrameQueued = false;
             bridgeCommitted = false;
             bridgeSelectionSeen = false;
@@ -1822,6 +1931,7 @@ final class GoogleCtsRuntimeInspector {
         bridgeSelectionText = "";
         bridgeSelectionBounds = null;
         presentationAlreadyAbsentReported = false;
+        uiSanitizer.detach();
         markedActivity = new WeakReference<>(null);
     }
 
