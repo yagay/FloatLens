@@ -14,6 +14,9 @@ public final class LsposedRuntimeConfig {
     public static final String K_GOOGLE_CTS_SESSION_TOKEN = "google_cts_session_token_v1";
     public static final String K_GOOGLE_CTS_TRIGGER_ELAPSED = "google_cts_trigger_elapsed_v1";
     public static final String K_GOOGLE_CTS_SESSION_UNTIL = "google_cts_session_until_elapsed_v1";
+    /** Independent lease used only by system_server to block FloatLens-owned contextual search. */
+    public static final String K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL =
+            "google_cts_component_block_until_elapsed_v1";
     public static final int SCHEMA_VERSION = 4;
 
     /** Short lease: never leave secure capture armed after a stalled/aborted capture. */
@@ -24,6 +27,9 @@ public final class LsposedRuntimeConfig {
     public static final long GOOGLE_CTS_MAX_FUTURE_MS = 10_000L;
     /** Standard Google invocation timestamp should remain tied to the FloatLens trigger. */
     public static final long GOOGLE_CTS_INVOCATION_MATCH_TOLERANCE_MS = 1_000L;
+    /** Long enough for selecting/dragging text, short enough not to affect later native CTS use. */
+    public static final long GOOGLE_CTS_COMPONENT_BLOCK_LEASE_MS = 30_000L;
+    public static final long GOOGLE_CTS_COMPONENT_BLOCK_MAX_FUTURE_MS = 45_000L;
     public static final int GOOGLE_CTS_EXPECTED_OMNI_ENTRY_POINT = 1;
 
     private LsposedRuntimeConfig() {}
@@ -53,6 +59,15 @@ public final class LsposedRuntimeConfig {
                 && age <= GOOGLE_CTS_FALLBACK_WINDOW_MS
                 && remaining >= 0L
                 && remaining <= GOOGLE_CTS_MAX_FUTURE_MS;
+    }
+
+    public static boolean isGoogleCtsComponentBlockArmed(boolean providerEnabled,
+                                                        String token,
+                                                        long blockUntilElapsed,
+                                                        long nowElapsed) {
+        if (!providerEnabled || token == null || token.isBlank()) return false;
+        long remaining = blockUntilElapsed - nowElapsed;
+        return remaining >= 0L && remaining <= GOOGLE_CTS_COMPONENT_BLOCK_MAX_FUTURE_MS;
     }
 
     public static boolean matchesGoogleCtsFallbackInvocation(
