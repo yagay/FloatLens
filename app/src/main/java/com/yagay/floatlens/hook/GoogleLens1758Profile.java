@@ -242,48 +242,21 @@ final class GoogleLens1758Profile {
                     "LensQuery unavailable pendingClass=" + pending.getClass().getName());
         }
 
-        Object interaction = findPresentationRequestObject(
+        String detail = suppressPresentationBooleanRecursive(
                 query, 0,
                 Collections.newSetFromMap(new IdentityHashMap<>()));
-        if (interaction == null) {
-            return new PresentationRequestSuppression(false,
-                    "requestPresentationResult object not found query="
-                            + compact(query, 2200));
-        }
-
-        String before = compact(interaction, 3200);
-        for (Field field : instanceFields(interaction.getClass())) {
-            if (field.getType() != boolean.class) continue;
-            try {
-                field.setAccessible(true);
-                boolean original = field.getBoolean(interaction);
-                if (!original) continue;
-
-                field.setBoolean(interaction, false);
-                String changed = compact(interaction, 3200);
-                if (changed.contains("requestPresentationResult=false")) {
-                    return new PresentationRequestSuppression(true,
-                            "class=" + interaction.getClass().getName()
-                                    + " field=" + field.getName()
-                                    + " before=" + trimForDiagnostic(before, 1400)
-                                    + " after=" + trimForDiagnostic(changed, 1400));
-                }
-
-                // This true boolean was unrelated to requestPresentationResult.
-                field.setBoolean(interaction, true);
-            } catch (Throwable ignored) {
-            }
+        if (detail != null) {
+            return new PresentationRequestSuppression(true, detail);
         }
 
         return new PresentationRequestSuppression(false,
-                "candidate=" + interaction.getClass().getName()
-                        + " but target boolean could not be changed"
-                        + " raw=" + trimForDiagnostic(before, 1800));
+                "requestPresentationResult target boolean not found query="
+                        + compact(query, 2200));
     }
 
-    private static Object findPresentationRequestObject(Object value, int depth,
-                                                        Set<Object> seen) {
-        if (value == null || depth > 6 || seen == null || !seen.add(value)) return null;
+    private static String suppressPresentationBooleanRecursive(Object value, int depth,
+                                                               Set<Object> seen) {
+        if (value == null || depth > 7 || seen == null || !seen.add(value)) return null;
 
         Class<?> type = value.getClass();
         if (type.isPrimitive() || value instanceof String || value instanceof Number
@@ -293,20 +266,30 @@ final class GoogleLens1758Profile {
             return null;
         }
 
-        String raw = compact(value, 3400);
-        boolean looksLikeInteraction = raw.contains("requestPresentationResult=true")
-                && (raw.contains("selectionType=WORD_BOXES")
-                || raw.contains("textSelection=Optional.of"));
-        if (looksLikeInteraction) {
-            // LensQuery itself contains the nested interaction in its toString. Prefer the
-            // deepest object that directly owns the boolean; verify by probing its own fields.
+        String before = compact(value, 3400);
+        if (before.contains("requestPresentationResult=true")) {
+            // Do not trust the outer object's toString alone: LensQuery includes its nested
+            // LensInteraction text. Probe each true boolean, verify the semantic label changes,
+            // and immediately restore unrelated fields before recursing deeper.
             for (Field field : instanceFields(type)) {
-                if (field.getType() == boolean.class) {
-                    try {
-                        field.setAccessible(true);
-                        if (field.getBoolean(value)) return value;
-                    } catch (Throwable ignored) {
+                if (field.getType() != boolean.class) continue;
+                try {
+                    field.setAccessible(true);
+                    boolean original = field.getBoolean(value);
+                    if (!original) continue;
+
+                    field.setBoolean(value, false);
+                    String changed = compact(value, 3400);
+                    if (changed.contains("requestPresentationResult=false")
+                            && !before.contains("requestPresentationResult=false")) {
+                        return "class=" + type.getName()
+                                + " field=" + field.getName()
+                                + " before=" + trimForDiagnostic(before, 1400)
+                                + " after=" + trimForDiagnostic(changed, 1400);
                     }
+
+                    field.setBoolean(value, true);
+                } catch (Throwable ignored) {
                 }
             }
         }
@@ -331,7 +314,8 @@ final class GoogleLens1758Profile {
                     continue;
                 }
 
-                Object found = findPresentationRequestObject(child, depth + 1, seen);
+                String found = suppressPresentationBooleanRecursive(
+                        child, depth + 1, seen);
                 if (found != null) return found;
             } catch (Throwable ignored) {
             }
