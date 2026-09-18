@@ -48,6 +48,10 @@ import io.github.libxposed.api.XposedModule;
 final class GoogleCtsRuntimeInspector {
     private static final String TAG = "FloatLens-GoogleCTS";
     private static final String SHOW_SESSION_ID = "android.service.voice.SHOW_SESSION_ID";
+    private static final String CONTEXTUAL_SEARCH_ACTION =
+            "android.app.contextualsearch.action.LAUNCH_CONTEXTUAL_SEARCH";
+    private static final String CONTEXTUAL_SCREENSHOT =
+            "android.app.contextualsearch.extra.SCREENSHOT";
     private static final long SESSION_TTL_MS = 120_000L;
     private static final long RESULT_SETTLE_MS = 1_500L;
     private static final int MAX_EVENT_LOGS = 500;
@@ -312,13 +316,24 @@ final class GoogleCtsRuntimeInspector {
     private synchronized void commitBridgeResult(String text, String detail, String reason) {
         if (!active() || bridgeCommitted
                 || (!bridgeSelectionSeen && !bridgePendingSeen)) return;
+
+        // Never close Google's marked Lens UI unless FloatLens actually has something it can
+        // display. v155 showed non-null dtqi placeholders with frame/text/LensResult all null;
+        // treating those as a settled result closed the UI and delivered nothing.
+        String finalText = bridgeSelectionText == null || bridgeSelectionText.isBlank()
+                ? text : bridgeSelectionText;
+        if ((finalText == null || finalText.isBlank()) && !bridgeFrameQueued) {
+            report("LENS_QUERY_NO_PAYLOAD",
+                    "keep Google UI open reason=" + reason
+                            + " detail=" + safe(detail));
+            return;
+        }
+
         bridgeCommitted = true;
 
         // Make the final event self-contained. Explicit broadcasts are asynchronous; carrying the
         // latest selection again prevents a query-result delivery from racing ahead of the earlier
         // selection event in the FloatLens process.
-        String finalText = bridgeSelectionText == null || bridgeSelectionText.isBlank()
-                ? text : bridgeSelectionText;
         Rect finalBounds = bridgeSelectionBounds == null
                 ? null : new Rect(bridgeSelectionBounds);
         sendBridgeEvent(GoogleCtsContract.EVENT_QUERY_RESULT,
@@ -538,6 +553,7 @@ final class GoogleCtsRuntimeInspector {
                     } else if (active() && intent != null) {
                         report("ACTIVITY_LIFECYCLE", name + " " + describeIntent(intent));
                     }
+                    if (active() && intent != null) captureContextualSearchFrame(intent);
                     if (active()) rememberMarkedActivity(activity);
                     return chain.proceed();
                 });
@@ -547,6 +563,29 @@ final class GoogleCtsRuntimeInspector {
             module.log(Log.WARN, TAG, "Activity lifecycle hook unavailable", t);
         }
         return count;
+    }
+
+    private void captureContextualSearchFrame(Intent intent) {
+        if (!active() || intent == null
+                || !CONTEXTUAL_SEARCH_ACTION.equals(intent.getAction())) return;
+        Bundle extras = intent.getExtras();
+        if (extras == null || !extras.containsKey(CONTEXTUAL_SCREENSHOT)) return;
+        Object value = null;
+        try {
+            value = extras.get(CONTEXTUAL_SCREENSHOT);
+        } catch (Throwable t) {
+            report("CONTEXTUAL_SCREENSHOT",
+                    "read failed=" + t.getClass().getSimpleName());
+            return;
+        }
+        if (value instanceof Bitmap bitmap && !bitmap.isRecycled()) {
+            report("CONTEXTUAL_SCREENSHOT",
+                    "bitmap=" + bitmapSummary(bitmap));
+            sendBridgeFrame(bitmap);
+            return;
+        }
+        report("CONTEXTUAL_SCREENSHOT",
+                "valueClass=" + (value == null ? "null" : value.getClass().getName()));
     }
 
     private int hookActivityDispatch() {
