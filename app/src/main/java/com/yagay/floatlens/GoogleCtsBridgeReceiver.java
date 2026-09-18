@@ -42,10 +42,14 @@ public final class GoogleCtsBridgeReceiver extends BroadcastReceiver {
                 LsposedStatusManager.clearGoogleCtsSessionRemote(token);
                 GoogleCtsBridgeController.onCommit(context, token, detail);
             }
-            case GoogleCtsContract.EVENT_QUERY_RESULT ->
-                    GoogleCtsBridgeController.onQueryResult(context, token, text, detail);
-            case GoogleCtsContract.EVENT_END ->
-                    GoogleCtsBridgeController.onEnd(context, token, detail);
+            case GoogleCtsContract.EVENT_QUERY_RESULT -> {
+                LsposedStatusManager.clearGoogleCtsSessionRemote(token);
+                GoogleCtsBridgeController.onQueryResult(context, token, text, detail);
+            }
+            case GoogleCtsContract.EVENT_END -> {
+                LsposedStatusManager.clearGoogleCtsSessionRemote(token);
+                GoogleCtsBridgeController.onEnd(context, token, detail);
+            }
             default -> DiagnosticLog.i(context, "GOOGLE_BRIDGE",
                     "unknown event=" + event + " session=" + shortToken(token));
         }
