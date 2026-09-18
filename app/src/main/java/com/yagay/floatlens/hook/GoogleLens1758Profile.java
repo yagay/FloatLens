@@ -46,6 +46,8 @@ final class GoogleLens1758Profile {
     static final String INFO_PANEL_OWNER = "dqpx";
     static final String INFO_PANEL_VIEW =
             "com.google.android.libraries.lens.view.infopanel.InfoPanelView";
+    static final String OMNIBOX_VIEW =
+            "com.google.android.libraries.lens.view.omnibox.OmniBoxView";
     static final String REGION_SELECTION = "dtln";
     static final String WORD_SELECTION = "dtlr";
     static final String ABSENT_OPTIONAL_HOLDER = "fxqw";
