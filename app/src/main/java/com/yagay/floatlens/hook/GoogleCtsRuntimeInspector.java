@@ -63,14 +63,215 @@ final class GoogleCtsRuntimeInspector {
 
     void install() {
         int hooks = 0;
+        hooks += hookGoogle1758OmnientBoundary();
+        hooks += hookGoogle1758LensSelectionBoundary();
         hooks += hookVoiceSessionShow();
         hooks += hookVoiceScreenshot();
         hooks += hookActivityLifecycle();
-        hooks += hookIntentWrites();
-        hooks += hookBundleWrites();
         hooks += hookActivityDispatch();
-        hooks += hookRelevantClassLoads();
-        module.log(Log.INFO, TAG, "marked-session inspector ready hooks=" + hooks);
+        module.log(Log.INFO, TAG,
+                "Google CTS inspector ready hooks=" + hooks + " profile=17.58.16.ve");
+    }
+
+    /** Google 17.58.16.ve real Omnient invocation boundary from classes6.dex. */
+    private int hookGoogle1758OmnientBoundary() {
+        try {
+            Class<?> cls = Class.forName(
+                    "com.google.android.apps.search.omnient.host.invocation.OmnientInvocationHandler",
+                    false, classLoader);
+            int count = 0;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(cls)) {
+                if (!(executable instanceof Method method)) continue;
+                Class<?>[] p = method.getParameterTypes();
+
+                if ("f".equals(method.getName()) && p.length == 3 && p[1] == Bundle.class) {
+                    module.hook(method).intercept(chain -> {
+                        Bundle args = (Bundle) chain.getArg(1);
+                        correlateGoogleBoundary(args, null, "OMNIENT_VIS");
+                        if (active()) {
+                            report("OMNIENT_VIS_ENTRY", "keys=" + safeKeys(args)
+                                    + " owner=" + chain.getThisObject().getClass().getName());
+                        }
+                        return chain.proceed();
+                    });
+                    count++;
+                    continue;
+                }
+
+                if ("c".equals(method.getName()) && p.length == 3 && p[1] == Intent.class) {
+                    module.hook(method).intercept(chain -> {
+                        Intent intent = (Intent) chain.getArg(1);
+                        correlateGoogleBoundary(intent == null ? null : intent.getExtras(),
+                                intent, "OMNIENT_CONTEXTUAL");
+                        if (active()) report("OMNIENT_CONTEXTUAL_ENTRY", describeIntent(intent));
+                        return chain.proceed();
+                    });
+                    count++;
+                    continue;
+                }
+
+                if ("a".equals(method.getName()) && p.length == 3
+                        && p[1] == Bitmap.class && p[2] == Intent.class
+                        && method.getReturnType() == Intent.class) {
+                    module.hook(method).intercept(chain -> {
+                        Bitmap bitmap = (Bitmap) chain.getArg(1);
+                        Intent source = (Intent) chain.getArg(2);
+                        if (active()) {
+                            report("OMNIENT_BUILD_VIS_INTENT",
+                                    "bitmap=" + bitmapSummary(bitmap)
+                                            + " source=" + describeIntent(source));
+                        }
+                        Object result = chain.proceed();
+                        if (active() && result instanceof Intent out) {
+                            report("OMNIENT_VIS_INTENT_READY", describeIntent(out));
+                        }
+                        return result;
+                    });
+                    count++;
+                }
+            }
+            module.log(Log.INFO, TAG, "Google 17.58 Omnient hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "Google 17.58 Omnient boundary unavailable", t);
+            return 0;
+        }
+    }
+
+    /** Google 17.58.16.ve Lens user-selection/query boundary from classes8.dex. */
+    private int hookGoogle1758LensSelectionBoundary() {
+        try {
+            Class<?> controller = Class.forName("dscu", false, classLoader);
+            int count = 0;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
+                if (!(executable instanceof Method method)) continue;
+                Class<?>[] p = method.getParameterTypes();
+
+                if ("y".equals(method.getName()) && p.length == 2
+                        && "dscl".equals(p[0].getName()) && p[1] == boolean.class) {
+                    module.hook(method).intercept(chain -> {
+                        if (active()) {
+                            report("USER_SELECTION",
+                                    describeSelectionWithMetadata(chain.getArg(0))
+                                            + " primary=" + chain.getArg(1));
+                        }
+                        return chain.proceed();
+                    });
+                    count++;
+                    continue;
+                }
+
+                if ("p".equals(method.getName()) && p.length == 1
+                        && "dtqj".equals(p[0].getName())) {
+                    module.hook(method).intercept(chain -> {
+                        if (active()) report("LENS_QUERY_START", compactObject(chain.getArg(0), 4500));
+                        return chain.proceed();
+                    });
+                    count++;
+                    continue;
+                }
+
+                if ("q".equals(method.getName()) && p.length == 1
+                        && "dtqi".equals(p[0].getName())) {
+                    module.hook(method).intercept(chain -> {
+                        if (active()) report("LENS_QUERY_RESULT", compactObject(chain.getArg(0), 4500));
+                        return chain.proceed();
+                    });
+                    count++;
+                }
+            }
+            module.log(Log.INFO, TAG, "Google 17.58 Lens selection hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "Google 17.58 Lens selection boundary unavailable", t);
+            return 0;
+        }
+    }
+
+    private void correlateGoogleBoundary(Bundle extras, Intent intent, String path) {
+        if (!provider.isActive()) return;
+        if (GoogleCtsContract.isFloatLensSession(extras)) {
+            activate(extras.getString(GoogleCtsContract.K_SESSION_TOKEN, ""),
+                    showSessionId, voiceSession, path + "_MARKER");
+            return;
+        }
+        if (active()) return;
+        String token = provider.googleCtsArmedToken();
+        if (!token.isBlank()) {
+            activate(token, showSessionId, voiceSession, path + "_ARMED");
+            report("BOUNDARY_CORRELATION",
+                    "marker=false extras=" + safeKeys(extras)
+                            + " intent=" + describeIntent(intent));
+        }
+    }
+
+    private String describeSelectionWithMetadata(Object metadata) {
+        if (metadata == null) return "metadata=null";
+        StringBuilder out = new StringBuilder();
+        out.append("metadataClass=").append(metadata.getClass().getName());
+        Object selection = fieldByTypeName(metadata, "dtlp");
+        if (selection == null) {
+            out.append(" raw=").append(compactObject(metadata, 3500));
+            return out.toString();
+        }
+        out.append(" userSelectionClass=").append(selection.getClass().getName());
+        if ("dtlr".equals(selection.getClass().getName())) {
+            Object textSelection = fieldByTypeName(selection, "dtvz");
+            String text = firstStringField(textSelection);
+            if (text != null && !text.isBlank()) out.append(" selectedText=").append(quote(text, 2000));
+            out.append(" textSelection=").append(compactObject(textSelection, 2500));
+        } else {
+            out.append(" selection=").append(compactObject(selection, 3500));
+        }
+        return out.toString();
+    }
+
+    private Object fieldByTypeName(Object target, String typeName) {
+        if (target == null) return null;
+        for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
+            if (!typeName.equals(field.getType().getName())) continue;
+            try {
+                field.setAccessible(true);
+                return field.get(target);
+            } catch (Throwable ignored) {}
+        }
+        return null;
+    }
+
+    private String firstStringField(Object target) {
+        if (target == null) return null;
+        for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
+            if (field.getType() != String.class) continue;
+            try {
+                field.setAccessible(true);
+                Object value = field.get(target);
+                if (value instanceof String s && !s.isBlank()) return s;
+            } catch (Throwable ignored) {}
+        }
+        return null;
+    }
+
+    private String compactObject(Object value, int max) {
+        if (value == null) return "null";
+        String text;
+        try {
+            text = value.getClass().getName() + "{" + String.valueOf(value) + "}";
+        } catch (Throwable t) {
+            text = value.getClass().getName();
+        }
+        text = safe(text).replace("\n", " ").replace("\r", " ");
+        return text.length() <= max ? text : text.substring(0, max) + "…";
+    }
+
+    private String quote(String value, int max) {
+        String text = safe(value).replace("\n", " ").replace("\r", " ");
+        if (text.length() > max) text = text.substring(0, max) + "…";
+        return "\"" + text + "\"";
+    }
+
+    private String bitmapSummary(Bitmap bitmap) {
+        return bitmap == null ? "null"
+                : bitmap.getWidth() + "x" + bitmap.getHeight() + "/" + bitmap.getConfig();
     }
 
     private int hookVoiceSessionShow() {
