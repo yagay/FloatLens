@@ -88,6 +88,7 @@ final class GoogleCtsRuntimeInspector {
         int hooks = 0;
         hooks += hookGoogle1758OmnientBoundary();
         hooks += hookGoogle1758LensSelectionBoundary();
+        hooks += hookGoogleTextFloatingToolbar();
         hooks += hookVoiceSessionShow();
         hooks += hookVoiceScreenshot();
         hooks += hookActivityLifecycle();
@@ -159,6 +160,50 @@ final class GoogleCtsRuntimeInspector {
             return count;
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "Google 17.58 Omnient boundary unavailable", t);
+            return 0;
+        }
+    }
+
+    /**
+     * Preserve Google's native selection/highlight/resize handles while replacing only the
+     * framework floating text toolbar with FloatLens' own menu. The hook lives only in the Google
+     * process and is additionally gated by a live FloatLens-marked CTS session.
+     */
+    private int hookGoogleTextFloatingToolbar() {
+        try {
+            Class<?> toolbar = Class.forName(
+                    "com.android.internal.widget.floatingtoolbar.FloatingToolbar",
+                    false, classLoader);
+            int count = 0;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(toolbar)) {
+                if (!(executable instanceof Method method)) continue;
+                if (!"show".equals(method.getName()) || method.getParameterCount() != 0) continue;
+
+                module.hook(method).intercept(chain -> {
+                    if (!active() || !bridgeSelectionSeen) return chain.proceed();
+
+                    report("GOOGLE_TEXT_TOOLBAR_SUPPRESSED",
+                            "class=" + chain.getThisObject().getClass().getName()
+                                    + " textLen="
+                                    + (bridgeSelectionText == null ? 0
+                                    : bridgeSelectionText.length())
+                                    + " bounds=" + String.valueOf(bridgeSelectionBounds));
+
+                    Class<?> returnType = method.getReturnType();
+                    if (returnType == void.class) return null;
+                    if (returnType.isInstance(chain.getThisObject())) {
+                        return chain.getThisObject();
+                    }
+                    return null;
+                });
+                count++;
+            }
+            module.log(Log.INFO, TAG,
+                    "Google floating text toolbar hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google floating text toolbar boundary unavailable", t);
             return 0;
         }
     }
