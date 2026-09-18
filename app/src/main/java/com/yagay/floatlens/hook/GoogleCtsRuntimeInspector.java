@@ -1983,6 +1983,7 @@ final class GoogleCtsRuntimeInspector {
     private boolean active() {
         return provider.isActive()
                 && !sessionToken.isBlank()
+                && provider.ownsGoogleCtsSession(sessionToken)
                 && SystemClock.elapsedRealtime() < activeUntil;
     }
 
