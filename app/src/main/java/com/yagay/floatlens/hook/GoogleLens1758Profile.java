@@ -10,6 +10,9 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass;
 import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Versioned structural adapter for Google App 17.58.16.ve Lens internals.
@@ -118,7 +121,7 @@ final class GoogleLens1758Profile {
 
     private static boolean hasField(Class<?> cls, String name, String typeName) {
         if (cls == null || name == null || typeName == null) return false;
-        for (Field field : HiddenApiBypass.getInstanceFields(cls)) {
+        for (Field field : instanceFields(cls)) {
             if (name.equals(field.getName()) && typeName.equals(field.getType().getName())) {
                 return true;
             }
@@ -128,8 +131,7 @@ final class GoogleLens1758Profile {
 
     private static boolean hasNoArgMethod(Class<?> cls, String name, String returnTypeName) {
         if (cls == null || name == null || returnTypeName == null) return false;
-        for (Executable executable : HiddenApiBypass.getDeclaredMethods(cls)) {
-            if (!(executable instanceof Method method)) continue;
+        for (Method method : methodsOf(cls)) {
             if (name.equals(method.getName())
                     && method.getParameterCount() == 0
                     && returnTypeName.equals(method.getReturnType().getName())) {
@@ -288,25 +290,22 @@ final class GoogleLens1758Profile {
         if (lensImage == null) return null;
         Object exact = readField(lensImage, "b", Bitmap.class.getName());
         if (exact instanceof Bitmap bitmap && !bitmap.isRecycled()) return bitmap;
-        for (Field field : HiddenApiBypass.getInstanceFields(lensImage.getClass())) {
-            if (field.getType() != Bitmap.class) continue;
-            try {
-                field.setAccessible(true);
-                Object value = field.get(lensImage);
-                if (value instanceof Bitmap bitmap && !bitmap.isRecycled()) return bitmap;
-            } catch (Throwable ignored) {
-            }
-        }
-        return null;
+        Object any = firstFieldByType(lensImage, Bitmap.class.getName());
+        return any instanceof Bitmap bitmap && !bitmap.isRecycled() ? bitmap : null;
     }
 
+    /**
+     * Google Lens model classes are ordinary app classes. Standard reflection is both simpler and
+     * more reliable here than using HiddenApiBypass for field values. Keep HiddenApiBypass only as
+     * a fallback for unusual runtime implementations.
+     */
     private static Object readField(Object target, String name, String typeName) {
         if (target == null) return null;
-        for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
+        for (Field field : instanceFields(target.getClass())) {
             if (name != null && !name.equals(field.getName())) continue;
             if (typeName != null && !typeName.equals(field.getType().getName())) continue;
             try {
-                field.setAccessible(true);
+                if (!field.canAccess(target)) field.setAccessible(true);
                 return field.get(target);
             } catch (Throwable ignored) {
             }
@@ -319,26 +318,61 @@ final class GoogleLens1758Profile {
     }
 
     private static boolean readBoolean(Object target, String name, boolean fallback) {
-        if (target == null) return fallback;
-        for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
-            if (!name.equals(field.getName()) || field.getType() != boolean.class) continue;
-            try {
-                field.setAccessible(true);
-                return field.getBoolean(target);
-            } catch (Throwable ignored) {
-                return fallback;
-            }
-        }
-        return fallback;
+        Object value = readField(target, name, boolean.class.getName());
+        return value instanceof Boolean b ? b : fallback;
     }
 
     private static Object invokeNoArg(Object target, String methodName) {
         if (target == null || methodName == null) return null;
+        for (Method method : methodsOf(target.getClass())) {
+            if (!methodName.equals(method.getName()) || method.getParameterCount() != 0) continue;
+            try {
+                if (!method.canAccess(target)) method.setAccessible(true);
+                return method.invoke(target);
+            } catch (Throwable ignored) {
+            }
+        }
         try {
             return HiddenApiBypass.invoke(target.getClass(), target, methodName);
         } catch (Throwable ignored) {
             return null;
         }
+    }
+
+    private static List<Field> instanceFields(Class<?> cls) {
+        ArrayList<Field> out = new ArrayList<>();
+        for (Class<?> current = cls; current != null; current = current.getSuperclass()) {
+            try {
+                for (Field field : current.getDeclaredFields()) {
+                    if (!Modifier.isStatic(field.getModifiers())) out.add(field);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        if (!out.isEmpty()) return out;
+        try {
+            for (Field field : HiddenApiBypass.getInstanceFields(cls)) out.add(field);
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    private static List<Method> methodsOf(Class<?> cls) {
+        ArrayList<Method> out = new ArrayList<>();
+        for (Class<?> current = cls; current != null; current = current.getSuperclass()) {
+            try {
+                for (Method method : current.getDeclaredMethods()) out.add(method);
+            } catch (Throwable ignored) {
+            }
+        }
+        if (!out.isEmpty()) return out;
+        try {
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(cls)) {
+                if (executable instanceof Method method) out.add(method);
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
     }
 
     private static Boolean invokeBooleanNoArg(Object target, String methodName) {
@@ -377,16 +411,8 @@ final class GoogleLens1758Profile {
     private static String firstString(Object target) {
         if (target == null) return null;
         if (target instanceof String s) return s;
-        for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
-            if (field.getType() != String.class) continue;
-            try {
-                field.setAccessible(true);
-                Object value = field.get(target);
-                if (value instanceof String s && !s.isBlank()) return s;
-            } catch (Throwable ignored) {
-            }
-        }
-        return null;
+        Object value = firstFieldByType(target, String.class.getName());
+        return value instanceof String s && !s.isBlank() ? s : null;
     }
 
     private static Rect firstRect(Object... targets) {
@@ -395,16 +421,12 @@ final class GoogleLens1758Profile {
             if (target == null) continue;
             Rect direct = asRect(target);
             if (direct != null) return direct;
-            for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
-                Class<?> type = field.getType();
-                if (type != Rect.class && type != RectF.class) continue;
-                try {
-                    field.setAccessible(true);
-                    Rect candidate = asRect(field.get(target));
-                    if (candidate != null) return candidate;
-                } catch (Throwable ignored) {
-                }
-            }
+            Object rect = firstFieldByType(target, Rect.class.getName());
+            direct = asRect(rect);
+            if (direct != null) return direct;
+            Object rectF = firstFieldByType(target, RectF.class.getName());
+            direct = asRect(rectF);
+            if (direct != null) return direct;
         }
         return null;
     }
