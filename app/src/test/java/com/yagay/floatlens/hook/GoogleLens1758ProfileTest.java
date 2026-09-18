@@ -44,4 +44,11 @@ public class GoogleLens1758ProfileTest {
         assertFalse(GoogleLens1758Profile.isCompleteState(true, true, false));
         assertTrue(GoogleLens1758Profile.isCompleteState(true, true, true));
     }
+
+    @Test public void postSelectionResultSuppressionRequiresRealTextSelection() {
+        assertFalse(GoogleLens1758Profile.shouldSuppressPostSelectionResult(false, "KernelSU"));
+        assertFalse(GoogleLens1758Profile.shouldSuppressPostSelectionResult(true, ""));
+        assertFalse(GoogleLens1758Profile.shouldSuppressPostSelectionResult(true, "   "));
+        assertTrue(GoogleLens1758Profile.shouldSuppressPostSelectionResult(true, "KernelSU"));
+    }
 }
