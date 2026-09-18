@@ -364,6 +364,24 @@ final class GoogleCtsRuntimeInspector {
         }
     }
 
+    private void finishActivity(Activity activity, String reason) {
+        if (activity == null) return;
+        String name = activity.getClass().getName();
+        module.log(Log.INFO, TAG,
+                "finish activity=" + name + " reason=" + reason);
+        activity.runOnUiThread(() -> {
+            try {
+                if (!activity.isFinishing() && !activity.isDestroyed()) {
+                    activity.finish();
+                    activity.overridePendingTransition(0, 0);
+                }
+            } catch (Throwable t) {
+                module.log(Log.WARN, TAG,
+                        "Failed to finish Google contextual search activity", t);
+            }
+        });
+    }
+
     private void finishMarkedGoogleActivity(String reason) {
         Activity activity = markedActivity.get();
         if (activity == null) {
@@ -563,11 +581,58 @@ final class GoogleCtsRuntimeInspector {
                             if (activity != null) dumpClassStructure(activity.getClass(), "activityFallback");
                         }
                     } else if (active() && intent != null) {
-                        report("ACTIVITY_LIFECYCLE", name + " " + describeIntent(intent));
+                        report("ACTIVITY_LIFECYCLE", name
+                                + " activityClass="
+                                + (activity == null ? "null" : activity.getClass().getName())
+                                + " " + describeIntent(intent));
                     }
-                    if (active() && intent != null) captureContextualSearchFrame(intent);
+
+                    boolean contextualBoundary = active() && intent != null
+                            && GoogleCtsContract.isContextualSearchAction(intent.getAction());
+                    boolean contextualFrame = false;
+                    boolean contextualPayload = false;
+                    String contextualDetail = "";
+                    if (contextualBoundary) {
+                        contextualFrame = captureContextualSearchFrame(intent);
+                        boolean hasText = bridgeSelectionText != null
+                                && !bridgeSelectionText.isBlank();
+                        boolean hasSelection = bridgeSelectionSeen
+                                && (hasText || bridgeSelectionBounds != null);
+                        contextualPayload = contextualFrame || hasSelection;
+                        contextualDetail = "source=activity_lifecycle"
+                                + " activityClass="
+                                + (activity == null ? "null" : activity.getClass().getName())
+                                + " selectionSeen=" + bridgeSelectionSeen
+                                + " textLen="
+                                + (bridgeSelectionText == null ? 0 : bridgeSelectionText.length())
+                                + " bounds=" + String.valueOf(bridgeSelectionBounds)
+                                + " frameQueued=" + contextualFrame
+                                + " extras=" + safeKeys(extras);
+                        report("CONTEXTUAL_SEARCH_BOUNDARY", contextualDetail);
+                    }
+
                     if (active()) rememberMarkedActivity(activity);
-                    return chain.proceed();
+                    Object result = chain.proceed();
+
+                    // Some Android builds launch Contextual Search through the framework service,
+                    // bypassing this process' execStartActivity(). In that case the Activity
+                    // lifecycle is the first reliable interception boundary. Let onCreate finish
+                    // normally, then immediately hand the payload to FloatLens and close both
+                    // Google activities before the search UI can remain onscreen.
+                    if (contextualBoundary && contextualPayload && active()) {
+                        commitBridgeResult("", contextualDetail,
+                                "contextual_search_activity_intercept");
+                        if (bridgeCommitted && activity instanceof Activity contextualActivity) {
+                            finishActivity(contextualActivity,
+                                    "contextual_search_activity_intercept");
+                            report("CONTEXTUAL_SEARCH_SUPPRESSED",
+                                    "activity lifecycle fallback consumed Google search");
+                        }
+                    } else if (contextualBoundary && !contextualPayload && active()) {
+                        report("CONTEXTUAL_SEARCH_PASSTHROUGH",
+                                "activity lifecycle has no FloatLens payload");
+                    }
+                    return result;
                 });
                 count++;
             }
