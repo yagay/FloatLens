@@ -45,6 +45,10 @@ public final class GoogleCtsContract {
 
     public static final long TRACE_SESSION_TTL_MS = 120_000L;
 
+    public static boolean isContextualSearchAction(String action) {
+        return CONTEXTUAL_SEARCH_ACTION.equals(action);
+    }
+
     public static boolean isFloatLensSession(Bundle args) {
         return args != null && isFloatLensSession(
                 args.getBoolean(K_TRIGGER, false),
