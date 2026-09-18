@@ -99,6 +99,7 @@ final class GoogleCtsRuntimeInspector {
         hooks += hookGoogleLensActionMenuController();
         hooks += hookGoogleLensInfoPanelController();
         hooks += hookGoogleLensChromeVisibility();
+        hooks += hookGoogleFrozenImageAutoFocus();
         hooks += hookGoogle1758LensSelectionBoundary();
         // v169 device/APK analysis proved the visible menu is Lens' own ActionMenuView,
         // not framework/Material FloatingToolbar. Keep those old experiments uninstalled.
@@ -868,6 +869,11 @@ final class GoogleCtsRuntimeInspector {
     }
 
     private boolean interestingView(View view) {
+        if (view != null
+                && GoogleLens1758Profile.FROZEN_IMAGE_VIEW
+                        .equals(view.getClass().getName())) {
+            return true;
+        }
         CharSequence text = view instanceof TextView tv ? tv.getText() : null;
         CharSequence desc = view.getContentDescription();
         String cls = view.getClass().getName().toLowerCase(Locale.ROOT);
@@ -903,6 +909,8 @@ final class GoogleCtsRuntimeInspector {
                 + " xy=" + loc[0] + "," + loc[1]
                 + " wh=" + view.getWidth() + "x" + view.getHeight()
                 + " alpha=" + view.getAlpha()
+                + " scale=" + view.getScaleX() + "," + view.getScaleY()
+                + " translation=" + view.getTranslationX() + "," + view.getTranslationY()
                 + " clickable=" + view.isClickable()
                 + " enabled=" + view.isEnabled()
                 + " parent=" + (parent == null ? "null" : parent.getClass().getName())
@@ -944,6 +952,116 @@ final class GoogleCtsRuntimeInspector {
         if (value == null) return "";
         String out = value.replace("\n", " ").replace("\r", " ").replace("\u0000", "?");
         return out.length() <= max ? out : out.substring(0, max) + "…";
+    }
+
+    /**
+     * Google 17.58 classes8.dex: duec.r(dudp) consumes a viewport request whose field c is the
+     * selected RectF and ultimately reaches duec.ai(float), which animates FrozenImageView
+     * scale/translation. Suppress only bounded text-selection focus requests in FloatLens-owned
+     * sessions. OCR, word boxes, highlights and DRAG_TEXT_HANDLE remain on their native paths.
+     */
+    private int hookGoogleFrozenImageAutoFocus() {
+        try {
+            Class<?> controller = Class.forName(
+                    GoogleLens1758Profile.VIEWPORT_CONTROLLER, false, classLoader);
+            Class<?> requestClass = Class.forName(
+                    GoogleLens1758Profile.VIEWPORT_REQUEST, false, classLoader);
+            int count = 0;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
+                if (!(executable instanceof Method method)) continue;
+                Class<?>[] params = method.getParameterTypes();
+                if (!"r".equals(method.getName())
+                        || params.length != 1
+                        || params[0] != requestClass
+                        || method.getReturnType() != void.class) {
+                    continue;
+                }
+
+                module.hook(method).intercept(chain -> {
+                    Object request = chain.getArg(0);
+                    Object rawBounds = fieldByName(request, "c");
+                    RectF focusBounds = rawBounds instanceof RectF rect
+                            ? new RectF(rect) : null;
+                    boolean hasBounds = focusBounds != null
+                            && focusBounds.width() > 0f
+                            && focusBounds.height() > 0f;
+
+                    if (!active()
+                            || !GoogleLens1758Profile.shouldSuppressTextViewportFocus(
+                                    bridgeSelectionSeen,
+                                    bridgeSelectionText,
+                                    request == null ? "" : request.getClass().getName(),
+                                    hasBounds)) {
+                        return chain.proceed();
+                    }
+
+                    report("GOOGLE_FROZEN_IMAGE_AUTO_FOCUS_SUPPRESSED",
+                            "controller=duec.r bounds=" + focusBounds
+                                    + " textLen="
+                                    + (bridgeSelectionText == null ? 0
+                                    : bridgeSelectionText.length())
+                                    + " request=" + compactObject(request, 360));
+                    reportFrozenImageTransform("beforeSuppressedFocus");
+                    mainHandler.postDelayed(
+                            () -> reportFrozenImageTransform("after120ms"), 120L);
+                    mainHandler.postDelayed(
+                            () -> reportFrozenImageTransform("after300ms"), 300L);
+                    return null;
+                });
+                count++;
+            }
+            module.log(Log.INFO, TAG,
+                    "Google FrozenImage auto-focus hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google FrozenImage auto-focus boundary unavailable", t);
+            return 0;
+        }
+    }
+
+    private void reportFrozenImageTransform(String phase) {
+        if (!active()) return;
+        Activity activity = markedActivity.get();
+        if (activity == null) return;
+        activity.runOnUiThread(() -> {
+            if (!active()) return;
+            try {
+                View root = activity.getWindow() == null
+                        ? null : activity.getWindow().getDecorView();
+                View image = findViewByClassName(root, GoogleLens1758Profile.FROZEN_IMAGE_VIEW);
+                if (image == null) {
+                    report("GOOGLE_FROZEN_IMAGE_TRANSFORM",
+                            "phase=" + phase + " view=missing");
+                    return;
+                }
+                int[] loc = new int[2];
+                try { image.getLocationOnScreen(loc); } catch (Throwable ignored) {}
+                report("GOOGLE_FROZEN_IMAGE_TRANSFORM",
+                        "phase=" + phase
+                                + " scaleX=" + image.getScaleX()
+                                + " scaleY=" + image.getScaleY()
+                                + " translationX=" + image.getTranslationX()
+                                + " translationY=" + image.getTranslationY()
+                                + " xy=" + loc[0] + "," + loc[1]
+                                + " wh=" + image.getWidth() + "x" + image.getHeight());
+            } catch (Throwable t) {
+                module.log(Log.WARN, TAG,
+                        "Failed to inspect FrozenImage transform", t);
+            }
+        });
+    }
+
+    private View findViewByClassName(View view, String className) {
+        if (view == null || className == null) return null;
+        if (className.equals(view.getClass().getName())) return view;
+        if (view instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = findViewByClassName(group.getChildAt(i), className);
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     /** Google 17.58.16.ve Lens user-selection/query boundary from classes8.dex. */
