@@ -337,13 +337,18 @@ final class GoogleCtsRuntimeInspector {
                             Rect selectionBounds = selectionBoundsForDisplay(selection);
                             bridgeSelectionSeen = true;
                             bridgeSelectionText = selection.text();
-                            bridgeSelectionBounds = selectionBounds;
+                            if (selectionBounds != null && !selectionBounds.isEmpty()) {
+                                bridgeSelectionBounds = selectionBounds;
+                            }
+                            Rect effectiveBounds = bridgeSelectionBounds == null
+                                    ? null : new Rect(bridgeSelectionBounds);
                             report("USER_SELECTION",
                                     selection.detail()
                                             + " pixelBounds=" + String.valueOf(selectionBounds)
+                                            + " effectiveBounds=" + String.valueOf(effectiveBounds)
                                             + " primary=" + chain.getArg(1));
                             sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
-                                    selection.text(), selection.detail(), selectionBounds);
+                                    selection.text(), selection.detail(), effectiveBounds);
                         }
                         Object result = chain.proceed();
                         if (active() && bridgeSelectionSeen
@@ -368,10 +373,22 @@ final class GoogleCtsRuntimeInspector {
                             return chain.proceed();
                         }
 
+                        if (bridgeSelectionText != null
+                                && !bridgeSelectionText.isBlank()) {
+                            GoogleLens1758Profile.PresentationRequestSuppression suppression =
+                                    GoogleLens1758Profile.suppressTextPresentationRequest(pending);
+                            report(suppression.suppressed()
+                                            ? "GOOGLE_PRESENTATION_REQUEST_SUPPRESSED"
+                                            : "GOOGLE_PRESENTATION_REQUEST_UNCHANGED",
+                                    suppression.detail());
+                        }
+
                         GoogleLens1758Profile.PendingSnapshot snapshot =
                                 GoogleLens1758Profile.pending(pending);
                         bridgePendingSeen = true;
-                        // A real non-null PendingLensQuery is retained as diagnostic/context.
+                        // Keep the query itself alive for OCR/selection updates. Only the
+                        // requestPresentationResult bit is disabled for FloatLens-owned text
+                        // selections so Google does not ask for its native action presentation.
                         report("LENS_QUERY_START", snapshot.detail());
                         sendBridgeFrame(snapshot.frame());
 
