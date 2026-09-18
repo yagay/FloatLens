@@ -40,7 +40,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import dalvik.system.BaseDexClassLoader;
 import io.github.libxposed.api.XposedModule;
 
 /**
@@ -554,108 +553,6 @@ final class GoogleCtsRuntimeInspector {
         } catch (Throwable t) {
             module.log(Log.WARN, TAG,
                     "Google fixed selection chip boundary unavailable", t);
-            return 0;
-        }
-    }
-
-    /**
-     * Preserve Google's native selection/highlight/resize handles while replacing only the
-     * framework floating text toolbar with FloatLens' own menu. The hook lives only in the Google
-     * process and is additionally gated by a live FloatLens-marked CTS session.
-     */
-    private int hookGoogleTextFloatingToolbar() {
-        try {
-            Class<?> toolbar = Class.forName(
-                    "com.android.internal.widget.floatingtoolbar.FloatingToolbar",
-                    false, classLoader);
-            int count = 0;
-            for (Executable executable : HiddenApiBypass.getDeclaredMethods(toolbar)) {
-                if (!(executable instanceof Method method)) continue;
-                if (!"show".equals(method.getName()) || method.getParameterCount() != 0) continue;
-
-                module.hook(method).intercept(chain -> {
-                    if (!active() || !bridgeSelectionSeen) return chain.proceed();
-
-                    report("GOOGLE_TEXT_TOOLBAR_SUPPRESSED",
-                            "class=" + chain.getThisObject().getClass().getName()
-                                    + " textLen="
-                                    + (bridgeSelectionText == null ? 0
-                                    : bridgeSelectionText.length())
-                                    + " bounds=" + String.valueOf(bridgeSelectionBounds));
-
-                    Class<?> returnType = method.getReturnType();
-                    if (returnType == void.class) return null;
-                    if (returnType.isInstance(chain.getThisObject())) {
-                        return chain.getThisObject();
-                    }
-                    return null;
-                });
-                count++;
-            }
-            module.log(Log.INFO, TAG,
-                    "Google floating text toolbar hooks=" + count);
-            return count;
-        } catch (Throwable t) {
-            module.log(Log.WARN, TAG,
-                    "Google floating text toolbar boundary unavailable", t);
-            return 0;
-        }
-    }
-
-    /**
-     * Google 17.58 also ships Material's FloatingToolbarLayout. Circle-to-Search can use this
-     * app-owned toolbar instead of the framework FloatingToolbar, so suppress that layout as a
-     * second, more specific boundary while preserving the selection state and handles.
-     */
-    private int hookGoogleMaterialFloatingToolbar() {
-        try {
-            Class<?> toolbar = Class.forName(
-                    "com.google.android.material.floatingtoolbar.FloatingToolbarLayout",
-                    false, classLoader);
-            Class<?> viewClass = Class.forName("android.view.View", false, classLoader);
-            Method setVisibility = viewClass.getDeclaredMethod("setVisibility", int.class);
-
-            module.hook(setVisibility).intercept(chain -> {
-                Object target = chain.getThisObject();
-                int visibility = (Integer) chain.getArg(0);
-                if (active() && bridgeSelectionSeen && visibility == View.VISIBLE
-                        && toolbar.isInstance(target)) {
-                    report("GOOGLE_MATERIAL_TOOLBAR_SUPPRESSED",
-                            "path=setVisibility textLen="
-                                    + (bridgeSelectionText == null ? 0
-                                    : bridgeSelectionText.length())
-                                    + " bounds=" + String.valueOf(bridgeSelectionBounds));
-                    return null;
-                }
-                return chain.proceed();
-            });
-
-            // The layout has an internal no-arg update method in 17.58. Hide it again after any
-            // update in case it was already visible before setVisibility was intercepted.
-            int count = 1;
-            for (Executable executable : HiddenApiBypass.getDeclaredMethods(toolbar)) {
-                if (!(executable instanceof Method method)) continue;
-                if (!"a".equals(method.getName()) || method.getParameterCount() != 0) continue;
-                module.hook(method).intercept(chain -> {
-                    Object result = chain.proceed();
-                    if (active() && bridgeSelectionSeen
-                            && chain.getThisObject() instanceof View view) {
-                        view.setVisibility(View.GONE);
-                        report("GOOGLE_MATERIAL_TOOLBAR_SUPPRESSED",
-                                "path=layoutUpdate class="
-                                        + chain.getThisObject().getClass().getName());
-                    }
-                    return result;
-                });
-                count++;
-            }
-
-            module.log(Log.INFO, TAG,
-                    "Google Material floating toolbar hooks=" + count);
-            return count;
-        } catch (Throwable t) {
-            module.log(Log.WARN, TAG,
-                    "Google Material floating toolbar boundary unavailable", t);
             return 0;
         }
     }
@@ -1466,26 +1363,6 @@ final class GoogleCtsRuntimeInspector {
         });
     }
 
-    private void finishMarkedGoogleActivity(String reason) {
-        Activity activity = markedActivity.get();
-        if (activity == null) {
-            report("GOOGLE_UI_FINISH", "activity=none reason=" + reason);
-            return;
-        }
-        String name = activity.getClass().getName();
-        report("GOOGLE_UI_FINISH", "activity=" + name + " reason=" + reason);
-        activity.runOnUiThread(() -> {
-            try {
-                if (!activity.isFinishing() && !activity.isDestroyed()) {
-                    activity.finish();
-                    activity.overridePendingTransition(0, 0);
-                }
-            } catch (Throwable t) {
-                module.log(Log.WARN, TAG, "Failed to finish marked Google Lens activity", t);
-            }
-        });
-    }
-
     private void correlateGoogleBoundary(Bundle extras, Intent intent, String path) {
         if (!provider.isActive()) return;
         if (GoogleCtsContract.isFloatLensSession(extras)) {
@@ -1544,19 +1421,6 @@ final class GoogleCtsRuntimeInspector {
                 }
             }
         } catch (Throwable ignored) {
-        }
-        return null;
-    }
-
-    private String firstStringField(Object target) {
-        if (target == null) return null;
-        for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
-            if (field.getType() != String.class) continue;
-            try {
-                field.setAccessible(true);
-                Object value = field.get(target);
-                if (value instanceof String s && !s.isBlank()) return s;
-            } catch (Throwable ignored) {}
         }
         return null;
     }
@@ -1898,80 +1762,6 @@ final class GoogleCtsRuntimeInspector {
             return count;
         } catch (Throwable t) {
             module.log(Log.INFO, TAG, "Activity dispatch hook unavailable", t);
-            return 0;
-        }
-    }
-
-    private int hookIntentWrites() {
-        int count = 0;
-        for (Method method : Intent.class.getDeclaredMethods()) {
-            if (!"putExtra".equals(method.getName())) continue;
-            Class<?>[] p = method.getParameterTypes();
-            if (p.length != 2 || p[0] != String.class) continue;
-            module.hook(method).intercept(chain -> {
-                if (active() && !isTraceDispatching()) {
-                    String key = (String) chain.getArg(0);
-                    if (!internalTraceKey(key) && relevantKey(key)) {
-                        report("INTENT_EXTRA", "key=" + key
-                                + " value=" + describeValue(chain.getArg(1))
-                                + " caller=" + googleCaller());
-                    }
-                }
-                return chain.proceed();
-            });
-            count++;
-        }
-        return count;
-    }
-
-    private int hookBundleWrites() {
-        int count = 0;
-        for (Method method : Bundle.class.getDeclaredMethods()) {
-            if (!method.getName().startsWith("put")) continue;
-            Class<?>[] p = method.getParameterTypes();
-            if (p.length < 2 || p[0] != String.class) continue;
-            module.hook(method).intercept(chain -> {
-                if (active() && !isTraceDispatching()) {
-                    String key = (String) chain.getArg(0);
-                    if (!internalTraceKey(key) && relevantKey(key)) {
-                        report("BUNDLE_WRITE", "method=" + method.getName()
-                                + " key=" + key
-                                + " value=" + describeValue(chain.getArg(1))
-                                + " caller=" + googleCaller());
-                    }
-                }
-                return chain.proceed();
-            });
-            count++;
-        }
-        return count;
-    }
-
-    private int hookRelevantClassLoads() {
-        try {
-            Class<?> cls = BaseDexClassLoader.class;
-            int count = 0;
-            for (Executable executable : HiddenApiBypass.getDeclaredMethods(cls)) {
-                if (!(executable instanceof Method method)) continue;
-                if (!"findClass".equals(method.getName())) continue;
-                Class<?>[] p = method.getParameterTypes();
-                if (p.length < 1 || p[0] != String.class) continue;
-                module.hook(method).intercept(chain -> {
-                    Object result = chain.proceed();
-                    if (active() && result instanceof Class<?> loaded) {
-                        String name = loaded.getName();
-                        if (relevantClass(name) && markClass(name)) {
-                            report("CLASS_LOAD", name);
-                            if (name.contains(".omnient.")) dumpClassStructure(loaded, "omnient");
-                        }
-                    }
-                    return result;
-                });
-                count++;
-            }
-            return count;
-        } catch (Throwable t) {
-            module.log(Log.INFO, TAG, "Dex class-load trace unavailable", t);
             return 0;
         }
     }
