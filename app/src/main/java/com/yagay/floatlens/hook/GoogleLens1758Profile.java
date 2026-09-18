@@ -316,7 +316,7 @@ final class GoogleLens1758Profile {
             if (name != null && !name.equals(field.getName())) continue;
             if (typeName != null && !typeName.equals(field.getType().getName())) continue;
             try {
-                if (!field.canAccess(target)) field.setAccessible(true);
+                field.setAccessible(true);
                 return field.get(target);
             } catch (Throwable ignored) {
             }
@@ -338,7 +338,7 @@ final class GoogleLens1758Profile {
         for (Method method : methodsOf(target.getClass())) {
             if (!methodName.equals(method.getName()) || method.getParameterCount() != 0) continue;
             try {
-                if (!method.canAccess(target)) method.setAccessible(true);
+                method.setAccessible(true);
                 return method.invoke(target);
             } catch (Throwable ignored) {
             }
