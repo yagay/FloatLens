@@ -92,6 +92,16 @@ final class GoogleCtsBridgeController {
                                 + " textLen=" + selectedText.length()
                                 + " bounds=" + String.valueOf(selectedBounds));
             });
+        } else {
+            MAIN.post(() -> {
+                synchronized (state) {
+                    if (state.delivered || state.selectionRevision != revision) return;
+                    state.textMenuShown = false;
+                }
+                FloatActionMenu.dismiss();
+                DiagnosticLog.i(app, "GOOGLE_TEXT_MENU",
+                        "dismiss empty selection session=" + shortToken(token));
+            });
         }
     }
 
@@ -264,13 +274,17 @@ final class GoogleCtsBridgeController {
     private static void scheduleCleanup(Context app, String token, State state) {
         MAIN.postDelayed(() -> {
             if (!STATES.remove(token, state)) return;
+            boolean dismissTextMenu;
             synchronized (state) {
                 recycle(state.frame);
                 state.frame = null;
+                dismissTextMenu = state.textMenuShown && !state.committed;
                 state.delivered = true;
             }
+            if (dismissTextMenu) FloatActionMenu.dismiss();
             DiagnosticLog.i(app, "GOOGLE_BRIDGE",
-                    "state expired session=" + shortToken(token));
+                    "state expired session=" + shortToken(token)
+                            + " menuDismissed=" + dismissTextMenu);
         }, STATE_TTL_MS);
     }
 
