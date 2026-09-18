@@ -17,7 +17,7 @@ public final class LsposedRuntimeConfig {
     /** Independent lease used only by system_server to block FloatLens-owned contextual search. */
     public static final String K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL =
             "google_cts_component_block_until_elapsed_v1";
-    public static final int SCHEMA_VERSION = 4;
+    public static final int SCHEMA_VERSION = 5;
 
     /** Short lease: never leave secure capture armed after a stalled/aborted capture. */
     public static final long SECURE_CAPTURE_LEASE_MS = 3_000L;
@@ -27,9 +27,9 @@ public final class LsposedRuntimeConfig {
     public static final long GOOGLE_CTS_MAX_FUTURE_MS = 10_000L;
     /** Standard Google invocation timestamp should remain tied to the FloatLens trigger. */
     public static final long GOOGLE_CTS_INVOCATION_MATCH_TOLERANCE_MS = 1_000L;
-    /** Long enough for selecting/dragging text, short enough not to affect later native CTS use. */
-    public static final long GOOGLE_CTS_COMPONENT_BLOCK_LEASE_MS = 30_000L;
-    public static final long GOOGLE_CTS_COMPONENT_BLOCK_MAX_FUTURE_MS = 45_000L;
+    /** Legacy only: v177+ never arms this lease. Retained so stale v159 system_server can expire safely. */
+    public static final long GOOGLE_CTS_COMPONENT_BLOCK_LEASE_MS = 0L;
+    public static final long GOOGLE_CTS_COMPONENT_BLOCK_MAX_FUTURE_MS = 5_000L;
     public static final int GOOGLE_CTS_EXPECTED_OMNI_ENTRY_POINT = 1;
 
     private LsposedRuntimeConfig() {}
