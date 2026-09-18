@@ -955,10 +955,13 @@ final class GoogleCtsRuntimeInspector {
     }
 
     /**
-     * Google 17.58 classes8.dex: duec.r(dudp) consumes a viewport request whose field c is the
-     * selected RectF and ultimately reaches duec.ai(float), which animates FrozenImageView
-     * scale/translation. Suppress only bounded text-selection focus requests in FloatLens-owned
-     * sessions. OCR, word boxes, highlights and DRAG_TEXT_HANDLE remain on their native paths.
+     * Google 17.58 classes8.dex: dsfk.Q() builds a TEXT AreaOfInterest and calls duec.r(dudp)
+     * before the user-selection callback reaches dscu.y(). Therefore the first focus animation
+     * must be rejected from dudp's own source enum rather than waiting for bridgeSelectionSeen.
+     * APK mapping: dudp.c=RectF region, dudp.e=int source, source 1=TEXT.
+     *
+     * duec.n(dsyc) is a second path into duec.ai(). v176 only traces it so we can distinguish
+     * independent viewport changes without suppressing unrelated initialization/region behavior.
      */
     private int hookGoogleFrozenImageAutoFocus() {
         try {
@@ -966,56 +969,78 @@ final class GoogleCtsRuntimeInspector {
                     GoogleLens1758Profile.VIEWPORT_CONTROLLER, false, classLoader);
             Class<?> requestClass = Class.forName(
                     GoogleLens1758Profile.VIEWPORT_REQUEST, false, classLoader);
+            Class<?> stateClass = Class.forName(
+                    GoogleLens1758Profile.VIEWPORT_STATE, false, classLoader);
             int count = 0;
             for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
                 if (!(executable instanceof Method method)) continue;
                 Class<?>[] params = method.getParameterTypes();
-                if (!"r".equals(method.getName())
-                        || params.length != 1
-                        || params[0] != requestClass
-                        || method.getReturnType() != void.class) {
+
+                if ("r".equals(method.getName())
+                        && params.length == 1
+                        && params[0] == requestClass
+                        && method.getReturnType() == void.class) {
+                    module.hook(method).intercept(chain -> {
+                        Object request = chain.getArg(0);
+                        Object rawBounds = fieldByName(request, "c");
+                        RectF focusBounds = rawBounds instanceof RectF rect
+                                ? new RectF(rect) : null;
+                        boolean hasBounds = focusBounds != null
+                                && focusBounds.width() > 0f
+                                && focusBounds.height() > 0f;
+                        Object rawSource = fieldByName(request, "e");
+                        int source = rawSource instanceof Integer value ? value : -1;
+
+                        if (!active()
+                                || !GoogleLens1758Profile.shouldSuppressTextViewportFocus(
+                                        request == null ? "" : request.getClass().getName(),
+                                        source,
+                                        hasBounds)) {
+                            return chain.proceed();
+                        }
+
+                        report("GOOGLE_FROZEN_IMAGE_TEXT_FOCUS_SUPPRESSED_EARLY",
+                                "controller=duec.r source=" + source
+                                        + " selectionSeen=" + bridgeSelectionSeen
+                                        + " bounds=" + focusBounds
+                                        + " request=" + compactObject(request, 360));
+                        reportFrozenImageTransform("beforeEarlyTextFocus");
+                        mainHandler.postDelayed(
+                                () -> reportFrozenImageTransform("after120ms"), 120L);
+                        mainHandler.postDelayed(
+                                () -> reportFrozenImageTransform("after300ms"), 300L);
+                        return null;
+                    });
+                    count++;
                     continue;
                 }
 
-                module.hook(method).intercept(chain -> {
-                    Object request = chain.getArg(0);
-                    Object rawBounds = fieldByName(request, "c");
-                    RectF focusBounds = rawBounds instanceof RectF rect
-                            ? new RectF(rect) : null;
-                    boolean hasBounds = focusBounds != null
-                            && focusBounds.width() > 0f
-                            && focusBounds.height() > 0f;
+                if ("n".equals(method.getName())
+                        && params.length == 1
+                        && params[0] == stateClass
+                        && method.getReturnType() == void.class) {
+                    module.hook(method).intercept(chain -> {
+                        if (!active()) return chain.proceed();
 
-                    if (!active()
-                            || !GoogleLens1758Profile.shouldSuppressTextViewportFocus(
-                                    bridgeSelectionSeen,
-                                    bridgeSelectionText,
-                                    request == null ? "" : request.getClass().getName(),
-                                    hasBounds)) {
-                        return chain.proceed();
-                    }
-
-                    report("GOOGLE_FROZEN_IMAGE_AUTO_FOCUS_SUPPRESSED",
-                            "controller=duec.r bounds=" + focusBounds
-                                    + " textLen="
-                                    + (bridgeSelectionText == null ? 0
-                                    : bridgeSelectionText.length())
-                                    + " request=" + compactObject(request, 360));
-                    reportFrozenImageTransform("beforeSuppressedFocus");
-                    mainHandler.postDelayed(
-                            () -> reportFrozenImageTransform("after120ms"), 120L);
-                    mainHandler.postDelayed(
-                            () -> reportFrozenImageTransform("after300ms"), 300L);
-                    return null;
-                });
-                count++;
+                        Object state = chain.getArg(0);
+                        report("GOOGLE_FROZEN_IMAGE_VIEWPORT_STATE_PATH",
+                                "controller=duec.n selectionSeen=" + bridgeSelectionSeen
+                                        + " state=" + compactObject(state, 420));
+                        reportFrozenImageTransform("beforeDuecN");
+                        Object result = chain.proceed();
+                        mainHandler.postDelayed(
+                                () -> reportFrozenImageTransform("afterDuecN120ms"), 120L);
+                        return result;
+                    });
+                    count++;
+                }
             }
             module.log(Log.INFO, TAG,
-                    "Google FrozenImage auto-focus hooks=" + count);
+                    "Google FrozenImage viewport hooks=" + count);
             return count;
         } catch (Throwable t) {
             module.log(Log.WARN, TAG,
-                    "Google FrozenImage auto-focus boundary unavailable", t);
+                    "Google FrozenImage viewport boundary unavailable", t);
             return 0;
         }
     }
