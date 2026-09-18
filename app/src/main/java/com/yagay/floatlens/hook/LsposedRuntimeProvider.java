@@ -69,6 +69,19 @@ final class LsposedRuntimeProvider {
         return active;
     }
 
+    boolean ownsGoogleCtsSession(String token) {
+        if (!active || preferences == null || token == null || token.isBlank()) return false;
+        try {
+            String current = preferences.getString(
+                    LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, "");
+            return token.equals(current);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Failed to verify Google CTS session ownership in " + displayProcess(), t);
+            return false;
+        }
+    }
+
     String googleCtsArmedToken() {
         return googleCtsArmedToken(null);
     }
