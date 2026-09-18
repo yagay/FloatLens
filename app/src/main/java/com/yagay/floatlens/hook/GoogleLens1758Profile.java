@@ -221,7 +221,8 @@ final class GoogleLens1758Profile {
         String detail = "pendingClass=" + pending.getClass().getName()
                 + " frame=" + bitmapSummary(frame)
                 + " lensImage=" + compact(lensImage, 1800)
-                + " query=" + compact(query, 1800);
+                + " query=" + compact(query, 1800)
+                + " raw=" + compact(pending, 3000);
         return new PendingSnapshot(frame, detail);
     }
 
@@ -265,7 +266,8 @@ final class GoogleLens1758Profile {
                 + " contentPresent=" + contentPresent
                 + " googleComplete=" + String.valueOf(googleComplete)
                 + " selectedTextLen=" + selectedText.length()
-                + " lensResult=" + compact(lensResult, 3000);
+                + " lensResult=" + compact(lensResult, 3000)
+                + " raw=" + compact(queryResult, 3000);
         return new ResultSnapshot(frame, selectedText, complete,
                 imageComplete, interactionPresent, detail);
     }
