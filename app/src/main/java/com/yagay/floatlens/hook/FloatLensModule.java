@@ -33,6 +33,13 @@ public final class FloatLensModule extends XposedModule {
             // Never let an optional screenshot enhancement destabilize system_server startup.
             log(Log.ERROR, TAG, "Failed to install controlled secure screenshot hooks", t);
         }
+        try {
+            new GoogleContextualSearchBlocker(
+                    this, provider, param.getClassLoader()).install();
+        } catch (Throwable t) {
+            // Component interception is optional and must never destabilize system_server.
+            log(Log.ERROR, TAG, "Failed to install Google contextual-search blocker", t);
+        }
     }
 
     @Override
