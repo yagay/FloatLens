@@ -231,9 +231,9 @@ final class GoogleCtsRuntimeInspector {
             Class<?>[] p = method.getParameterTypes();
             if (p.length != 2 || p[0] != String.class) continue;
             module.hook(method).intercept(chain -> {
-                if (active()) {
+                if (active() && !isTraceDispatching()) {
                     String key = (String) chain.getArg(0);
-                    if (relevantKey(key)) {
+                    if (!internalTraceKey(key) && relevantKey(key)) {
                         report("INTENT_EXTRA", "key=" + key
                                 + " value=" + describeValue(chain.getArg(1))
                                 + " caller=" + googleCaller());
@@ -253,9 +253,9 @@ final class GoogleCtsRuntimeInspector {
             Class<?>[] p = method.getParameterTypes();
             if (p.length < 2 || p[0] != String.class) continue;
             module.hook(method).intercept(chain -> {
-                if (active()) {
+                if (active() && !isTraceDispatching()) {
                     String key = (String) chain.getArg(0);
-                    if (relevantKey(key)) {
+                    if (!internalTraceKey(key) && relevantKey(key)) {
                         report("BUNDLE_WRITE", "method=" + method.getName()
                                 + " key=" + key
                                 + " value=" + describeValue(chain.getArg(1))
