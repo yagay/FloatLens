@@ -317,18 +317,21 @@ final class GoogleCtsRuntimeInspector {
                     // HIDDEN alone animates the panel below the screen and leaves WebX visible for
                     // ~80-220ms. Hide the actual InfoPanelView immediately, then also feed HIDDEN
                     // into Google's state machine so its internal bottom-sheet state stays sane.
-                    int hiddenViews = forceGoogleInfoPanelGone(chain.getThisObject());
+                    int hiddenBefore = forceGoogleInfoPanelGone(chain.getThisObject());
                     Object requested = chain.getArg(0);
                     Object[] args = chain.getArgs().toArray();
                     args[0] = hiddenState;
+                    Object result = chain.proceed(args);
+                    int hiddenAfter = forceGoogleInfoPanelGone(chain.getThisObject());
                     report("GOOGLE_INFO_PANEL_SUPPRESSED",
                             "controller=dqqt.z requested="
                                     + (requested == null ? "null" : String.valueOf(requested))
-                                    + " forced=HIDDEN goneViews=" + hiddenViews
+                                    + " forced=HIDDEN goneBefore=" + hiddenBefore
+                                    + " goneAfter=" + hiddenAfter
                                     + " textLen="
                                     + (bridgeSelectionText == null ? 0
                                     : bridgeSelectionText.length()));
-                    return chain.proceed(args);
+                    return result;
                 });
                 count++;
             }
