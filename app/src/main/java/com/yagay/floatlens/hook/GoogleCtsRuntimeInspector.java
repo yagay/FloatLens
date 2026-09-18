@@ -579,7 +579,7 @@ final class GoogleCtsRuntimeInspector {
 
     private boolean captureContextualSearchFrame(Intent intent) {
         if (!active() || intent == null
-                || !GoogleCtsContract.CONTEXTUAL_SEARCH_ACTION.equals(intent.getAction())) {
+                || !GoogleCtsContract.isContextualSearchAction(intent.getAction())) {
             return false;
         }
         Bundle extras = intent.getExtras();
