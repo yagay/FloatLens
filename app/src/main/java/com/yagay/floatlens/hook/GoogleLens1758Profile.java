@@ -48,6 +48,10 @@ final class GoogleLens1758Profile {
             "com.google.android.libraries.lens.view.infopanel.InfoPanelView";
     static final String OMNIBOX_VIEW =
             "com.google.android.libraries.lens.view.omnibox.OmniBoxView";
+    static final String FROZEN_IMAGE_VIEW =
+            "com.google.android.libraries.lens.view.frozenimage.FrozenImageView";
+    static final String VIEWPORT_CONTROLLER = "duec";
+    static final String VIEWPORT_REQUEST = "dudp";
     static final String REGION_SELECTION = "dtln";
     static final String WORD_SELECTION = "dtlr";
     static final String ABSENT_OPTIONAL_HOLDER = "fxqw";
@@ -222,6 +226,15 @@ final class GoogleLens1758Profile {
 
     static boolean isDirectRegionSelectionClass(String className) {
         return REGION_SELECTION.equals(className);
+    }
+
+    static boolean shouldSuppressTextViewportFocus(boolean selectionSeen, String selectedText,
+                                                   String requestClass, boolean hasBounds) {
+        return selectionSeen
+                && selectedText != null
+                && !selectedText.isBlank()
+                && VIEWPORT_REQUEST.equals(requestClass)
+                && hasBounds;
     }
 
     static boolean shouldCommitNonTextSelection(boolean selectionSeen, String selectedText,
