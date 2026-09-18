@@ -1,9 +1,11 @@
 package com.yagay.floatlens.hook;
 
 import android.content.SharedPreferences;
+import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Log;
 
+import com.yagay.floatlens.GoogleCtsContract;
 import com.yagay.floatlens.LsposedRuntimeConfig;
 
 import io.github.libxposed.api.XposedInterface;
@@ -67,6 +69,10 @@ final class LsposedRuntimeProvider {
     }
 
     String googleCtsArmedToken() {
+        return googleCtsArmedToken(null);
+    }
+
+    String googleCtsArmedToken(Bundle observedExtras) {
         if (!active || preferences == null) return "";
         try {
             long now = SystemClock.elapsedRealtime();
@@ -76,8 +82,23 @@ final class LsposedRuntimeProvider {
                     LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED, 0L);
             long until = preferences.getLong(
                     LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL, 0L);
-            return LsposedRuntimeConfig.isGoogleCtsFallbackArmed(
-                    active, token, trigger, until, now) ? token : "";
+            if (!LsposedRuntimeConfig.isGoogleCtsFallbackArmed(
+                    active, token, trigger, until, now)) {
+                return "";
+            }
+
+            boolean hasInvocation = observedExtras != null
+                    && observedExtras.containsKey(GoogleCtsContract.K_INVOCATION_TIME);
+            long observedInvocation = hasInvocation
+                    ? observedExtras.getLong(GoogleCtsContract.K_INVOCATION_TIME, -1L) : -1L;
+            boolean hasEntryPoint = observedExtras != null
+                    && observedExtras.containsKey(GoogleCtsContract.K_OMNI_ENTRY_POINT);
+            int observedEntryPoint = hasEntryPoint
+                    ? observedExtras.getInt(GoogleCtsContract.K_OMNI_ENTRY_POINT, -1) : -1;
+
+            return LsposedRuntimeConfig.matchesGoogleCtsFallbackInvocation(
+                    trigger, hasInvocation, observedInvocation,
+                    hasEntryPoint, observedEntryPoint) ? token : "";
         } catch (Throwable t) {
             module.log(Log.WARN, TAG,
                     "Failed to read Google CTS armed session in " + displayProcess(), t);
