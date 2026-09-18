@@ -76,6 +76,14 @@
         <service android:name=".FloatService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Persistent user-controlled floating gesture button" />
         </service>
+        <provider
+            android:name=".GoogleCtsBridgeProvider"
+            android:authorities="${applicationId}.googlebridge"
+            android:exported="true"
+            android:grantUriPermissions="false" />
+        <receiver
+            android:name=".GoogleCtsBridgeReceiver"
+            android:exported="true" />
         <receiver
             android:name=".GoogleCtsTraceReceiver"
             android:exported="true" />
