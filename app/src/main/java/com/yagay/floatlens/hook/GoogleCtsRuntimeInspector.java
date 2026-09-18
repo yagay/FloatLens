@@ -94,9 +94,11 @@ final class GoogleCtsRuntimeInspector {
         hooks += hookGoogle1758OmnientBoundary();
         hooks += hookGoogleNativeRenderedPresentationData();
         hooks += hookGoogleFixedSelectionChips();
+        hooks += hookGoogleLensActionMenuController();
+        hooks += hookGoogleLensInfoPanelController();
         hooks += hookGoogle1758LensSelectionBoundary();
-        hooks += hookGoogleTextFloatingToolbar();
-        hooks += hookGoogleMaterialFloatingToolbar();
+        // v169 device/APK analysis proved the visible menu is Lens' own ActionMenuView,
+        // not framework/Material FloatingToolbar. Keep those old experiments uninstalled.
         hooks += hookGoogleWindowInspector();
         hooks += hookVoiceSessionShow();
         hooks += hookVoiceScreenshot();
@@ -209,6 +211,118 @@ final class GoogleCtsRuntimeInspector {
         } catch (Throwable t) {
             module.log(Log.WARN, TAG,
                     "Google native presentation constructor boundary unavailable", t);
+            return 0;
+        }
+    }
+
+    /**
+     * Google 17.58 classes8.dex:
+     * dscu.q(dtqi) resolves "action_menu_fragment" -> dokt.a() -> dokz.f().
+     * dokz.f() is therefore the actual Lens ActionMenuView presentation boundary. Suppress only
+     * FloatLens-owned text sessions; Google's OCR, selection highlight and DRAG_TEXT_HANDLE live
+     * outside this controller and continue normally.
+     */
+    private int hookGoogleLensActionMenuController() {
+        try {
+            Class<?> controller = Class.forName("dokz", false, classLoader);
+            int count = 0;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
+                if (!(executable instanceof Method method)) continue;
+                if (!"f".equals(method.getName())
+                        || method.getParameterCount() != 0
+                        || method.getReturnType() != void.class) {
+                    continue;
+                }
+
+                module.hook(method).intercept(chain -> {
+                    if (!active() || !bridgeSelectionSeen
+                            || bridgeSelectionText == null
+                            || bridgeSelectionText.isBlank()) {
+                        return chain.proceed();
+                    }
+
+                    report("GOOGLE_ACTION_MENU_SUPPRESSED",
+                            "controller=dokz.f textLen=" + bridgeSelectionText.length()
+                                    + " bounds=" + String.valueOf(bridgeSelectionBounds));
+                    // Do not call the original. The selected-word overlay and resize handles are
+                    // owned by other Lens controllers; this method only builds/positions the
+                    // ActionMenuView (Copy/Translate/overflow).
+                    return null;
+                });
+                count++;
+            }
+            module.log(Log.INFO, TAG,
+                    "Google Lens ActionMenu controller hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google Lens ActionMenu controller unavailable", t);
+            return 0;
+        }
+    }
+
+    /**
+     * Google 17.58 classes8.dex:
+     * dqsi.e == HIDDEN and dqqt.z(dqsi,int) directly drives InfoPanelView/
+     * LensResultPanelBottomsheetBehavior. Rewrite only FloatLens-owned text sessions to HIDDEN so
+     * the Web LRP/SearchBox/bottom-sheet disappears while the Lens selection overlay stays alive.
+     */
+    private int hookGoogleLensInfoPanelController() {
+        try {
+            Class<?> controller = Class.forName("dqqt", false, classLoader);
+            Class<?> panelState = Class.forName("dqsi", false, classLoader);
+            Field hiddenField = panelState.getDeclaredField("e");
+            hiddenField.setAccessible(true);
+            Object hiddenState = hiddenField.get(null);
+            if (hiddenState == null) {
+                module.log(Log.WARN, TAG,
+                        "Google Lens InfoPanel HIDDEN state unavailable");
+                return 0;
+            }
+
+            int count = 0;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
+                if (!(executable instanceof Method method)) continue;
+                Class<?>[] params = method.getParameterTypes();
+                if (!"z".equals(method.getName())
+                        || params.length != 2
+                        || params[0] != panelState
+                        || params[1] != int.class
+                        || method.getReturnType() != void.class) {
+                    continue;
+                }
+
+                module.hook(method).intercept(chain -> {
+                    if (!active() || !bridgeSelectionSeen
+                            || bridgeSelectionText == null
+                            || bridgeSelectionText.isBlank()) {
+                        return chain.proceed();
+                    }
+
+                    Object requested = chain.getArg(0);
+                    if (requested == hiddenState) {
+                        return chain.proceed();
+                    }
+
+                    Object[] args = chain.getArgs().toArray();
+                    args[0] = hiddenState;
+                    report("GOOGLE_INFO_PANEL_HIDDEN",
+                            "controller=dqqt.z requested="
+                                    + (requested == null ? "null" : String.valueOf(requested))
+                                    + " forced=HIDDEN textLen="
+                                    + bridgeSelectionText.length());
+                    // Proceed with Google's own method using HIDDEN instead of simply setting the
+                    // View GONE ourselves; this keeps its bottom-sheet/internal state consistent.
+                    return chain.proceed(args);
+                });
+                count++;
+            }
+            module.log(Log.INFO, TAG,
+                    "Google Lens InfoPanel controller hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google Lens InfoPanel controller unavailable", t);
             return 0;
         }
     }
