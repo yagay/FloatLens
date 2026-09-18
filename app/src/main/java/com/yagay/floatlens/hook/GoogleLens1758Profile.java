@@ -40,6 +40,15 @@ final class GoogleLens1758Profile {
     static final String IMMUTABLE_LIST = "com.google.common.collect.ImmutableList";
     static final String OPTIONAL = "fxsy";            // Google/Guava optional wrapper
     static final String ACTION_MENU_CONTROLLER = "dokz";
+    static final String ACTION_MENU_VIEW =
+            "com.google.android.libraries.lens.view.actionmenu.ActionMenuView";
+    static final String INFO_PANEL_CONTROLLER = "dqqt";
+    static final String INFO_PANEL_OWNER = "dqpx";
+    static final String INFO_PANEL_VIEW =
+            "com.google.android.libraries.lens.view.infopanel.InfoPanelView";
+    static final String REGION_SELECTION = "dtln";
+    static final String WORD_SELECTION = "dtlr";
+    static final String ABSENT_OPTIONAL_HOLDER = "fxqw";
     static final String TEXT_SELECTION = "dtvz";
     static final String TEXT_SELECTION_RANGE = "dnqv";
     static final String WORD_BOX = "dnqw";
@@ -209,6 +218,10 @@ final class GoogleLens1758Profile {
         return selectionSeen;
     }
 
+    static boolean isDirectRegionSelectionClass(String className) {
+        return REGION_SELECTION.equals(className);
+    }
+
     static boolean shouldCommitNonTextSelection(boolean selectionSeen, String selectedText,
                                                 boolean complete, boolean interactionPresent) {
         return selectionSeen
@@ -219,7 +232,7 @@ final class GoogleLens1758Profile {
 
     static SelectionSnapshot selection(Object metadata) {
         if (metadata == null) {
-            return new SelectionSnapshot("", null, null, "metadata=null");
+            return new SelectionSnapshot("", null, null, "", "metadata=null");
         }
 
         Object userSelection = readField(metadata, "a", USER_SELECTION);
@@ -229,7 +242,7 @@ final class GoogleLens1758Profile {
             String text = selectedTextFromString(raw);
             RectF rawBounds = selectionBoundsFromString(raw);
             return new SelectionSnapshot(text, absoluteRect(rawBounds), rawBounds,
-                    "metadataClass=" + metadata.getClass().getName()
+                    "", "metadataClass=" + metadata.getClass().getName()
                             + " userSelection=unavailable raw=" + raw);
         }
 
@@ -277,7 +290,8 @@ final class GoogleLens1758Profile {
         if (gesture != null) detail.append(" gesture=").append(compact(gesture, 500));
         if (drawing != null) detail.append(" drawing=").append(compact(drawing, 700));
         detail.append(" selection=").append(rawSelection);
-        return new SelectionSnapshot(text, bounds, rawBounds, detail.toString());
+        return new SelectionSnapshot(text, bounds, rawBounds,
+                userSelection.getClass().getName(), detail.toString());
     }
 
     static PendingSnapshot pending(Object pending) {
@@ -556,6 +570,19 @@ final class GoogleLens1758Profile {
         if (selected instanceof String s) return s.trim();
         String value = firstString(selected);
         return value == null ? "" : value.trim();
+    }
+
+    static Object absentOptional(ClassLoader loader) {
+        if (loader == null) return null;
+        try {
+            Class<?> holder = Class.forName(ABSENT_OPTIONAL_HOLDER, false, loader);
+            Field field = holder.getDeclaredField("a");
+            field.setAccessible(true);
+            Object value = field.get(null);
+            return value != null && hasTypeInHierarchy(value.getClass(), OPTIONAL) ? value : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private static RectF wordBoxUnionBounds(Object userSelection) {
@@ -894,18 +921,27 @@ final class GoogleLens1758Profile {
         private final String text;
         private final Rect bounds;
         private final RectF rawBounds;
+        private final String userSelectionClass;
         private final String detail;
 
-        SelectionSnapshot(String text, Rect bounds, RectF rawBounds, String detail) {
+        SelectionSnapshot(String text, Rect bounds, RectF rawBounds,
+                          String userSelectionClass, String detail) {
             this.text = text == null ? "" : text;
             this.bounds = bounds == null ? null : new Rect(bounds);
             this.rawBounds = rawBounds == null ? null : new RectF(rawBounds);
+            this.userSelectionClass = userSelectionClass == null ? "" : userSelectionClass;
             this.detail = detail == null ? "" : detail;
         }
 
         String text() { return text; }
 
         Rect bounds() { return bounds == null ? null : new Rect(bounds); }
+
+        String userSelectionClass() { return userSelectionClass; }
+
+        boolean isDirectRegionSelection() {
+            return isDirectRegionSelectionClass(userSelectionClass);
+        }
 
         Rect boundsForFrame(int width, int height) {
             if (bounds != null) return new Rect(bounds);
