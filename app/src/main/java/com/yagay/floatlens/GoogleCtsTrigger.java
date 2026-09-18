@@ -49,7 +49,8 @@ final class GoogleCtsTrigger {
                 "remote=" + remoteArmed + " session=" + token.substring(0, 8)
                         + " fallbackMs=" + LsposedRuntimeConfig.GOOGLE_CTS_FALLBACK_WINDOW_MS);
         args.putLong(GoogleCtsContract.K_INVOCATION_TIME, nowElapsed);
-        args.putInt(GoogleCtsContract.K_OMNI_ENTRY_POINT, 1);
+        args.putInt(GoogleCtsContract.K_OMNI_ENTRY_POINT,
+                LsposedRuntimeConfig.GOOGLE_CTS_EXPECTED_OMNI_ENTRY_POINT);
         args.putBoolean(GoogleCtsContract.K_TRIGGER, true);
         args.putString(GoogleCtsContract.K_SESSION_TOKEN, token);
 
@@ -77,7 +78,9 @@ final class GoogleCtsTrigger {
             boolean ok = Boolean.TRUE.equals(result);
             DiagnosticLog.i(app, "GOOGLE_CTS_TRIGGER",
                     "result=" + ok + " session=" + token.substring(0, 8)
-                            + " entryPoint=1 flags=" + CTS_SHOW_FLAGS);
+                            + " entryPoint="
+                            + LsposedRuntimeConfig.GOOGLE_CTS_EXPECTED_OMNI_ENTRY_POINT
+                            + " flags=" + CTS_SHOW_FLAGS);
             if (!ok) {
                 fs.clearGoogleCtsSession();
                 LsposedStatusManager.clearGoogleCtsSessionRemote(token);
