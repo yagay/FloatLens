@@ -22,6 +22,9 @@ public final class LsposedRuntimeConfig {
     /** Marker fallback is intentionally much shorter than the diagnostic receiver TTL. */
     public static final long GOOGLE_CTS_FALLBACK_WINDOW_MS = 5_000L;
     public static final long GOOGLE_CTS_MAX_FUTURE_MS = 10_000L;
+    /** Standard Google invocation timestamp should remain tied to the FloatLens trigger. */
+    public static final long GOOGLE_CTS_INVOCATION_MATCH_TOLERANCE_MS = 1_000L;
+    public static final int GOOGLE_CTS_EXPECTED_OMNI_ENTRY_POINT = 1;
 
     private LsposedRuntimeConfig() {}
 
@@ -50,6 +53,21 @@ public final class LsposedRuntimeConfig {
                 && age <= GOOGLE_CTS_FALLBACK_WINDOW_MS
                 && remaining >= 0L
                 && remaining <= GOOGLE_CTS_MAX_FUTURE_MS;
+    }
+
+    public static boolean matchesGoogleCtsFallbackInvocation(
+            long triggerElapsed,
+            boolean hasObservedInvocation,
+            long observedInvocationElapsed,
+            boolean hasObservedEntryPoint,
+            int observedEntryPoint) {
+        if (triggerElapsed <= 0L) return false;
+        if (hasObservedInvocation) {
+            long delta = observedInvocationElapsed - triggerElapsed;
+            if (delta < -250L || delta > GOOGLE_CTS_INVOCATION_MATCH_TOLERANCE_MS) return false;
+        }
+        return !hasObservedEntryPoint
+                || observedEntryPoint == GOOGLE_CTS_EXPECTED_OMNI_ENTRY_POINT;
     }
 
     public static boolean isSecureCaptureActive(boolean enhancedMode,
