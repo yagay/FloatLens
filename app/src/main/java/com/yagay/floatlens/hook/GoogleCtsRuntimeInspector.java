@@ -191,16 +191,19 @@ final class GoogleCtsRuntimeInspector {
                         if (active()) {
                             GoogleLens1758Profile.SelectionSnapshot selection =
                                     GoogleLens1758Profile.selection(chain.getArg(0));
+                            Rect selectionBounds = selectionBoundsForDisplay(selection);
                             bridgeSelectionSeen = true;
                             bridgeSelectionText = selection.text();
-                            bridgeSelectionBounds = selection.bounds();
+                            bridgeSelectionBounds = selectionBounds;
                             // Invalidate any pre-selection settle timer. The next accepted result
                             // must belong to this user interaction, not initial image analysis.
                             bridgeResultGeneration.incrementAndGet();
                             report("USER_SELECTION",
-                                    selection.detail() + " primary=" + chain.getArg(1));
+                                    selection.detail()
+                                            + " pixelBounds=" + String.valueOf(selectionBounds)
+                                            + " primary=" + chain.getArg(1));
                             sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
-                                    selection.text(), selection.detail(), selection.bounds());
+                                    selection.text(), selection.detail(), selectionBounds);
                         }
                         return chain.proceed();
                     });
@@ -340,6 +343,22 @@ final class GoogleCtsRuntimeInspector {
                 finalText, detail, finalBounds);
         finishMarkedGoogleActivity(reason);
         clear(reason);
+    }
+
+    private Rect selectionBoundsForDisplay(
+            GoogleLens1758Profile.SelectionSnapshot selection) {
+        if (selection == null) return null;
+        Rect direct = selection.bounds();
+        if (direct != null) return direct;
+        try {
+            Context context = currentApplicationContext();
+            if (context == null) return null;
+            android.util.DisplayMetrics metrics =
+                    context.getResources().getDisplayMetrics();
+            return selection.boundsForFrame(metrics.widthPixels, metrics.heightPixels);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private void rememberMarkedActivity(Object value) {
