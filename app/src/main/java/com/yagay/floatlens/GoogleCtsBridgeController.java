@@ -78,6 +78,10 @@ final class GoogleCtsBridgeController {
                 "selection session=" + shortToken(token)
                         + " textLen=" + selectedText.length()
                         + " bounds=" + String.valueOf(selectedBounds));
+        // Renew the independent system_server component-block lease whenever Google reports
+        // a live selection. This keeps ContextualSearchEntrypoint blocked even after long handle
+        // adjustments without extending the short startup-correlation fallback window.
+        LsposedStatusManager.renewGoogleCtsComponentBlockRemote(token);
         scheduleCleanup(app, token, state);
 
         // Google Circle has already done OCR/selection geometry at this point. Reuse the same
