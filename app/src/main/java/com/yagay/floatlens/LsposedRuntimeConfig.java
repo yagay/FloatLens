@@ -10,6 +10,7 @@ public final class LsposedRuntimeConfig {
     public static final String K_LSPOSED_ENABLED = "lsposed_enabled";
     public static final String K_SECURE_SCREENSHOT_ENABLED = "secure_screenshot_enabled";
     public static final String K_SECURE_CAPTURE_ARMED_UNTIL = "secure_capture_armed_until_elapsed";
+    public static final String K_DIAGNOSTIC_ENABLED = "diagnostic_enabled";
     public static final String K_UPDATED_AT = "updated_at";
     public static final String K_GOOGLE_CTS_SESSION_TOKEN = "google_cts_session_token_v1";
     public static final String K_GOOGLE_CTS_TRIGGER_ELAPSED = "google_cts_trigger_elapsed_v1";
@@ -17,7 +18,7 @@ public final class LsposedRuntimeConfig {
     /** Legacy v159 key retained only so current builds can scrub stale Remote Preferences. */
     public static final String K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL =
             "google_cts_component_block_until_elapsed_v1";
-    public static final int SCHEMA_VERSION = 5;
+    public static final int SCHEMA_VERSION = 6;
 
     /** Short lease: never leave secure capture armed after a stalled/aborted capture. */
     public static final long SECURE_CAPTURE_LEASE_MS = 3_000L;
