@@ -180,30 +180,13 @@ public class LensAccessibilityService extends AccessibilityService {
         if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
                 && type != AccessibilityEvent.TYPE_WINDOWS_CHANGED) return false;
 
+        // Only trust the event's own identity. TYPE_WINDOWS_CHANGED frequently arrives with no
+        // package/class while Google CTS is opening; inferring from getWindows() at that instant can
+        // still see Launcher as active and wrongly revoke a freshly armed FloatLens session.
         String pkg = eventPackage(event);
+        if (pkg == null || pkg.isBlank() || getPackageName().equals(pkg)) return false;
         String cls = eventClass(event);
-        if (isHomePackage(pkg) || isRecentsWindow(pkg, cls)) return true;
-
-        try {
-            List<AccessibilityWindowInfo> windows = getWindows();
-            if (windows != null) {
-                for (AccessibilityWindowInfo window : windows) {
-                    if (window == null || (!window.isActive() && !window.isFocused())) continue;
-                    AccessibilityNodeInfo root = null;
-                    try { root = window.getRoot(); } catch (Throwable ignored) {}
-                    String activePkg = nodePackage(root);
-                    if (isHomePackage(activePkg)) return true;
-                    String activeCls = "";
-                    try {
-                        if (root != null && root.getClassName() != null) {
-                            activeCls = root.getClassName().toString();
-                        }
-                    } catch (Throwable ignored) {}
-                    if (isRecentsWindow(activePkg, activeCls)) return true;
-                }
-            }
-        } catch (Throwable ignored) {}
-        return false;
+        return isHomePackage(pkg) || isRecentsWindow(pkg, cls);
     }
 
     private boolean isHomePackage(String pkg) {
