@@ -1,8 +1,6 @@
 package com.yagay.floatlens;
 
 import android.content.Context;
-import android.graphics.Bitmap;
-import android.graphics.Rect;
 import android.widget.Toast;
 
 /** Entry point for the FloatLens exact content-selection workflow. */
@@ -91,54 +89,6 @@ final class FLCircleController {
             Toast.makeText(app, "圈画识别截图失败: "
                     + ScreenCaptureBackend.safeMessage(error), Toast.LENGTH_LONG).show();
         });
-    }
-
-    /**
-     * Reuse the FloatLens Circle workspace with a frozen frame supplied by an external trusted
-     * system capture path. Google CTS takeover uses this so FloatLens never captures a second frame.
-     */
-    static synchronized boolean showCaptured(Context c, Bitmap bitmap, String source) {
-        if (c == null || bitmap == null || bitmap.isRecycled()
-                || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) return false;
-
-        Context app = c.getApplicationContext();
-        long gen = ++generation;
-        FLCircleInlineOverlay.dismissActive("external_restart");
-        CircleActiveBorderOverlay.hide(app, "external_restart");
-        cancelPendingLocked(app);
-
-        Rect bounds = ScreenGeometry.displayBounds(app);
-        if (bounds.isEmpty()) {
-            bounds = new Rect(0, 0, bitmap.getWidth(), bitmap.getHeight());
-        }
-
-        FLCircleCapture.Frame frame = new FLCircleCapture.Frame(bitmap, bounds);
-        String safeSource = source == null || source.isBlank() ? "external" : source;
-        DiagnosticLog.i(app, "FL_CIRCLE_EXTERNAL",
-                "start gen=" + gen
-                        + " source=" + safeSource
-                        + " bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight()
-                        + " screen=" + bounds.toShortString()
-                        + " capture=reused_system_frame secondCapture=false");
-
-        FLCircleTextResolver.preload(app, frame);
-        boolean shown = FLCircleInlineOverlay.show(app, frame, () -> {
-            FLCircleTextResolver.release(app, frame, "external_workspace_closed");
-            CircleActiveBorderOverlay.hide(app, "external_workspace_closed");
-            DiagnosticLog.i(app, "FL_CIRCLE_EXTERNAL",
-                    "finish gen=" + gen + " source=" + safeSource);
-        });
-        if (!shown) {
-            FLCircleTextResolver.release(app, frame, "external_overlay_failed");
-            frame.recycle();
-            CircleActiveBorderOverlay.hide(app, "external_overlay_failed");
-            DiagnosticLog.i(app, "FL_CIRCLE_EXTERNAL",
-                    "overlay failed gen=" + gen + " source=" + safeSource);
-            return false;
-        }
-
-        CircleActiveBorderOverlay.show(app);
-        return true;
     }
 
     private static void restore(Context app, ScreenshotHideCoordinator.Lease lease,

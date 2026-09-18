@@ -40,7 +40,6 @@ final class LsposedRuntimeProvider {
                         || LsposedRuntimeConfig.K_ENHANCED_MODE.equals(key)
                         || LsposedRuntimeConfig.K_LSPOSED_ENABLED.equals(key)
                         || LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED.equals(key)
-                        || LsposedRuntimeConfig.K_GOOGLE_CTS_CAPTURE_ONLY_ENABLED.equals(key)
                         || LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL.equals(key)) {
                     refresh();
                 }
@@ -62,17 +61,6 @@ final class LsposedRuntimeProvider {
 
     boolean isActive() {
         return active;
-    }
-
-    boolean isGoogleCtsCaptureOnlyEnabled() {
-        if (!active || preferences == null) return false;
-        try {
-            return LsposedRuntimeConfig.isGoogleCtsCaptureOnlyEnabled(preferences);
-        } catch (Throwable t) {
-            module.log(Log.ERROR, TAG,
-                    "Failed to read Google CTS takeover config in " + displayProcess(), t);
-            return false;
-        }
     }
 
     /** Read live Remote Preferences on every capture call so lease expiry never depends on listener timing. */

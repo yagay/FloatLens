@@ -42,11 +42,13 @@ FLCircleController
 
 Direct 仍然可以使用 Accessibility 的真实 `node.getText()`；这是 Direct View 提取功能，与普通 OCR / Circle OCR 路径分开。普通“OCR/提取文字”动作统一进入截图 OCR 区域选择器，不再维护第二套全屏 View picker。显式“区域 View 文字”只存在于区域编辑器，并由 `RegionContentResolver` 负责。
 
-## Google Circle to Search 接管（LSPosed，可选）
+## Google Circle to Search：只 Hook FloatLens 发起的会话
 
-Android 15/16 上，FloatLens 的 `GoogleCts*` 链路 Hook Android `system_server` 的 Contextual Search 启动边界，而不是依赖 Google App 内部混淆类。系统生成冻结截图后，Hook 只在目标确认为 `com.google.android.googlequicksearchbox` 且“仅抓屏，不搜索”开关开启时接管：把系统截图交给 `GoogleCtsBridgeActivity`，再直接复用 `FLCircle*` 工作区。只有桥接 Activity 成功启动后才阻断原 Google 搜索；截图缺失、OEM 方法不兼容或桥接失败时全部 fail-open，继续原始 Google 圈画。
+Google CTS 与 `FLCircle*` 完全独立。MiCTS 只作为 **CTS 触发方式** 的参考：FloatLens 在 Google 模式下调用 VoiceInteractionManagerService，并额外写入 `floatlens_trigger=true` 与一次性 `floatlens_session_token`。
 
-这条链路与 FloatLens 自研圈画保持隔离：`GoogleCts*` 只负责 Google/Android CTS 的入口接管和系统截图转交，文字 OCR、圈选、截图裁剪和结果 UI 仍由现有 `FLCircle*` / `Circle*` owner 负责。主路径只需要 LSPosed 的 `system` 作用域，不需要把 Google App 加入作用域。
+Google App 侧的 LSPosed Hook 不接管系统 Home / 小白条入口。它同时识别两种 Android CTS 入口：VIS 路径从 `VoiceInteractionSession` 的 show Bundle 读取 FloatLens 标记；CSHelper / Contextual Search 路径从 Google Omnient Activity 的启动 Intent 读取同一标记。只有带 FloatLens 标记的会话才进入 Google CTS 运行时 Inspector；没有标记的 Google 原生会话全部直接放行。
+
+当前 Inspector 会在一次 FloatLens Google 圈画会话中记录：Google CTS Activity / VoiceInteractionSession 实现类、系统截图回调、Omnient/Lens/Contextual 相关动态类加载、与 selection/query/text/image/region/crop 等相关的 Bundle / Intent 写入，以及搜索 Activity dispatch。它不会在未确认真实 selection → search 边界前做全局拦截。
 
 ## 统一架构原则
 

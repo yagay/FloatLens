@@ -26,6 +26,8 @@ public final class FloatSettings {
     public static final String K_KEEP_STATUS_BAR = "screen_capture_keep_noti_bar";
     public static final String K_KEEP_NAVIGATION_BAR = "screen_capture_keep_navigation_bar_v1";
     public static final String K_ACCESSIBILITY_SCREENSHOT = "screen_capture_accessibility";
+    /** 0=FloatLens native circle, 1=Google Circle to Search (FloatLens-marked session). */
+    public static final String K_CIRCLE_ENGINE = "circle_engine_v1";
     public static final String K_CIRCLE_BORDER_ENABLED = "circle_active_border_enabled_v1";
     public static final String K_CIRCLE_BORDER_COLOR = "circle_active_border_color_v1";
     public static final String K_CIRCLE_BORDER_WIDTH_DP = "circle_active_border_width_dp_v1";
@@ -74,7 +76,6 @@ public final class FloatSettings {
     public static final String K_ROOT_ENABLED = "privilege_root_enabled_v1";
     public static final String K_LSPOSED_ENABLED = "privilege_lsposed_enabled_v1";
     public static final String K_LSPOSED_SECURE_SCREENSHOT = "lsposed_secure_screenshot_v1";
-    public static final String K_LSPOSED_GOOGLE_CTS_CAPTURE_ONLY = "lsposed_google_cts_capture_only_v1";
     public static final String K_PRIVILEGE_FALLBACK = "privilege_fallback_normal_v1";
     public static final String K_ROOT_LAST_GRANTED = "privilege_root_last_granted_v1";
     public static final String K_ROOT_LAST_CHECK = "privilege_root_last_check_ms_v1";
@@ -152,6 +153,7 @@ public final class FloatSettings {
     public boolean keepStatusBarInScreenshot() { return p.getBoolean(K_KEEP_STATUS_BAR, true); }
     public boolean keepNavigationBarInScreenshot() { return p.getBoolean(K_KEEP_NAVIGATION_BAR, false); }
     public boolean accessibilityScreenshot() { return p.getBoolean(K_ACCESSIBILITY_SCREENSHOT, true); }
+    public int circleEngine() { return clamp(p.getInt(K_CIRCLE_ENGINE, 0), 0, 1); }
     public boolean circleBorderEnabled() { return p.getBoolean(K_CIRCLE_BORDER_ENABLED, true); }
     public int circleBorderColor() { return p.getInt(K_CIRCLE_BORDER_COLOR, DEFAULT_CIRCLE_BORDER_COLOR); }
     public int circleBorderWidthDp() { return clamp(p.getInt(K_CIRCLE_BORDER_WIDTH_DP, 3), 1, 8); }
@@ -181,7 +183,6 @@ public final class FloatSettings {
     public boolean rootEnabled() { return p.getBoolean(K_ROOT_ENABLED, false); }
     public boolean lsposedEnabled() { return p.getBoolean(K_LSPOSED_ENABLED, false); }
     public boolean lsposedSecureScreenshot() { return p.getBoolean(K_LSPOSED_SECURE_SCREENSHOT, false); }
-    public boolean lsposedGoogleCtsCaptureOnly() { return p.getBoolean(K_LSPOSED_GOOGLE_CTS_CAPTURE_ONLY, false); }
     public boolean privilegeFallback() { return p.getBoolean(K_PRIVILEGE_FALLBACK, true); }
     public boolean canUseRoot() { return enhancedMode() && rootEnabled(); }
     public boolean canUseLsposed() { return PrivilegeManager.canUseLsposed(this); }

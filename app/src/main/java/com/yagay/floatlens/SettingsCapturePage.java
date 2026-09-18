@@ -26,13 +26,18 @@ final class SettingsCapturePage {
                 FloatSettings.K_ACCESSIBILITY_SCREENSHOT, fs.accessibilityScreenshot());
         AppUi.addSection(root, capture);
 
+        AppUi.Section circleEngine = AppUi.section(activity, "圈画引擎",
+                "两套圈画完全分开。Google 模式只接管由 FloatLens 主动触发并带会话标记的 Google 圈画；系统长按 Home / 小白条仍使用 Google 原生流程。" );
+        ui.circleEngineSpinner(circleEngine.body);
+        AppUi.addSection(root, circleEngine);
+
         AppUi.Section circleBorder = AppUi.section(activity, "圈画激活提示",
                 "边框圆角会根据当前设备和屏幕方向自动适配；它只用于提示激活状态，FloatLens 截图时会自动隐藏。" );
         CircleBorderSettingsUi.add(activity, fs, circleBorder.body);
         AppUi.addSection(root, circleBorder);
 
-        AppUi.Section circleOcr = AppUi.section(activity, "圈画 OCR",
-                "整屏识别负责建立冻结画面的完整文字索引；局部校正会在每次 TAP / 划线 / 涂抹时重新识别手势附近区域。两者结果一致时继续使用整屏结果，不一致时采用局部校正结果。" );
+        AppUi.Section circleOcr = AppUi.section(activity, "FloatLens 圈画 OCR",
+                "以下 OCR 设置只用于 FloatLens 原生圈画；Google 圈画模式使用 Google 自己的识别、圈选和目标分析。" );
         ui.circleFullOcrEngineSpinner(circleOcr.body);
         ui.circleCorrectionEngineSpinner(circleOcr.body);
         AppUi.addSection(root, circleOcr);

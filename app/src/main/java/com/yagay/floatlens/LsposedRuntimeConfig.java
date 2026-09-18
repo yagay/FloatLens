@@ -9,7 +9,6 @@ public final class LsposedRuntimeConfig {
     public static final String K_ENHANCED_MODE = "enhanced_mode";
     public static final String K_LSPOSED_ENABLED = "lsposed_enabled";
     public static final String K_SECURE_SCREENSHOT_ENABLED = "secure_screenshot_enabled";
-    public static final String K_GOOGLE_CTS_CAPTURE_ONLY_ENABLED = "google_cts_capture_only_enabled";
     public static final String K_SECURE_CAPTURE_ARMED_UNTIL = "secure_capture_armed_until_elapsed";
     public static final String K_UPDATED_AT = "updated_at";
     public static final int SCHEMA_VERSION = 4;
@@ -30,11 +29,6 @@ public final class LsposedRuntimeConfig {
         return isEnabled(
                 preferences.getBoolean(K_ENHANCED_MODE, false),
                 preferences.getBoolean(K_LSPOSED_ENABLED, false));
-    }
-
-    public static boolean isGoogleCtsCaptureOnlyEnabled(SharedPreferences preferences) {
-        return isEnabled(preferences)
-                && preferences.getBoolean(K_GOOGLE_CTS_CAPTURE_ONLY_ENABLED, false);
     }
 
     public static boolean isSecureCaptureActive(boolean enhancedMode,

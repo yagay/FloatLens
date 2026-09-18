@@ -109,6 +109,13 @@ final class SettingsPageUi {
         }, fs.ocrEngineMode(), FloatSettings.K_OCR_ENGINE, true);
     }
 
+    void circleEngineSpinner(LinearLayout parent) {
+        addIntPreferenceSpinner(parent, "圈画引擎", new String[]{
+                "FloatLens 原生圈画",
+                "Google 圈画（FloatLens 会话 Hook）"
+        }, fs.circleEngine(), FloatSettings.K_CIRCLE_ENGINE, true);
+    }
+
     void circleFullOcrEngineSpinner(LinearLayout parent) {
         addIntPreferenceSpinner(parent, "整屏识别引擎", new String[]{
                 "ML Kit 快速",

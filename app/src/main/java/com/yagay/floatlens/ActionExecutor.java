@@ -29,9 +29,20 @@ public final class ActionExecutor {
                 ScreenshotController.captureForOcr(c);
             }
             case ActionId.AI_SCREEN -> {
-                OcrEngine.invalidatePending(c, "action_fl_circle");
-                DiagnosticLog.i(c, "AI_SCREEN", "enter cached-full-OCR circle workspace");
-                FLCircleController.show(c);
+                FloatSettings fs = new FloatSettings(c);
+                if (fs.circleEngine() == 1) {
+                    DiagnosticLog.i(c, "AI_SCREEN", "engine=google_cts source=floatlens");
+                    boolean launched = GoogleCtsTrigger.trigger(c);
+                    if (!launched && fs.privilegeFallback()) {
+                        DiagnosticLog.i(c, "AI_SCREEN", "google trigger failed; fallback=fl_circle");
+                        OcrEngine.invalidatePending(c, "action_fl_circle_fallback");
+                        FLCircleController.show(c);
+                    }
+                } else {
+                    OcrEngine.invalidatePending(c, "action_fl_circle");
+                    DiagnosticLog.i(c, "AI_SCREEN", "engine=fl_circle");
+                    FLCircleController.show(c);
+                }
             }
             case ActionId.MOVE_ICON -> {
                 FloatService f = FloatService.get();

@@ -50,13 +50,6 @@
             android:launchMode="singleTop"
             android:taskAffinity="" />
         <activity
-            android:name=".GoogleCtsBridgeActivity"
-            android:theme="@style/Theme.FloatLens.ShadeDismiss"
-            android:exported="false"
-            android:excludeFromRecents="true"
-            android:noHistory="true"
-            android:taskAffinity="" />
-        <activity
             android:name=".ShadeDismissActivity"
             android:theme="@style/Theme.FloatLens.ShadeDismiss"
             android:exported="false"
