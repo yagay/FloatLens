@@ -87,6 +87,20 @@ public final class PrivilegeSettingsPanel {
         lsposedSwitch.setEnabled(PrivilegeManager.lsposedProviderAvailable());
         AppUi.addRow(lsposedSection.body, AppUi.switchContainer(lsposedSwitch));
 
+        SwitchMaterial googleCircleSwitch = AppUi.switchRow(activity,
+                "启用 Google 圈画",
+                "开启后 FloatLens 的圈画动作改用 Google Circle to Search；只处理 FloatLens 主动发起并带会话标记的 Google 圈画，系统 Home / 小白条原生 Google 圈画不受影响。需要 Google App 已加入 LSPosed 作用域并加载当前模块版本。",
+                fs.circleEngine() == 1,
+                (button, checked) -> {
+                    fs.setInt(FloatSettings.K_CIRCLE_ENGINE, checked ? 1 : 0);
+                    DiagnosticLog.i(activity, "PRIVILEGE",
+                            "setting " + FloatSettings.K_CIRCLE_ENGINE + "=" + (checked ? 1 : 0));
+                    LsposedStatusManager.refreshAsync();
+                    refresh(activity, fs, modeStatus, rootStatus);
+                    refreshLsposed(activity, lsposedStatus);
+                });
+        AppUi.addRow(lsposedSection.body, AppUi.switchContainer(googleCircleSwitch));
+
         SwitchMaterial secureScreenshotSwitch = preferenceSwitch(activity, fs,
                 "LSPosed 安全窗口截图增强",
                 "仅 FloatLens 截图时建立短时授权；需要增强模式、LSPosed Provider 和 system_server 已实际加载模块。不会永久移除 FLAG_SECURE。",
@@ -210,13 +224,17 @@ public final class PrivilegeSettingsPanel {
         String framework = s.frameworkName.isBlank() ? "Xposed" : s.frameworkName;
         String version = s.frameworkVersion.isBlank() ? "" : " " + s.frameworkVersion;
         String scopeLine = "作用域：system " + yesNo(s.systemScopeEnabled)
-                + " · SystemUI " + yesNo(s.systemUiScopeEnabled);
+                + " · SystemUI " + yesNo(s.systemUiScopeEnabled)
+                + " · Google App " + yesNo(s.googleScopeEnabled());
         String loadedLine = "实际加载：系统框架 " + loaded(s.systemLoaded)
                 + " · SystemUI " + loaded(s.systemUiLoaded);
         String remoteLine = "配置通道：" + (s.remoteConfigReady ? "已同步" : "不可用")
                 + " · Provider " + (s.remoteProviderEnabled() ? "已开启" : "已关闭");
         String secureLine = "安全窗口截图：" + (s.remoteSecureScreenshotEnabled ? "已启用" : "未启用")
                 + " · 短时授权 " + (s.remoteSecureCaptureArmed() ? "进行中" : "空闲");
+        String googleLine = "Google 圈画：" + (new FloatSettings(activity).circleEngine() == 1 ? "已启用" : "未启用")
+                + " · Hook " + (s.googleTargetLoaded() ? "当前版本已加载"
+                : (s.googleTargetStale() ? "旧版本 STALE" : "未加载"));
         String updatedLine = s.remoteUpdatedAt <= 0L ? ""
                 : " · " + DateFormat.format("HH:mm:ss", s.remoteUpdatedAt);
         String processLine = s.runningProcesses.isEmpty()
@@ -226,6 +244,7 @@ public final class PrivilegeSettingsPanel {
         status.setText("框架服务：已连接 " + framework + version + " · API " + s.apiVersion
                 + "\n" + remoteLine + updatedLine
                 + "\n" + secureLine
+                + "\n" + googleLine
                 + "\n" + scopeLine
                 + "\n" + loadedLine
                 + "\n" + processLine

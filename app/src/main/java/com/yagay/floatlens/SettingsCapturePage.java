@@ -8,7 +8,7 @@ final class SettingsCapturePage {
     static LinearLayout build(SettingsActivity activity, FloatSettings fs) {
         SettingsPageUi ui = new SettingsPageUi(activity, fs);
         LinearLayout root = AppUi.pageRoot(activity, "截图与 OCR",
-                "普通截图 OCR 与圈画 OCR 分开设置。圈画可以独立选择整屏识别引擎和局部校正引擎；只读取冻结截图，不读取 Accessibility / View 文字。Root / LSPosed 增强开关统一放在“高级权限”中。" );
+                "普通截图 OCR 与 FloatLens 原生圈画 OCR 分开设置。Google 圈画开关已移到“高级权限 → LSPosed”中；本页只保留截图与 FloatLens 原生 OCR 设置。" );
 
         AppUi.Section capture = AppUi.section(activity, "截图",
                 "状态栏与导航栏范围同时作用于普通截图、OCR 区域截图和圈画模式。" );
@@ -26,10 +26,6 @@ final class SettingsCapturePage {
                 FloatSettings.K_ACCESSIBILITY_SCREENSHOT, fs.accessibilityScreenshot());
         AppUi.addSection(root, capture);
 
-        AppUi.Section circleEngine = AppUi.section(activity, "圈画引擎",
-                "两套圈画完全分开。Google 模式只接管由 FloatLens 主动触发并带会话标记的 Google 圈画；系统长按 Home / 小白条仍使用 Google 原生流程。" );
-        ui.circleEngineSpinner(circleEngine.body);
-        AppUi.addSection(root, circleEngine);
 
         AppUi.Section circleBorder = AppUi.section(activity, "圈画激活提示",
                 "边框圆角会根据当前设备和屏幕方向自动适配；它只用于提示激活状态，FloatLens 截图时会自动隐藏。" );
