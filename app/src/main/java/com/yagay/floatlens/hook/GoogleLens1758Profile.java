@@ -52,6 +52,8 @@ final class GoogleLens1758Profile {
             "com.google.android.libraries.lens.view.frozenimage.FrozenImageView";
     static final String VIEWPORT_CONTROLLER = "duec";
     static final String VIEWPORT_REQUEST = "dudp";
+    static final String VIEWPORT_STATE = "dsyc";
+    static final int VIEWPORT_SOURCE_TEXT = 1;
     static final String REGION_SELECTION = "dtln";
     static final String WORD_SELECTION = "dtlr";
     static final String ABSENT_OPTIONAL_HOLDER = "fxqw";
@@ -228,12 +230,10 @@ final class GoogleLens1758Profile {
         return REGION_SELECTION.equals(className);
     }
 
-    static boolean shouldSuppressTextViewportFocus(boolean selectionSeen, String selectedText,
-                                                   String requestClass, boolean hasBounds) {
-        return selectionSeen
-                && selectedText != null
-                && !selectedText.isBlank()
-                && VIEWPORT_REQUEST.equals(requestClass)
+    static boolean shouldSuppressTextViewportFocus(String requestClass, int source,
+                                                   boolean hasBounds) {
+        return VIEWPORT_REQUEST.equals(requestClass)
+                && source == VIEWPORT_SOURCE_TEXT
                 && hasBounds;
     }
 
