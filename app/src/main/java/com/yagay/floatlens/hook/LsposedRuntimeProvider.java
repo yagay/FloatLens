@@ -45,7 +45,8 @@ final class LsposedRuntimeProvider {
                         || LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL.equals(key)
                         || LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN.equals(key)
                         || LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED.equals(key)
-                        || LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL.equals(key)) {
+                        || LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL.equals(key)
+                        || LsposedRuntimeConfig.K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL.equals(key)) {
                     refresh();
                 }
             };
@@ -102,6 +103,22 @@ final class LsposedRuntimeProvider {
         } catch (Throwable t) {
             module.log(Log.WARN, TAG,
                     "Failed to read Google CTS armed session in " + displayProcess(), t);
+            return "";
+        }
+    }
+
+    String googleCtsComponentBlockToken() {
+        if (!active || preferences == null) return "";
+        try {
+            String token = preferences.getString(
+                    LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, "");
+            long until = preferences.getLong(
+                    LsposedRuntimeConfig.K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL, 0L);
+            return LsposedRuntimeConfig.isGoogleCtsComponentBlockArmed(
+                    active, token, until, SystemClock.elapsedRealtime()) ? token : "";
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Failed to read Google CTS component-block lease in " + displayProcess(), t);
             return "";
         }
     }
