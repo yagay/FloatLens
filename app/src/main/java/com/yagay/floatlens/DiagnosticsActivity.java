@@ -83,6 +83,9 @@ public final class DiagnosticsActivity extends AppCompatActivity {
                 .append(" api=").append(s.apiVersion).append("\n")
                 .append("remoteConfigReady=").append(s.remoteConfigReady)
                 .append(" provider=").append(s.remoteProviderEnabled()).append("\n")
+                .append("googleScope=").append(s.googleScopeEnabled())
+                .append(" googleLoaded=").append(s.googleTargetLoaded())
+                .append(" googleStale=").append(s.googleTargetStale()).append("\n")
                 .append("scope=").append(s.scope).append("\n")
                 .append("runningProcesses=").append(s.runningProcesses).append("\n");
         if (!s.detail.isBlank()) combined.append("detail=").append(s.detail).append("\n");

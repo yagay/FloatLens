@@ -24,8 +24,17 @@ final class GoogleCtsTrigger {
         }
         LsposedStatusManager.Snapshot status = LsposedStatusManager.snapshot();
         if (!status.serviceConnected || !status.remoteConfigReady
-                || !status.scope.contains(GoogleCtsContract.GOOGLE_PACKAGE)) {
+                || !status.googleScopeEnabled()) {
             Toast.makeText(app, "请在 LSPosed 作用域勾选 Google App", Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (status.googleTargetStale()) {
+            DiagnosticLog.i(app, "GOOGLE_CTS_TRIGGER",
+                    "blocked stale Google LSPosed target currentVersion=" + BuildConfig.VERSION_CODE
+                            + " running=" + status.runningProcesses);
+            Toast.makeText(app,
+                    "Google Hook 仍是旧版本，请先强制停止 Google App 或重启手机",
+                    Toast.LENGTH_LONG).show();
             return false;
         }
 

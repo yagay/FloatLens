@@ -87,6 +87,30 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                     && LsposedRuntimeConfig.isEnabled(remoteEnhancedMode, remoteLsposedEnabled);
         }
 
+        public boolean googleScopeEnabled() {
+            return scope.contains(GoogleCtsContract.GOOGLE_PACKAGE);
+        }
+
+        /** True when any running Google target still has an older FloatLens module generation. */
+        public boolean googleTargetStale() {
+            String expected = "[UP_TO_DATE v" + BuildConfig.VERSION_CODE + "]";
+            for (String process : runningProcesses) {
+                if (process != null && process.startsWith(GoogleCtsContract.GOOGLE_PACKAGE)
+                        && !process.contains(expected)) return true;
+            }
+            return false;
+        }
+
+        /** True when at least one Google target is already running with the current module. */
+        public boolean googleTargetLoaded() {
+            String expected = "[UP_TO_DATE v" + BuildConfig.VERSION_CODE + "]";
+            for (String process : runningProcesses) {
+                if (process != null && process.startsWith(GoogleCtsContract.GOOGLE_PACKAGE)
+                        && process.contains(expected)) return true;
+            }
+            return false;
+        }
+
         public boolean remoteSecureCaptureArmed() {
             return remoteConfigReady && LsposedRuntimeConfig.isSecureCaptureActive(
                     remoteEnhancedMode,
