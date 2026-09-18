@@ -217,39 +217,58 @@ final class GoogleCtsRuntimeInspector {
 
     /**
      * Google 17.58 classes8.dex:
-     * dscu.q(dtqi) resolves "action_menu_fragment" -> dokt.a() -> dokz.f().
-     * dokz.f() is therefore the actual Lens ActionMenuView presentation boundary. Suppress only
-     * FloatLens-owned text sessions; Google's OCR, selection highlight and DRAG_TEXT_HANDLE live
-     * outside this controller and continue normally.
+     * dscu.q(dtqi) reaches dokz.f(), and dokz.f() reaches dokz.g(dnqv). APK call-site analysis
+     * also shows independent callers entering g(dnqv), so suppress both the menu layout wrapper
+     * and the action-population method for FloatLens-owned text sessions. Google's OCR, selection
+     * highlight and DRAG_TEXT_HANDLE live outside this controller and continue normally.
      */
     private int hookGoogleLensActionMenuController() {
         try {
-            Class<?> controller = Class.forName("dokz", false, classLoader);
+            Class<?> controller = Class.forName(
+                    GoogleLens1758Profile.ACTION_MENU_CONTROLLER, false, classLoader);
             int count = 0;
             for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
                 if (!(executable instanceof Method method)) continue;
-                if (!"f".equals(method.getName())
-                        || method.getParameterCount() != 0
-                        || method.getReturnType() != void.class) {
+
+                if (GoogleLens1758Profile.isActionMenuLayoutMethod(method)) {
+                    module.hook(method).intercept(chain -> {
+                        if (!active() || !GoogleLens1758Profile.shouldSuppressPostSelectionResult(
+                                bridgeSelectionSeen, bridgeSelectionText)) {
+                            return chain.proceed();
+                        }
+
+                        report("GOOGLE_ACTION_MENU_LAYOUT_SUPPRESSED",
+                                "controller=dokz.f textLen=" + bridgeSelectionText.length()
+                                        + " bounds=" + String.valueOf(bridgeSelectionBounds));
+                        // f() lays out/refreshes Lens ActionMenuView and normally reaches g(dnqv).
+                        // Keep this as a fail-safe, but do not rely on it alone: 17.58 also has
+                        // independent callers that enter g(dnqv) without going through f().
+                        return null;
+                    });
+                    count++;
                     continue;
                 }
 
-                module.hook(method).intercept(chain -> {
-                    if (!active() || !bridgeSelectionSeen
-                            || bridgeSelectionText == null
-                            || bridgeSelectionText.isBlank()) {
-                        return chain.proceed();
-                    }
+                if (GoogleLens1758Profile.isActionMenuPopulationMethod(method)) {
+                    module.hook(method).intercept(chain -> {
+                        if (!active() || !GoogleLens1758Profile.shouldSuppressPostSelectionResult(
+                                bridgeSelectionSeen, bridgeSelectionText)) {
+                            return chain.proceed();
+                        }
 
-                    report("GOOGLE_ACTION_MENU_SUPPRESSED",
-                            "controller=dokz.f textLen=" + bridgeSelectionText.length()
-                                    + " bounds=" + String.valueOf(bridgeSelectionBounds));
-                    // Do not call the original. The selected-word overlay and resize handles are
-                    // owned by other Lens controllers; this method only builds/positions the
-                    // ActionMenuView (Copy/Translate/overflow).
-                    return null;
-                });
-                count++;
+                        report("GOOGLE_ACTION_MENU_POPULATION_SUPPRESSED",
+                                "controller=dokz.g arg="
+                                        + (chain.getArg(0) == null
+                                        ? "null" : chain.getArg(0).getClass().getName())
+                                        + " textLen=" + bridgeSelectionText.length()
+                                        + " bounds=" + String.valueOf(bridgeSelectionBounds));
+                        // g(dnqv) is the action-population path. APK analysis shows it is called
+                        // not only by f(), but also from independent async/synthetic callbacks.
+                        // Blocking it prevents Copy/Translate/overflow from being repopulated.
+                        return null;
+                    });
+                    count++;
+                }
             }
             module.log(Log.INFO, TAG,
                     "Google Lens ActionMenu controller hooks=" + count);
@@ -815,27 +834,35 @@ final class GoogleCtsRuntimeInspector {
                             return chain.proceed();
                         }
 
+                        boolean textSelection =
+                                GoogleLens1758Profile.shouldSuppressPostSelectionResult(
+                                        bridgeSelectionSeen, bridgeSelectionText);
+                        if (textSelection && renderablePayload) {
+                            report("LENS_POST_SELECTION_RESULT_SUPPRESSED",
+                                    "complete=" + snapshot.complete()
+                                            + " presentationPresent="
+                                            + snapshot.presentationPresent()
+                                            + " keepSelectionAlive=true textLen="
+                                            + bridgeSelectionText.length());
+                            suppressBridgeTextPresentation(snapshot.detail());
+
+                            // Important: do not wait for presentationPresent=true. The 17.58
+                            // incomplete post-selection q(dtqi) already enters Google's downstream
+                            // result consumer, which can create ActionMenuView, InfoPanelView and
+                            // WebX before the final InteractionPresentationResult arrives. p(dtqj)
+                            // continues running, so Google still produces OCR/selection results;
+                            // y(dscl,boolean) continues running, so highlight/resize handles stay
+                            // alive. FloatLens consumes every q(dtqi) after the text selection.
+                            return null;
+                        }
+
                         if (presentationBoundary && renderablePayload) {
                             report("LENS_PRESENTATION_BOUNDARY",
-                                    "Google LRP ready; handing selection to FloatLens");
-
-                            boolean textMenuSelection = bridgeSelectionText != null
-                                    && !bridgeSelectionText.isBlank();
-                            boolean consumed = textMenuSelection
-                                    ? suppressBridgeTextPresentation(snapshot.detail())
-                                    : commitBridgeResult(snapshot.text(), snapshot.detail(),
-                                    "lens_presentation_intercept");
-
-                            if (consumed) {
+                                    "Google LRP ready; handing non-text selection to FloatLens");
+                            if (commitBridgeResult(snapshot.text(), snapshot.detail(),
+                                    "lens_presentation_intercept")) {
                                 module.log(Log.INFO, TAG,
-                                        textMenuSelection
-                                                ? "Google Lens result panel suppressed; selection layer kept alive"
-                                                : "Google Lens result-panel presentation suppressed");
-                                // dscu.q(dtqi) is void in the validated 17.58 profile. For text
-                                // selections, skip only the result-panel callback: do not finish
-                                // LensientActivity and do not clear the marked session. Google
-                                // keeps its highlight/selection handles alive, and later y(dscl)
-                                // callbacks can continue updating the FloatLens menu.
+                                        "Google Lens result-panel presentation suppressed");
                                 return null;
                             }
                         }
