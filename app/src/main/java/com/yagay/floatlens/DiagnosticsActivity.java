@@ -1,7 +1,11 @@
 package com.yagay.floatlens;
 
-import android.content.Intent;
+import android.content.ContentResolver;
+import android.content.ContentValues;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.view.ViewGroup;
 import android.widget.LinearLayout;
 import android.widget.Toast;
@@ -11,10 +15,14 @@ import androidx.appcompat.app.AppCompatActivity;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.switchmaterial.SwitchMaterial;
 
-/** FloatLens-only diagnostics. No third-party runtime inspection or method probing lives here. */
-public final class DiagnosticsActivity extends AppCompatActivity {
-    private static final int REQ_EXPORT_LOG = 701;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
+/** FloatLens-only diagnostics. */
+public final class DiagnosticsActivity extends AppCompatActivity {
     private FloatSettings fs;
 
     @Override protected void onCreate(Bundle state) {
@@ -22,10 +30,10 @@ public final class DiagnosticsActivity extends AppCompatActivity {
         fs = new FloatSettings(this);
 
         LinearLayout root = AppUi.pageRoot(this, "诊断与调试",
-                "仅记录 FloatLens 自身的悬浮、截图、OCR、View 选择和结果窗口状态。" );
+                "记录 FloatLens 自身运行状态，并可直接保存到 Download/FloatLens。" );
 
         AppUi.Section logging = AppUi.section(this, "FloatLens 诊断日志",
-                "用于排查 FloatLens 自身问题；不 Hook、抓取或分析其他应用的运行时方法。" );
+                "导出不再依赖系统文件选择器，Android 11+ 直接通过 MediaStore 写入下载目录。" );
         SwitchMaterial loggingSwitch = AppUi.switchRow(this,
                 "记录诊断日志",
                 "关闭时不会持续写入 FloatLens 诊断日志",
@@ -33,7 +41,7 @@ public final class DiagnosticsActivity extends AppCompatActivity {
                 (button, checked) -> fs.setBoolean(FloatSettings.K_DIAGNOSTIC, checked));
         AppUi.addRow(logging.body, AppUi.switchContainer(loggingSwitch));
         addButtonPair(logging.body,
-                button("导出诊断日志", this::exportDiagnostic),
+                button("保存诊断日志", this::exportDiagnostic),
                 button("清空", () -> {
                     DiagnosticLog.clear(this);
                     Toast.makeText(this, "诊断日志已清空", Toast.LENGTH_SHORT).show();
@@ -51,10 +59,12 @@ public final class DiagnosticsActivity extends AppCompatActivity {
 
     private void addButtonPair(LinearLayout parent, MaterialButton left, MaterialButton right) {
         LinearLayout row = AppUi.buttonRow(this);
-        LinearLayout.LayoutParams leftLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        LinearLayout.LayoutParams leftLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         leftLp.setMarginEnd(AppUi.dp(this, 6));
         row.addView(left, leftLp);
-        LinearLayout.LayoutParams rightLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        LinearLayout.LayoutParams rightLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         rightLp.setMarginStart(AppUi.dp(this, 6));
         row.addView(right, rightLp);
         AppUi.addRow(parent, row);
@@ -63,27 +73,53 @@ public final class DiagnosticsActivity extends AppCompatActivity {
     private void exportDiagnostic() {
         String text = DiagnosticLog.read(this);
         if (text.isBlank()) {
-            Toast.makeText(this, "暂无诊断日志，请先开启记录并操作一次 FloatLens", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "暂无诊断日志，请先开启记录并操作一次 FloatLens",
+                    Toast.LENGTH_LONG).show();
             return;
         }
-        Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT)
-                .setType("text/plain")
-                .putExtra(Intent.EXTRA_TITLE, "FloatLens-diagnostic.txt");
-        startActivityForResult(i, REQ_EXPORT_LOG);
-    }
 
-    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQ_EXPORT_LOG || resultCode != RESULT_OK
-                || data == null || data.getData() == null) return;
-        try (java.io.OutputStream out = getContentResolver().openOutputStream(data.getData())) {
-            if (out != null) {
-                out.write(DiagnosticLog.read(this).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
+        String fileName = "FloatLens-diagnostic-" + stamp + ".txt";
+        Uri uri = null;
+        try {
+            ContentResolver resolver = getContentResolver();
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+            values.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
+            values.put(MediaStore.MediaColumns.RELATIVE_PATH,
+                    Environment.DIRECTORY_DOWNLOADS + "/FloatLens");
+            values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+
+            uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (uri == null) throw new java.io.IOException("MediaStore insert returned null");
+
+            try (OutputStream out = resolver.openOutputStream(uri, "w")) {
+                if (out == null) throw new java.io.IOException("MediaStore returned null output stream");
+                out.write(text.getBytes(StandardCharsets.UTF_8));
                 out.flush();
-                Toast.makeText(this, "诊断日志已导出", Toast.LENGTH_SHORT).show();
             }
+
+            ContentValues ready = new ContentValues();
+            ready.put(MediaStore.MediaColumns.IS_PENDING, 0);
+            resolver.update(uri, ready, null, null);
+
+            DiagnosticLog.i(this, "DIAGNOSTIC_EXPORT",
+                    "saved uri=" + uri + " name=" + fileName + " bytes="
+                            + text.getBytes(StandardCharsets.UTF_8).length);
+            Toast.makeText(this,
+                    "已保存到 下载/FloatLens/" + fileName,
+                    Toast.LENGTH_LONG).show();
         } catch (Throwable t) {
-            Toast.makeText(this, "导出失败: " + t.getMessage(), Toast.LENGTH_LONG).show();
+            if (uri != null) {
+                try { getContentResolver().delete(uri, null, null); } catch (Throwable ignored) {}
+            }
+            String message = t.getMessage();
+            if (message == null || message.isBlank()) message = t.getClass().getSimpleName();
+            Toast.makeText(this,
+                    "保存失败: " + t.getClass().getSimpleName() + " · " + message,
+                    Toast.LENGTH_LONG).show();
+            DiagnosticLog.i(this, "DIAGNOSTIC_EXPORT",
+                    "failed=" + t.getClass().getName() + ":" + message);
         }
     }
 }
