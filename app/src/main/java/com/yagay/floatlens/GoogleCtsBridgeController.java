@@ -117,19 +117,32 @@ final class GoogleCtsBridgeController {
         Context app = context.getApplicationContext();
         State state = state(token);
         Bitmap frame = null;
+        String finalText;
+        Rect finalBounds;
+        boolean showMenuNow;
         synchronized (state) {
             if (state.delivered) return;
             if (text != null && !text.isBlank()) state.text = text.trim();
             if (bounds != null && !bounds.isEmpty()) state.bounds = new Rect(bounds);
             if (detail != null && !detail.isBlank()) state.detail = detail;
+            finalText = state.text == null ? "" : state.text.trim();
+            finalBounds = state.bounds == null ? null : new Rect(state.bounds);
+            showMenuNow = !state.textMenuShown && !finalText.isBlank();
             state.committed = true;
             state.delivered = true;
-            state.textMenuShown = true;
+            state.textMenuShown = state.textMenuShown || showMenuNow;
             frame = state.frame;
             state.frame = null;
         }
         STATES.remove(token, state);
         recycle(frame);
+        if (showMenuNow) {
+            FloatActionMenu.showTextAt(app, finalText, null, finalBounds);
+            DiagnosticLog.i(app, "GOOGLE_TEXT_MENU",
+                    "late show session=" + shortToken(token)
+                            + " textLen=" + finalText.length()
+                            + " bounds=" + String.valueOf(finalBounds));
+        }
         new FloatSettings(app).clearGoogleCtsSession();
         FloatService service = FloatService.get();
         if (service != null) service.onCircleFinished("google_text_menu_committed");
