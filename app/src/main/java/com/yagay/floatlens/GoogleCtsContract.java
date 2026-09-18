@@ -10,6 +10,10 @@ public final class GoogleCtsContract {
     public static final String K_SESSION_TOKEN = "floatlens_session_token";
     public static final String K_INVOCATION_TIME = "invocation_time_ms";
     public static final String K_OMNI_ENTRY_POINT = "omni.entry_point";
+    public static final String CONTEXTUAL_SEARCH_ACTION =
+            "android.app.contextualsearch.action.LAUNCH_CONTEXTUAL_SEARCH";
+    public static final String CONTEXTUAL_SCREENSHOT =
+            "android.app.contextualsearch.extra.SCREENSHOT";
     public static final String ACTION_TRACE = "com.yagay.floatlens.action.GOOGLE_CTS_TRACE";
     public static final String TRACE_RECEIVER_CLASS = "com.yagay.floatlens.GoogleCtsTraceReceiver";
     public static final String EXTRA_TRACE_SESSION = "com.yagay.floatlens.extra.CTS_TRACE_SESSION";
