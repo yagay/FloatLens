@@ -270,16 +270,26 @@ final class GoogleCtsBridgeController {
             return;
         }
 
-        boolean shown = ResultController.show(app, session);
+        Runnable firstFrameHandoff = () -> {
+            FloatService service = FloatService.get();
+            if (service != null) service.onCircleFinished("google_bridge_result_visible");
+            clearSessionState(app, token, "result_first_frame");
+            DiagnosticLog.i(app, "GOOGLE_BRIDGE",
+                    "result visible session=" + shortToken(token)
+                            + " release=after_first_frame");
+        };
+
+        boolean shown = ResultController.showAfterFirstFrame(app, session, firstFrameHandoff);
         if (!shown) {
             try { session.close(); } catch (Throwable ignored) {}
+            FloatService service = FloatService.get();
+            if (service != null) service.onCircleFinished("google_bridge_delivery_failed");
+            clearSessionState(app, token, "result_start_failed");
         }
-        FloatService service = FloatService.get();
-        if (service != null) service.onCircleFinished("google_bridge_delivered");
-        clearSessionState(app, token, "bridge_delivered");
         DiagnosticLog.i(app, "GOOGLE_BRIDGE",
                 "delivered session=" + shortToken(token)
                         + " shown=" + shown
+                        + " release=" + (shown ? "deferred_first_frame" : "immediate_failed")
                         + " textLen=" + text.length()
                         + " bounds=" + String.valueOf(normalized));
     }
