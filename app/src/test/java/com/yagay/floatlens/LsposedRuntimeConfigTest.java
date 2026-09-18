@@ -46,6 +46,28 @@ public class LsposedRuntimeConfigTest {
                 LsposedRuntimeConfig.GOOGLE_CTS_EXPECTED_OMNI_ENTRY_POINT + 1));
     }
 
+    @Test public void googleCtsComponentBlockLeaseIsIndependentAndBounded() {
+        long now = 70_000L;
+        assertTrue(LsposedRuntimeConfig.isGoogleCtsComponentBlockArmed(
+                true, "abc",
+                now + LsposedRuntimeConfig.GOOGLE_CTS_COMPONENT_BLOCK_LEASE_MS,
+                now));
+        assertFalse(LsposedRuntimeConfig.isGoogleCtsComponentBlockArmed(
+                true, "",
+                now + LsposedRuntimeConfig.GOOGLE_CTS_COMPONENT_BLOCK_LEASE_MS,
+                now));
+        assertFalse(LsposedRuntimeConfig.isGoogleCtsComponentBlockArmed(
+                false, "abc",
+                now + LsposedRuntimeConfig.GOOGLE_CTS_COMPONENT_BLOCK_LEASE_MS,
+                now));
+        assertFalse(LsposedRuntimeConfig.isGoogleCtsComponentBlockArmed(
+                true, "abc", now - 1L, now));
+        assertFalse(LsposedRuntimeConfig.isGoogleCtsComponentBlockArmed(
+                true, "abc",
+                now + LsposedRuntimeConfig.GOOGLE_CTS_COMPONENT_BLOCK_MAX_FUTURE_MS + 1L,
+                now));
+    }
+
     @Test public void googleCtsFallbackLeaseIsShortAndTokenBound() {
         long now = 10_000L;
         assertTrue(LsposedRuntimeConfig.isGoogleCtsFallbackArmed(
