@@ -274,12 +274,20 @@ final class GoogleCtsRuntimeInspector {
                         if (presentationBoundary && renderablePayload) {
                             report("LENS_PRESENTATION_BOUNDARY",
                                     "Google LRP ready; handing selection to FloatLens");
-                            boolean consumed = commitBridgeResult(
-                                    snapshot.text(), snapshot.detail(),
+
+                            boolean textMenuSelection = bridgeSelectionText != null
+                                    && !bridgeSelectionText.isBlank();
+                            boolean consumed = textMenuSelection
+                                    ? commitBridgeTextMenu(snapshot.detail(),
+                                    "lens_text_menu_intercept")
+                                    : commitBridgeResult(snapshot.text(), snapshot.detail(),
                                     "lens_presentation_intercept");
+
                             if (consumed) {
                                 module.log(Log.INFO, TAG,
-                                        "Google Lens result-panel presentation suppressed");
+                                        textMenuSelection
+                                                ? "Google Lens text presentation replaced by FloatLens menu"
+                                                : "Google Lens result-panel presentation suppressed");
                                 // dscu.q(dtqi) is void in the validated 17.58 profile. Skipping
                                 // the original call prevents LensResultPanelResponse from being
                                 // rendered while retaining all earlier Google recognition work.
@@ -302,6 +310,22 @@ final class GoogleCtsRuntimeInspector {
                             + " Lens selection boundary unavailable", t);
             return 0;
         }
+    }
+
+    private synchronized boolean commitBridgeTextMenu(String detail, String reason) {
+        if (!active() || bridgeCommitted || !bridgeSelectionSeen
+                || bridgeSelectionText == null || bridgeSelectionText.isBlank()) {
+            return false;
+        }
+
+        bridgeCommitted = true;
+        Rect finalBounds = bridgeSelectionBounds == null
+                ? null : new Rect(bridgeSelectionBounds);
+        sendBridgeEvent(GoogleCtsContract.EVENT_TEXT_MENU_COMMIT,
+                bridgeSelectionText, detail, finalBounds);
+        finishMarkedGoogleActivity(reason);
+        clear(reason);
+        return true;
     }
 
     private synchronized boolean commitBridgeResult(String text, String detail, String reason) {
