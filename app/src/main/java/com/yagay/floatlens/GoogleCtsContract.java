@@ -11,9 +11,13 @@ public final class GoogleCtsContract {
     public static final String K_OMNI_ENTRY_POINT = "omni.entry_point";
 
     public static boolean isFloatLensSession(Bundle args) {
-        return args != null
-                && args.getBoolean(K_TRIGGER, false)
-                && !args.getString(K_SESSION_TOKEN, "").isBlank();
+        return args != null && isFloatLensSession(
+                args.getBoolean(K_TRIGGER, false),
+                args.getString(K_SESSION_TOKEN, ""));
+    }
+
+    static boolean isFloatLensSession(boolean trigger, String token) {
+        return trigger && token != null && !token.isBlank();
     }
 
     private GoogleCtsContract() {}
