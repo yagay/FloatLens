@@ -39,6 +39,8 @@ final class GoogleLens1758Profile {
     static final String INTERACTION_DATA = "eses";    // InteractionDataResult
     static final String IMMUTABLE_LIST = "com.google.common.collect.ImmutableList";
     static final String OPTIONAL = "fxsy";            // Google/Guava optional wrapper
+    static final String ACTION_MENU_CONTROLLER = "dokz";
+    static final String TEXT_SELECTION_RANGE = "dnqv";
 
     static String validationError(ClassLoader loader) {
         if (loader == null) return "classLoader=null";
@@ -56,6 +58,20 @@ final class GoogleLens1758Profile {
             if (!selection || !pending || !result) {
                 return "LensUiController methods mismatch selection=" + selection
                         + " pending=" + pending + " result=" + result;
+            }
+
+            Class<?> actionMenuController = Class.forName(
+                    ACTION_MENU_CONTROLLER, false, loader);
+            boolean actionMenuLayout = false;
+            boolean actionMenuPopulation = false;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(actionMenuController)) {
+                if (!(executable instanceof Method method)) continue;
+                actionMenuLayout |= isActionMenuLayoutMethod(method);
+                actionMenuPopulation |= isActionMenuPopulationMethod(method);
+            }
+            if (!actionMenuLayout || !actionMenuPopulation) {
+                return "Lens ActionMenu methods mismatch layout=" + actionMenuLayout
+                        + " population=" + actionMenuPopulation;
             }
 
             Class<?> selectionMetadata = Class.forName(SELECTION_METADATA, false, loader);
@@ -165,6 +181,24 @@ final class GoogleLens1758Profile {
         Class<?>[] p = method.getParameterTypes();
         return p.length == 1 && QUERY_RESULT.equals(p[0].getName())
                 && method.getReturnType() == void.class;
+    }
+
+    static boolean isActionMenuLayoutMethod(Method method) {
+        return method != null
+                && "f".equals(method.getName())
+                && method.getParameterCount() == 0
+                && method.getReturnType() == void.class;
+    }
+
+    static boolean isActionMenuPopulationMethod(Method method) {
+        if (method == null || !"g".equals(method.getName())
+                || method.getReturnType() != void.class) return false;
+        Class<?>[] p = method.getParameterTypes();
+        return p.length == 1 && TEXT_SELECTION_RANGE.equals(p[0].getName());
+    }
+
+    static boolean shouldSuppressPostSelectionResult(boolean selectionSeen, String selectedText) {
+        return selectionSeen && selectedText != null && !selectedText.isBlank();
     }
 
     static SelectionSnapshot selection(Object metadata) {
