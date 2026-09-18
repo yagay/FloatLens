@@ -49,7 +49,6 @@ final class GoogleCtsRuntimeInspector {
     private static final String TAG = "FloatLens-GoogleCTS";
     private static final String SHOW_SESSION_ID = "android.service.voice.SHOW_SESSION_ID";
     private static final long SESSION_TTL_MS = 120_000L;
-    private static final long RESULT_SETTLE_MS = 1_500L;
     private static final int MAX_EVENT_LOGS = 500;
 
     private final XposedModule module;
@@ -57,7 +56,6 @@ final class GoogleCtsRuntimeInspector {
     private final ClassLoader classLoader;
     private final Set<String> seenClasses = new HashSet<>();
     private final AtomicInteger eventCount = new AtomicInteger();
-    private final AtomicInteger bridgeResultGeneration = new AtomicInteger();
     private final ThreadLocal<Boolean> traceDispatching = new ThreadLocal<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService bridgeIo = Executors.newSingleThreadExecutor(r -> {
@@ -193,7 +191,6 @@ final class GoogleCtsRuntimeInspector {
                             bridgeSelectionBounds = selectionBounds;
                             // Invalidate any pre-selection settle timer. The next accepted result
                             // must belong to this user interaction, not initial image analysis.
-                            bridgeResultGeneration.incrementAndGet();
                             report("USER_SELECTION",
                                     selection.detail()
                                             + " pixelBounds=" + String.valueOf(selectionBounds)
@@ -223,7 +220,6 @@ final class GoogleCtsRuntimeInspector {
                         bridgePendingSeen = true;
                         // A real non-null PendingLensQuery marks the interaction-query boundary.
                         // Cancel any settle timer created by earlier source-image processing.
-                        bridgeResultGeneration.incrementAndGet();
                         report("LENS_QUERY_START", snapshot.detail());
                         sendBridgeFrame(snapshot.frame());
 
@@ -253,7 +249,6 @@ final class GoogleCtsRuntimeInspector {
                                 GoogleLens1758Profile.result(queryResult);
                         sendBridgeFrame(snapshot.frame());
 
-                        int generation = bridgeResultGeneration.incrementAndGet();
                         boolean userInteractionSeen = bridgeSelectionSeen || bridgePendingSeen;
                         report("LENS_QUERY_RESULT",
                                 "complete=" + snapshot.complete()
@@ -290,23 +285,6 @@ final class GoogleCtsRuntimeInspector {
                             + " Lens selection boundary unavailable", t);
             return 0;
         }
-    }
-
-    /**
-     * Some 17.58 result streams expose one or more non-complete LensQueryResult snapshots before
-     * settling. Deliver the last snapshot after a short quiet period if no explicit complete result
-     * arrives, rather than ending the FloatLens session on the first update.
-     */
-    private void scheduleBridgeResultSettle(int generation, String text, String detail) {
-        mainHandler.postDelayed(() -> {
-            if (!active() || bridgeCommitted
-                    || (!bridgeSelectionSeen && !bridgePendingSeen)
-                    || generation != bridgeResultGeneration.get()) return;
-            report("LENS_QUERY_SETTLED",
-                    "no newer result for " + RESULT_SETTLE_MS
-                            + "ms; using latest non-null result");
-            commitBridgeResult(text, detail, "bridge_query_result_settled");
-        }, RESULT_SETTLE_MS);
     }
 
     private synchronized boolean commitBridgeResult(String text, String detail, String reason) {
@@ -831,7 +809,6 @@ final class GoogleCtsRuntimeInspector {
             bridgePendingSeen = false;
             bridgeSelectionText = "";
             bridgeSelectionBounds = null;
-            bridgeResultGeneration.incrementAndGet();
             markedActivity = new WeakReference<>(null);
         }
         if (id >= 0) showSessionId = id;
@@ -869,7 +846,6 @@ final class GoogleCtsRuntimeInspector {
         bridgePendingSeen = false;
         bridgeSelectionText = "";
         bridgeSelectionBounds = null;
-        bridgeResultGeneration.incrementAndGet();
         markedActivity = new WeakReference<>(null);
         seenClasses.clear();
     }
