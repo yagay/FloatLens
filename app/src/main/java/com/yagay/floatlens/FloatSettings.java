@@ -74,6 +74,7 @@ public final class FloatSettings {
     public static final String K_ROOT_ENABLED = "privilege_root_enabled_v1";
     public static final String K_LSPOSED_ENABLED = "privilege_lsposed_enabled_v1";
     public static final String K_LSPOSED_SECURE_SCREENSHOT = "lsposed_secure_screenshot_v1";
+    public static final String K_LSPOSED_GOOGLE_CTS_CAPTURE_ONLY = "lsposed_google_cts_capture_only_v1";
     public static final String K_PRIVILEGE_FALLBACK = "privilege_fallback_normal_v1";
     public static final String K_ROOT_LAST_GRANTED = "privilege_root_last_granted_v1";
     public static final String K_ROOT_LAST_CHECK = "privilege_root_last_check_ms_v1";
@@ -180,6 +181,7 @@ public final class FloatSettings {
     public boolean rootEnabled() { return p.getBoolean(K_ROOT_ENABLED, false); }
     public boolean lsposedEnabled() { return p.getBoolean(K_LSPOSED_ENABLED, false); }
     public boolean lsposedSecureScreenshot() { return p.getBoolean(K_LSPOSED_SECURE_SCREENSHOT, false); }
+    public boolean lsposedGoogleCtsCaptureOnly() { return p.getBoolean(K_LSPOSED_GOOGLE_CTS_CAPTURE_ONLY, false); }
     public boolean privilegeFallback() { return p.getBoolean(K_PRIVILEGE_FALLBACK, true); }
     public boolean canUseRoot() { return enhancedMode() && rootEnabled(); }
     public boolean canUseLsposed() { return PrivilegeManager.canUseLsposed(this); }

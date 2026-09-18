@@ -96,6 +96,17 @@ public final class PrivilegeSettingsPanel {
                     refresh(activity, fs, modeStatus, rootStatus);
                 });
         AppUi.addRow(lsposedSection.body, AppUi.switchContainer(secureScreenshotSwitch));
+
+        SwitchMaterial googleCtsSwitch = preferenceSwitch(activity, fs,
+                "接管 Google 圈画（仅抓屏，不搜索）",
+                "Android 15/16：在系统把冻结截图交给 Google 前截获它，转入 FloatLens 圈画工作区；转交成功后不启动 Google 搜索界面。",
+                FloatSettings.K_LSPOSED_GOOGLE_CTS_CAPTURE_ONLY,
+                fs.lsposedGoogleCtsCaptureOnly(),
+                () -> {
+                    LsposedStatusManager.syncRuntimeConfigAsync();
+                    refresh(activity, fs, modeStatus, rootStatus);
+                });
+        AppUi.addRow(lsposedSection.body, AppUi.switchContainer(googleCtsSwitch));
         AppUi.addRow(lsposedSection.body, statusBlock(activity, "LSPosed 实际状态", lsposedStatus));
 
         LinearLayout lsposedButtons = AppUi.buttonRow(activity);
@@ -113,7 +124,7 @@ public final class PrivilegeSettingsPanel {
         AppUi.addRow(lsposedSection.body, lsposedButtons);
 
         TextView lsposedNote = AppUi.caption(activity,
-                "推荐作用域是 system + com.android.systemui。安全窗口截图 Hook 只安装在 system_server，并且每次调用都实时检查短时授权；不会永久取消窗口的 FLAG_SECURE / secure Surface 标记，也不会开启 DRM protected content 捕获。‘测试安全截图’会打开 FloatLens 自己的 FLAG_SECURE 页面并实际验证返回 Bitmap。",
+                "推荐作用域仍是 system + com.android.systemui。Google 圈画接管的主路径只 Hook system_server 的 Android Contextual Search，不需要把 Google App 加入作用域；只有成功取得系统冻结截图并启动 FloatLens 桥接页后才阻断 Google 搜索，任何异常都会放行原始 Google 圈画。安全窗口截图仍只在短时 lease 内生效，不永久取消 FLAG_SECURE。",
                 12);
         AppUi.addRow(lsposedSection.body, simpleBlock(activity, lsposedNote));
 

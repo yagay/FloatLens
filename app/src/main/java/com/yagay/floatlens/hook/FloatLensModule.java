@@ -26,6 +26,12 @@ public final class FloatLensModule extends XposedModule {
             return;
         }
         try {
+            new GoogleCtsSystemHook(this, provider, param.getClassLoader()).install();
+        } catch (Throwable t) {
+            // CTS takeover is optional and must never destabilize system_server.
+            log(Log.ERROR, TAG, "Failed to install Google CTS capture-only hook", t);
+        }
+        try {
             new SecureScreenshotHook(this, provider, param.getClassLoader()).install();
         } catch (Throwable t) {
             // Never let an optional screenshot enhancement destabilize system_server startup.
@@ -35,7 +41,7 @@ public final class FloatLensModule extends XposedModule {
 
     @Override
     public void onPackageLoaded(PackageLoadedParam param) {
-        // SystemUI currently uses the Remote Preferences provider/status channel only.
-        // Secure screenshot capture is implemented in system_server, so no package hook is needed.
+        // Google CTS capture-only is intentionally implemented at the Android contextual-search
+        // boundary in system_server. No obfuscated Google App hook is required on Android 15/16.
     }
 }
