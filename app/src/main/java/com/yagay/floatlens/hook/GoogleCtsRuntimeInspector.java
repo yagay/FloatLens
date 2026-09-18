@@ -89,6 +89,8 @@ final class GoogleCtsRuntimeInspector {
     void install() {
         int hooks = 0;
         hooks += hookGoogle1758OmnientBoundary();
+        hooks += hookGoogleNativeRenderedPresentationData();
+        hooks += hookGoogleFixedSelectionChips();
         hooks += hookGoogle1758LensSelectionBoundary();
         hooks += hookGoogleTextFloatingToolbar();
         hooks += hookGoogleMaterialFloatingToolbar();
@@ -163,6 +165,85 @@ final class GoogleCtsRuntimeInspector {
             return count;
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "Google 17.58 Omnient boundary unavailable", t);
+            return 0;
+        }
+    }
+
+    /**
+     * 17.58 InteractionDataResult (eses) owns nativeRenderedPresentationResult in field f.
+     * Strip that server/native action presentation as soon as the value object is constructed,
+     * before any Google UI consumer can observe it. Selection geometry/state lives elsewhere.
+     */
+    private int hookGoogleNativeRenderedPresentationData() {
+        try {
+            Class<?> interactionData = Class.forName(
+                    GoogleLens1758Profile.INTERACTION_DATA, false, classLoader);
+            int count = 0;
+            for (Executable constructor : interactionData.getDeclaredConstructors()) {
+                module.hook(constructor).intercept(chain -> {
+                    Object result = chain.proceed();
+                    if (!active() || !bridgeSelectionSeen
+                            || bridgeSelectionText == null
+                            || bridgeSelectionText.isBlank()) {
+                        return result;
+                    }
+
+                    GoogleLens1758Profile.NativePresentationSuppression suppression =
+                            GoogleLens1758Profile.suppressNativeRenderedPresentationData(
+                                    chain.getThisObject());
+                    if (suppression.suppressed()) {
+                        report("GOOGLE_NATIVE_PRESENTATION_STRIPPED",
+                                "path=constructor " + suppression.detail());
+                    }
+                    return result;
+                });
+                count++;
+            }
+            module.log(Log.INFO, TAG,
+                    "Google native presentation constructors hooked=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google native presentation constructor boundary unavailable", t);
+            return 0;
+        }
+    }
+
+    /**
+     * classes8.dex dujo is the fixed Google text-selection chip Fragment. Its onCreateView
+     * explicitly wires the "Select all chip clicked" and "Listen all chip clicked" controls.
+     * Hide only this Fragment's root for FloatLens-owned sessions; the Lens selection overlay and
+     * DRAG_TEXT_HANDLE implementation are separate from this Fragment.
+     */
+    private int hookGoogleFixedSelectionChips() {
+        try {
+            Class<?> fragment = Class.forName("dujo", false, classLoader);
+            int count = 0;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(fragment)) {
+                if (!(executable instanceof Method method)) continue;
+                if (!"onCreateView".equals(method.getName())
+                        || method.getParameterCount() != 3
+                        || !View.class.isAssignableFrom(method.getReturnType())) {
+                    continue;
+                }
+
+                module.hook(method).intercept(chain -> {
+                    Object result = chain.proceed();
+                    if (active() && result instanceof View view) {
+                        view.setVisibility(View.GONE);
+                        report("GOOGLE_FIXED_SELECTION_CHIPS_SUPPRESSED",
+                                "fragment=dujo root=" + view.getClass().getName());
+                    }
+                    return result;
+                });
+                count++;
+            }
+            module.log(Log.INFO, TAG,
+                    "Google fixed selection chip hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google fixed selection chip boundary unavailable", t);
             return 0;
         }
     }
@@ -409,6 +490,22 @@ final class GoogleCtsRuntimeInspector {
                             report("LENS_QUERY_STATE",
                                     "result=null ignored (LensUiController initial state)");
                             return chain.proceed();
+                        }
+
+                        // Constructor-level stripping is the earliest boundary. Repeat the
+                        // native-presentation strip here as a fail-soft fallback in case a future
+                        // Google path materializes InteractionDataResult before this process hook
+                        // observes its constructor.
+                        if (bridgeSelectionSeen && bridgeSelectionText != null
+                                && !bridgeSelectionText.isBlank()) {
+                            GoogleLens1758Profile.NativePresentationSuppression suppression =
+                                    GoogleLens1758Profile
+                                            .suppressNativeRenderedPresentationFromQueryResult(
+                                                    queryResult);
+                            if (suppression.suppressed()) {
+                                report("GOOGLE_NATIVE_PRESENTATION_STRIPPED",
+                                        "path=queryResult " + suppression.detail());
+                            }
                         }
 
                         // Parse before invoking Google. In 17.58 the final q(dtqi) already contains
