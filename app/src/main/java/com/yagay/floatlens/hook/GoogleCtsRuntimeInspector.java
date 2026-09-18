@@ -46,6 +46,7 @@ final class GoogleCtsRuntimeInspector {
     private final ClassLoader classLoader;
     private final Set<String> seenClasses = new HashSet<>();
     private final AtomicInteger eventCount = new AtomicInteger();
+    private final ThreadLocal<Boolean> traceDispatching = new ThreadLocal<>();
 
     private volatile long activeUntil;
     private volatile String sessionToken = "";
@@ -337,16 +338,26 @@ final class GoogleCtsRuntimeInspector {
 
     private void report(String event, String message) {
         if (!active()) return;
-        int n = eventCount.incrementAndGet();
-        if (n > MAX_EVENT_LOGS) return;
+        int n = reserveEventNumber();
+        if (n < 0) return;
         String line = "#" + n + " " + event + " session="
                 + shortToken(sessionToken) + " " + safe(message);
         sendTrace(line);
         module.log(Log.INFO, TAG, line);
     }
 
+    private int reserveEventNumber() {
+        while (true) {
+            int current = eventCount.get();
+            if (current >= MAX_EVENT_LOGS) return -1;
+            if (eventCount.compareAndSet(current, current + 1)) return current + 1;
+        }
+    }
+
     private void sendTrace(String line) {
         if (line == null || line.isBlank() || sessionToken.isBlank()) return;
+        if (isTraceDispatching()) return;
+        traceDispatching.set(Boolean.TRUE);
         try {
             Context context = currentApplicationContext();
             if (context == null) return;
@@ -359,7 +370,19 @@ final class GoogleCtsRuntimeInspector {
             context.sendBroadcast(intent);
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "CTS trace broadcast failed", t);
+        } finally {
+            traceDispatching.remove();
         }
+    }
+
+    private boolean isTraceDispatching() {
+        return Boolean.TRUE.equals(traceDispatching.get());
+    }
+
+    private boolean internalTraceKey(String key) {
+        if (key == null) return false;
+        return GoogleCtsContract.EXTRA_TRACE_SESSION.equals(key)
+                || GoogleCtsContract.EXTRA_TRACE_LINE.equals(key);
     }
 
     private Context currentApplicationContext() {
