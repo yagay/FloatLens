@@ -461,7 +461,7 @@ final class GoogleLens1758Profile {
                 && rect.right <= 1.05f && rect.bottom <= 1.05f;
     }
 
-    private static String selectedTextFromString(String raw) {
+    static String selectedTextFromString(String raw) {
         if (raw == null || raw.isBlank()) return "";
         String marker = "selectedText=";
         int start = raw.indexOf(marker);
