@@ -38,6 +38,8 @@ public final class GoogleCtsContract {
     public static final String EVENT_SELECTION = "selection";
     public static final String EVENT_COMMIT = "commit";
     public static final String EVENT_QUERY_RESULT = "query_result";
+    /** Finalize a text selection whose FloatLens action menu was already shown at selection time. */
+    public static final String EVENT_TEXT_MENU_COMMIT = "text_menu_commit";
     public static final String EVENT_END = "end";
     public static final String Q_WIDTH = "w";
     public static final String Q_HEIGHT = "h";
