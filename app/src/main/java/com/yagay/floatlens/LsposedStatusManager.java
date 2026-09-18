@@ -150,7 +150,8 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
             (preferences, key) -> {
                 if (FloatSettings.K_ENHANCED_MODE.equals(key)
                         || FloatSettings.K_LSPOSED_ENABLED.equals(key)
-                        || FloatSettings.K_LSPOSED_SECURE_SCREENSHOT.equals(key)) {
+                        || FloatSettings.K_LSPOSED_SECURE_SCREENSHOT.equals(key)
+                        || FloatSettings.K_DIAGNOSTIC.equals(key)) {
                     syncRuntimeConfigAsync();
                 }
             };
@@ -258,6 +259,7 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         boolean enhanced = local.getBoolean(FloatSettings.K_ENHANCED_MODE, false);
         boolean lsposed = local.getBoolean(FloatSettings.K_LSPOSED_ENABLED, false);
         boolean secureScreenshot = local.getBoolean(FloatSettings.K_LSPOSED_SECURE_SCREENSHOT, false);
+        boolean diagnostic = local.getBoolean(FloatSettings.K_DIAGNOSTIC, false);
         long updatedAt = System.currentTimeMillis();
         IO.execute(() -> {
             try {
@@ -273,6 +275,7 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                         .putBoolean(LsposedRuntimeConfig.K_LSPOSED_ENABLED, lsposed)
                         .putBoolean(LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED, secureScreenshot)
                         .putLong(LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL, 0L)
+                        .putBoolean(LsposedRuntimeConfig.K_DIAGNOSTIC_ENABLED, diagnostic)
                         .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN)
                         .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED)
                         .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL)
