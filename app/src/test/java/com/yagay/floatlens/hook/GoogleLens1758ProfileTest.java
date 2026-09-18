@@ -31,6 +31,13 @@ public class GoogleLens1758ProfileTest {
         assertEquals("", GoogleLens1758Profile.selectedTextFromString("RegionSearchSelection"));
     }
 
+    @Test public void presentationBoundaryRequiresCompleteInteractionPresentation() {
+        assertFalse(GoogleLens1758Profile.isPresentationBoundary(false, true, true));
+        assertFalse(GoogleLens1758Profile.isPresentationBoundary(true, false, true));
+        assertFalse(GoogleLens1758Profile.isPresentationBoundary(true, true, false));
+        assertTrue(GoogleLens1758Profile.isPresentationBoundary(true, true, true));
+    }
+
     @Test public void resultCompletionRequiresImageAndAnyPresentInteraction() {
         assertFalse(GoogleLens1758Profile.isCompleteState(false, false, false));
         assertTrue(GoogleLens1758Profile.isCompleteState(true, false, false));
