@@ -13,6 +13,14 @@ public class GoogleCtsContractTest {
         assertTrue(GoogleCtsContract.isFloatLensSession(true, "abc"));
     }
 
+    @Test public void contextualSearchBoundaryMatchesOnlyPlatformAction() {
+        assertTrue(GoogleCtsContract.isContextualSearchAction(
+                "android.app.contextualsearch.action.LAUNCH_CONTEXTUAL_SEARCH"));
+        assertFalse(GoogleCtsContract.isContextualSearchAction(null));
+        assertFalse(GoogleCtsContract.isContextualSearchAction(
+                "android.intent.action.WEB_SEARCH"));
+    }
+
     @Test public void traceAuthorizationRequiresMatchingLiveSession() {
         long now = 1000L;
         assertTrue(GoogleCtsContract.isAuthorizedTrace("token", now + 1000L, "token", now));
