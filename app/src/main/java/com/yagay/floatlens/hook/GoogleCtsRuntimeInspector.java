@@ -8,6 +8,7 @@ import android.graphics.Rect;
 import android.graphics.RectF;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.util.Log;
 
@@ -15,14 +16,19 @@ import com.yagay.floatlens.GoogleCtsContract;
 
 import org.lsposed.hiddenapibypass.HiddenApiBypass;
 
+import java.io.FileOutputStream;
 import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import dalvik.system.BaseDexClassLoader;
@@ -47,11 +53,18 @@ final class GoogleCtsRuntimeInspector {
     private final Set<String> seenClasses = new HashSet<>();
     private final AtomicInteger eventCount = new AtomicInteger();
     private final ThreadLocal<Boolean> traceDispatching = new ThreadLocal<>();
+    private final ExecutorService bridgeIo = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "FloatLens-GoogleBridge-Tx");
+        t.setDaemon(true);
+        return t;
+    });
 
     private volatile long activeUntil;
     private volatile String sessionToken = "";
     private volatile int showSessionId = -1;
     private volatile Object voiceSession;
+    private volatile boolean bridgeFrameQueued;
+    private volatile boolean bridgeCommitted;
 
     GoogleCtsRuntimeInspector(XposedModule module,
                               LsposedRuntimeProvider provider,
@@ -120,6 +133,7 @@ final class GoogleCtsRuntimeInspector {
                             report("OMNIENT_BUILD_VIS_INTENT",
                                     "bitmap=" + bitmapSummary(bitmap)
                                             + " source=" + describeIntent(source));
+                            sendBridgeFrame(bitmap);
                         }
                         Object result = chain.proceed();
                         if (active() && result instanceof Intent out) {
@@ -151,9 +165,11 @@ final class GoogleCtsRuntimeInspector {
                         && "dscl".equals(p[0].getName()) && p[1] == boolean.class) {
                     module.hook(method).intercept(chain -> {
                         if (active()) {
+                            SelectionSnapshot selection = selectionSnapshot(chain.getArg(0));
                             report("USER_SELECTION",
-                                    describeSelectionWithMetadata(chain.getArg(0))
-                                            + " primary=" + chain.getArg(1));
+                                    selection.detail() + " primary=" + chain.getArg(1));
+                            sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
+                                    selection.text(), selection.detail(), selection.bounds());
                         }
                         return chain.proceed();
                     });
@@ -164,7 +180,19 @@ final class GoogleCtsRuntimeInspector {
                 if ("p".equals(method.getName()) && p.length == 1
                         && "dtqj".equals(p[0].getName())) {
                     module.hook(method).intercept(chain -> {
-                        if (active()) report("LENS_QUERY_START", compactObject(chain.getArg(0), 4500));
+                        if (!active()) return chain.proceed();
+                        String detail = compactObject(chain.getArg(0), 4500);
+                        report("LENS_QUERY_START", detail);
+                        if (!bridgeCommitted) {
+                            bridgeCommitted = true;
+                            sendBridgeEvent(GoogleCtsContract.EVENT_COMMIT, "", detail, null);
+                        }
+                        if (method.getReturnType() == void.class) {
+                            report("LENS_QUERY_SUPPRESSED",
+                                    "FloatLens owns marked session; Google query submission skipped");
+                            clear("bridge_commit_suppressed");
+                            return null;
+                        }
                         return chain.proceed();
                     });
                     count++;
@@ -174,8 +202,17 @@ final class GoogleCtsRuntimeInspector {
                 if ("q".equals(method.getName()) && p.length == 1
                         && "dtqi".equals(p[0].getName())) {
                     module.hook(method).intercept(chain -> {
-                        if (active()) report("LENS_QUERY_RESULT", compactObject(chain.getArg(0), 4500));
-                        return chain.proceed();
+                        if (!active()) return chain.proceed();
+                        Object queryResult = chain.getArg(0);
+                        Object result = chain.proceed();
+                        if (active()) {
+                            String detail = compactObject(queryResult, 4500);
+                            report("LENS_QUERY_RESULT", detail);
+                            sendBridgeEvent(GoogleCtsContract.EVENT_QUERY_RESULT,
+                                    firstStringField(queryResult), detail, null);
+                            clear("bridge_query_result");
+                        }
+                        return result;
                     });
                     count++;
                 }
@@ -205,26 +242,66 @@ final class GoogleCtsRuntimeInspector {
         }
     }
 
-    private String describeSelectionWithMetadata(Object metadata) {
-        if (metadata == null) return "metadata=null";
+    private SelectionSnapshot selectionSnapshot(Object metadata) {
+        if (metadata == null) return new SelectionSnapshot("", null, "metadata=null");
         StringBuilder out = new StringBuilder();
         out.append("metadataClass=").append(metadata.getClass().getName());
         Object selection = fieldByTypeName(metadata, "dtlp");
         if (selection == null) {
             out.append(" raw=").append(compactObject(metadata, 3500));
-            return out.toString();
+            return new SelectionSnapshot("", firstRectField(metadata), out.toString());
         }
+
         out.append(" userSelectionClass=").append(selection.getClass().getName());
+        Object textSelection = null;
+        String text = "";
         if ("dtlr".equals(selection.getClass().getName())) {
-            Object textSelection = fieldByTypeName(selection, "dtvz");
-            String text = firstStringField(textSelection);
-            if (text != null && !text.isBlank()) out.append(" selectedText=").append(quote(text, 2000));
+            textSelection = fieldByTypeName(selection, "dtvz");
+            String found = firstStringField(textSelection);
+            if (found != null && !found.isBlank()) {
+                text = found;
+                out.append(" selectedText=").append(quote(found, 2000));
+            }
             out.append(" textSelection=").append(compactObject(textSelection, 2500));
         } else {
             out.append(" selection=").append(compactObject(selection, 3500));
         }
-        return out.toString();
+
+        Rect bounds = firstRectField(textSelection, selection, metadata);
+        if (bounds != null) out.append(" bounds=").append(bounds.toShortString());
+        return new SelectionSnapshot(text, bounds, out.toString());
     }
+
+    private Rect firstRectField(Object... targets) {
+        if (targets == null) return null;
+        for (Object target : targets) {
+            if (target == null) continue;
+            if (target instanceof Rect rect && !rect.isEmpty()) return new Rect(rect);
+            if (target instanceof RectF rectF && rectF.width() > 0f && rectF.height() > 0f) {
+                Rect out = new Rect();
+                rectF.roundOut(out);
+                if (!out.isEmpty()) return out;
+            }
+            for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
+                Class<?> type = field.getType();
+                if (type != Rect.class && type != RectF.class) continue;
+                try {
+                    field.setAccessible(true);
+                    Object value = field.get(target);
+                    if (value instanceof Rect rect && !rect.isEmpty()) return new Rect(rect);
+                    if (value instanceof RectF rectF
+                            && rectF.width() > 0f && rectF.height() > 0f) {
+                        Rect out = new Rect();
+                        rectF.roundOut(out);
+                        if (!out.isEmpty()) return out;
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }
+        return null;
+    }
+
+    private record SelectionSnapshot(String text, Rect bounds, String detail) {}
 
     private Object fieldByTypeName(Object target, String typeName) {
         if (target == null) return null;
@@ -346,6 +423,7 @@ final class GoogleCtsRuntimeInspector {
                             report("SCREENSHOT", bitmap == null ? "bitmap=null"
                                     : "bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight()
                                     + " config=" + bitmap.getConfig());
+                            sendBridgeFrame(bitmap);
                         }
                     }
                     return chain.proceed();
@@ -500,8 +578,15 @@ final class GoogleCtsRuntimeInspector {
     }
 
     private synchronized void activate(String token, int id, Object session, String path) {
+        String nextToken = token == null ? "" : token;
+        boolean newBridgeSession = !nextToken.equals(sessionToken)
+                || SystemClock.elapsedRealtime() >= activeUntil;
         activeUntil = SystemClock.elapsedRealtime() + SESSION_TTL_MS;
-        sessionToken = token == null ? "" : token;
+        sessionToken = nextToken;
+        if (newBridgeSession) {
+            bridgeFrameQueued = false;
+            bridgeCommitted = false;
+        }
         if (id >= 0) showSessionId = id;
         if (session != null) voiceSession = session;
         eventCount.set(0);
@@ -522,12 +607,17 @@ final class GoogleCtsRuntimeInspector {
     private synchronized void clear(String reason) {
         String end = "END session=" + shortToken(sessionToken)
                 + " reason=" + reason + " events=" + eventCount.get();
+        if (!bridgeCommitted && !sessionToken.isBlank()) {
+            sendBridgeEvent(GoogleCtsContract.EVENT_END, "", reason, null);
+        }
         sendTrace(end);
         module.log(Log.INFO, TAG, end);
         activeUntil = 0L;
         sessionToken = "";
         showSessionId = -1;
         voiceSession = null;
+        bridgeFrameQueued = false;
+        bridgeCommitted = false;
         seenClasses.clear();
     }
 
@@ -576,6 +666,108 @@ final class GoogleCtsRuntimeInspector {
         }
     }
 
+    private void sendBridgeEvent(String event, String text, String detail, Rect bounds) {
+        String token = sessionToken;
+        if (token == null || token.isBlank() || event == null || event.isBlank()) return;
+        try {
+            Context context = currentApplicationContext();
+            if (context == null) return;
+            Intent intent = new Intent(GoogleCtsContract.ACTION_BRIDGE)
+                    .setClassName("com.yagay.floatlens", GoogleCtsContract.BRIDGE_RECEIVER_CLASS)
+                    .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+                    .putExtra(GoogleCtsContract.EXTRA_BRIDGE_SESSION, token)
+                    .putExtra(GoogleCtsContract.EXTRA_BRIDGE_EVENT, event);
+            if (text != null && !text.isBlank()) {
+                intent.putExtra(GoogleCtsContract.EXTRA_BRIDGE_TEXT,
+                        text.length() > 20_000 ? text.substring(0, 20_000) : text);
+            }
+            if (detail != null && !detail.isBlank()) {
+                intent.putExtra(GoogleCtsContract.EXTRA_BRIDGE_DETAIL,
+                        detail.length() > 8_000 ? detail.substring(0, 8_000) : detail);
+            }
+            if (bounds != null && !bounds.isEmpty()) {
+                intent.putExtra(GoogleCtsContract.EXTRA_LEFT, bounds.left);
+                intent.putExtra(GoogleCtsContract.EXTRA_TOP, bounds.top);
+                intent.putExtra(GoogleCtsContract.EXTRA_RIGHT, bounds.right);
+                intent.putExtra(GoogleCtsContract.EXTRA_BOTTOM, bounds.bottom);
+            }
+            context.sendBroadcast(intent);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "CTS bridge event failed event=" + event, t);
+        }
+    }
+
+    private synchronized void sendBridgeFrame(Bitmap bitmap) {
+        if (!active() || bridgeFrameQueued || bitmap == null || bitmap.isRecycled()) return;
+        String token = sessionToken;
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        ByteBuffer pixels = snapshotPixels(bitmap);
+        if (pixels == null) return;
+        bridgeFrameQueued = true;
+        bridgeIo.execute(() -> writeBridgeFrame(token, width, height, pixels));
+    }
+
+    private ByteBuffer snapshotPixels(Bitmap bitmap) {
+        Bitmap normalized = null;
+        try {
+            int width = bitmap.getWidth();
+            int height = bitmap.getHeight();
+            long byteCountLong = (long) width * (long) height * 4L;
+            if (width <= 0 || height <= 0 || byteCountLong <= 0L
+                    || byteCountLong > 64L * 1024L * 1024L) {
+                return null;
+            }
+            int bytes = (int) byteCountLong;
+            Bitmap source = bitmap;
+            if (bitmap.getConfig() != Bitmap.Config.ARGB_8888
+                    || bitmap.getRowBytes() != width * 4) {
+                normalized = bitmap.copy(Bitmap.Config.ARGB_8888, false);
+                if (normalized == null) return null;
+                source = normalized;
+            }
+            ByteBuffer pixels = ByteBuffer.allocateDirect(bytes);
+            source.copyPixelsToBuffer(pixels);
+            pixels.flip();
+            if (pixels.remaining() != bytes) return null;
+            return pixels;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "Google bridge pixel snapshot failed", t);
+            return null;
+        } finally {
+            if (normalized != null && !normalized.isRecycled()) {
+                try { normalized.recycle(); } catch (Throwable ignored) {}
+            }
+        }
+    }
+
+    private void writeBridgeFrame(String token, int width, int height, ByteBuffer pixels) {
+        int bytes = pixels == null ? 0 : pixels.remaining();
+        try {
+            Context context = currentApplicationContext();
+            if (context == null || bytes <= 0) {
+                throw new IllegalStateException("context/pixels unavailable");
+            }
+            Uri uri = GoogleCtsContract.bridgeFrameUri(token, width, height, bytes);
+            ParcelFileDescriptor descriptor =
+                    context.getContentResolver().openFileDescriptor(uri, "w");
+            if (descriptor == null) throw new IllegalStateException("bridge pipe unavailable");
+            try (FileOutputStream out = new ParcelFileDescriptor.AutoCloseOutputStream(descriptor)) {
+                FileChannel channel = out.getChannel();
+                while (pixels.hasRemaining()) channel.write(pixels);
+            }
+            module.log(Log.INFO, TAG,
+                    "Google bridge frame sent session=" + shortToken(token)
+                            + " size=" + width + "x" + height + " bytes=" + bytes);
+        } catch (Throwable t) {
+            if (token != null && token.equals(sessionToken) && !bridgeCommitted) {
+                bridgeFrameQueued = false;
+            }
+            module.log(Log.WARN, TAG,
+                    "Google bridge frame send failed session=" + shortToken(token), t);
+        }
+    }
+
     private boolean isTraceDispatching() {
         return Boolean.TRUE.equals(traceDispatching.get());
     }
@@ -583,7 +775,11 @@ final class GoogleCtsRuntimeInspector {
     private boolean internalTraceKey(String key) {
         if (key == null) return false;
         return GoogleCtsContract.EXTRA_TRACE_SESSION.equals(key)
-                || GoogleCtsContract.EXTRA_TRACE_LINE.equals(key);
+                || GoogleCtsContract.EXTRA_TRACE_LINE.equals(key)
+                || GoogleCtsContract.EXTRA_BRIDGE_SESSION.equals(key)
+                || GoogleCtsContract.EXTRA_BRIDGE_EVENT.equals(key)
+                || GoogleCtsContract.EXTRA_BRIDGE_TEXT.equals(key)
+                || GoogleCtsContract.EXTRA_BRIDGE_DETAIL.equals(key);
     }
 
     private Context currentApplicationContext() {
