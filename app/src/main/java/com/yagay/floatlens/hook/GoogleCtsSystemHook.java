@@ -57,29 +57,65 @@ final class GoogleCtsSystemHook {
         this.classLoader = classLoader;
     }
 
-    void install() throws Exception {
-        Class<?> service = classLoader.loadClass(SERVICE_CLASS);
-        int installed = 0;
-        for (Method method : service.getDeclaredMethods()) {
-            if (!"invokeContextualSearchIntent".equals(method.getName())) continue;
-            Class<?>[] p = method.getParameterTypes();
-            if (p.length != 1 || !Intent.class.isAssignableFrom(p[0])) continue;
-            if (method.getReturnType() != int.class && method.getReturnType() != Integer.class) {
-                continue;
-            }
-            module.hook(method).intercept(chain ->
-                    interceptLaunch((Intent) chain.getArg(0), chain::proceed));
-            installed++;
-        }
-
-        if (installed == 0) {
+    void install() {
+        int contextualHooks = installContextualServiceHooks();
+        int activityTaskHooks = installActivityTaskFallbackHooks();
+        int total = contextualHooks + activityTaskHooks;
+        if (total == 0) {
             module.log(Log.WARN, TAG,
-                    "AOSP ContextualSearch launch boundary not found; Google CTS left untouched");
+                    "No compatible contextual-search launch boundary found; Google CTS left untouched");
         } else {
             module.log(Log.INFO, TAG,
-                    "Google CTS capture-only hook installed methods=" + installed
+                    "Google CTS capture-only hooks installed contextual=" + contextualHooks
+                            + " activityTaskFallback=" + activityTaskHooks
                             + " package=" + GOOGLE_PACKAGE);
         }
+    }
+
+    private int installContextualServiceHooks() {
+        try {
+            Class<?> service = classLoader.loadClass(SERVICE_CLASS);
+            int installed = 0;
+            for (Method method : service.getDeclaredMethods()) {
+                if (!"invokeContextualSearchIntent".equals(method.getName())) continue;
+                Class<?>[] p = method.getParameterTypes();
+                if (p.length != 1 || !Intent.class.isAssignableFrom(p[0])) continue;
+                if (!returnsStartCode(method)) continue;
+                module.hook(method).intercept(chain ->
+                        interceptLaunch((Intent) chain.getArg(0), chain::proceed));
+                installed++;
+            }
+            return installed;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "ContextualSearchManagerService path unavailable; using lower fallback", t);
+            return 0;
+        }
+    }
+
+    private int installActivityTaskFallbackHooks() {
+        try {
+            Class<?> localService = classLoader.loadClass(
+                    "com.android.server.wm.ActivityTaskManagerService$LocalService");
+            int installed = 0;
+            for (Method method : localService.getDeclaredMethods()) {
+                if (!"startActivityWithScreenshot".equals(method.getName())) continue;
+                Class<?>[] p = method.getParameterTypes();
+                if (p.length == 0 || !Intent.class.isAssignableFrom(p[0])) continue;
+                if (!returnsStartCode(method)) continue;
+                module.hook(method).intercept(chain ->
+                        interceptLaunch((Intent) chain.getArg(0), chain::proceed));
+                installed++;
+            }
+            return installed;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "ActivityTaskManager screenshot fallback unavailable", t);
+            return 0;
+        }
+    }
+
+    private boolean returnsStartCode(Method method) {
+        return method.getReturnType() == int.class || method.getReturnType() == Integer.class;
     }
 
     private Object interceptLaunch(Intent launchIntent, Proceed proceed) throws Throwable {
