@@ -115,7 +115,7 @@ public final class GoogleAppController {
 
             String detail = out.toString().trim();
             State state = parseState(detail);
-            boolean success = process.exitValue() == 0 && state != State.UNKNOWN;
+            boolean success = process.exitValue() == 0 && operationSucceeded(operation, state);
             if (detail.isBlank()) detail = "su exit=" + process.exitValue();
             return new Result(success, state, detail);
         } catch (Throwable t) {
@@ -170,6 +170,16 @@ public final class GoogleAppController {
                 + "| grep -m1 -q 'stopped=true' && STOPPED=1; "
                 + "echo \"FLOATLENS_GOOGLE_STATE user=$USER_ID disabled=$DISABLED "
                 + "running=$RUNNING stopped=$STOPPED\"; ";
+    }
+
+    static boolean operationSucceeded(Operation operation, State state) {
+        if (operation == null || state == null || state == State.UNKNOWN) return false;
+        return switch (operation) {
+            case QUERY -> true;
+            case STOP -> state == State.STOPPED || state == State.FROZEN;
+            case FREEZE -> state == State.FROZEN;
+            case RESTORE -> state != State.FROZEN;
+        };
     }
 
     static State parseState(String detail) {
