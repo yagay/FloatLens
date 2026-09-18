@@ -66,7 +66,9 @@ final class GoogleCtsBridgeController {
         synchronized (state) {
             if (state.delivered) return;
             state.text = text == null ? "" : text.trim();
-            state.bounds = bounds == null ? null : new Rect(bounds);
+            if (bounds != null && !bounds.isEmpty()) {
+                state.bounds = new Rect(bounds);
+            }
             state.detail = detail == null ? "" : detail;
             revision = ++state.selectionRevision;
             selectedText = state.text;
