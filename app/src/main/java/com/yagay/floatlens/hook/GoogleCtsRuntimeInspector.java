@@ -301,7 +301,21 @@ final class GoogleCtsRuntimeInspector {
         return null;
     }
 
-    private record SelectionSnapshot(String text, Rect bounds, String detail) {}
+    private static final class SelectionSnapshot {
+        private final String text;
+        private final Rect bounds;
+        private final String detail;
+
+        SelectionSnapshot(String text, Rect bounds, String detail) {
+            this.text = text == null ? "" : text;
+            this.bounds = bounds == null ? null : new Rect(bounds);
+            this.detail = detail == null ? "" : detail;
+        }
+
+        String text() { return text; }
+        Rect bounds() { return bounds == null ? null : new Rect(bounds); }
+        String detail() { return detail; }
+    }
 
     private Object fieldByTypeName(Object target, String typeName) {
         if (target == null) return null;
