@@ -239,35 +239,55 @@ final class GoogleCtsRuntimeInspector {
                             return chain.proceed();
                         }
 
-                        Object result = chain.proceed();
-                        if (!active()) return result;
-
+                        // Parse before invoking Google. In 17.58 the final q(dtqi) already contains
+                        // InteractionPresentationResult/LensResultPanelResponse. If FloatLens owns
+                        // the session we can consume this final state before Google renders LRP.
                         GoogleLens1758Profile.ResultSnapshot snapshot =
                                 GoogleLens1758Profile.result(queryResult);
                         sendBridgeFrame(snapshot.frame());
 
-                        boolean userInteractionSeen = bridgeSelectionSeen || bridgePendingSeen;
+                        boolean userInteractionSeen = bridgeSelectionSeen;
+                        boolean presentationBoundary =
+                                GoogleLens1758Profile.isPresentationBoundary(
+                                        snapshot.complete(),
+                                        snapshot.interactionPresent(),
+                                        snapshot.presentationPresent());
+                        boolean renderablePayload = bridgeFrameQueued
+                                || (bridgeSelectionText != null
+                                && !bridgeSelectionText.isBlank());
+
                         report("LENS_QUERY_RESULT",
                                 "complete=" + snapshot.complete()
                                         + " selectionSeen=" + bridgeSelectionSeen
                                         + " pendingSeen=" + bridgePendingSeen
                                         + " interactionSeen=" + userInteractionSeen
+                                        + " presentationBoundary=" + presentationBoundary
+                                        + " renderablePayload=" + renderablePayload
                                         + " " + snapshot.detail());
 
-                        // Lens may publish a completed source-image result before the user has
-                        // selected anything. That result is useful to Google's UI but it is not
-                        // the FloatLens result and must never close the marked Lens activity.
                         if (!userInteractionSeen) {
                             report("LENS_QUERY_PRESELECTION",
-                                    "non-null result ignored until USER_SELECTION or PendingLensQuery");
-                            return result;
+                                    "result allowed until USER_SELECTION");
+                            return chain.proceed();
                         }
 
-                        // Diagnostic only. FloatLens no longer commits on dtqi because
-                        // Google may publish multiple internal result states before it decides to
-                        // launch contextual search. The stable ownership boundary is the outgoing
-                        // LAUNCH_CONTEXTUAL_SEARCH Intent intercepted in hookActivityDispatch().
-                        return result;
+                        if (presentationBoundary && renderablePayload) {
+                            report("LENS_PRESENTATION_BOUNDARY",
+                                    "Google LRP ready; handing selection to FloatLens");
+                            boolean consumed = commitBridgeResult(
+                                    snapshot.text(), snapshot.detail(),
+                                    "lens_presentation_intercept");
+                            if (consumed) {
+                                module.log(Log.INFO, TAG,
+                                        "Google Lens result-panel presentation suppressed");
+                                // dscu.q(dtqi) is void in the validated 17.58 profile. Skipping
+                                // the original call prevents LensResultPanelResponse from being
+                                // rendered while retaining all earlier Google recognition work.
+                                return null;
+                            }
+                        }
+
+                        return chain.proceed();
                     });
                     count++;
                 }
