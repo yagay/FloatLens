@@ -309,9 +309,9 @@ final class GoogleCtsRuntimeInspector {
         }, RESULT_SETTLE_MS);
     }
 
-    private synchronized void commitBridgeResult(String text, String detail, String reason) {
+    private synchronized boolean commitBridgeResult(String text, String detail, String reason) {
         if (!active() || bridgeCommitted
-                || (!bridgeSelectionSeen && !bridgePendingSeen)) return;
+                || (!bridgeSelectionSeen && !bridgePendingSeen)) return false;
 
         // Never close Google's marked Lens UI unless FloatLens actually has something it can
         // display. v155 showed non-null dtqi placeholders with frame/text/LensResult all null;
@@ -322,7 +322,7 @@ final class GoogleCtsRuntimeInspector {
             report("LENS_QUERY_NO_PAYLOAD",
                     "keep Google UI open reason=" + reason
                             + " detail=" + safe(detail));
-            return;
+            return false;
         }
 
         bridgeCommitted = true;
@@ -336,6 +336,7 @@ final class GoogleCtsRuntimeInspector {
                 finalText, detail, finalBounds);
         finishMarkedGoogleActivity(reason);
         clear(reason);
+        return true;
     }
 
     private Rect selectionBoundsForDisplay(
@@ -620,13 +621,13 @@ final class GoogleCtsRuntimeInspector {
                     // normally, then immediately hand the payload to FloatLens and close both
                     // Google activities before the search UI can remain onscreen.
                     if (contextualBoundary && contextualPayload && active()) {
-                        commitBridgeResult("", contextualDetail,
+                        boolean consumed = commitBridgeResult("", contextualDetail,
                                 "contextual_search_activity_intercept");
-                        if (bridgeCommitted && activity instanceof Activity contextualActivity) {
+                        if (consumed && activity instanceof Activity contextualActivity) {
                             finishActivity(contextualActivity,
                                     "contextual_search_activity_intercept");
-                            report("CONTEXTUAL_SEARCH_SUPPRESSED",
-                                    "activity lifecycle fallback consumed Google search");
+                            module.log(Log.INFO, TAG,
+                                    "Contextual search activity consumed by FloatLens");
                         }
                     } else if (contextualBoundary && !contextualPayload && active()) {
                         report("CONTEXTUAL_SEARCH_PASSTHROUGH",
@@ -719,8 +720,9 @@ final class GoogleCtsRuntimeInspector {
                         return chain.proceed();
                     }
 
-                    commitBridgeResult("", detail, "contextual_search_intercept");
-                    if (!bridgeCommitted) {
+                    boolean consumed = commitBridgeResult(
+                            "", detail, "contextual_search_intercept");
+                    if (!consumed) {
                         report("CONTEXTUAL_SEARCH_PASSTHROUGH",
                                 "bridge commit rejected; Google search allowed");
                         return chain.proceed();
