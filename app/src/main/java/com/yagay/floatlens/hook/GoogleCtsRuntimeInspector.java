@@ -188,9 +188,7 @@ final class GoogleCtsRuntimeInspector {
             for (Executable constructor : interactionData.getDeclaredConstructors()) {
                 module.hook(constructor).intercept(chain -> {
                     Object result = chain.proceed();
-                    if (!active() || !bridgeSelectionSeen
-                            || bridgeSelectionText == null
-                            || bridgeSelectionText.isBlank()) {
+                    if (!active() || !bridgeSelectionSeen) {
                         return result;
                     }
 
@@ -283,8 +281,8 @@ final class GoogleCtsRuntimeInspector {
     /**
      * Google 17.58 classes8.dex:
      * dqsi.e == HIDDEN and dqqt.z(dqsi,int) directly drives InfoPanelView/
-     * LensResultPanelBottomsheetBehavior. Rewrite only FloatLens-owned text sessions to HIDDEN so
-     * the Web LRP/SearchBox/bottom-sheet disappears while the Lens selection overlay stays alive.
+     * LensResultPanelBottomsheetBehavior. For every FloatLens-owned selection, immediately hide
+     * the actual InfoPanelView and also rewrite state to HIDDEN so WebX/SearchBox never flashes.
      */
     private int hookGoogleLensInfoPanelController() {
         try {
@@ -312,26 +310,24 @@ final class GoogleCtsRuntimeInspector {
                 }
 
                 module.hook(method).intercept(chain -> {
-                    if (!active() || !bridgeSelectionSeen
-                            || bridgeSelectionText == null
-                            || bridgeSelectionText.isBlank()) {
+                    if (!active() || !bridgeSelectionSeen) {
                         return chain.proceed();
                     }
 
+                    // HIDDEN alone animates the panel below the screen and leaves WebX visible for
+                    // ~80-220ms. Hide the actual InfoPanelView immediately, then also feed HIDDEN
+                    // into Google's state machine so its internal bottom-sheet state stays sane.
+                    int hiddenViews = forceGoogleInfoPanelGone(chain.getThisObject());
                     Object requested = chain.getArg(0);
-                    if (requested == hiddenState) {
-                        return chain.proceed();
-                    }
-
                     Object[] args = chain.getArgs().toArray();
                     args[0] = hiddenState;
-                    report("GOOGLE_INFO_PANEL_HIDDEN",
+                    report("GOOGLE_INFO_PANEL_SUPPRESSED",
                             "controller=dqqt.z requested="
                                     + (requested == null ? "null" : String.valueOf(requested))
-                                    + " forced=HIDDEN textLen="
-                                    + bridgeSelectionText.length());
-                    // Proceed with Google's own method using HIDDEN instead of simply setting the
-                    // View GONE ourselves; this keeps its bottom-sheet/internal state consistent.
+                                    + " forced=HIDDEN goneViews=" + hiddenViews
+                                    + " textLen="
+                                    + (bridgeSelectionText == null ? 0
+                                    : bridgeSelectionText.length()));
                     return chain.proceed(args);
                 });
                 count++;
@@ -342,6 +338,20 @@ final class GoogleCtsRuntimeInspector {
         } catch (Throwable t) {
             module.log(Log.WARN, TAG,
                     "Google Lens InfoPanel controller unavailable", t);
+            return 0;
+        }
+    }
+
+    private int forceGoogleInfoPanelGone(Object controller) {
+        Object panel = fieldByTypeName(controller,
+                "com.google.android.libraries.lens.view.infopanel.InfoPanelView");
+        if (!(panel instanceof View view)) return 0;
+        try {
+            if (view.getVisibility() != View.GONE) view.setVisibility(View.GONE);
+            view.setAlpha(0f);
+            return 1;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "Failed to hide Google InfoPanelView", t);
             return 0;
         }
     }
@@ -748,14 +758,17 @@ final class GoogleCtsRuntimeInspector {
                             return chain.proceed();
                         }
 
-                        if (bridgeSelectionText != null
-                                && !bridgeSelectionText.isBlank()) {
+                        if (bridgeSelectionSeen) {
                             GoogleLens1758Profile.PresentationRequestSuppression suppression =
-                                    GoogleLens1758Profile.suppressTextPresentationRequest(pending);
+                                    GoogleLens1758Profile
+                                            .suppressSelectionPresentationRequest(pending);
                             report(suppression.suppressed()
                                             ? "GOOGLE_PRESENTATION_REQUEST_SUPPRESSED"
                                             : "GOOGLE_PRESENTATION_REQUEST_UNCHANGED",
-                                    suppression.detail());
+                                    "selectionTextLen="
+                                            + (bridgeSelectionText == null ? 0
+                                            : bridgeSelectionText.length())
+                                            + " " + suppression.detail());
                         }
 
                         GoogleLens1758Profile.PendingSnapshot snapshot =
@@ -790,8 +803,7 @@ final class GoogleCtsRuntimeInspector {
                         // native-presentation strip here as a fail-soft fallback in case a future
                         // Google path materializes InteractionDataResult before this process hook
                         // observes its constructor.
-                        if (bridgeSelectionSeen && bridgeSelectionText != null
-                                && !bridgeSelectionText.isBlank()) {
+                        if (bridgeSelectionSeen) {
                             GoogleLens1758Profile.NativePresentationSuppression suppression =
                                     GoogleLens1758Profile
                                             .suppressNativeRenderedPresentationFromQueryResult(
@@ -837,34 +849,50 @@ final class GoogleCtsRuntimeInspector {
                         boolean textSelection =
                                 GoogleLens1758Profile.shouldSuppressPostSelectionResult(
                                         bridgeSelectionSeen, bridgeSelectionText);
+                        boolean anySelection =
+                                GoogleLens1758Profile.shouldSuppressAnyPostSelectionResult(
+                                        bridgeSelectionSeen);
+
                         if (textSelection && renderablePayload) {
                             report("LENS_POST_SELECTION_RESULT_SUPPRESSED",
-                                    "complete=" + snapshot.complete()
+                                    "type=text complete=" + snapshot.complete()
                                             + " presentationPresent="
                                             + snapshot.presentationPresent()
                                             + " keepSelectionAlive=true textLen="
                                             + bridgeSelectionText.length());
                             suppressBridgeTextPresentation(snapshot.detail());
 
-                            // Important: do not wait for presentationPresent=true. The 17.58
-                            // incomplete post-selection q(dtqi) already enters Google's downstream
-                            // result consumer, which can create ActionMenuView, InfoPanelView and
-                            // WebX before the final InteractionPresentationResult arrives. p(dtqj)
-                            // continues running, so Google still produces OCR/selection results;
-                            // y(dscl,boolean) continues running, so highlight/resize handles stay
-                            // alive. FloatLens consumes every q(dtqi) after the text selection.
+                            // Keep Google's OCR/highlight/drag-handle state alive, but never let its
+                            // post-selection result consumer build ActionMenu/InfoPanel/WebX.
                             return null;
                         }
 
-                        if (presentationBoundary && renderablePayload) {
-                            report("LENS_PRESENTATION_BOUNDARY",
-                                    "Google LRP ready; handing non-text selection to FloatLens");
-                            if (commitBridgeResult(snapshot.text(), snapshot.detail(),
-                                    "lens_presentation_intercept")) {
-                                module.log(Log.INFO, TAG,
-                                        "Google Lens result-panel presentation suppressed");
-                                return null;
+                        if (anySelection && renderablePayload) {
+                            boolean commitNonText =
+                                    GoogleLens1758Profile.shouldCommitNonTextSelection(
+                                            bridgeSelectionSeen, bridgeSelectionText,
+                                            snapshot.complete(), snapshot.interactionPresent());
+                            if (commitNonText) {
+                                report("LENS_NON_TEXT_COMPLETE",
+                                        "presentationPresent=" + snapshot.presentationPresent()
+                                                + " committing without waiting for Google LRP");
+                                if (commitBridgeResult(snapshot.text(), snapshot.detail(),
+                                        "lens_non_text_complete")) {
+                                    return null;
+                                }
                             }
+
+                            report("LENS_POST_SELECTION_RESULT_SUPPRESSED",
+                                    "type=non_text complete=" + snapshot.complete()
+                                            + " interactionPresent="
+                                            + snapshot.interactionPresent()
+                                            + " presentationPresent="
+                                            + snapshot.presentationPresent());
+                            // Region/object selections no longer wait for
+                            // InteractionPresentationResult/LensResultPanelResponse. Suppress every
+                            // post-selection q(dtqi); commit as soon as Lens itself reports a
+                            // complete interaction result.
+                            return null;
                         }
 
                         return chain.proceed();
