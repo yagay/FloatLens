@@ -96,17 +96,29 @@ final class GoogleCtsBridgeController {
             if (detail != null && !detail.isBlank()) state.detail = detail;
             state.committed = true;
         }
-        MAIN.post(() -> tryDeliver(context.getApplicationContext(), token, state, true));
+        Context app = context.getApplicationContext();
+        MAIN.post(() -> tryDeliver(app, token, state, false));
+        MAIN.postDelayed(() -> tryDeliver(app, token, state, true), FRAME_WAIT_MS);
     }
 
     static void onEnd(Context context, String token, String detail) {
         if (context == null || token == null || token.isBlank()) return;
-        State state = STATES.get(token);
-        if (state == null) return;
-        synchronized (state) {
-            if (detail != null && !detail.isBlank()) state.detail = detail;
+        Context app = context.getApplicationContext();
+        State state = STATES.remove(token);
+        if (state != null) {
+            synchronized (state) {
+                if (detail != null && !detail.isBlank()) state.detail = detail;
+                recycle(state.frame);
+                state.frame = null;
+                state.delivered = true;
+            }
         }
-        scheduleCleanup(context.getApplicationContext(), token, state);
+        new FloatSettings(app).clearGoogleCtsSession();
+        FloatService service = FloatService.get();
+        if (service != null) service.onCircleFinished("google_bridge_end");
+        DiagnosticLog.i(app, "GOOGLE_BRIDGE",
+                "ended session=" + shortToken(token)
+                        + " detail=" + trim(detail, 600));
     }
 
     private static void tryDeliver(Context app, String token, State state, boolean force) {
