@@ -57,6 +57,19 @@ public class GoogleLens1758ProfileTest {
         assertTrue(GoogleLens1758Profile.shouldSuppressAnyPostSelectionResult(true));
     }
 
+    @Test public void textViewportFocusSuppressionIsNarrowlyScoped() {
+        assertFalse(GoogleLens1758Profile.shouldSuppressTextViewportFocus(
+                false, "KernelSU", "dudp", true));
+        assertFalse(GoogleLens1758Profile.shouldSuppressTextViewportFocus(
+                true, "", "dudp", true));
+        assertFalse(GoogleLens1758Profile.shouldSuppressTextViewportFocus(
+                true, "KernelSU", "other", true));
+        assertFalse(GoogleLens1758Profile.shouldSuppressTextViewportFocus(
+                true, "KernelSU", "dudp", false));
+        assertTrue(GoogleLens1758Profile.shouldSuppressTextViewportFocus(
+                true, "KernelSU", "dudp", true));
+    }
+
     @Test public void regionSelectionClassUsesImmediateCommitPath() {
         assertTrue(GoogleLens1758Profile.isDirectRegionSelectionClass("dtln"));
         assertFalse(GoogleLens1758Profile.isDirectRegionSelectionClass("dtlr"));
