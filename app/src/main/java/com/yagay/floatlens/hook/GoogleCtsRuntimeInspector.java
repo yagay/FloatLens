@@ -189,8 +189,6 @@ final class GoogleCtsRuntimeInspector {
                             bridgeSelectionSeen = true;
                             bridgeSelectionText = selection.text();
                             bridgeSelectionBounds = selectionBounds;
-                            // Invalidate any pre-selection settle timer. The next accepted result
-                            // must belong to this user interaction, not initial image analysis.
                             report("USER_SELECTION",
                                     selection.detail()
                                             + " pixelBounds=" + String.valueOf(selectionBounds)
@@ -218,8 +216,7 @@ final class GoogleCtsRuntimeInspector {
                         GoogleLens1758Profile.PendingSnapshot snapshot =
                                 GoogleLens1758Profile.pending(pending);
                         bridgePendingSeen = true;
-                        // A real non-null PendingLensQuery marks the interaction-query boundary.
-                        // Cancel any settle timer created by earlier source-image processing.
+                        // A real non-null PendingLensQuery is retained as diagnostic/context.
                         report("LENS_QUERY_START", snapshot.detail());
                         sendBridgeFrame(snapshot.frame());
 
@@ -575,9 +572,7 @@ final class GoogleCtsRuntimeInspector {
                         contextualFrame = captureContextualSearchFrame(intent);
                         boolean hasText = bridgeSelectionText != null
                                 && !bridgeSelectionText.isBlank();
-                        boolean hasSelection = bridgeSelectionSeen
-                                && (hasText || bridgeSelectionBounds != null);
-                        contextualPayload = contextualFrame || hasSelection;
+                        contextualPayload = hasText || bridgeFrameQueued;
                         contextualDetail = "source=activity_lifecycle"
                                 + " activityClass="
                                 + (activity == null ? "null" : activity.getClass().getName())
@@ -668,7 +663,7 @@ final class GoogleCtsRuntimeInspector {
                             + " caller=" + googleCaller());
 
                     if (intent == null
-                            || !GoogleCtsContract.CONTEXTUAL_SEARCH_ACTION.equals(
+                            || !GoogleCtsContract.isContextualSearchAction(
                                     intent.getAction())) {
                         return chain.proceed();
                     }
@@ -676,8 +671,7 @@ final class GoogleCtsRuntimeInspector {
                     boolean frameQueued = captureContextualSearchFrame(intent);
                     boolean hasText = bridgeSelectionText != null
                             && !bridgeSelectionText.isBlank();
-                    boolean hasSelection = bridgeSelectionSeen
-                            && (hasText || bridgeSelectionBounds != null);
+                    boolean hasRenderablePayload = hasText || bridgeFrameQueued;
 
                     String detail = "action=" + intent.getAction()
                             + " selectionSeen=" + bridgeSelectionSeen
@@ -692,12 +686,14 @@ final class GoogleCtsRuntimeInspector {
                     // Suppress only when FloatLens can actually render something. This keeps the
                     // Google flow untouched if a future Google build changes the screenshot or
                     // selection payload shape.
-                    if (!frameQueued && !hasSelection) {
+                    if (!hasRenderablePayload) {
                         report("CONTEXTUAL_SEARCH_PASSTHROUGH",
-                                "no FloatLens payload; Google search allowed");
+                                "no renderable FloatLens payload; Google search allowed");
                         return chain.proceed();
                     }
 
+                    report("CONTEXTUAL_SEARCH_TAKEOVER",
+                            "renderable payload ready; suppressing marked Google search");
                     boolean consumed = commitBridgeResult(
                             "", detail, "contextual_search_intercept");
                     if (!consumed) {
@@ -706,8 +702,8 @@ final class GoogleCtsRuntimeInspector {
                         return chain.proceed();
                     }
 
-                    report("CONTEXTUAL_SEARCH_SUPPRESSED",
-                            "FloatLens owns marked session; Google search launch skipped");
+                    module.log(Log.INFO, TAG,
+                            "Contextual search launch suppressed for FloatLens session");
                     // Instrumentation.execStartActivity normally returns null for a successful
                     // external launch, so null is also the safest synthetic result when we consume
                     // this marked launch.
