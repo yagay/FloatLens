@@ -880,10 +880,11 @@ final class GoogleCtsRuntimeInspector {
 
                 if (GoogleLens1758Profile.isSelectionMethod(method)) {
                     module.hook(method).intercept(chain -> {
+                        GoogleLens1758Profile.SelectionSnapshot selection = null;
+                        Rect selectionBounds = null;
                         if (active()) {
-                            GoogleLens1758Profile.SelectionSnapshot selection =
-                                    GoogleLens1758Profile.selection(chain.getArg(0));
-                            Rect selectionBounds = selectionBoundsForDisplay(selection);
+                            selection = GoogleLens1758Profile.selection(chain.getArg(0));
+                            selectionBounds = selectionBoundsForDisplay(selection);
                             bridgeSelectionSeen = true;
                             bridgeSelectionText = selection.text();
                             if (selectionBounds != null && !selectionBounds.isEmpty()) {
@@ -900,6 +901,7 @@ final class GoogleCtsRuntimeInspector {
                                     selection.text(), selection.detail(), effectiveBounds);
                         }
                         boolean directRegionCommit = active()
+                                && selection != null
                                 && selection.isDirectRegionSelection()
                                 && selectionBounds != null
                                 && !selectionBounds.isEmpty();
