@@ -16,6 +16,9 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
+import android.view.WindowManager;
+import android.widget.TextView;
 
 import com.yagay.floatlens.GoogleCtsContract;
 
@@ -94,6 +97,7 @@ final class GoogleCtsRuntimeInspector {
         hooks += hookGoogle1758LensSelectionBoundary();
         hooks += hookGoogleTextFloatingToolbar();
         hooks += hookGoogleMaterialFloatingToolbar();
+        hooks += hookGoogleWindowInspector();
         hooks += hookVoiceSessionShow();
         hooks += hookVoiceScreenshot();
         hooks += hookActivityLifecycle();
@@ -393,6 +397,162 @@ final class GoogleCtsRuntimeInspector {
         return hidden;
     }
 
+    /**
+     * Capture the real Google menu window/view boundary instead of guessing by protobuf type.
+     * This is diagnostic-only: it never hides a view. A later version can suppress the exact
+     * class/resource once the device log identifies it.
+     */
+    private int hookGoogleWindowInspector() {
+        try {
+            Class<?> global = Class.forName("android.view.WindowManagerGlobal", false, classLoader);
+            int count = 0;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(global)) {
+                if (!(executable instanceof Method method)) continue;
+                if (!"addView".equals(method.getName())) continue;
+                Class<?>[] params = method.getParameterTypes();
+                int viewIndex = findParameter(params, View.class);
+                int lpIndex = findParameter(params, ViewGroup.LayoutParams.class);
+                if (viewIndex < 0) continue;
+                final int vIdx = viewIndex;
+                final int lIdx = lpIndex;
+
+                module.hook(method).intercept(chain -> {
+                    Object result = chain.proceed();
+                    if (!active() || !bridgeSelectionSeen) return result;
+
+                    Object rawView = chain.getArg(vIdx);
+                    Object rawLp = lIdx >= 0 ? chain.getArg(lIdx) : null;
+                    if (rawView instanceof View view) {
+                        report("GOOGLE_WINDOW_ADD",
+                                describeView(view, true)
+                                        + " lp=" + describeWindowLayoutParams(rawLp));
+                    }
+                    return result;
+                });
+                count++;
+            }
+            module.log(Log.INFO, TAG, "Google window inspector hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "Google window inspector unavailable", t);
+            return 0;
+        }
+    }
+
+    private void inspectGoogleSelectionViewsSoon() {
+        Activity activity = markedActivity.get();
+        if (activity == null) return;
+        final long[] delays = {0L, 80L, 220L, 500L};
+        for (long delay : delays) {
+            Runnable scan = () -> {
+                if (!active() || !bridgeSelectionSeen) return;
+                try {
+                    View root = activity.getWindow() == null
+                            ? null : activity.getWindow().getDecorView();
+                    if (root == null) return;
+                    StringBuilder out = new StringBuilder();
+                    int[] count = {0};
+                    collectInterestingViews(root, 0, out, count);
+                    report("GOOGLE_VIEW_SNAPSHOT",
+                            "delayMs=" + delay
+                                    + " activity=" + activity.getClass().getName()
+                                    + " selectedBounds=" + String.valueOf(bridgeSelectionBounds)
+                                    + " nodes=" + count[0]
+                                    + "\n" + trimViewDump(out.toString(), 6500));
+                } catch (Throwable t) {
+                    module.log(Log.WARN, TAG, "Google view snapshot failed", t);
+                }
+            };
+            if (delay == 0L) activity.runOnUiThread(scan);
+            else mainHandler.postDelayed(() -> activity.runOnUiThread(scan), delay);
+        }
+    }
+
+    private void collectInterestingViews(View view, int depth,
+                                         StringBuilder out, int[] count) {
+        if (view == null || count[0] >= 56 || out.length() >= 6200) return;
+        if (view.getVisibility() == View.VISIBLE && interestingView(view)) {
+            out.append("\n").append(depth).append(":").append(describeView(view, false));
+            count[0]++;
+        }
+        if (view instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) {
+                collectInterestingViews(group.getChildAt(i), depth + 1, out, count);
+                if (count[0] >= 56 || out.length() >= 6200) break;
+            }
+        }
+    }
+
+    private boolean interestingView(View view) {
+        CharSequence text = view instanceof TextView tv ? tv.getText() : null;
+        CharSequence desc = view.getContentDescription();
+        String cls = view.getClass().getName().toLowerCase(Locale.ROOT);
+        return (text != null && !text.toString().isBlank())
+                || (desc != null && !desc.toString().isBlank())
+                || view.isClickable()
+                || cls.contains("menu")
+                || cls.contains("toolbar")
+                || cls.contains("popup")
+                || cls.contains("chip")
+                || cls.contains("button")
+                || cls.contains("compose");
+    }
+
+    private String describeView(View view, boolean includeChildren) {
+        if (view == null) return "view=null";
+        int[] loc = new int[2];
+        try { view.getLocationOnScreen(loc); } catch (Throwable ignored) {}
+        String id = resourceEntryName(view);
+        String text = "";
+        if (view instanceof TextView tv && tv.getText() != null) {
+            text = trimViewDump(tv.getText().toString(), 180);
+        }
+        String desc = view.getContentDescription() == null
+                ? "" : trimViewDump(view.getContentDescription().toString(), 180);
+        ViewParent parent = view.getParent();
+        return "class=" + view.getClass().getName()
+                + " id=" + id
+                + " text=" + quote(text, 180)
+                + " desc=" + quote(desc, 180)
+                + " xy=" + loc[0] + "," + loc[1]
+                + " wh=" + view.getWidth() + "x" + view.getHeight()
+                + " alpha=" + view.getAlpha()
+                + " clickable=" + view.isClickable()
+                + " enabled=" + view.isEnabled()
+                + " parent=" + (parent == null ? "null" : parent.getClass().getName())
+                + (includeChildren && view instanceof ViewGroup g
+                ? " children=" + g.getChildCount() : "");
+    }
+
+    private String describeWindowLayoutParams(Object raw) {
+        if (!(raw instanceof WindowManager.LayoutParams lp)) {
+            return raw == null ? "null" : raw.getClass().getName();
+        }
+        CharSequence title = lp.getTitle();
+        return "type=" + lp.type
+                + " title=" + quote(title == null ? "" : title.toString(), 180)
+                + " flags=0x" + Integer.toHexString(lp.flags)
+                + " gravity=" + lp.gravity
+                + " xy=" + lp.x + "," + lp.y
+                + " wh=" + lp.width + "x" + lp.height;
+    }
+
+    private String resourceEntryName(View view) {
+        int id = view == null ? View.NO_ID : view.getId();
+        if (id == View.NO_ID || id == 0) return "none";
+        try {
+            return view.getResources().getResourceName(id);
+        } catch (Throwable ignored) {
+            return "0x" + Integer.toHexString(id);
+        }
+    }
+
+    private String trimViewDump(String value, int max) {
+        if (value == null) return "";
+        String out = value.replace("\n", " ").replace("\r", " ").replace("\u0000", "?");
+        return out.length() <= max ? out : out.substring(0, max) + "…";
+    }
+
     /** Google 17.58.16.ve Lens user-selection/query boundary from classes8.dex. */
     private int hookGoogle1758LensSelectionBoundary() {
         try {
@@ -436,6 +596,7 @@ final class GoogleCtsRuntimeInspector {
                                 && bridgeSelectionText != null
                                 && !bridgeSelectionText.isBlank()) {
                             hideGoogleMaterialFloatingToolbarSoon();
+                            inspectGoogleSelectionViewsSoon();
                         }
                         return result;
                     });
