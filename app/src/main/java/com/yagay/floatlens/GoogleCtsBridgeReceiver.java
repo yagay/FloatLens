@@ -47,6 +47,11 @@ public final class GoogleCtsBridgeReceiver extends BroadcastReceiver {
                 GoogleCtsBridgeController.onQueryResult(
                         context, token, text, bounds, detail);
             }
+            case GoogleCtsContract.EVENT_TEXT_MENU_COMMIT -> {
+                LsposedStatusManager.clearGoogleCtsSessionRemote(token);
+                GoogleCtsBridgeController.onTextMenuCommit(
+                        context, token, text, bounds, detail);
+            }
             case GoogleCtsContract.EVENT_END -> {
                 LsposedStatusManager.clearGoogleCtsSessionRemote(token);
                 GoogleCtsBridgeController.onEnd(context, token, detail);
