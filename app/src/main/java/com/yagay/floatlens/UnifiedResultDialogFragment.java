@@ -10,7 +10,6 @@ import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.view.WindowManager;
 
@@ -52,34 +51,15 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
             // showNow() normally creates the panel synchronously; this fallback handles lifecycle
             // edge cases without releasing the Google session before a visible frame exists.
             getViewLifecycleOwnerLiveData().observe(this, owner -> {
-                if (owner != null && panel != null) scheduleFirstVisibleFrame(panel.root(), callback);
+                if (owner != null && panel != null) {
+                    ResultReadyCoordinator.afterFirstVisibleFrame(
+                            panel.root(), stage -> runFirstFrameCallback(callback, stage));
+                }
             });
             return;
         }
-        scheduleFirstVisibleFrame(panel.root(), callback);
-    }
-
-    private void scheduleFirstVisibleFrame(View root, Runnable callback) {
-        if (root == null || callback == null) return;
-        root.post(() -> {
-            ViewTreeObserver observer = root.getViewTreeObserver();
-            if (!observer.isAlive()) {
-                root.postOnAnimation(() -> runFirstFrameCallback(callback, "observer_dead"));
-                return;
-            }
-            ViewTreeObserver.OnPreDrawListener listener = new ViewTreeObserver.OnPreDrawListener() {
-                @Override public boolean onPreDraw() {
-                    try {
-                        ViewTreeObserver current = root.getViewTreeObserver();
-                        if (current.isAlive()) current.removeOnPreDrawListener(this);
-                    } catch (Throwable ignored) {}
-                    root.postOnAnimation(() -> runFirstFrameCallback(callback, "dialog_first_frame"));
-                    return true;
-                }
-            };
-            observer.addOnPreDrawListener(listener);
-            root.invalidate();
-        });
+        ResultReadyCoordinator.afterFirstVisibleFrame(
+                panel.root(), stage -> runFirstFrameCallback(callback, stage));
     }
 
     private void runFirstFrameCallback(Runnable callback, String stage) {
