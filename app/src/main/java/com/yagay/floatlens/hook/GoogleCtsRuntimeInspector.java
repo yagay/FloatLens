@@ -895,6 +895,22 @@ final class GoogleCtsRuntimeInspector {
                         report("CONTEXTUAL_SEARCH_BOUNDARY", contextualDetail);
                     }
 
+                    boolean contextualText = contextualBoundary
+                            && bridgeSelectionText != null
+                            && !bridgeSelectionText.isBlank();
+
+                    // If Google reuses the original LensientActivity via onNewIntent, do not
+                    // deliver the contextual-search intent at all. Finishing that Activity would
+                    // destroy the live selection handles that FloatLens intentionally preserves.
+                    if (contextualText && "callActivityOnNewIntent".equals(name)) {
+                        report("CONTEXTUAL_TEXT_SEARCH_SUPPRESSED",
+                                "path=activity_new_intent keepSelectionAlive=true textLen="
+                                        + bridgeSelectionText.length());
+                        module.log(Log.INFO, TAG,
+                                "Contextual text-search newIntent suppressed; selection kept alive");
+                        return null;
+                    }
+
                     // Never replace the remembered selection Activity with a later Contextual
                     // Search Activity. The original LensientActivity owns Google's highlight and
                     // resize handles and must remain alive for FloatLens text-menu sessions.
