@@ -93,6 +93,7 @@ final class GoogleCtsRuntimeInspector {
         int hooks = 0;
         hooks += hookGoogle1758OmnientBoundary();
         hooks += hookGoogleNativeRenderedPresentationData();
+        hooks += hookGoogleInteractionPresentationResult();
         hooks += hookGoogleFixedSelectionChips();
         hooks += hookGoogleLensActionMenuController();
         hooks += hookGoogleLensInfoPanelController();
@@ -214,6 +215,55 @@ final class GoogleCtsRuntimeInspector {
     }
 
     /**
+     * Google 17.58 eseu is LensInteractionResult. Its six-argument constructor stores argument 3
+     * (index 2) directly into field c == presentationResult. For FloatLens-owned selections,
+     * replace that Optional with Google's canonical absent singleton before the value object exists.
+     */
+    private int hookGoogleInteractionPresentationResult() {
+        try {
+            Class<?> resultClass = Class.forName(
+                    GoogleLens1758Profile.INTERACTION_RESULT, false, classLoader);
+            Object absent = GoogleLens1758Profile.absentOptional(classLoader);
+            if (absent == null) {
+                module.log(Log.WARN, TAG,
+                        "Google presentation-result absent Optional unavailable");
+                return 0;
+            }
+
+            int count = 0;
+            for (Executable constructor : resultClass.getDeclaredConstructors()) {
+                Class<?>[] params = constructor.getParameterTypes();
+                if (params.length != 6
+                        || !GoogleLens1758Profile.hasTypeInHierarchy(
+                                params[2], GoogleLens1758Profile.OPTIONAL)) {
+                    continue;
+                }
+                module.hook(constructor).intercept(chain -> {
+                    if (!active() || !bridgeSelectionSeen) return chain.proceed();
+
+                    Object before = chain.getArg(2);
+                    Object[] args = chain.getArgs().toArray();
+                    args[2] = absent;
+                    Object result = chain.proceed(args);
+                    report("GOOGLE_PRESENTATION_RESULT_STRIPPED",
+                            "class=eseu ctorArg=2 before="
+                                    + (before == null ? "null" : before.getClass().getName())
+                                    + " after=" + absent.getClass().getName());
+                    return result;
+                });
+                count++;
+            }
+            module.log(Log.INFO, TAG,
+                    "Google LensInteractionResult presentation hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google LensInteractionResult presentation boundary unavailable", t);
+            return 0;
+        }
+    }
+
+    /**
      * Google 17.58 classes8.dex:
      * dscu.q(dtqi) reaches dokz.f(), and dokz.f() reaches dokz.g(dnqv). APK call-site analysis
      * also shows independent callers entering g(dnqv), so suppress both the menu layout wrapper
@@ -227,6 +277,24 @@ final class GoogleCtsRuntimeInspector {
             int count = 0;
             for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
                 if (!(executable instanceof Method method)) continue;
+
+                if ("a".equals(method.getName())
+                        && method.getParameterCount() == 0
+                        && GoogleLens1758Profile.ACTION_MENU_VIEW
+                                .equals(method.getReturnType().getName())) {
+                    module.hook(method).intercept(chain -> {
+                        Object result = chain.proceed();
+                        if (active() && bridgeSelectionSeen && result instanceof View view) {
+                            hideGoogleShellView(view);
+                            report("GOOGLE_ACTION_MENU_ROOT_SUPPRESSED",
+                                    "controller=dokz.a visibility="
+                                            + visibilityName(view.getVisibility()));
+                        }
+                        return result;
+                    });
+                    count++;
+                    continue;
+                }
 
                 if (GoogleLens1758Profile.isActionMenuLayoutMethod(method)) {
                     module.hook(method).intercept(chain -> {
@@ -286,7 +354,8 @@ final class GoogleCtsRuntimeInspector {
      */
     private int hookGoogleLensInfoPanelController() {
         try {
-            Class<?> controller = Class.forName("dqqt", false, classLoader);
+            Class<?> controller = Class.forName(
+                    GoogleLens1758Profile.INFO_PANEL_CONTROLLER, false, classLoader);
             Class<?> panelState = Class.forName("dqsi", false, classLoader);
             Field hiddenField = panelState.getDeclaredField("e");
             hiddenField.setAccessible(true);
@@ -335,8 +404,36 @@ final class GoogleCtsRuntimeInspector {
                 });
                 count++;
             }
+            try {
+                Class<?> owner = Class.forName(
+                        GoogleLens1758Profile.INFO_PANEL_OWNER, false, classLoader);
+                for (Executable executable : HiddenApiBypass.getDeclaredMethods(owner)) {
+                    if (!(executable instanceof Method method)) continue;
+                    if (!"d".equals(method.getName())
+                            || method.getParameterCount() != 0
+                            || !GoogleLens1758Profile.INFO_PANEL_VIEW
+                                    .equals(method.getReturnType().getName())) {
+                        continue;
+                    }
+                    module.hook(method).intercept(chain -> {
+                        Object result = chain.proceed();
+                        if (active() && bridgeSelectionSeen && result instanceof View view) {
+                            hideGoogleShellView(view);
+                            report("GOOGLE_INFO_PANEL_OWNER_SUPPRESSED",
+                                    "owner=dqpx.d visibility="
+                                            + visibilityName(view.getVisibility()));
+                        }
+                        return result;
+                    });
+                    count++;
+                }
+            } catch (Throwable t) {
+                module.log(Log.WARN, TAG,
+                        "Google Lens InfoPanel owner dqpx unavailable", t);
+            }
+
             module.log(Log.INFO, TAG,
-                    "Google Lens InfoPanel controller hooks=" + count);
+                    "Google Lens InfoPanel controller/owner hooks=" + count);
             return count;
         } catch (Throwable t) {
             module.log(Log.WARN, TAG,
@@ -346,17 +443,26 @@ final class GoogleCtsRuntimeInspector {
     }
 
     private int forceGoogleInfoPanelGone(Object controller) {
-        Object panel = fieldByTypeName(controller,
-                "com.google.android.libraries.lens.view.infopanel.InfoPanelView");
+        Object panel = fieldByName(controller, "b");
+        if (!(panel instanceof View)
+                || !GoogleLens1758Profile.INFO_PANEL_VIEW.equals(panel.getClass().getName())) {
+            panel = fieldByTypeName(controller, GoogleLens1758Profile.INFO_PANEL_VIEW);
+        }
         if (!(panel instanceof View view)) return 0;
         try {
-            if (view.getVisibility() != View.GONE) view.setVisibility(View.GONE);
-            view.setAlpha(0f);
+            hideGoogleShellView(view);
             return 1;
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "Failed to hide Google InfoPanelView", t);
             return 0;
         }
+    }
+
+    private void hideGoogleShellView(View view) {
+        if (view == null) return;
+        if (view.getVisibility() != View.GONE) view.setVisibility(View.GONE);
+        view.setAlpha(0f);
+        view.setClickable(false);
     }
 
     /**
@@ -543,6 +649,45 @@ final class GoogleCtsRuntimeInspector {
         return hidden;
     }
 
+    private void hideGoogleLensShellViewsSoon() {
+        Activity activity = markedActivity.get();
+        if (activity == null) return;
+        Runnable hide = () -> {
+            if (!active() || !bridgeSelectionSeen) return;
+            try {
+                View root = activity.getWindow() == null
+                        ? null : activity.getWindow().getDecorView();
+                int hidden = hideGoogleLensShellViews(root);
+                if (hidden > 0) {
+                    report("GOOGLE_LENS_SHELLS_SUPPRESSED",
+                            "hidden=" + hidden);
+                }
+            } catch (Throwable t) {
+                module.log(Log.WARN, TAG, "Failed to hide Google Lens shell views", t);
+            }
+        };
+        activity.runOnUiThread(hide);
+        mainHandler.postDelayed(() -> activity.runOnUiThread(hide), 32L);
+        mainHandler.postDelayed(() -> activity.runOnUiThread(hide), 96L);
+    }
+
+    private int hideGoogleLensShellViews(View view) {
+        if (view == null) return 0;
+        int hidden = 0;
+        String cls = view.getClass().getName();
+        if (GoogleLens1758Profile.INFO_PANEL_VIEW.equals(cls)
+                || GoogleLens1758Profile.ACTION_MENU_VIEW.equals(cls)) {
+            hideGoogleShellView(view);
+            hidden++;
+        }
+        if (view instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) {
+                hidden += hideGoogleLensShellViews(group.getChildAt(i));
+            }
+        }
+        return hidden;
+    }
+
     /**
      * Capture the real Google menu window/view boundary instead of guessing by protobuf type.
      * This is diagnostic-only: it never hides a view. A later version can suppress the exact
@@ -617,7 +762,8 @@ final class GoogleCtsRuntimeInspector {
     private void collectInterestingViews(View view, int depth,
                                          StringBuilder out, int[] count) {
         if (view == null || count[0] >= 56 || out.length() >= 6200) return;
-        if (view.getVisibility() == View.VISIBLE && interestingView(view)) {
+        if ((view.getVisibility() == View.VISIBLE || isGoogleLensShellView(view))
+                && interestingView(view)) {
             out.append("\n").append(depth).append(":").append(describeView(view, false));
             count[0]++;
         }
@@ -627,6 +773,13 @@ final class GoogleCtsRuntimeInspector {
                 if (count[0] >= 56 || out.length() >= 6200) break;
             }
         }
+    }
+
+    private boolean isGoogleLensShellView(View view) {
+        if (view == null) return false;
+        String cls = view.getClass().getName();
+        return GoogleLens1758Profile.INFO_PANEL_VIEW.equals(cls)
+                || GoogleLens1758Profile.ACTION_MENU_VIEW.equals(cls);
     }
 
     private boolean interestingView(View view) {
@@ -658,6 +811,8 @@ final class GoogleCtsRuntimeInspector {
         ViewParent parent = view.getParent();
         return "class=" + view.getClass().getName()
                 + " id=" + id
+                + " visibility=" + visibilityName(view.getVisibility())
+                + " shown=" + view.isShown()
                 + " text=" + quote(text, 180)
                 + " desc=" + quote(desc, 180)
                 + " xy=" + loc[0] + "," + loc[1]
@@ -681,6 +836,13 @@ final class GoogleCtsRuntimeInspector {
                 + " gravity=" + lp.gravity
                 + " xy=" + lp.x + "," + lp.y
                 + " wh=" + lp.width + "x" + lp.height;
+    }
+
+    private String visibilityName(int visibility) {
+        return visibility == View.VISIBLE ? "VISIBLE"
+                : visibility == View.INVISIBLE ? "INVISIBLE"
+                : visibility == View.GONE ? "GONE"
+                : String.valueOf(visibility);
     }
 
     private String resourceEntryName(View view) {
@@ -737,11 +899,28 @@ final class GoogleCtsRuntimeInspector {
                             sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
                                     selection.text(), selection.detail(), effectiveBounds);
                         }
+                        boolean directRegionCommit = active()
+                                && selection.isDirectRegionSelection()
+                                && selectionBounds != null
+                                && !selectionBounds.isEmpty();
                         Object result = chain.proceed();
+
+                        if (directRegionCommit && active() && !bridgeCommitted) {
+                            report("LENS_REGION_SELECTION_COMMIT",
+                                    "class=" + selection.userSelectionClass()
+                                            + " bounds=" + String.valueOf(bridgeSelectionBounds)
+                                            + " presentationWait=false");
+                            if (commitBridgeResult("", selection.detail(),
+                                    "lens_region_selection")) {
+                                return result;
+                            }
+                        }
+
                         if (active() && bridgeSelectionSeen
                                 && bridgeSelectionText != null
                                 && !bridgeSelectionText.isBlank()) {
                             hideGoogleMaterialFloatingToolbarSoon();
+                            hideGoogleLensShellViewsSoon();
                             inspectGoogleSelectionViewsSoon();
                         }
                         return result;
@@ -1038,14 +1217,47 @@ final class GoogleCtsRuntimeInspector {
         }
     }
 
-    private Object fieldByTypeName(Object target, String typeName) {
-        if (target == null) return null;
-        for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
-            if (!typeName.equals(field.getType().getName())) continue;
+    private Object fieldByName(Object target, String fieldName) {
+        if (target == null || fieldName == null) return null;
+        for (Class<?> current = target.getClass();
+             current != null; current = current.getSuperclass()) {
             try {
+                Field field = current.getDeclaredField(fieldName);
                 field.setAccessible(true);
                 return field.get(target);
-            } catch (Throwable ignored) {}
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
+    private Object fieldByTypeName(Object target, String typeName) {
+        if (target == null || typeName == null) return null;
+        for (Class<?> current = target.getClass();
+             current != null; current = current.getSuperclass()) {
+            try {
+                for (Field field : current.getDeclaredFields()) {
+                    if (Modifier.isStatic(field.getModifiers())
+                            || !typeName.equals(field.getType().getName())) continue;
+                    try {
+                        field.setAccessible(true);
+                        return field.get(target);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
+                if (!typeName.equals(field.getType().getName())) continue;
+                try {
+                    field.setAccessible(true);
+                    return field.get(target);
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable ignored) {
         }
         return null;
     }
