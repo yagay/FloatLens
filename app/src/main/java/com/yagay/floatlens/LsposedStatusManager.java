@@ -198,10 +198,6 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         return INSTANCE.armGoogleCtsSession(token, triggerElapsed, armedUntilElapsed);
     }
 
-    public static void renewGoogleCtsComponentBlockRemote(String token) {
-        INSTANCE.renewGoogleCtsComponentBlock(token);
-    }
-
     public static void clearGoogleCtsSessionRemote(String token) {
         INSTANCE.clearGoogleCtsSession(token);
     }
@@ -316,26 +312,6 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         } catch (Throwable t) {
             return false;
         }
-    }
-
-    private void renewGoogleCtsComponentBlock(String token) {
-        XposedService current = service;
-        if (current == null || token == null || token.isBlank()) return;
-        IO.execute(() -> {
-            try {
-                SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
-                if (remote == null) return;
-                String currentToken = remote.getString(
-                        LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, "");
-                if (!token.equals(currentToken)) return;
-                remote.edit()
-                        .putLong(LsposedRuntimeConfig.K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL,
-                                SystemClock.elapsedRealtime()
-                                        + LsposedRuntimeConfig.GOOGLE_CTS_COMPONENT_BLOCK_LEASE_MS)
-                        .apply();
-            } catch (Throwable ignored) {
-            }
-        });
     }
 
     private void clearGoogleCtsSession(String token) {
