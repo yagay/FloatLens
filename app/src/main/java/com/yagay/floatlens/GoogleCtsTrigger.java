@@ -42,6 +42,12 @@ final class GoogleCtsTrigger {
         String token = UUID.randomUUID().toString();
         long nowElapsed = SystemClock.elapsedRealtime();
         fs.armGoogleCtsSession(token, nowElapsed + GoogleCtsContract.TRACE_SESSION_TTL_MS);
+        long fallbackUntil = nowElapsed + LsposedRuntimeConfig.GOOGLE_CTS_FALLBACK_WINDOW_MS;
+        boolean remoteArmed = LsposedStatusManager.armGoogleCtsSessionRemote(
+                token, nowElapsed, fallbackUntil);
+        DiagnosticLog.i(app, "GOOGLE_CTS_ARM",
+                "remote=" + remoteArmed + " session=" + token.substring(0, 8)
+                        + " fallbackMs=" + LsposedRuntimeConfig.GOOGLE_CTS_FALLBACK_WINDOW_MS);
         args.putLong(GoogleCtsContract.K_INVOCATION_TIME, nowElapsed);
         args.putInt(GoogleCtsContract.K_OMNI_ENTRY_POINT, 1);
         args.putBoolean(GoogleCtsContract.K_TRIGGER, true);
@@ -74,11 +80,13 @@ final class GoogleCtsTrigger {
                             + " entryPoint=1 flags=" + CTS_SHOW_FLAGS);
             if (!ok) {
                 fs.clearGoogleCtsSession();
+                LsposedStatusManager.clearGoogleCtsSessionRemote(token);
                 Toast.makeText(app, "Google 圈画启动失败", Toast.LENGTH_SHORT).show();
             }
             return ok;
         } catch (Throwable t) {
             fs.clearGoogleCtsSession();
+            LsposedStatusManager.clearGoogleCtsSessionRemote(token);
             DiagnosticLog.i(app, "GOOGLE_CTS_TRIGGER",
                     "failed=" + t.getClass().getSimpleName() + ":" + String.valueOf(t.getMessage()));
             Toast.makeText(app, "Google 圈画启动失败: " + t.getClass().getSimpleName(),

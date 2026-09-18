@@ -191,6 +191,17 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         INSTANCE.syncRuntimeConfig();
     }
 
+    /** Arms a very short Google CTS correlation lease in framework-backed preferences. */
+    public static boolean armGoogleCtsSessionRemote(String token,
+                                                    long triggerElapsed,
+                                                    long armedUntilElapsed) {
+        return INSTANCE.armGoogleCtsSession(token, triggerElapsed, armedUntilElapsed);
+    }
+
+    public static void clearGoogleCtsSessionRemote(String token) {
+        INSTANCE.clearGoogleCtsSession(token);
+    }
+
     /** Arms secure-layer capture for one short FloatLens screenshot lease. Callback runs on main. */
     public static void armSecureCaptureAsync(Consumer<Boolean> callback) {
         INSTANCE.armSecureCapture(callback);
@@ -268,6 +279,44 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
             } catch (Throwable t) {
                 publishSnapshot(current, false, false, false, false, 0L, 0L,
                         "同步 LSPosed 配置失败：" + messageOf(t));
+            }
+        });
+    }
+
+    private boolean armGoogleCtsSession(String token, long triggerElapsed, long armedUntilElapsed) {
+        XposedService current = service;
+        SharedPreferences local = localPreferences;
+        if (current == null || local == null || token == null || token.isBlank()) return false;
+        if (!snapshot.remoteProviderEnabled() || !snapshot.googleScopeEnabled()) return false;
+        try {
+            SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
+            if (remote == null) return false;
+            return remote.edit()
+                    .putString(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, token)
+                    .putLong(LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED, triggerElapsed)
+                    .putLong(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL, armedUntilElapsed)
+                    .commit();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private void clearGoogleCtsSession(String token) {
+        XposedService current = service;
+        if (current == null) return;
+        IO.execute(() -> {
+            try {
+                SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
+                if (remote == null) return;
+                String currentToken = remote.getString(
+                        LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, "");
+                if (token != null && !token.isBlank() && !token.equals(currentToken)) return;
+                remote.edit()
+                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN)
+                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED)
+                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL)
+                        .apply();
+            } catch (Throwable ignored) {
             }
         });
     }

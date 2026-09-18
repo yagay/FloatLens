@@ -40,7 +40,10 @@ final class LsposedRuntimeProvider {
                         || LsposedRuntimeConfig.K_ENHANCED_MODE.equals(key)
                         || LsposedRuntimeConfig.K_LSPOSED_ENABLED.equals(key)
                         || LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED.equals(key)
-                        || LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL.equals(key)) {
+                        || LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL.equals(key)
+                        || LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN.equals(key)
+                        || LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED.equals(key)
+                        || LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL.equals(key)) {
                     refresh();
                 }
             };
@@ -61,6 +64,25 @@ final class LsposedRuntimeProvider {
 
     boolean isActive() {
         return active;
+    }
+
+    String googleCtsArmedToken() {
+        if (!active || preferences == null) return "";
+        try {
+            long now = SystemClock.elapsedRealtime();
+            String token = preferences.getString(
+                    LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, "");
+            long trigger = preferences.getLong(
+                    LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED, 0L);
+            long until = preferences.getLong(
+                    LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL, 0L);
+            return LsposedRuntimeConfig.isGoogleCtsFallbackArmed(
+                    active, token, trigger, until, now) ? token : "";
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Failed to read Google CTS armed session in " + displayProcess(), t);
+            return "";
+        }
     }
 
     /** Read live Remote Preferences on every capture call so lease expiry never depends on listener timing. */

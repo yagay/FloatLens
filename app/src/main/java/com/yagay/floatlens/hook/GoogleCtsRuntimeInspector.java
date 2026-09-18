@@ -86,12 +86,22 @@ final class GoogleCtsRuntimeInspector {
                     int id = args == null ? -1 : args.getInt(SHOW_SESSION_ID, -1);
                     if (provider.isActive() && GoogleCtsContract.isFloatLensSession(args)) {
                         activate(args.getString(GoogleCtsContract.K_SESSION_TOKEN, ""),
-                                id, chain.getThisObject(), "VIS");
-                        report("SESSION_SHOW", "path=VIS sessionClass="
+                                id, chain.getThisObject(), "VIS_MARKER");
+                        report("SESSION_SHOW", "path=VIS_MARKER sessionClass="
                                 + chain.getThisObject().getClass().getName()
                                 + " flags=" + chain.getArg(1)
                                 + " keys=" + safeKeys(args));
                         dumpClassStructure(chain.getThisObject().getClass(), "voiceSession");
+                    } else if (provider.isActive() && !active()) {
+                        String armedToken = provider.googleCtsArmedToken();
+                        if (!armedToken.isBlank()) {
+                            activate(armedToken, id, chain.getThisObject(), "VIS_ARMED_FALLBACK");
+                            report("SESSION_SHOW", "path=VIS_ARMED_FALLBACK marker=false sessionClass="
+                                    + chain.getThisObject().getClass().getName()
+                                    + " flags=" + chain.getArg(1)
+                                    + " keys=" + safeKeys(args));
+                            dumpClassStructure(chain.getThisObject().getClass(), "voiceSessionFallback");
+                        }
                     } else if (active() && id >= 0 && id != showSessionId) {
                         clear("new_unmarked_voice_session id=" + id);
                     }
@@ -160,11 +170,20 @@ final class GoogleCtsRuntimeInspector {
                     Bundle extras = intent == null ? null : intent.getExtras();
                     if (provider.isActive() && GoogleCtsContract.isFloatLensSession(extras)) {
                         String token = extras.getString(GoogleCtsContract.K_SESSION_TOKEN, "");
-                        activate(token, -1, null, "CONTEXTUAL_ACTIVITY");
+                        activate(token, -1, null, "CONTEXTUAL_ACTIVITY_MARKER");
                         report("SESSION_SHOW", "path=ContextualActivity activity="
                                 + (activity == null ? "null" : activity.getClass().getName())
                                 + " intent=" + describeIntent(intent));
                         if (activity != null) dumpClassStructure(activity.getClass(), "activity");
+                    } else if (provider.isActive() && !active() && intent != null) {
+                        String armedToken = provider.googleCtsArmedToken();
+                        if (!armedToken.isBlank()) {
+                            activate(armedToken, -1, null, "CONTEXTUAL_ACTIVITY_ARMED_FALLBACK");
+                            report("SESSION_SHOW", "path=ContextualActivityArmedFallback marker=false activity="
+                                    + (activity == null ? "null" : activity.getClass().getName())
+                                    + " intent=" + describeIntent(intent));
+                            if (activity != null) dumpClassStructure(activity.getClass(), "activityFallback");
+                        }
                     } else if (active() && intent != null) {
                         report("ACTIVITY_LIFECYCLE", name + " " + describeIntent(intent));
                     }

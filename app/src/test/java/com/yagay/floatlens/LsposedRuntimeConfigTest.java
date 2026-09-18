@@ -29,4 +29,17 @@ public class LsposedRuntimeConfigTest {
         assertFalse(LsposedRuntimeConfig.isSecureCaptureActive(
                 true, true, true, staleFuture, now));
     }
+
+    @Test public void googleCtsFallbackLeaseIsShortAndTokenBound() {
+        long now = 10_000L;
+        assertTrue(LsposedRuntimeConfig.isGoogleCtsFallbackArmed(
+                true, "abc", now - 100L, now + 1000L, now));
+        assertFalse(LsposedRuntimeConfig.isGoogleCtsFallbackArmed(
+                true, "", now - 100L, now + 1000L, now));
+        assertFalse(LsposedRuntimeConfig.isGoogleCtsFallbackArmed(
+                true, "abc", now - LsposedRuntimeConfig.GOOGLE_CTS_FALLBACK_WINDOW_MS - 1L,
+                now + 1000L, now));
+        assertFalse(LsposedRuntimeConfig.isGoogleCtsFallbackArmed(
+                true, "abc", now - 100L, now - 1L, now));
+    }
 }
