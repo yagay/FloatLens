@@ -85,13 +85,17 @@ final class GoogleCtsBridgeController {
         MAIN.postDelayed(() -> tryDeliver(app, token, state, true), FRAME_WAIT_MS);
     }
 
-    static void onQueryResult(Context context, String token, String text, String detail) {
+    static void onQueryResult(Context context, String token, String text,
+                              Rect bounds, String detail) {
         if (context == null || token == null || token.isBlank()) return;
         State state = state(token);
         synchronized (state) {
             if (state.delivered) return;
             if ((state.text == null || state.text.isBlank()) && text != null && !text.isBlank()) {
                 state.text = text.trim();
+            }
+            if (state.bounds == null && bounds != null && !bounds.isEmpty()) {
+                state.bounds = new Rect(bounds);
             }
             if (detail != null && !detail.isBlank()) state.detail = detail;
             state.committed = true;
