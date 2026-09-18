@@ -132,8 +132,7 @@ final class GoogleCtsRuntimeInspector {
                 if (!(executable instanceof Method method)) continue;
                 Class<?>[] p = method.getParameterTypes();
 
-                if (p.length == 3 && p[1] == Bundle.class
-                        && method.getReturnType() == void.class) {
+                if (p.length == 3 && p[1] == Bundle.class) {
                     module.hook(method).intercept(chain -> {
                         Bundle args = (Bundle) chain.getArg(1);
                         correlateGoogleBoundary(args, null, "OMNIENT_VIS");
@@ -147,8 +146,7 @@ final class GoogleCtsRuntimeInspector {
                     continue;
                 }
 
-                if (p.length == 3 && p[1] == Intent.class
-                        && method.getReturnType() == void.class) {
+                if (p.length == 3 && p[1] == Intent.class) {
                     module.hook(method).intercept(chain -> {
                         Intent intent = (Intent) chain.getArg(1);
                         correlateGoogleBoundary(intent == null ? null : intent.getExtras(),
@@ -1277,24 +1275,13 @@ final class GoogleCtsRuntimeInspector {
                             selection.text(), detail, effectiveBounds);
                 }
 
-                boolean directRegionCommit = active()
-                        && selection != null
-                        && selection.directRegionLike()
-                        && selectionBounds != null
-                        && !selectionBounds.isEmpty();
+                // Dynamic discovery is allowed to drive text selection immediately, but it
+                // does not auto-commit non-text/region selections yet. Empty-text selections are
+                // too ambiguous until a runtime validator has observed the new Google version.
                 Object result = chain.proceed();
 
                 if (active() && bridgeSelectionSeen) {
                     uiSanitizer.sanitizeNow();
-                }
-
-                if (directRegionCommit && active() && !bridgeCommitted) {
-                    report("LENS_REGION_SELECTION_COMMIT_DYNAMIC",
-                            "class=" + selection.selectionClass()
-                                    + " confidence=" + binding.confidence()
-                                    + " bounds=" + String.valueOf(bridgeSelectionBounds));
-                    commitBridgeResult("", selection.detail(),
-                            "dynamic_region_selection");
                 }
 
                 if (active() && bridgeSelectionSeen
