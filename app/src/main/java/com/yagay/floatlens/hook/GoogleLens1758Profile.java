@@ -1,0 +1,370 @@
+package com.yagay.floatlens.hook;
+
+import android.graphics.Bitmap;
+import android.graphics.PointF;
+import android.graphics.Rect;
+import android.graphics.RectF;
+
+import org.lsposed.hiddenapibypass.HiddenApiBypass;
+
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+
+/**
+ * Versioned structural adapter for Google App 17.58.16.ve Lens internals.
+ *
+ * <p>Keep every obfuscated Google symbol in this one file. Runtime hooks should consume semantic
+ * snapshots instead of reaching into obfuscated fields directly. The profile is intentionally
+ * fail-soft: a missing field after a Google update produces diagnostics/fallback data instead of
+ * crashing the Google process.</p>
+ */
+final class GoogleLens1758Profile {
+    static final String NAME = "17.58.16.ve";
+    static final String CONTROLLER = "dscu";          // LensUiController
+    static final String SELECTION_METADATA = "dscl";  // SelectionWithMetadata
+    static final String USER_SELECTION = "dtlp";      // UserSelection interface
+    static final String PENDING_QUERY = "dtqj";       // PendingLensQuery
+    static final String QUERY_RESULT = "dtqi";        // LensQueryResult
+    static final String LENS_IMAGE = "esel";          // LensImage
+    static final String LENS_RESULT = "esfe";         // LensResult
+    static final String IMAGE_RESULT = "eseo";        // LensImageResult
+    static final String INTERACTION_RESULT = "eseu";  // LensInteractionResult
+    static final String INTERACTION_DATA = "eses";    // InteractionDataResult
+    static final String OPTIONAL = "fxsy";            // Google/Guava optional wrapper
+
+    static boolean isSelectionMethod(Method method) {
+        if (method == null || !"y".equals(method.getName())) return false;
+        Class<?>[] p = method.getParameterTypes();
+        return p.length == 2 && SELECTION_METADATA.equals(p[0].getName())
+                && p[1] == boolean.class;
+    }
+
+    static boolean isPendingQueryMethod(Method method) {
+        if (method == null || !"p".equals(method.getName())) return false;
+        Class<?>[] p = method.getParameterTypes();
+        return p.length == 1 && PENDING_QUERY.equals(p[0].getName());
+    }
+
+    static boolean isQueryResultMethod(Method method) {
+        if (method == null || !"q".equals(method.getName())) return false;
+        Class<?>[] p = method.getParameterTypes();
+        return p.length == 1 && QUERY_RESULT.equals(p[0].getName());
+    }
+
+    static SelectionSnapshot selection(Object metadata) {
+        if (metadata == null) {
+            return new SelectionSnapshot("", null, "metadata=null");
+        }
+
+        Object userSelection = readField(metadata, "a", USER_SELECTION);
+        if (userSelection == null) userSelection = firstFieldByType(metadata, USER_SELECTION);
+        if (userSelection == null) {
+            return new SelectionSnapshot("", firstRect(metadata),
+                    "metadataClass=" + metadata.getClass().getName()
+                            + " userSelection=unavailable raw=" + compact(metadata, 2600));
+        }
+
+        String text = asString(invokeNoArg(userSelection, "k"));
+        // 17.58 WordSelection(dtlr) keeps TextSelection(dtvz) in field a. Keep this fallback
+        // because some UserSelection implementations return an empty generic k() string.
+        if (text.isBlank() && "dtlr".equals(userSelection.getClass().getName())) {
+            Object textSelection = readField(userSelection, "a", "dtvz");
+            Object selectedText = readField(textSelection, "a", String.class.getName());
+            text = asString(selectedText);
+        }
+
+        Object region = invokeNoArg(userSelection, "b"); // UserSelection.b() -> RectF
+        Rect bounds = asRect(region);
+        if (bounds == null) bounds = firstRect(userSelection, metadata);
+
+        Object point = invokeNoArg(userSelection, "a");  // UserSelection.a() -> PointF
+        Object gesture = invokeNoArg(userSelection, "c");
+        Object drawing = invokeNoArg(userSelection, "d");
+
+        StringBuilder detail = new StringBuilder();
+        detail.append("metadataClass=").append(metadata.getClass().getName())
+                .append(" userSelectionClass=").append(userSelection.getClass().getName());
+        if (!text.isBlank()) detail.append(" selectedText=").append(quote(text, 1800));
+        if (bounds != null) detail.append(" bounds=").append(bounds.toShortString());
+        if (point instanceof PointF p) detail.append(" point=").append(p.x).append(",").append(p.y);
+        if (gesture != null) detail.append(" gesture=").append(compact(gesture, 500));
+        if (drawing != null) detail.append(" drawing=").append(compact(drawing, 700));
+        detail.append(" selection=").append(compact(userSelection, 2500));
+        return new SelectionSnapshot(text, bounds, detail.toString());
+    }
+
+    static PendingSnapshot pending(Object pending) {
+        if (pending == null) return new PendingSnapshot(null, "pending=null");
+        Object lensImage = readField(pending, "d", LENS_IMAGE);
+        if (lensImage == null) lensImage = firstFieldByType(pending, LENS_IMAGE);
+        Bitmap frame = bitmapFromLensImage(lensImage);
+
+        Object query = readField(pending, "c", "esew");
+        String detail = "pendingClass=" + pending.getClass().getName()
+                + " frame=" + bitmapSummary(frame)
+                + " lensImage=" + compact(lensImage, 1800)
+                + " query=" + compact(query, 1800);
+        return new PendingSnapshot(frame, detail);
+    }
+
+    static ResultSnapshot result(Object queryResult) {
+        if (queryResult == null) {
+            return new ResultSnapshot(null, "", false, false, false,
+                    "queryResult=null");
+        }
+
+        Object lensImage = readField(queryResult, "f", LENS_IMAGE);
+        if (lensImage == null) lensImage = firstFieldByType(queryResult, LENS_IMAGE);
+        Bitmap frame = bitmapFromLensImage(lensImage);
+
+        Object lensResult = readField(queryResult, "d", LENS_RESULT);
+        if (lensResult == null) lensResult = firstFieldByType(queryResult, LENS_RESULT);
+
+        Object imageResult = readField(lensResult, "b", IMAGE_RESULT);
+        if (imageResult == null) imageResult = firstFieldByType(lensResult, IMAGE_RESULT);
+        boolean imageComplete = readBoolean(imageResult, "c", false);
+
+        Object interactionOptional = readField(lensResult, "c", OPTIONAL);
+        boolean interactionPresent = optionalPresent(interactionOptional);
+        Object interaction = unwrapOptional(interactionOptional);
+        boolean interactionComplete = interaction == null
+                || readBoolean(interaction, "d", false);
+
+        String selectedText = selectedText(interaction);
+        boolean complete = isCompleteState(imageComplete, interactionPresent, interactionComplete);
+
+        String detail = "queryResultClass=" + queryResult.getClass().getName()
+                + " frame=" + bitmapSummary(frame)
+                + " imageComplete=" + imageComplete
+                + " interactionPresent=" + interactionPresent
+                + " interactionComplete=" + interactionComplete
+                + " selectedTextLen=" + selectedText.length()
+                + " lensResult=" + compact(lensResult, 3000);
+        return new ResultSnapshot(frame, selectedText, complete,
+                imageComplete, interactionPresent, detail);
+    }
+
+    /**
+     * 17.58 publishes LensImageResult and LensInteractionResult independently. A result is stable
+     * when image processing is complete and any present interaction result is also complete.
+     */
+    static boolean isCompleteState(boolean imageComplete,
+                                   boolean interactionPresent,
+                                   boolean interactionComplete) {
+        return imageComplete && (!interactionPresent || interactionComplete);
+    }
+
+    private static String selectedText(Object interaction) {
+        if (interaction == null || !INTERACTION_RESULT.equals(interaction.getClass().getName())) {
+            return "";
+        }
+        Object dataOptional = readField(interaction, "a", OPTIONAL);
+        Object data = unwrapOptional(dataOptional);
+        if (data == null || !INTERACTION_DATA.equals(data.getClass().getName())) return "";
+
+        Object selectedOptional = readField(data, "b", OPTIONAL);
+        Object selected = unwrapOptional(selectedOptional);
+        if (selected instanceof String s) return s.trim();
+        String value = firstString(selected);
+        return value == null ? "" : value.trim();
+    }
+
+    private static Bitmap bitmapFromLensImage(Object lensImage) {
+        if (lensImage == null) return null;
+        Object exact = readField(lensImage, "b", Bitmap.class.getName());
+        if (exact instanceof Bitmap bitmap && !bitmap.isRecycled()) return bitmap;
+        for (Field field : HiddenApiBypass.getInstanceFields(lensImage.getClass())) {
+            if (field.getType() != Bitmap.class) continue;
+            try {
+                field.setAccessible(true);
+                Object value = field.get(lensImage);
+                if (value instanceof Bitmap bitmap && !bitmap.isRecycled()) return bitmap;
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static Object readField(Object target, String name, String typeName) {
+        if (target == null) return null;
+        for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
+            if (name != null && !name.equals(field.getName())) continue;
+            if (typeName != null && !typeName.equals(field.getType().getName())) continue;
+            try {
+                field.setAccessible(true);
+                return field.get(target);
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static Object firstFieldByType(Object target, String typeName) {
+        return readField(target, null, typeName);
+    }
+
+    private static boolean readBoolean(Object target, String name, boolean fallback) {
+        if (target == null) return fallback;
+        for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
+            if (!name.equals(field.getName()) || field.getType() != boolean.class) continue;
+            try {
+                field.setAccessible(true);
+                return field.getBoolean(target);
+            } catch (Throwable ignored) {
+                return fallback;
+            }
+        }
+        return fallback;
+    }
+
+    private static Object invokeNoArg(Object target, String methodName) {
+        if (target == null || methodName == null) return null;
+        try {
+            return HiddenApiBypass.invoke(target.getClass(), target, methodName);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static boolean optionalPresent(Object optional) {
+        if (optional == null || !OPTIONAL.equals(optional.getClass().getName())) return false;
+        Object value = invokeNoArg(optional, "g");
+        return value instanceof Boolean b && b;
+    }
+
+    private static Object unwrapOptional(Object optional) {
+        if (!optionalPresent(optional)) return null;
+        Object value = invokeNoArg(optional, "c");
+        if (value != null) return value;
+        return invokeNoArg(optional, "f");
+    }
+
+    private static String firstString(Object target) {
+        if (target == null) return null;
+        if (target instanceof String s) return s;
+        for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
+            if (field.getType() != String.class) continue;
+            try {
+                field.setAccessible(true);
+                Object value = field.get(target);
+                if (value instanceof String s && !s.isBlank()) return s;
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static Rect firstRect(Object... targets) {
+        if (targets == null) return null;
+        for (Object target : targets) {
+            if (target == null) continue;
+            Rect direct = asRect(target);
+            if (direct != null) return direct;
+            for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
+                Class<?> type = field.getType();
+                if (type != Rect.class && type != RectF.class) continue;
+                try {
+                    field.setAccessible(true);
+                    Rect candidate = asRect(field.get(target));
+                    if (candidate != null) return candidate;
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return null;
+    }
+
+    private static Rect asRect(Object value) {
+        if (value instanceof Rect rect && !rect.isEmpty()) return new Rect(rect);
+        if (value instanceof RectF rectF && rectF.width() > 0f && rectF.height() > 0f) {
+            Rect out = new Rect();
+            rectF.roundOut(out);
+            return out.isEmpty() ? null : out;
+        }
+        return null;
+    }
+
+    private static String asString(Object value) {
+        return value instanceof String s ? s.trim() : "";
+    }
+
+    private static String compact(Object value, int max) {
+        if (value == null) return "null";
+        String out;
+        try {
+            out = value.getClass().getName() + "{" + String.valueOf(value) + "}";
+        } catch (Throwable ignored) {
+            out = value.getClass().getName();
+        }
+        out = out.replace("\n", " ").replace("\r", " ").replace("\u0000", "?");
+        return out.length() <= max ? out : out.substring(0, max) + "…";
+    }
+
+    private static String quote(String value, int max) {
+        String out = value == null ? "" : value.replace("\n", " ").replace("\r", " ");
+        if (out.length() > max) out = out.substring(0, max) + "…";
+        return "\"" + out + "\"";
+    }
+
+    private static String bitmapSummary(Bitmap bitmap) {
+        return bitmap == null ? "null"
+                : bitmap.getWidth() + "x" + bitmap.getHeight() + "/" + bitmap.getConfig();
+    }
+
+    static final class SelectionSnapshot {
+        private final String text;
+        private final Rect bounds;
+        private final String detail;
+
+        SelectionSnapshot(String text, Rect bounds, String detail) {
+            this.text = text == null ? "" : text;
+            this.bounds = bounds == null ? null : new Rect(bounds);
+            this.detail = detail == null ? "" : detail;
+        }
+
+        String text() { return text; }
+        Rect bounds() { return bounds == null ? null : new Rect(bounds); }
+        String detail() { return detail; }
+    }
+
+    static final class PendingSnapshot {
+        private final Bitmap frame;
+        private final String detail;
+
+        PendingSnapshot(Bitmap frame, String detail) {
+            this.frame = frame;
+            this.detail = detail == null ? "" : detail;
+        }
+
+        Bitmap frame() { return frame; }
+        String detail() { return detail; }
+    }
+
+    static final class ResultSnapshot {
+        private final Bitmap frame;
+        private final String text;
+        private final boolean complete;
+        private final boolean imageComplete;
+        private final boolean interactionPresent;
+        private final String detail;
+
+        ResultSnapshot(Bitmap frame, String text, boolean complete,
+                       boolean imageComplete, boolean interactionPresent, String detail) {
+            this.frame = frame;
+            this.text = text == null ? "" : text;
+            this.complete = complete;
+            this.imageComplete = imageComplete;
+            this.interactionPresent = interactionPresent;
+            this.detail = detail == null ? "" : detail;
+        }
+
+        Bitmap frame() { return frame; }
+        String text() { return text; }
+        boolean complete() { return complete; }
+        boolean imageComplete() { return imageComplete; }
+        boolean interactionPresent() { return interactionPresent; }
+        String detail() { return detail; }
+    }
+
+    private GoogleLens1758Profile() {}
+}
