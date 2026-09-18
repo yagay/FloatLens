@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 final class GoogleCtsBridgeController {
     private static final long FRAME_WAIT_MS = 900L;
+    private static final long MENU_UPDATE_DELAY_MS = 90L;
     private static final long STATE_TTL_MS = 150_000L;
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final Map<String, State> STATES = new ConcurrentHashMap<>();
@@ -79,9 +80,10 @@ final class GoogleCtsBridgeController {
 
         // Google Circle has already done OCR/selection geometry at this point. Reuse the same
         // FloatLens text menu used by result-dialog selections instead of waiting for Google's
-        // Lens Result Panel. Repeated drag-selection updates replace the previous menu cleanly.
+        // Lens Result Panel. While the user drags Google's native selection handles, y(dscl)
+        // can fire rapidly; debounce menu reconstruction so the gesture remains smooth.
         if (!selectedText.isBlank()) {
-            MAIN.post(() -> {
+            MAIN.postDelayed(() -> {
                 synchronized (state) {
                     if (state.delivered || state.selectionRevision != revision) return;
                     state.textMenuShown = true;
@@ -89,9 +91,11 @@ final class GoogleCtsBridgeController {
                 FloatActionMenu.showTextAt(app, selectedText, null, selectedBounds);
                 DiagnosticLog.i(app, "GOOGLE_TEXT_MENU",
                         "show session=" + shortToken(token)
+                                + " revision=" + revision
                                 + " textLen=" + selectedText.length()
-                                + " bounds=" + String.valueOf(selectedBounds));
-            });
+                                + " bounds=" + String.valueOf(selectedBounds)
+                                + " debouncedMs=" + MENU_UPDATE_DELAY_MS);
+            }, MENU_UPDATE_DELAY_MS);
         } else {
             MAIN.post(() -> {
                 synchronized (state) {
