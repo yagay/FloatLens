@@ -206,6 +206,14 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         INSTANCE.clearGoogleCtsSession(token);
     }
 
+    /**
+     * Synchronous safety release used immediately before native Home/gesture navigation.
+     * This guarantees Google-process hooks lose ownership before the native CTS Activity starts.
+     */
+    public static boolean clearGoogleCtsSessionRemoteNow() {
+        return INSTANCE.clearGoogleCtsSessionNow(null);
+    }
+
     /** Arms secure-layer capture for one short FloatLens screenshot lease. Callback runs on main. */
     public static void armSecureCaptureAsync(Consumer<Boolean> callback) {
         INSTANCE.armSecureCapture(callback);
@@ -331,24 +339,28 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
     }
 
     private void clearGoogleCtsSession(String token) {
+        if (service == null) return;
+        IO.execute(() -> clearGoogleCtsSessionNow(token));
+    }
+
+    private boolean clearGoogleCtsSessionNow(String token) {
         XposedService current = service;
-        if (current == null) return;
-        IO.execute(() -> {
-            try {
-                SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
-                if (remote == null) return;
-                String currentToken = remote.getString(
-                        LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, "");
-                if (token != null && !token.isBlank() && !token.equals(currentToken)) return;
-                remote.edit()
-                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN)
-                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED)
-                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL)
-                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL)
-                        .apply();
-            } catch (Throwable ignored) {
-            }
-        });
+        if (current == null) return false;
+        try {
+            SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
+            if (remote == null) return false;
+            String currentToken = remote.getString(
+                    LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, "");
+            if (token != null && !token.isBlank() && !token.equals(currentToken)) return false;
+            return remote.edit()
+                    .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN)
+                    .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED)
+                    .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL)
+                    .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL)
+                    .commit();
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private void armSecureCapture(Consumer<Boolean> callback) {
