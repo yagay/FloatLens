@@ -37,6 +37,7 @@ final class GoogleLens1758Profile {
     static final String IMAGE_RESULT = "eseo";        // LensImageResult
     static final String INTERACTION_RESULT = "eseu";  // LensInteractionResult
     static final String INTERACTION_DATA = "eses";    // InteractionDataResult
+    static final String IMMUTABLE_LIST = "com.google.common.collect.ImmutableList";
     static final String OPTIONAL = "fxsy";            // Google/Guava optional wrapper
 
     static String validationError(ClassLoader loader) {
@@ -105,8 +106,9 @@ final class GoogleLens1758Profile {
             }
 
             Class<?> interactionData = Class.forName(INTERACTION_DATA, false, loader);
-            if (!hasField(interactionData, "b", OPTIONAL)) {
-                return "InteractionDataResult.b selectedText missing";
+            if (!hasField(interactionData, "b", OPTIONAL)
+                    || !hasField(interactionData, "f", IMMUTABLE_LIST)) {
+                return "InteractionDataResult selectedText/native presentation fields mismatch";
             }
 
             Class<?> optional = Class.forName(OPTIONAL, false, loader);
@@ -252,6 +254,82 @@ final class GoogleLens1758Profile {
         return new PresentationRequestSuppression(false,
                 "requestPresentationResult target boolean not found query="
                         + compact(query, 2200));
+    }
+
+    static NativePresentationSuppression suppressNativeRenderedPresentationData(
+            Object interactionData) {
+        if (interactionData == null
+                || !INTERACTION_DATA.equals(interactionData.getClass().getName())) {
+            return new NativePresentationSuppression(false, 0,
+                    "interactionData unavailable/class="
+                            + (interactionData == null
+                            ? "null" : interactionData.getClass().getName()));
+        }
+
+        for (Field field : instanceFields(interactionData.getClass())) {
+            if (!"f".equals(field.getName())
+                    || !IMMUTABLE_LIST.equals(field.getType().getName())) {
+                continue;
+            }
+            try {
+                field.setAccessible(true);
+                Object value = field.get(interactionData);
+                if (!(value instanceof List<?> list)) {
+                    return new NativePresentationSuppression(false, 0,
+                            "nativeRenderedPresentationResult not List class="
+                                    + (value == null ? "null" : value.getClass().getName()));
+                }
+                int before = list.size();
+                if (before == 0) {
+                    return new NativePresentationSuppression(false, 0,
+                            "nativeRenderedPresentationResult already empty");
+                }
+
+                Object empty = list.subList(0, 0);
+                if (!field.getType().isInstance(empty)) {
+                    return new NativePresentationSuppression(false, before,
+                            "empty subList type mismatch field=" + field.getType().getName()
+                                    + " value=" + empty.getClass().getName());
+                }
+
+                field.set(interactionData, empty);
+                Object afterValue = field.get(interactionData);
+                int after = afterValue instanceof List<?> afterList ? afterList.size() : -1;
+                if (after == 0) {
+                    String first = list.get(0) == null
+                            ? "null" : list.get(0).getClass().getName();
+                    return new NativePresentationSuppression(true, before,
+                            "class=" + interactionData.getClass().getName()
+                                    + " field=" + field.getName()
+                                    + " removed=" + before
+                                    + " first=" + first);
+                }
+                return new NativePresentationSuppression(false, before,
+                        "field write verification failed after=" + after);
+            } catch (Throwable t) {
+                String message = t.getMessage();
+                return new NativePresentationSuppression(false, 0,
+                        "field write failed " + t.getClass().getSimpleName()
+                                + (message == null || message.isBlank()
+                                ? "" : ":" + message));
+            }
+        }
+
+        return new NativePresentationSuppression(false, 0,
+                "InteractionDataResult.f ImmutableList not found");
+    }
+
+    static NativePresentationSuppression suppressNativeRenderedPresentationFromQueryResult(
+            Object queryResult) {
+        if (queryResult == null) {
+            return new NativePresentationSuppression(false, 0, "queryResult=null");
+        }
+        Object lensResult = readField(queryResult, "d", LENS_RESULT);
+        Object interactionOptional = readField(lensResult, "c", OPTIONAL);
+        Object interaction = unwrapOptional(interactionOptional);
+        Object dataOptional = readField(interaction, "a", OPTIONAL);
+        Object interactionData = unwrapOptional(dataOptional);
+        return suppressNativeRenderedPresentationData(interactionData);
     }
 
     private static String suppressPresentationBooleanRecursive(Object value, int depth,
@@ -707,6 +785,22 @@ final class GoogleLens1758Profile {
             return out.isEmpty() ? null : out;
         }
 
+        String detail() { return detail; }
+    }
+
+    static final class NativePresentationSuppression {
+        private final boolean suppressed;
+        private final int removedCount;
+        private final String detail;
+
+        NativePresentationSuppression(boolean suppressed, int removedCount, String detail) {
+            this.suppressed = suppressed;
+            this.removedCount = Math.max(0, removedCount);
+            this.detail = detail == null ? "" : detail;
+        }
+
+        boolean suppressed() { return suppressed; }
+        int removedCount() { return removedCount; }
         String detail() { return detail; }
     }
 
