@@ -54,6 +54,8 @@ final class GoogleCtsRuntimeInspector {
     private static final String TAG = "FloatLens-GoogleCTS";
     private static final String SHOW_SESSION_ID = "android.service.voice.SHOW_SESSION_ID";
     private static final long SESSION_TTL_MS = 120_000L;
+    private static final long RESULT_HANDOFF_TIMEOUT_MS = 2_500L;
+    private static final long RESULT_HANDOFF_POLL_MS = 16L;
     private static final int MAX_EVENT_LOGS = 500;
 
     private final XposedModule module;
@@ -1363,11 +1365,61 @@ final class GoogleCtsRuntimeInspector {
         // selection event in the FloatLens process.
         Rect finalBounds = bridgeSelectionBounds == null
                 ? null : new Rect(bridgeSelectionBounds);
+        String committedToken = sessionToken;
         sendBridgeEvent(GoogleCtsContract.EVENT_QUERY_RESULT,
                 finalText, detail, finalBounds);
-        finishMarkedGoogleActivity(reason);
-        clear(reason);
+        // Do not finish LensientActivity here. ResultActivity is translucent and its DialogFragment
+        // needs ~50-120ms before its first visible frame. Finishing Google immediately exposes the
+        // underlying app/launcher for one frame, which looks like a flash. Keep Google's frozen
+        // image alive until the FloatLens app clears the remote token from its first-frame callback.
+        awaitFloatLensResultHandoff(committedToken, reason,
+                SystemClock.elapsedRealtime());
         return true;
+    }
+
+    private void awaitFloatLensResultHandoff(
+            String token, String reason, long startedAtElapsed) {
+        if (token == null || token.isBlank()) return;
+        mainHandler.post(new Runnable() {
+            @Override public void run() {
+                if (!token.equals(sessionToken) || !bridgeCommitted) return;
+
+                long elapsed = Math.max(0L,
+                        SystemClock.elapsedRealtime() - startedAtElapsed);
+                boolean stillOwned = provider.ownsGoogleCtsSession(token);
+                if (stillOwned && elapsed < RESULT_HANDOFF_TIMEOUT_MS) {
+                    // Google remains the stable frozen-image backdrop while FloatLens' translucent
+                    // result host is being created. Keep its own chrome suppressed during the gap.
+                    if (active()) hideGoogleLensShellViewsNow();
+                    mainHandler.postDelayed(this, RESULT_HANDOFF_POLL_MS);
+                    return;
+                }
+
+                String stage = stillOwned ? "timeout" : "result_first_frame";
+                Activity activity = markedActivity.get();
+                String activityName = activity == null ? "none"
+                        : activity.getClass().getName();
+                String line = "GOOGLE_UI_FINISH_AFTER_HANDOFF session="
+                        + shortToken(token)
+                        + " activity=" + activityName
+                        + " stage=" + stage
+                        + " elapsedMs=" + elapsed
+                        + " reason=" + reason;
+                sendTrace(line);
+                module.log(Log.INFO, TAG, line);
+
+                if (stillOwned) {
+                    // The app-side first-frame callback failed or never arrived. Tell FloatLens to
+                    // tear down its remote lease before closing Google so a native CTS session is
+                    // never left contaminated by this failed marked session.
+                    sendBridgeEvent(GoogleCtsContract.EVENT_END, "",
+                            "result_handoff_timeout", null);
+                }
+                if (activity != null) finishActivity(activity,
+                        reason + "_" + stage);
+                clear(reason + "_" + stage);
+            }
+        });
     }
 
     private Rect selectionBoundsForDisplay(
