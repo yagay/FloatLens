@@ -48,10 +48,6 @@ import io.github.libxposed.api.XposedModule;
 final class GoogleCtsRuntimeInspector {
     private static final String TAG = "FloatLens-GoogleCTS";
     private static final String SHOW_SESSION_ID = "android.service.voice.SHOW_SESSION_ID";
-    private static final String CONTEXTUAL_SEARCH_ACTION =
-            "android.app.contextualsearch.action.LAUNCH_CONTEXTUAL_SEARCH";
-    private static final String CONTEXTUAL_SCREENSHOT =
-            "android.app.contextualsearch.extra.SCREENSHOT";
     private static final long SESSION_TTL_MS = 120_000L;
     private static final long RESULT_SETTLE_MS = 1_500L;
     private static final int MAX_EVENT_LOGS = 500;
@@ -275,13 +271,10 @@ final class GoogleCtsRuntimeInspector {
                             return result;
                         }
 
-                        if (snapshot.complete()) {
-                            commitBridgeResult(snapshot.text(), snapshot.detail(),
-                                    "bridge_query_result_complete");
-                        } else {
-                            scheduleBridgeResultSettle(generation,
-                                    snapshot.text(), snapshot.detail());
-                        }
+                        // Diagnostic only. FloatLens no longer commits on dtqi because
+                        // Google may publish multiple internal result states before it decides to
+                        // launch contextual search. The stable ownership boundary is the outgoing
+                        // LAUNCH_CONTEXTUAL_SEARCH Intent intercepted in hookActivityDispatch().
                         return result;
                     });
                     count++;
@@ -584,27 +577,34 @@ final class GoogleCtsRuntimeInspector {
         return count;
     }
 
-    private void captureContextualSearchFrame(Intent intent) {
+    private boolean captureContextualSearchFrame(Intent intent) {
         if (!active() || intent == null
-                || !CONTEXTUAL_SEARCH_ACTION.equals(intent.getAction())) return;
+                || !GoogleCtsContract.CONTEXTUAL_SEARCH_ACTION.equals(intent.getAction())) {
+            return false;
+        }
         Bundle extras = intent.getExtras();
-        if (extras == null || !extras.containsKey(CONTEXTUAL_SCREENSHOT)) return;
-        Object value = null;
+        if (extras == null || !extras.containsKey(GoogleCtsContract.CONTEXTUAL_SCREENSHOT)) {
+            report("CONTEXTUAL_SCREENSHOT", "missing");
+            return false;
+        }
+        Object value;
         try {
-            value = extras.get(CONTEXTUAL_SCREENSHOT);
+            value = extras.get(GoogleCtsContract.CONTEXTUAL_SCREENSHOT);
         } catch (Throwable t) {
             report("CONTEXTUAL_SCREENSHOT",
                     "read failed=" + t.getClass().getSimpleName());
-            return;
+            return false;
         }
         if (value instanceof Bitmap bitmap && !bitmap.isRecycled()) {
             report("CONTEXTUAL_SCREENSHOT",
                     "bitmap=" + bitmapSummary(bitmap));
             sendBridgeFrame(bitmap);
-            return;
+            return bridgeFrameQueued;
         }
         report("CONTEXTUAL_SCREENSHOT",
-                "valueClass=" + (value == null ? "null" : value.getClass().getName()));
+                "valueClass=" + (value == null ? "null" : value.getClass().getName())
+                        + " value=" + describeValue(value));
+        return false;
     }
 
     private int hookActivityDispatch() {
@@ -617,12 +617,56 @@ final class GoogleCtsRuntimeInspector {
                 if (intentIndex < 0) continue;
                 final int idx = intentIndex;
                 module.hook(method).intercept(chain -> {
-                    if (active()) {
-                        Intent intent = (Intent) chain.getArg(idx);
-                        report("START_ACTIVITY", describeIntent(intent)
-                                + " caller=" + googleCaller());
+                    if (!active()) return chain.proceed();
+
+                    Intent intent = (Intent) chain.getArg(idx);
+                    report("START_ACTIVITY", describeIntent(intent)
+                            + " caller=" + googleCaller());
+
+                    if (intent == null
+                            || !GoogleCtsContract.CONTEXTUAL_SEARCH_ACTION.equals(
+                                    intent.getAction())) {
+                        return chain.proceed();
                     }
-                    return chain.proceed();
+
+                    boolean frameQueued = captureContextualSearchFrame(intent);
+                    boolean hasText = bridgeSelectionText != null
+                            && !bridgeSelectionText.isBlank();
+                    boolean hasSelection = bridgeSelectionSeen
+                            && (hasText || bridgeSelectionBounds != null);
+
+                    String detail = "action=" + intent.getAction()
+                            + " selectionSeen=" + bridgeSelectionSeen
+                            + " textLen="
+                            + (bridgeSelectionText == null ? 0 : bridgeSelectionText.length())
+                            + " bounds=" + String.valueOf(bridgeSelectionBounds)
+                            + " frameQueued=" + frameQueued
+                            + " extras=" + safeKeys(intent.getExtras());
+
+                    report("CONTEXTUAL_SEARCH_BOUNDARY", detail);
+
+                    // Suppress only when FloatLens can actually render something. This keeps the
+                    // Google flow untouched if a future Google build changes the screenshot or
+                    // selection payload shape.
+                    if (!frameQueued && !hasSelection) {
+                        report("CONTEXTUAL_SEARCH_PASSTHROUGH",
+                                "no FloatLens payload; Google search allowed");
+                        return chain.proceed();
+                    }
+
+                    commitBridgeResult("", detail, "contextual_search_intercept");
+                    if (!bridgeCommitted) {
+                        report("CONTEXTUAL_SEARCH_PASSTHROUGH",
+                                "bridge commit rejected; Google search allowed");
+                        return chain.proceed();
+                    }
+
+                    report("CONTEXTUAL_SEARCH_SUPPRESSED",
+                            "FloatLens owns marked session; Google search launch skipped");
+                    // Instrumentation.execStartActivity normally returns null for a successful
+                    // external launch, so null is also the safest synthetic result when we consume
+                    // this marked launch.
+                    return null;
                 });
                 count++;
             }
