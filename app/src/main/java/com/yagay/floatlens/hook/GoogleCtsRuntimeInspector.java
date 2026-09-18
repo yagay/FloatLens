@@ -285,14 +285,20 @@ final class GoogleCtsRuntimeInspector {
         if (session != null) voiceSession = session;
         eventCount.set(0);
         seenClasses.clear();
-        module.log(Log.INFO, TAG, "ACTIVE path=" + path
+        String header = "=== Google CTS marked session ===\n"
+                + "ACTIVE path=" + path
                 + " session=" + shortToken(sessionToken)
-                + " showId=" + showSessionId);
+                + " showId=" + showSessionId
+                + " atElapsed=" + SystemClock.elapsedRealtime();
+        provider.resetGoogleCtsTrace(header);
+        module.log(Log.INFO, TAG, header.replace("\n", " | "));
     }
 
     private synchronized void clear(String reason) {
-        module.log(Log.INFO, TAG, "END session=" + shortToken(sessionToken)
-                + " reason=" + reason + " events=" + eventCount.get());
+        String end = "END session=" + shortToken(sessionToken)
+                + " reason=" + reason + " events=" + eventCount.get();
+        provider.appendGoogleCtsTrace(end);
+        module.log(Log.INFO, TAG, end);
         activeUntil = 0L;
         sessionToken = "";
         showSessionId = -1;
@@ -310,8 +316,10 @@ final class GoogleCtsRuntimeInspector {
         if (!active()) return;
         int n = eventCount.incrementAndGet();
         if (n > MAX_EVENT_LOGS) return;
-        module.log(Log.INFO, TAG, "#" + n + " " + event + " session="
-                + shortToken(sessionToken) + " " + safe(message));
+        String line = "#" + n + " " + event + " session="
+                + shortToken(sessionToken) + " " + safe(message);
+        provider.appendGoogleCtsTrace(line);
+        module.log(Log.INFO, TAG, line);
     }
 
     private void dumpClassStructure(Class<?> cls, String reason) {

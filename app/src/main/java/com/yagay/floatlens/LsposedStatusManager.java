@@ -177,6 +177,11 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         INSTANCE.disarmSecureCapture();
     }
 
+    /** Reads the latest Google CTS marked-session trace from LSPosed remote storage. */
+    public static void readGoogleCtsTraceAsync(Consumer<String> callback) {
+        INSTANCE.readGoogleCtsTrace(callback);
+    }
+
     public static void addListener(Listener listener, boolean notifyImmediately) {
         if (listener == null) return;
         INSTANCE.listeners.add(listener);
@@ -286,6 +291,25 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                         "安全截图短时授权失败：" + messageOf(t));
             }
             complete(callback, success);
+        });
+    }
+
+    private void readGoogleCtsTrace(Consumer<String> callback) {
+        XposedService current = service;
+        if (current == null) {
+            completeString(callback, "");
+            return;
+        }
+        IO.execute(() -> {
+            String value = "";
+            try {
+                SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
+                if (remote != null) {
+                    value = remote.getString(LsposedRuntimeConfig.K_GOOGLE_CTS_TRACE, "");
+                }
+            } catch (Throwable ignored) {
+            }
+            completeString(callback, value);
         });
     }
 
@@ -428,6 +452,10 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
 
     private static void complete(Consumer<Boolean> callback, boolean value) {
         if (callback != null) MAIN.post(() -> callback.accept(value));
+    }
+
+    private static void completeString(Consumer<String> callback, String value) {
+        if (callback != null) MAIN.post(() -> callback.accept(value == null ? "" : value));
     }
 
     private void publish(Snapshot next) {

@@ -71,13 +71,24 @@ public final class DiagnosticsActivity extends AppCompatActivity {
     }
 
     private void exportDiagnostic() {
-        String text = DiagnosticLog.read(this);
-        if (text.isBlank()) {
-            Toast.makeText(this, "暂无诊断日志，请先开启记录并操作一次 FloatLens",
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
+        String appText = DiagnosticLog.read(this);
+        LsposedStatusManager.readGoogleCtsTraceAsync(ctsTrace -> {
+            StringBuilder combined = new StringBuilder();
+            if (!appText.isBlank()) combined.append(appText.trim()).append("\n");
+            if (ctsTrace != null && !ctsTrace.isBlank()) {
+                combined.append("\n===== LSPosed / Google CTS trace =====\n")
+                        .append(ctsTrace.trim()).append("\n");
+            }
+            if (combined.length() == 0) {
+                Toast.makeText(this, "暂无诊断日志，请先开启记录并操作一次 FloatLens",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            saveDiagnosticText(combined.toString());
+        });
+    }
 
+    private void saveDiagnosticText(String text) {
         String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
         String fileName = "FloatLens-diagnostic-" + stamp + ".txt";
         Uri uri = null;
