@@ -43,6 +43,7 @@ final class LsposedRuntimeProvider {
                         || LsposedRuntimeConfig.K_LSPOSED_ENABLED.equals(key)
                         || LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED.equals(key)
                         || LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL.equals(key)
+                        || LsposedRuntimeConfig.K_DIAGNOSTIC_ENABLED.equals(key)
                         || LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN.equals(key)
                         || LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED.equals(key)
                         || LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL.equals(key)) {
@@ -66,6 +67,15 @@ final class LsposedRuntimeProvider {
 
     boolean isActive() {
         return active;
+    }
+
+    boolean diagnosticsEnabled() {
+        if (!active || preferences == null) return false;
+        try {
+            return preferences.getBoolean(LsposedRuntimeConfig.K_DIAGNOSTIC_ENABLED, false);
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     boolean ownsGoogleCtsSession(String token) {
