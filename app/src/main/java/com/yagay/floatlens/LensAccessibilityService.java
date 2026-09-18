@@ -112,16 +112,21 @@ public class LensAccessibilityService extends AccessibilityService {
             if (isSystemNavigationEvent(event)) {
                 String pkg = eventPackage(event);
                 String cls = eventClass(event);
-                DiagnosticLog.i(this, "CIRCLE_SELECT",
-                        "system navigation event pkg=" + pkg + " cls=" + cls);
-                // Native Home/gesture navigation always wins ownership. Drop any stale
-                // FloatLens-marked Google session synchronously before ContextualSearch starts.
-                new FloatSettings(this).clearGoogleCtsSession();
-                boolean remoteCleared = LsposedStatusManager.clearGoogleCtsSessionRemoteNow();
-                DiagnosticLog.i(this, "GOOGLE_CTS_NATIVE_RELEASE",
-                        "reason=system_navigation remoteCleared=" + remoteCleared
-                                + " pkg=" + pkg + " cls=" + cls);
-                FLCircleInlineOverlay.dismissActive("system_navigation");
+                if (getPackageName().equals(pkg)) {
+                    DiagnosticLog.i(this, "CIRCLE_SELECT",
+                            "ignore own activity navigation pkg=" + pkg + " cls=" + cls);
+                } else {
+                    DiagnosticLog.i(this, "CIRCLE_SELECT",
+                            "system navigation event pkg=" + pkg + " cls=" + cls);
+                    // Native Home/gesture navigation always wins ownership. Drop any stale
+                    // FloatLens-marked Google session synchronously before ContextualSearch starts.
+                    new FloatSettings(this).clearGoogleCtsSession();
+                    boolean remoteCleared = LsposedStatusManager.clearGoogleCtsSessionRemoteNow();
+                    DiagnosticLog.i(this, "GOOGLE_CTS_NATIVE_RELEASE",
+                            "reason=system_navigation remoteCleared=" + remoteCleared
+                                    + " pkg=" + pkg + " cls=" + cls);
+                    FLCircleInlineOverlay.dismissActive("system_navigation");
+                }
             }
 
             String oldTop = env.topPackage();
