@@ -40,7 +40,11 @@ final class GoogleLens1758Profile {
     static final String IMMUTABLE_LIST = "com.google.common.collect.ImmutableList";
     static final String OPTIONAL = "fxsy";            // Google/Guava optional wrapper
     static final String ACTION_MENU_CONTROLLER = "dokz";
+    static final String TEXT_SELECTION = "dtvz";
     static final String TEXT_SELECTION_RANGE = "dnqv";
+    static final String WORD_BOX = "dnqw";
+    static final String ROTATED_BOX = "dnpt";
+    static final String GEOMETRY_UTIL = "dnpv";
 
     static String validationError(ClassLoader loader) {
         if (loader == null) return "classLoader=null";
@@ -201,6 +205,18 @@ final class GoogleLens1758Profile {
         return selectionSeen && selectedText != null && !selectedText.isBlank();
     }
 
+    static boolean shouldSuppressAnyPostSelectionResult(boolean selectionSeen) {
+        return selectionSeen;
+    }
+
+    static boolean shouldCommitNonTextSelection(boolean selectionSeen, String selectedText,
+                                                boolean complete, boolean interactionPresent) {
+        return selectionSeen
+                && (selectedText == null || selectedText.isBlank())
+                && complete
+                && interactionPresent;
+    }
+
     static SelectionSnapshot selection(Object metadata) {
         if (metadata == null) {
             return new SelectionSnapshot("", null, null, "metadata=null");
@@ -229,10 +245,21 @@ final class GoogleLens1758Profile {
         String rawSelection = compact(userSelection, 4200);
         if (text.isBlank()) text = selectedTextFromString(rawSelection);
 
-        Object region = invokeNoArg(userSelection, "b"); // UserSelection.b() -> RectF
-        RectF rawBounds = asRectF(region);
-        if (rawBounds == null) rawBounds = firstRectF(userSelection, metadata);
-        if (rawBounds == null) rawBounds = selectionBoundsFromString(rawSelection);
+        RectF rawBounds = wordBoxUnionBounds(userSelection);
+        String boundsSource = rawBounds == null ? "" : "wordBoxes";
+        if (rawBounds == null) {
+            Object region = invokeNoArg(userSelection, "b"); // UserSelection.b() -> RectF
+            rawBounds = asRectF(region);
+            if (rawBounds != null) boundsSource = "userSelection.b";
+        }
+        if (rawBounds == null) {
+            rawBounds = firstRectF(userSelection, metadata);
+            if (rawBounds != null) boundsSource = "reflectedRect";
+        }
+        if (rawBounds == null) {
+            rawBounds = selectionBoundsFromString(rawSelection);
+            if (rawBounds != null) boundsSource = "diagnosticString";
+        }
         Rect bounds = absoluteRect(rawBounds);
 
         Object point = invokeNoArg(userSelection, "a");  // UserSelection.a() -> PointF
@@ -243,6 +270,7 @@ final class GoogleLens1758Profile {
         detail.append("metadataClass=").append(metadata.getClass().getName())
                 .append(" userSelectionClass=").append(userSelection.getClass().getName());
         if (!text.isBlank()) detail.append(" selectedText=").append(quote(text, 1800));
+        if (!boundsSource.isBlank()) detail.append(" boundsSource=").append(boundsSource);
         if (bounds != null) detail.append(" bounds=").append(bounds.toShortString());
         else if (rawBounds != null) detail.append(" normalizedBounds=").append(rawBounds);
         if (point instanceof PointF p) detail.append(" point=").append(p.x).append(",").append(p.y);
@@ -267,7 +295,7 @@ final class GoogleLens1758Profile {
         return new PendingSnapshot(frame, detail);
     }
 
-    static PresentationRequestSuppression suppressTextPresentationRequest(Object pending) {
+    static PresentationRequestSuppression suppressSelectionPresentationRequest(Object pending) {
         if (pending == null) {
             return new PresentationRequestSuppression(false, "pending=null");
         }
@@ -288,6 +316,10 @@ final class GoogleLens1758Profile {
         return new PresentationRequestSuppression(false,
                 "requestPresentationResult target boolean not found query="
                         + compact(query, 2200));
+    }
+
+    static PresentationRequestSuppression suppressTextPresentationRequest(Object pending) {
+        return suppressSelectionPresentationRequest(pending);
     }
 
     static NativePresentationSuppression suppressNativeRenderedPresentationData(
@@ -524,6 +556,76 @@ final class GoogleLens1758Profile {
         if (selected instanceof String s) return s.trim();
         String value = firstString(selected);
         return value == null ? "" : value.trim();
+    }
+
+    private static RectF wordBoxUnionBounds(Object userSelection) {
+        if (userSelection == null || !"dtlr".equals(userSelection.getClass().getName())) {
+            return null;
+        }
+        try {
+            Object textSelection = readField(userSelection, "a", TEXT_SELECTION);
+            Object rawBoxes = readField(textSelection, "b", IMMUTABLE_LIST);
+            if (!(rawBoxes instanceof Iterable<?> boxes)) return null;
+
+            RectF union = null;
+            for (Object wordBox : boxes) {
+                if (wordBox == null || !WORD_BOX.equals(wordBox.getClass().getName())) continue;
+                Object rotatedBox = readField(wordBox, "d", ROTATED_BOX);
+                RectF rect = rectFromGoogleRotatedBox(rotatedBox);
+                if (rect == null || rect.width() <= 0f || rect.height() <= 0f) continue;
+                if (union == null) {
+                    union = new RectF(rect);
+                } else {
+                    union.union(rect);
+                }
+            }
+            return union;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Google 17.58 stores word geometry in dnpt. Reuse Google's own geometry helpers instead of
+     * guessing the five float fields: dnpv.v(dnpt) -> geyn, then dnpv.D(geyn) -> RectF.
+     * The w/E pair is a fail-soft alternate path observed in the same APK.
+     */
+    private static RectF rectFromGoogleRotatedBox(Object rotatedBox) {
+        if (rotatedBox == null || !ROTATED_BOX.equals(rotatedBox.getClass().getName())) {
+            return null;
+        }
+        try {
+            ClassLoader loader = rotatedBox.getClass().getClassLoader();
+            Class<?> geometry = Class.forName(GEOMETRY_UTIL, false, loader);
+
+            Object oriented = invokeStaticOneArg(geometry, "v", rotatedBox);
+            Object rect = invokeStaticOneArg(geometry, "D", oriented);
+            RectF out = asRectF(rect);
+            if (out != null) return out;
+
+            Object quad = invokeStaticOneArg(geometry, "w", rotatedBox);
+            rect = invokeStaticOneArg(geometry, "E", quad);
+            return asRectF(rect);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static Object invokeStaticOneArg(Class<?> owner, String name, Object arg) {
+        if (owner == null || name == null || arg == null) return null;
+        for (Method method : methodsOf(owner)) {
+            if (!name.equals(method.getName())
+                    || method.getParameterCount() != 1
+                    || !Modifier.isStatic(method.getModifiers())) continue;
+            Class<?> parameter = method.getParameterTypes()[0];
+            if (!parameter.isInstance(arg)) continue;
+            try {
+                method.setAccessible(true);
+                return method.invoke(null, arg);
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
     }
 
     private static Bitmap bitmapFromLensImage(Object lensImage) {
