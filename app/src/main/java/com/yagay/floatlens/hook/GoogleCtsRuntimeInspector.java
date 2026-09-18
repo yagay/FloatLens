@@ -278,19 +278,20 @@ final class GoogleCtsRuntimeInspector {
                             boolean textMenuSelection = bridgeSelectionText != null
                                     && !bridgeSelectionText.isBlank();
                             boolean consumed = textMenuSelection
-                                    ? commitBridgeTextMenu(snapshot.detail(),
-                                    "lens_text_menu_intercept")
+                                    ? suppressBridgeTextPresentation(snapshot.detail())
                                     : commitBridgeResult(snapshot.text(), snapshot.detail(),
                                     "lens_presentation_intercept");
 
                             if (consumed) {
                                 module.log(Log.INFO, TAG,
                                         textMenuSelection
-                                                ? "Google Lens text presentation replaced by FloatLens menu"
+                                                ? "Google Lens result panel suppressed; selection layer kept alive"
                                                 : "Google Lens result-panel presentation suppressed");
-                                // dscu.q(dtqi) is void in the validated 17.58 profile. Skipping
-                                // the original call prevents LensResultPanelResponse from being
-                                // rendered while retaining all earlier Google recognition work.
+                                // dscu.q(dtqi) is void in the validated 17.58 profile. For text
+                                // selections, skip only the result-panel callback: do not finish
+                                // LensientActivity and do not clear the marked session. Google
+                                // keeps its highlight/selection handles alive, and later y(dscl)
+                                // callbacks can continue updating the FloatLens menu.
                                 return null;
                             }
                         }
@@ -312,19 +313,15 @@ final class GoogleCtsRuntimeInspector {
         }
     }
 
-    private synchronized boolean commitBridgeTextMenu(String detail, String reason) {
-        if (!active() || bridgeCommitted || !bridgeSelectionSeen
+    private synchronized boolean suppressBridgeTextPresentation(String detail) {
+        if (!active() || !bridgeSelectionSeen
                 || bridgeSelectionText == null || bridgeSelectionText.isBlank()) {
             return false;
         }
-
-        bridgeCommitted = true;
-        Rect finalBounds = bridgeSelectionBounds == null
-                ? null : new Rect(bridgeSelectionBounds);
-        sendBridgeEvent(GoogleCtsContract.EVENT_TEXT_MENU_COMMIT,
-                bridgeSelectionText, detail, finalBounds);
-        finishMarkedGoogleActivity(reason);
-        clear(reason);
+        report("LENS_TEXT_PRESENTATION_SUPPRESSED",
+                "keepSelectionAlive=true textLen=" + bridgeSelectionText.length()
+                        + " bounds=" + String.valueOf(bridgeSelectionBounds)
+                        + " detail=" + safe(detail));
         return true;
     }
 
