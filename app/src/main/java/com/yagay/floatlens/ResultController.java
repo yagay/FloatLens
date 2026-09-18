@@ -22,34 +22,45 @@ final class ResultController {
     static final class Delivery {
         final ResultSession session;
         final ResultReadyCoordinator.Ticket readyTicket;
-        Delivery(ResultSession session, ResultReadyCoordinator.Ticket readyTicket) {
+        final Runnable firstFrameCallback;
+        Delivery(ResultSession session, ResultReadyCoordinator.Ticket readyTicket,
+                 Runnable firstFrameCallback) {
             this.session = session;
             this.readyTicket = readyTicket;
+            this.firstFrameCallback = firstFrameCallback;
         }
     }
 
     private static final class Pending {
         final ResultSession session;
         final ResultReadyCoordinator.Ticket readyTicket;
+        final Runnable firstFrameCallback;
         final long createdAt;
-        Pending(ResultSession session, ResultReadyCoordinator.Ticket readyTicket) {
+        Pending(ResultSession session, ResultReadyCoordinator.Ticket readyTicket,
+                Runnable firstFrameCallback) {
             this.session = session;
             this.readyTicket = readyTicket;
+            this.firstFrameCallback = firstFrameCallback;
             createdAt = SystemClock.uptimeMillis();
         }
     }
 
     static boolean show(Context c, ResultSession session) {
-        return showInternal(c, session, null);
+        return showInternal(c, session, null, null);
+    }
+
+    static boolean showAfterFirstFrame(Context c, ResultSession session, Runnable callback) {
+        return showInternal(c, session, null, callback);
     }
 
     private static boolean showInternal(Context c, ResultSession session,
-                                        ResultReadyCoordinator.Ticket readyTicket) {
+                                        ResultReadyCoordinator.Ticket readyTicket,
+                                        Runnable firstFrameCallback) {
         if (c == null || session == null) return false;
         Context app = c.getApplicationContext();
         cleanupExpired(app);
         long token = NEXT.getAndIncrement();
-        PENDING.put(token, new Pending(session, readyTicket));
+        PENDING.put(token, new Pending(session, readyTicket, firstFrameCallback));
         trimOverflow(app);
         MAIN.postDelayed(() -> expire(token, app), PENDING_TTL_MS);
 
@@ -81,7 +92,7 @@ final class ResultController {
         if (c == null || session == null) return false;
         Context app = c.getApplicationContext();
         ResultReadyCoordinator.Ticket ticket = ResultReadyCoordinator.arm(app, shadeState, reason);
-        boolean shown = showInternal(app, session, ticket);
+        boolean shown = showInternal(app, session, ticket, null);
         DiagnosticLog.i(app, "RESULT_CONTROLLER", "captured mode=" + session.mode()
                 + " shown=" + shown + " reason=" + reason);
         if (!shown) ResultReadyCoordinator.cancel(ticket, app, reason + "_start_failed");
@@ -97,7 +108,7 @@ final class ResultController {
             close(pending.session);
             return null;
         }
-        return new Delivery(pending.session, pending.readyTicket);
+        return new Delivery(pending.session, pending.readyTicket, pending.firstFrameCallback);
     }
 
     static void discard(long token) {
