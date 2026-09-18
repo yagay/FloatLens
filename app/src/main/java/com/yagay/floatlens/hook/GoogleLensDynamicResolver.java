@@ -171,10 +171,11 @@ final class GoogleLensDynamicResolver {
             return cls.getDeclaredMethods();
         } catch (Throwable ignored) {
             try {
-                return java.util.Arrays.stream(HiddenApiBypass.getDeclaredMethods(cls))
-                        .filter(it -> it instanceof Method)
-                        .map(it -> (Method) it)
-                        .toArray(Method[]::new);
+                java.util.ArrayList<Method> out = new java.util.ArrayList<>();
+                for (Executable executable : HiddenApiBypass.getDeclaredMethods(cls)) {
+                    if (executable instanceof Method method) out.add(method);
+                }
+                return out.toArray(new Method[0]);
             } catch (Throwable ignoredAgain) {
                 return new Method[0];
             }
