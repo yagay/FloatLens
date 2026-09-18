@@ -74,6 +74,8 @@ final class GoogleCtsRuntimeInspector {
     private volatile boolean bridgeCommitted;
     private volatile boolean bridgeSelectionSeen;
     private volatile boolean bridgePendingSeen;
+    private volatile String bridgeSelectionText = "";
+    private volatile Rect bridgeSelectionBounds;
     private volatile WeakReference<Activity> markedActivity = new WeakReference<>(null);
 
     GoogleCtsRuntimeInspector(XposedModule module,
@@ -166,6 +168,14 @@ final class GoogleCtsRuntimeInspector {
     /** Google 17.58.16.ve Lens user-selection/query boundary from classes8.dex. */
     private int hookGoogle1758LensSelectionBoundary() {
         try {
+            String profileError = GoogleLens1758Profile.validationError(classLoader);
+            if (!profileError.isBlank()) {
+                module.log(Log.WARN, TAG,
+                        "Google " + GoogleLens1758Profile.NAME
+                                + " Lens profile rejected: " + profileError);
+                return 0;
+            }
+
             Class<?> controller = Class.forName(
                     GoogleLens1758Profile.CONTROLLER, false, classLoader);
             int count = 0;
@@ -178,6 +188,11 @@ final class GoogleCtsRuntimeInspector {
                             GoogleLens1758Profile.SelectionSnapshot selection =
                                     GoogleLens1758Profile.selection(chain.getArg(0));
                             bridgeSelectionSeen = true;
+                            bridgeSelectionText = selection.text();
+                            bridgeSelectionBounds = selection.bounds();
+                            // Invalidate any pre-selection settle timer. The next accepted result
+                            // must belong to this user interaction, not initial image analysis.
+                            bridgeResultGeneration.incrementAndGet();
                             report("USER_SELECTION",
                                     selection.detail() + " primary=" + chain.getArg(1));
                             sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
@@ -203,6 +218,9 @@ final class GoogleCtsRuntimeInspector {
                         GoogleLens1758Profile.PendingSnapshot snapshot =
                                 GoogleLens1758Profile.pending(pending);
                         bridgePendingSeen = true;
+                        // A real non-null PendingLensQuery marks the interaction-query boundary.
+                        // Cancel any settle timer created by earlier source-image processing.
+                        bridgeResultGeneration.incrementAndGet();
                         report("LENS_QUERY_START", snapshot.detail());
                         sendBridgeFrame(snapshot.frame());
 
@@ -233,11 +251,22 @@ final class GoogleCtsRuntimeInspector {
                         sendBridgeFrame(snapshot.frame());
 
                         int generation = bridgeResultGeneration.incrementAndGet();
+                        boolean userInteractionSeen = bridgeSelectionSeen || bridgePendingSeen;
                         report("LENS_QUERY_RESULT",
                                 "complete=" + snapshot.complete()
                                         + " selectionSeen=" + bridgeSelectionSeen
                                         + " pendingSeen=" + bridgePendingSeen
+                                        + " interactionSeen=" + userInteractionSeen
                                         + " " + snapshot.detail());
+
+                        // Lens may publish a completed source-image result before the user has
+                        // selected anything. That result is useful to Google's UI but it is not
+                        // the FloatLens result and must never close the marked Lens activity.
+                        if (!userInteractionSeen) {
+                            report("LENS_QUERY_PRESELECTION",
+                                    "non-null result ignored until USER_SELECTION or PendingLensQuery");
+                            return result;
+                        }
 
                         if (snapshot.complete()) {
                             commitBridgeResult(snapshot.text(), snapshot.detail(),
@@ -271,6 +300,7 @@ final class GoogleCtsRuntimeInspector {
     private void scheduleBridgeResultSettle(int generation, String text, String detail) {
         mainHandler.postDelayed(() -> {
             if (!active() || bridgeCommitted
+                    || (!bridgeSelectionSeen && !bridgePendingSeen)
                     || generation != bridgeResultGeneration.get()) return;
             report("LENS_QUERY_SETTLED",
                     "no newer result for " + RESULT_SETTLE_MS
@@ -280,9 +310,19 @@ final class GoogleCtsRuntimeInspector {
     }
 
     private synchronized void commitBridgeResult(String text, String detail, String reason) {
-        if (!active() || bridgeCommitted) return;
+        if (!active() || bridgeCommitted
+                || (!bridgeSelectionSeen && !bridgePendingSeen)) return;
         bridgeCommitted = true;
-        sendBridgeEvent(GoogleCtsContract.EVENT_QUERY_RESULT, text, detail, null);
+
+        // Make the final event self-contained. Explicit broadcasts are asynchronous; carrying the
+        // latest selection again prevents a query-result delivery from racing ahead of the earlier
+        // selection event in the FloatLens process.
+        String finalText = bridgeSelectionText == null || bridgeSelectionText.isBlank()
+                ? text : bridgeSelectionText;
+        Rect finalBounds = bridgeSelectionBounds == null
+                ? null : new Rect(bridgeSelectionBounds);
+        sendBridgeEvent(GoogleCtsContract.EVENT_QUERY_RESULT,
+                finalText, detail, finalBounds);
         finishMarkedGoogleActivity(reason);
         clear(reason);
     }
@@ -325,7 +365,7 @@ final class GoogleCtsRuntimeInspector {
             return;
         }
         if (active()) return;
-        String token = provider.googleCtsArmedToken();
+        String token = provider.googleCtsArmedToken(extras);
         if (!token.isBlank()) {
             activate(token, showSessionId, voiceSession, path + "_ARMED");
             report("BOUNDARY_CORRELATION",
@@ -403,7 +443,7 @@ final class GoogleCtsRuntimeInspector {
                                 + " keys=" + safeKeys(args));
                         dumpClassStructure(chain.getThisObject().getClass(), "voiceSession");
                     } else if (provider.isActive() && !active()) {
-                        String armedToken = provider.googleCtsArmedToken();
+                        String armedToken = provider.googleCtsArmedToken(args);
                         if (!armedToken.isBlank()) {
                             activate(armedToken, id, chain.getThisObject(), "VIS_ARMED_FALLBACK");
                             report("SESSION_SHOW", "path=VIS_ARMED_FALLBACK marker=false sessionClass="
@@ -487,7 +527,7 @@ final class GoogleCtsRuntimeInspector {
                                 + " intent=" + describeIntent(intent));
                         if (activity != null) dumpClassStructure(activity.getClass(), "activity");
                     } else if (provider.isActive() && !active() && intent != null) {
-                        String armedToken = provider.googleCtsArmedToken();
+                        String armedToken = provider.googleCtsArmedToken(extras);
                         if (!armedToken.isBlank()) {
                             activate(armedToken, -1, null, "CONTEXTUAL_ACTIVITY_ARMED_FALLBACK");
                             report("SESSION_SHOW", "path=ContextualActivityArmedFallback marker=false activity="
@@ -620,6 +660,8 @@ final class GoogleCtsRuntimeInspector {
             bridgeCommitted = false;
             bridgeSelectionSeen = false;
             bridgePendingSeen = false;
+            bridgeSelectionText = "";
+            bridgeSelectionBounds = null;
             bridgeResultGeneration.incrementAndGet();
             markedActivity = new WeakReference<>(null);
         }
@@ -656,6 +698,8 @@ final class GoogleCtsRuntimeInspector {
         bridgeCommitted = false;
         bridgeSelectionSeen = false;
         bridgePendingSeen = false;
+        bridgeSelectionText = "";
+        bridgeSelectionBounds = null;
         bridgeResultGeneration.incrementAndGet();
         markedActivity = new WeakReference<>(null);
         seenClasses.clear();
