@@ -52,8 +52,7 @@
         <activity
             android:name=".GoogleCtsBridgeActivity"
             android:theme="@style/Theme.FloatLens.ShadeDismiss"
-            android:permission="android.permission.ACCESS_CONTEXTUAL_SEARCH"
-            android:exported="true"
+            android:exported="false"
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:taskAffinity="" />

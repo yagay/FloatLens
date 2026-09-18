@@ -1,12 +1,10 @@
 package com.yagay.floatlens.hook;
 
 import android.content.ComponentName;
-import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.util.Log;
 
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 
@@ -16,10 +14,9 @@ import io.github.libxposed.api.XposedModule;
  * Android 15/16 Google Circle-to-Search capture-only takeover.
  *
  * <p>AOSP ContextualSearchManagerService creates the frozen screenshot before launching the
- * contextual-search provider. Intercepting its final launch boundary gives FloatLens the exact
- * system frame without depending on Google's obfuscated implementation. The original launch is
- * suppressed only after the FloatLens bridge Activity was successfully started; every failure is
- * fail-open and proceeds to Google's normal flow.</p>
+ * contextual-search provider. FloatLens redirects that already-prepared launch Intent to its own
+ * private bridge Activity, then lets Android's original startActivityWithScreenshot path proceed.
+ * Google's obfuscated implementation is never entered. Every precondition failure is fail-open.</p>
  */
 final class GoogleCtsSystemHook {
     private static final String TAG = "FloatLens-GoogleCTS";
@@ -70,8 +67,8 @@ final class GoogleCtsSystemHook {
             if (method.getReturnType() != int.class && method.getReturnType() != Integer.class) {
                 continue;
             }
-            module.hook(method).intercept(chain -> interceptLaunch(
-                    chain.getThisObject(), (Intent) chain.getArg(0), chain::proceed));
+            module.hook(method).intercept(chain ->
+                    interceptLaunch((Intent) chain.getArg(0), chain::proceed));
             installed++;
         }
 
@@ -85,9 +82,7 @@ final class GoogleCtsSystemHook {
         }
     }
 
-    private Object interceptLaunch(Object service,
-                                   Intent launchIntent,
-                                   Proceed proceed) throws Throwable {
+    private Object interceptLaunch(Intent launchIntent, Proceed proceed) throws Throwable {
         if (!provider.isGoogleCtsCaptureOnlyEnabled()) return proceed.call();
         if (!isGoogleCtsLaunch(launchIntent)) return proceed.call();
 
@@ -109,39 +104,41 @@ final class GoogleCtsSystemHook {
             return proceed.call();
         }
 
-        Context context = findContext(service);
-        if (context == null) {
+        String originalAction = launchIntent.getAction();
+        String originalPackage = launchIntent.getPackage();
+        ComponentName originalComponent = launchIntent.getComponent();
+
+        launchIntent.setAction(BRIDGE_ACTION);
+        launchIntent.setPackage(BRIDGE.getPackageName());
+        launchIntent.setComponent(BRIDGE);
+        launchIntent.putExtra(BRIDGE_SCREENSHOT, screenshot);
+        launchIntent.putExtra(BRIDGE_ENTRYPOINT, entrypoint);
+        launchIntent.putExtra(BRIDGE_SECURE_FOUND, secureFound);
+
+        Object result = proceed.call();
+        if (result instanceof Integer code && code < 0) {
+            restoreOriginalTarget(launchIntent, originalAction, originalPackage, originalComponent);
             module.log(Log.WARN, TAG,
-                    "CTS screenshot captured but system Context unavailable; fail-open");
+                    "FloatLens CTS bridge returned startCode=" + code + "; retrying Google flow");
             return proceed.call();
         }
 
-        Intent bridge = new Intent(BRIDGE_ACTION)
-                .setComponent(BRIDGE)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                        | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                        | Intent.FLAG_ACTIVITY_NO_ANIMATION
-                        | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
-                .putExtra(BRIDGE_SCREENSHOT, screenshot)
-                .putExtra(BRIDGE_ENTRYPOINT, entrypoint)
-                .putExtra(BRIDGE_SECURE_FOUND, secureFound);
+        module.log(Log.INFO, TAG,
+                "CTS takeover success"
+                        + " startCode=" + result
+                        + " entrypoint=" + entrypoint
+                        + " screenshot=" + screenshot.getWidth() + "x" + screenshot.getHeight()
+                        + " secureFound=" + secureFound
+                        + " visiblePackages=" + (visible == null ? -1 : visible.size())
+                        + " originalComponent=" + originalComponent);
+        return result;
+    }
 
-        try {
-            context.startActivity(bridge);
-            module.log(Log.INFO, TAG,
-                    "CTS takeover success"
-                            + " entrypoint=" + entrypoint
-                            + " screenshot=" + screenshot.getWidth() + "x" + screenshot.getHeight()
-                            + " secureFound=" + secureFound
-                            + " visiblePackages=" + (visible == null ? -1 : visible.size())
-                            + " component=" + launchIntent.getComponent());
-            // ActivityManager.START_SUCCESS. The original Google activity is intentionally skipped.
-            return 0;
-        } catch (Throwable t) {
-            module.log(Log.ERROR, TAG,
-                    "FloatLens bridge launch failed; fail-open to Google CTS", t);
-            return proceed.call();
-        }
+    private void restoreOriginalTarget(Intent intent, String action, String pkg,
+                                       ComponentName component) {
+        intent.setAction(action);
+        intent.setPackage(pkg);
+        intent.setComponent(component);
     }
 
     private boolean isGoogleCtsLaunch(Intent intent) {
@@ -162,27 +159,6 @@ final class GoogleCtsSystemHook {
             module.log(Log.ERROR, TAG, "Failed to read CTS screenshot extra", t);
             return null;
         }
-    }
-
-    private Context findContext(Object service) {
-        if (service == null) return null;
-        try {
-            Method getContext = service.getClass().getMethod("getContext");
-            Object value = getContext.invoke(service);
-            if (value instanceof Context context) return context;
-        } catch (Throwable ignored) {
-        }
-
-        for (Class<?> c = service.getClass(); c != null; c = c.getSuperclass()) {
-            try {
-                Field field = c.getDeclaredField("mContext");
-                field.setAccessible(true);
-                Object value = field.get(service);
-                if (value instanceof Context context) return context;
-            } catch (Throwable ignored) {
-            }
-        }
-        return null;
     }
 
     @FunctionalInterface
