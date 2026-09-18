@@ -57,6 +57,13 @@ public class GoogleLens1758ProfileTest {
         assertTrue(GoogleLens1758Profile.shouldSuppressAnyPostSelectionResult(true));
     }
 
+    @Test public void regionSelectionClassUsesImmediateCommitPath() {
+        assertTrue(GoogleLens1758Profile.isDirectRegionSelectionClass("dtln"));
+        assertFalse(GoogleLens1758Profile.isDirectRegionSelectionClass("dtlr"));
+        assertFalse(GoogleLens1758Profile.isDirectRegionSelectionClass(""));
+        assertFalse(GoogleLens1758Profile.isDirectRegionSelectionClass(null));
+    }
+
     @Test public void nonTextSelectionCommitsOnCompleteInteractionWithoutPresentation() {
         assertFalse(GoogleLens1758Profile.shouldCommitNonTextSelection(
                 false, "", true, true));
