@@ -22,6 +22,7 @@ public final class PrivilegeSettingsPanel {
 
         TextView modeStatus = AppUi.caption(activity, "", 13);
         TextView rootStatus = AppUi.caption(activity, "", 13);
+        TextView googleAppStatus = AppUi.caption(activity, "", 13);
 
         AppUi.Section master = AppUi.section(activity, "增强模式总开关",
                 "关闭后保留子开关选择，运行时只使用普通 Android / 无障碍实现。" );
@@ -29,7 +30,10 @@ public final class PrivilegeSettingsPanel {
                 "启用增强模式",
                 "开启后才允许已经接入且单独启用的增强 Provider 参与后端选择。",
                 FloatSettings.K_ENHANCED_MODE, fs.enhancedMode(),
-                () -> refresh(activity, fs, modeStatus, rootStatus));
+                () -> {
+                    refresh(activity, fs, modeStatus, rootStatus);
+                    refreshGoogleApp(activity, fs, googleAppStatus);
+                });
         AppUi.addRow(master.body, AppUi.switchContainer(enhanced));
         AppUi.addRow(master.body, statusBlock(activity, "当前生效模式", modeStatus));
         AppUi.addSection(root, master);
@@ -40,7 +44,10 @@ public final class PrivilegeSettingsPanel {
                 "使用 Root 功能",
                 "允许已接入的 Root 增强功能参与后端选择。",
                 FloatSettings.K_ROOT_ENABLED, fs.rootEnabled(),
-                () -> refresh(activity, fs, modeStatus, rootStatus));
+                () -> {
+                    refresh(activity, fs, modeStatus, rootStatus);
+                    refreshGoogleApp(activity, fs, googleAppStatus);
+                });
         AppUi.addRow(rootSection.body, AppUi.switchContainer(rootSwitch));
 
         SwitchMaterial rootScreenshotSwitch = preferenceSwitch(activity, fs,
@@ -73,7 +80,6 @@ public final class PrivilegeSettingsPanel {
         AppUi.addRow(rootSection.body, simpleBlock(activity, rootNote));
         AppUi.addSection(root, rootSection);
 
-        TextView googleAppStatus = AppUi.caption(activity, "", 13);
         AppUi.Section googleAppSection = AppUi.section(activity, "Google App 管理",
                 "Root 一键停止 Google App 及其 search / interactor / googleapp 等同包进程。普通停止不会禁用应用；冻结会禁用 Google App，直到手动恢复。");
 
