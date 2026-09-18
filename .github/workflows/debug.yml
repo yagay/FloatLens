@@ -2,7 +2,7 @@ name: Debug Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, feature/google-bridge-container ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
