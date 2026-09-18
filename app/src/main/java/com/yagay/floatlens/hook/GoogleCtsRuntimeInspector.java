@@ -895,22 +895,37 @@ final class GoogleCtsRuntimeInspector {
                         report("CONTEXTUAL_SEARCH_BOUNDARY", contextualDetail);
                     }
 
-                    if (active()) rememberMarkedActivity(activity);
+                    // Never replace the remembered selection Activity with a later Contextual
+                    // Search Activity. The original LensientActivity owns Google's highlight and
+                    // resize handles and must remain alive for FloatLens text-menu sessions.
+                    if (active() && !contextualBoundary) rememberMarkedActivity(activity);
                     Object result = chain.proceed();
 
                     // Some Android builds launch Contextual Search through the framework service,
-                    // bypassing this process' execStartActivity(). In that case the Activity
-                    // lifecycle is the first reliable interception boundary. Let onCreate finish
-                    // normally, then immediately hand the payload to FloatLens and close both
-                    // Google activities before the search UI can remain onscreen.
+                    // bypassing this process' execStartActivity(). Text selections already have a
+                    // live FloatLens menu, so close only this search Activity: do not commit the
+                    // bridge, do not clear the marked session, and do not finish the underlying
+                    // selection Activity. Region/image flows keep the previous result fallback.
                     if (contextualBoundary && contextualPayload && active()) {
-                        boolean consumed = commitBridgeResult("", contextualDetail,
-                                "contextual_search_activity_intercept");
-                        if (consumed && activity instanceof Activity contextualActivity) {
+                        boolean hasText = bridgeSelectionText != null
+                                && !bridgeSelectionText.isBlank();
+                        if (hasText && activity instanceof Activity contextualActivity) {
+                            report("CONTEXTUAL_TEXT_SEARCH_SUPPRESSED",
+                                    "path=activity_lifecycle keepSelectionAlive=true textLen="
+                                            + bridgeSelectionText.length());
                             finishActivity(contextualActivity,
-                                    "contextual_search_activity_intercept");
+                                    "contextual_text_search_suppressed");
                             module.log(Log.INFO, TAG,
-                                    "Contextual search activity consumed by FloatLens");
+                                    "Contextual text search activity suppressed; selection kept alive");
+                        } else {
+                            boolean consumed = commitBridgeResult("", contextualDetail,
+                                    "contextual_search_activity_intercept");
+                            if (consumed && activity instanceof Activity contextualActivity) {
+                                finishActivity(contextualActivity,
+                                        "contextual_search_activity_intercept");
+                                module.log(Log.INFO, TAG,
+                                        "Contextual search activity consumed by FloatLens");
+                            }
                         }
                     } else if (contextualBoundary && !contextualPayload && active()) {
                         report("CONTEXTUAL_SEARCH_PASSTHROUGH",
@@ -1000,6 +1015,18 @@ final class GoogleCtsRuntimeInspector {
                         report("CONTEXTUAL_SEARCH_PASSTHROUGH",
                                 "no renderable FloatLens payload; Google search allowed");
                         return chain.proceed();
+                    }
+
+                    if (hasText) {
+                        report("CONTEXTUAL_TEXT_SEARCH_SUPPRESSED",
+                                "path=execStartActivity keepSelectionAlive=true textLen="
+                                        + bridgeSelectionText.length());
+                        module.log(Log.INFO, TAG,
+                                "Contextual text search launch suppressed; selection kept alive");
+                        // Do not commit/clear a live text-menu session. Returning null prevents
+                        // the search Activity from launching while Google's original selection UI
+                        // and resize handles stay active underneath FloatLens.
+                        return null;
                     }
 
                     report("CONTEXTUAL_SEARCH_TAKEOVER",
