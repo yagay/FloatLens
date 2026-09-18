@@ -162,15 +162,18 @@ final class GoogleLens1758Profile {
 
     static SelectionSnapshot selection(Object metadata) {
         if (metadata == null) {
-            return new SelectionSnapshot("", null, "metadata=null");
+            return new SelectionSnapshot("", null, null, "metadata=null");
         }
 
         Object userSelection = readField(metadata, "a", USER_SELECTION);
         if (userSelection == null) userSelection = firstFieldByType(metadata, USER_SELECTION);
         if (userSelection == null) {
-            return new SelectionSnapshot("", firstRect(metadata),
+            String raw = compact(metadata, 4200);
+            String text = selectedTextFromString(raw);
+            RectF rawBounds = selectionBoundsFromString(raw);
+            return new SelectionSnapshot(text, absoluteRect(rawBounds), rawBounds,
                     "metadataClass=" + metadata.getClass().getName()
-                            + " userSelection=unavailable raw=" + compact(metadata, 2600));
+                            + " userSelection=unavailable raw=" + raw);
         }
 
         String text = asString(invokeNoArg(userSelection, "k"));
@@ -182,9 +185,14 @@ final class GoogleLens1758Profile {
             text = asString(selectedText);
         }
 
+        String rawSelection = compact(userSelection, 4200);
+        if (text.isBlank()) text = selectedTextFromString(rawSelection);
+
         Object region = invokeNoArg(userSelection, "b"); // UserSelection.b() -> RectF
-        Rect bounds = asRect(region);
-        if (bounds == null) bounds = firstRect(userSelection, metadata);
+        RectF rawBounds = asRectF(region);
+        if (rawBounds == null) rawBounds = firstRectF(userSelection, metadata);
+        if (rawBounds == null) rawBounds = selectionBoundsFromString(rawSelection);
+        Rect bounds = absoluteRect(rawBounds);
 
         Object point = invokeNoArg(userSelection, "a");  // UserSelection.a() -> PointF
         Object gesture = invokeNoArg(userSelection, "c");
@@ -195,11 +203,12 @@ final class GoogleLens1758Profile {
                 .append(" userSelectionClass=").append(userSelection.getClass().getName());
         if (!text.isBlank()) detail.append(" selectedText=").append(quote(text, 1800));
         if (bounds != null) detail.append(" bounds=").append(bounds.toShortString());
+        else if (rawBounds != null) detail.append(" normalizedBounds=").append(rawBounds);
         if (point instanceof PointF p) detail.append(" point=").append(p.x).append(",").append(p.y);
         if (gesture != null) detail.append(" gesture=").append(compact(gesture, 500));
         if (drawing != null) detail.append(" drawing=").append(compact(drawing, 700));
-        detail.append(" selection=").append(compact(userSelection, 2500));
-        return new SelectionSnapshot(text, bounds, detail.toString());
+        detail.append(" selection=").append(rawSelection);
+        return new SelectionSnapshot(text, bounds, rawBounds, detail.toString());
     }
 
     static PendingSnapshot pending(Object pending) {
@@ -415,30 +424,110 @@ final class GoogleLens1758Profile {
         return value instanceof String s && !s.isBlank() ? s : null;
     }
 
-    private static Rect firstRect(Object... targets) {
+    private static RectF firstRectF(Object... targets) {
         if (targets == null) return null;
         for (Object target : targets) {
             if (target == null) continue;
-            Rect direct = asRect(target);
+            RectF direct = asRectF(target);
             if (direct != null) return direct;
             Object rect = firstFieldByType(target, Rect.class.getName());
-            direct = asRect(rect);
+            direct = asRectF(rect);
             if (direct != null) return direct;
             Object rectF = firstFieldByType(target, RectF.class.getName());
-            direct = asRect(rectF);
+            direct = asRectF(rectF);
             if (direct != null) return direct;
         }
         return null;
     }
 
-    private static Rect asRect(Object value) {
-        if (value instanceof Rect rect && !rect.isEmpty()) return new Rect(rect);
+    private static RectF asRectF(Object value) {
+        if (value instanceof Rect rect && !rect.isEmpty()) return new RectF(rect);
         if (value instanceof RectF rectF && rectF.width() > 0f && rectF.height() > 0f) {
-            Rect out = new Rect();
-            rectF.roundOut(out);
-            return out.isEmpty() ? null : out;
+            return new RectF(rectF);
         }
         return null;
+    }
+
+    private static Rect absoluteRect(RectF rectF) {
+        if (rectF == null || looksNormalized(rectF)) return null;
+        Rect out = new Rect();
+        rectF.roundOut(out);
+        return out.isEmpty() ? null : out;
+    }
+
+    private static boolean looksNormalized(RectF rect) {
+        return rect != null
+                && rect.left >= -0.05f && rect.top >= -0.05f
+                && rect.right <= 1.05f && rect.bottom <= 1.05f;
+    }
+
+    private static String selectedTextFromString(String raw) {
+        if (raw == null || raw.isBlank()) return "";
+        String marker = "selectedText=";
+        int start = raw.indexOf(marker);
+        if (start < 0) return "";
+        start += marker.length();
+        int end = raw.indexOf(", wordBoxes=", start);
+        if (end < 0) end = raw.indexOf(", selectionRange=", start);
+        if (end < 0) end = raw.indexOf(')', start);
+        if (end < 0 || end <= start) return "";
+        return raw.substring(start, end).trim();
+    }
+
+    private static RectF selectionBoundsFromString(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        RectF rect = parseRectF(raw, "rect=RectF(");
+        if (rect != null) return rect;
+
+        Float minX = parseNamedFloat(raw, "minX=");
+        Float minY = parseNamedFloat(raw, "minY=");
+        Float maxX = parseNamedFloat(raw, "maxX=");
+        Float maxY = parseNamedFloat(raw, "maxY=");
+        if (minX == null || minY == null || maxX == null || maxY == null
+                || maxX <= minX || maxY <= minY) return null;
+        return new RectF(minX, minY, maxX, maxY);
+    }
+
+    private static RectF parseRectF(String raw, String marker) {
+        int start = raw.indexOf(marker);
+        if (start < 0) return null;
+        start += marker.length();
+        int end = raw.indexOf(')', start);
+        if (end < 0) return null;
+        String[] parts = raw.substring(start, end).split(",");
+        if (parts.length != 4) return null;
+        try {
+            float left = Float.parseFloat(parts[0].trim());
+            float top = Float.parseFloat(parts[1].trim());
+            float right = Float.parseFloat(parts[2].trim());
+            float bottom = Float.parseFloat(parts[3].trim());
+            if (right <= left || bottom <= top) return null;
+            return new RectF(left, top, right, bottom);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static Float parseNamedFloat(String raw, String marker) {
+        int start = raw.indexOf(marker);
+        if (start < 0) return null;
+        start += marker.length();
+        int end = start;
+        while (end < raw.length()) {
+            char ch = raw.charAt(end);
+            if ((ch >= '0' && ch <= '9') || ch == '-' || ch == '+' || ch == '.'
+                    || ch == 'e' || ch == 'E') {
+                end++;
+            } else {
+                break;
+            }
+        }
+        if (end <= start) return null;
+        try {
+            return Float.parseFloat(raw.substring(start, end));
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private static String asString(Object value) {
@@ -471,16 +560,34 @@ final class GoogleLens1758Profile {
     static final class SelectionSnapshot {
         private final String text;
         private final Rect bounds;
+        private final RectF rawBounds;
         private final String detail;
 
-        SelectionSnapshot(String text, Rect bounds, String detail) {
+        SelectionSnapshot(String text, Rect bounds, RectF rawBounds, String detail) {
             this.text = text == null ? "" : text;
             this.bounds = bounds == null ? null : new Rect(bounds);
+            this.rawBounds = rawBounds == null ? null : new RectF(rawBounds);
             this.detail = detail == null ? "" : detail;
         }
 
         String text() { return text; }
+
         Rect bounds() { return bounds == null ? null : new Rect(bounds); }
+
+        Rect boundsForFrame(int width, int height) {
+            if (bounds != null) return new Rect(bounds);
+            if (rawBounds == null || !looksNormalized(rawBounds)
+                    || width <= 0 || height <= 0) return null;
+            RectF scaled = new RectF(
+                    rawBounds.left * width,
+                    rawBounds.top * height,
+                    rawBounds.right * width,
+                    rawBounds.bottom * height);
+            Rect out = new Rect();
+            scaled.roundOut(out);
+            return out.isEmpty() ? null : out;
+        }
+
         String detail() { return detail; }
     }
 
