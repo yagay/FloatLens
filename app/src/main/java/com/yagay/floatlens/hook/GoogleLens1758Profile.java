@@ -12,7 +12,10 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Versioned structural adapter for Google App 17.58.16.ve Lens internals.
@@ -226,6 +229,119 @@ final class GoogleLens1758Profile {
                 + " query=" + compact(query, 1800)
                 + " raw=" + compact(pending, 3000);
         return new PendingSnapshot(frame, detail);
+    }
+
+    static PresentationRequestSuppression suppressTextPresentationRequest(Object pending) {
+        if (pending == null) {
+            return new PresentationRequestSuppression(false, "pending=null");
+        }
+
+        Object query = readField(pending, "c", "esew");
+        if (query == null) {
+            return new PresentationRequestSuppression(false,
+                    "LensQuery unavailable pendingClass=" + pending.getClass().getName());
+        }
+
+        Object interaction = findPresentationRequestObject(
+                query, 0,
+                Collections.newSetFromMap(new IdentityHashMap<>()));
+        if (interaction == null) {
+            return new PresentationRequestSuppression(false,
+                    "requestPresentationResult object not found query="
+                            + compact(query, 2200));
+        }
+
+        String before = compact(interaction, 3200);
+        for (Field field : instanceFields(interaction.getClass())) {
+            if (field.getType() != boolean.class) continue;
+            try {
+                field.setAccessible(true);
+                boolean original = field.getBoolean(interaction);
+                if (!original) continue;
+
+                field.setBoolean(interaction, false);
+                String changed = compact(interaction, 3200);
+                if (changed.contains("requestPresentationResult=false")) {
+                    return new PresentationRequestSuppression(true,
+                            "class=" + interaction.getClass().getName()
+                                    + " field=" + field.getName()
+                                    + " before=" + trimForDiagnostic(before, 1400)
+                                    + " after=" + trimForDiagnostic(changed, 1400));
+                }
+
+                // This true boolean was unrelated to requestPresentationResult.
+                field.setBoolean(interaction, true);
+            } catch (Throwable ignored) {
+            }
+        }
+
+        return new PresentationRequestSuppression(false,
+                "candidate=" + interaction.getClass().getName()
+                        + " but target boolean could not be changed"
+                        + " raw=" + trimForDiagnostic(before, 1800));
+    }
+
+    private static Object findPresentationRequestObject(Object value, int depth,
+                                                        Set<Object> seen) {
+        if (value == null || depth > 6 || seen == null || !seen.add(value)) return null;
+
+        Class<?> type = value.getClass();
+        if (type.isPrimitive() || value instanceof String || value instanceof Number
+                || value instanceof Boolean || value instanceof Character
+                || value instanceof Bitmap || value instanceof Rect || value instanceof RectF
+                || value instanceof PointF) {
+            return null;
+        }
+
+        String raw = compact(value, 3400);
+        boolean looksLikeInteraction = raw.contains("requestPresentationResult=true")
+                && (raw.contains("selectionType=WORD_BOXES")
+                || raw.contains("textSelection=Optional.of"));
+        if (looksLikeInteraction) {
+            // LensQuery itself contains the nested interaction in its toString. Prefer the
+            // deepest object that directly owns the boolean; verify by probing its own fields.
+            for (Field field : instanceFields(type)) {
+                if (field.getType() == boolean.class) {
+                    try {
+                        field.setAccessible(true);
+                        if (field.getBoolean(value)) return value;
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        }
+
+        for (Field field : instanceFields(type)) {
+            Class<?> ft = field.getType();
+            if (ft.isPrimitive() || ft == String.class) continue;
+            try {
+                field.setAccessible(true);
+                Object child = field.get(value);
+                if (child == null || child == value) continue;
+
+                if (hasTypeInHierarchy(child.getClass(), OPTIONAL)) {
+                    child = unwrapOptional(child);
+                    if (child == null) continue;
+                }
+
+                String childName = child.getClass().getName();
+                if (childName.startsWith("android.")
+                        || childName.startsWith("java.")
+                        || childName.startsWith("kotlin.")) {
+                    continue;
+                }
+
+                Object found = findPresentationRequestObject(child, depth + 1, seen);
+                if (found != null) return found;
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static String trimForDiagnostic(String value, int max) {
+        if (value == null) return "";
+        return value.length() <= max ? value : value.substring(0, max);
     }
 
     static ResultSnapshot result(Object queryResult) {
@@ -607,6 +723,19 @@ final class GoogleLens1758Profile {
             return out.isEmpty() ? null : out;
         }
 
+        String detail() { return detail; }
+    }
+
+    static final class PresentationRequestSuppression {
+        private final boolean suppressed;
+        private final String detail;
+
+        PresentationRequestSuppression(boolean suppressed, String detail) {
+            this.suppressed = suppressed;
+            this.detail = detail == null ? "" : detail;
+        }
+
+        boolean suppressed() { return suppressed; }
         String detail() { return detail; }
     }
 
