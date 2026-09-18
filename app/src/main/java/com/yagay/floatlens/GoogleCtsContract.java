@@ -1,6 +1,7 @@
 package com.yagay.floatlens;
 
-import android.net.Uri;\nimport android.os.Bundle;
+import android.net.Uri;
+import android.os.Bundle;
 
 /** Stable marker contract for FloatLens-triggered Google Circle-to-Search sessions. */
 public final class GoogleCtsContract {
