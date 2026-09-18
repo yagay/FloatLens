@@ -96,6 +96,7 @@ final class GoogleLens1758Profile {
 
             Class<?> interactionResult = Class.forName(INTERACTION_RESULT, false, loader);
             if (!hasField(interactionResult, "a", OPTIONAL)
+                    || !hasField(interactionResult, "c", OPTIONAL)
                     || !hasField(interactionResult, "d", boolean.class.getName())) {
                 return "LensInteractionResult structure mismatch";
             }
@@ -157,7 +158,8 @@ final class GoogleLens1758Profile {
     static boolean isQueryResultMethod(Method method) {
         if (method == null || !"q".equals(method.getName())) return false;
         Class<?>[] p = method.getParameterTypes();
-        return p.length == 1 && QUERY_RESULT.equals(p[0].getName());
+        return p.length == 1 && QUERY_RESULT.equals(p[0].getName())
+                && method.getReturnType() == void.class;
     }
 
     static SelectionSnapshot selection(Object metadata) {
@@ -228,7 +230,7 @@ final class GoogleLens1758Profile {
 
     static ResultSnapshot result(Object queryResult) {
         if (queryResult == null) {
-            return new ResultSnapshot(null, "", false, false, false,
+            return new ResultSnapshot(null, "", false, false, false, false,
                     "queryResult=null");
         }
 
@@ -249,6 +251,13 @@ final class GoogleLens1758Profile {
         boolean interactionComplete = interaction == null
                 || readBoolean(interaction, "d", false);
 
+        // Google 17.58 LensInteractionResult.c is presentationResult. In the observed CTS
+        // flow it becomes present only when LensResultPanelResponse (the Google search panel)
+        // is ready. This is the stable boundary FloatLens can intercept before UI presentation.
+        Object presentationOptional = readField(interaction, "c", OPTIONAL);
+        boolean presentationPresent = optionalPresent(presentationOptional);
+        Object presentation = unwrapOptional(presentationOptional);
+
         Object contentOptional = readField(lensResult, "d", OPTIONAL);
         boolean contentPresent = optionalPresent(contentOptional);
 
@@ -263,13 +272,15 @@ final class GoogleLens1758Profile {
                 + " imageComplete=" + imageComplete
                 + " interactionPresent=" + interactionPresent
                 + " interactionComplete=" + interactionComplete
+                + " presentationPresent=" + presentationPresent
                 + " contentPresent=" + contentPresent
                 + " googleComplete=" + String.valueOf(googleComplete)
                 + " selectedTextLen=" + selectedText.length()
+                + " presentation=" + compact(presentation, 2200)
                 + " lensResult=" + compact(lensResult, 3000)
                 + " raw=" + compact(queryResult, 3000);
         return new ResultSnapshot(frame, selectedText, complete,
-                imageComplete, interactionPresent, detail);
+                imageComplete, interactionPresent, presentationPresent, detail);
     }
 
     /**
@@ -280,6 +291,12 @@ final class GoogleLens1758Profile {
                                    boolean interactionPresent,
                                    boolean interactionComplete) {
         return imageComplete && (!interactionPresent || interactionComplete);
+    }
+
+    static boolean isPresentationBoundary(boolean complete,
+                                          boolean interactionPresent,
+                                          boolean presentationPresent) {
+        return complete && interactionPresent && presentationPresent;
     }
 
     private static String selectedText(Object interaction) {
@@ -612,15 +629,18 @@ final class GoogleLens1758Profile {
         private final boolean complete;
         private final boolean imageComplete;
         private final boolean interactionPresent;
+        private final boolean presentationPresent;
         private final String detail;
 
         ResultSnapshot(Bitmap frame, String text, boolean complete,
-                       boolean imageComplete, boolean interactionPresent, String detail) {
+                       boolean imageComplete, boolean interactionPresent,
+                       boolean presentationPresent, String detail) {
             this.frame = frame;
             this.text = text == null ? "" : text;
             this.complete = complete;
             this.imageComplete = imageComplete;
             this.interactionPresent = interactionPresent;
+            this.presentationPresent = presentationPresent;
             this.detail = detail == null ? "" : detail;
         }
 
@@ -629,6 +649,7 @@ final class GoogleLens1758Profile {
         boolean complete() { return complete; }
         boolean imageComplete() { return imageComplete; }
         boolean interactionPresent() { return interactionPresent; }
+        boolean presentationPresent() { return presentationPresent; }
         String detail() { return detail; }
     }
 
