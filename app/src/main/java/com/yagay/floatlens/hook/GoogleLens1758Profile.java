@@ -32,6 +32,110 @@ final class GoogleLens1758Profile {
     static final String INTERACTION_DATA = "eses";    // InteractionDataResult
     static final String OPTIONAL = "fxsy";            // Google/Guava optional wrapper
 
+    static String validationError(ClassLoader loader) {
+        if (loader == null) return "classLoader=null";
+        try {
+            Class<?> controller = Class.forName(CONTROLLER, false, loader);
+            boolean selection = false;
+            boolean pending = false;
+            boolean result = false;
+            for (Method method : HiddenApiBypass.getDeclaredMethods(controller)) {
+                selection |= isSelectionMethod(method);
+                pending |= isPendingQueryMethod(method);
+                result |= isQueryResultMethod(method);
+            }
+            if (!selection || !pending || !result) {
+                return "LensUiController methods mismatch selection=" + selection
+                        + " pending=" + pending + " result=" + result;
+            }
+
+            Class<?> selectionMetadata = Class.forName(SELECTION_METADATA, false, loader);
+            if (!hasField(selectionMetadata, "a", USER_SELECTION)) {
+                return "SelectionWithMetadata.a UserSelection missing";
+            }
+
+            Class<?> userSelection = Class.forName(USER_SELECTION, false, loader);
+            if (!hasNoArgMethod(userSelection, "b", RectF.class.getName())
+                    || !hasNoArgMethod(userSelection, "k", String.class.getName())) {
+                return "UserSelection semantic methods mismatch";
+            }
+
+            Class<?> pendingQuery = Class.forName(PENDING_QUERY, false, loader);
+            if (!hasField(pendingQuery, "d", LENS_IMAGE)) {
+                return "PendingLensQuery.d LensImage missing";
+            }
+
+            Class<?> queryResult = Class.forName(QUERY_RESULT, false, loader);
+            if (!hasField(queryResult, "d", LENS_RESULT)
+                    || !hasField(queryResult, "f", LENS_IMAGE)) {
+                return "LensQueryResult payload fields mismatch";
+            }
+
+            Class<?> lensImage = Class.forName(LENS_IMAGE, false, loader);
+            if (!hasField(lensImage, "b", Bitmap.class.getName())) {
+                return "LensImage.b Bitmap missing";
+            }
+
+            Class<?> lensResult = Class.forName(LENS_RESULT, false, loader);
+            if (!hasField(lensResult, "b", IMAGE_RESULT)
+                    || !hasField(lensResult, "c", OPTIONAL)
+                    || !hasField(lensResult, "d", OPTIONAL)
+                    || !hasNoArgMethod(lensResult, "f", boolean.class.getName())) {
+                return "LensResult structure mismatch";
+            }
+
+            Class<?> imageResult = Class.forName(IMAGE_RESULT, false, loader);
+            if (!hasField(imageResult, "c", boolean.class.getName())) {
+                return "LensImageResult.c isComplete missing";
+            }
+
+            Class<?> interactionResult = Class.forName(INTERACTION_RESULT, false, loader);
+            if (!hasField(interactionResult, "a", OPTIONAL)
+                    || !hasField(interactionResult, "d", boolean.class.getName())) {
+                return "LensInteractionResult structure mismatch";
+            }
+
+            Class<?> interactionData = Class.forName(INTERACTION_DATA, false, loader);
+            if (!hasField(interactionData, "b", OPTIONAL)) {
+                return "InteractionDataResult.b selectedText missing";
+            }
+
+            Class<?> optional = Class.forName(OPTIONAL, false, loader);
+            if (!hasNoArgMethod(optional, "g", boolean.class.getName())
+                    || !hasNoArgMethod(optional, "c", Object.class.getName())
+                    || !hasNoArgMethod(optional, "f", Object.class.getName())) {
+                return "Google Optional methods mismatch";
+            }
+            return "";
+        } catch (Throwable t) {
+            String message = t.getMessage();
+            return t.getClass().getSimpleName()
+                    + (message == null || message.isBlank() ? "" : ":" + message);
+        }
+    }
+
+    private static boolean hasField(Class<?> cls, String name, String typeName) {
+        if (cls == null || name == null || typeName == null) return false;
+        for (Field field : HiddenApiBypass.getInstanceFields(cls)) {
+            if (name.equals(field.getName()) && typeName.equals(field.getType().getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasNoArgMethod(Class<?> cls, String name, String returnTypeName) {
+        if (cls == null || name == null || returnTypeName == null) return false;
+        for (Method method : HiddenApiBypass.getDeclaredMethods(cls)) {
+            if (name.equals(method.getName())
+                    && method.getParameterCount() == 0
+                    && returnTypeName.equals(method.getReturnType().getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static boolean isSelectionMethod(Method method) {
         if (method == null || !"y".equals(method.getName())) return false;
         Class<?>[] p = method.getParameterTypes();
@@ -130,14 +234,22 @@ final class GoogleLens1758Profile {
         boolean interactionComplete = interaction == null
                 || readBoolean(interaction, "d", false);
 
+        Object contentOptional = readField(lensResult, "d", OPTIONAL);
+        boolean contentPresent = optionalPresent(contentOptional);
+
         String selectedText = selectedText(interaction);
-        boolean complete = isCompleteState(imageComplete, interactionPresent, interactionComplete);
+        Boolean googleComplete = invokeBooleanNoArg(lensResult, "f");
+        boolean complete = googleComplete != null
+                ? googleComplete
+                : isCompleteState(imageComplete, interactionPresent, interactionComplete);
 
         String detail = "queryResultClass=" + queryResult.getClass().getName()
                 + " frame=" + bitmapSummary(frame)
                 + " imageComplete=" + imageComplete
                 + " interactionPresent=" + interactionPresent
                 + " interactionComplete=" + interactionComplete
+                + " contentPresent=" + contentPresent
+                + " googleComplete=" + String.valueOf(googleComplete)
                 + " selectedTextLen=" + selectedText.length()
                 + " lensResult=" + compact(lensResult, 3000);
         return new ResultSnapshot(frame, selectedText, complete,
@@ -226,8 +338,13 @@ final class GoogleLens1758Profile {
         }
     }
 
+    private static Boolean invokeBooleanNoArg(Object target, String methodName) {
+        Object value = invokeNoArg(target, methodName);
+        return value instanceof Boolean b ? b : null;
+    }
+
     private static boolean optionalPresent(Object optional) {
-        if (optional == null || !OPTIONAL.equals(optional.getClass().getName())) return false;
+        if (optional == null || !hasTypeInHierarchy(optional.getClass(), OPTIONAL)) return false;
         Object value = invokeNoArg(optional, "g");
         return value instanceof Boolean b && b;
     }
@@ -237,6 +354,21 @@ final class GoogleLens1758Profile {
         Object value = invokeNoArg(optional, "c");
         if (value != null) return value;
         return invokeNoArg(optional, "f");
+    }
+
+    /**
+     * Google/Guava Optional is declared as fxsy but runtime instances are concrete subclasses
+     * (for example fxtg). Never compare getClass().getName() directly with fxsy.
+     */
+    static boolean hasTypeInHierarchy(Class<?> type, String expectedName) {
+        if (type == null || expectedName == null || expectedName.isBlank()) return false;
+        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+            if (expectedName.equals(current.getName())) return true;
+            for (Class<?> iface : current.getInterfaces()) {
+                if (hasTypeInHierarchy(iface, expectedName)) return true;
+            }
+        }
+        return false;
     }
 
     private static String firstString(Object target) {
