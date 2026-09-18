@@ -269,6 +269,10 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                         .putBoolean(LsposedRuntimeConfig.K_LSPOSED_ENABLED, lsposed)
                         .putBoolean(LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED, secureScreenshot)
                         .putLong(LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL, 0L)
+                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN)
+                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED)
+                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL)
+                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL)
                         .putLong(LsposedRuntimeConfig.K_UPDATED_AT, updatedAt)
                         .commit();
                 if (!committed) {
@@ -299,9 +303,7 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                     .putString(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, token)
                     .putLong(LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED, triggerElapsed)
                     .putLong(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL, armedUntilElapsed)
-                    .putLong(LsposedRuntimeConfig.K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL,
-                            triggerElapsed
-                                    + LsposedRuntimeConfig.GOOGLE_CTS_COMPONENT_BLOCK_LEASE_MS)
+                    .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL)
                     .commit();
         } catch (Throwable t) {
             return false;
