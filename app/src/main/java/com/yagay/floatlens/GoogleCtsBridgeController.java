@@ -78,10 +78,9 @@ final class GoogleCtsBridgeController {
                 "selection session=" + shortToken(token)
                         + " textLen=" + selectedText.length()
                         + " bounds=" + String.valueOf(selectedBounds));
-        // Renew the independent system_server component-block lease whenever Google reports
-        // a live selection. This keeps ContextualSearchEntrypoint blocked even after long handle
-        // adjustments without extending the short startup-correlation fallback window.
-        LsposedStatusManager.renewGoogleCtsComponentBlockRemote(token);
+        // v177 deliberately does not renew any system_server component-block lease.
+        // Google UI suppression is scoped inside the marked Google App process so native CTS
+        // remains independently usable immediately after a FloatLens session.
         scheduleCleanup(app, token, state);
 
         // Google Circle has already done OCR/selection geometry at this point. Reuse the same
@@ -163,7 +162,7 @@ final class GoogleCtsBridgeController {
                             + " textLen=" + finalText.length()
                             + " bounds=" + String.valueOf(finalBounds));
         }
-        new FloatSettings(app).clearGoogleCtsSession();
+        clearSessionState(app, token, "text_menu_commit");
         FloatService service = FloatService.get();
         if (service != null) service.onCircleFinished("google_text_menu_committed");
         DiagnosticLog.i(app, "GOOGLE_TEXT_MENU",
@@ -171,6 +170,14 @@ final class GoogleCtsBridgeController {
                         + " textLen=" + (text == null ? 0 : text.length())
                         + " bounds=" + String.valueOf(bounds)
                         + " resultDialog=false");
+    }
+
+    private static void clearSessionState(Context app, String token, String reason) {
+        if (app == null) return;
+        new FloatSettings(app).clearGoogleCtsSession();
+        LsposedStatusManager.clearGoogleCtsSessionRemote(token);
+        DiagnosticLog.i(app, "GOOGLE_CTS_LEASE",
+                "cleared session=" + shortToken(token) + " reason=" + reason);
     }
 
     static void onQueryResult(Context context, String token, String text,
@@ -208,7 +215,7 @@ final class GoogleCtsBridgeController {
             }
         }
         if (dismissTextMenu) FloatActionMenu.dismiss();
-        new FloatSettings(app).clearGoogleCtsSession();
+        clearSessionState(app, token, "bridge_end");
         FloatService service = FloatService.get();
         if (service != null) service.onCircleFinished("google_bridge_end");
         DiagnosticLog.i(app, "GOOGLE_BRIDGE",
@@ -259,7 +266,7 @@ final class GoogleCtsBridgeController {
             DiagnosticLog.i(app, "GOOGLE_BRIDGE",
                     "nothing to show session=" + shortToken(token)
                             + " detail=" + trim(detail, 600));
-            new FloatSettings(app).clearGoogleCtsSession();
+            clearSessionState(app, token, "nothing_to_show");
             return;
         }
 
@@ -269,7 +276,7 @@ final class GoogleCtsBridgeController {
         }
         FloatService service = FloatService.get();
         if (service != null) service.onCircleFinished("google_bridge_delivered");
-        new FloatSettings(app).clearGoogleCtsSession();
+        clearSessionState(app, token, "bridge_delivered");
         DiagnosticLog.i(app, "GOOGLE_BRIDGE",
                 "delivered session=" + shortToken(token)
                         + " shown=" + shown
@@ -292,6 +299,7 @@ final class GoogleCtsBridgeController {
                 state.delivered = true;
             }
             if (dismissTextMenu) FloatActionMenu.dismiss();
+            clearSessionState(app, token, "state_expired");
             DiagnosticLog.i(app, "GOOGLE_BRIDGE",
                     "state expired session=" + shortToken(token)
                             + " menuDismissed=" + dismissTextMenu);
