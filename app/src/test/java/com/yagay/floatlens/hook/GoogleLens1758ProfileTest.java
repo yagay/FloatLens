@@ -1,5 +1,6 @@
 package com.yagay.floatlens.hook;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -17,6 +18,17 @@ public class GoogleLens1758ProfileTest {
                 OptionalImpl.class, OptionalImpl.class.getName()));
         assertFalse(GoogleLens1758Profile.hasTypeInHierarchy(
                 OptionalImpl.class, "missing.OptionalType"));
+    }
+
+    @Test public void selectionTextFallbackParsesObservedGoogle1758WordSelection() {
+        String kernel = "WordSelection(textSelection=TextSelection(selectedText=KernelSU, "
+                + "wordBoxes=[x], selectionRange=y, salientText=[]))";
+        String rednote = "SelectionWithMetadata(userSelection=WordSelection("
+                + "textSelection=TextSelection(selectedText=rednote, wordBoxes=[x], "
+                + "selectionRange=y)))";
+        assertEquals("KernelSU", GoogleLens1758Profile.selectedTextFromString(kernel));
+        assertEquals("rednote", GoogleLens1758Profile.selectedTextFromString(rednote));
+        assertEquals("", GoogleLens1758Profile.selectedTextFromString("RegionSearchSelection"));
     }
 
     @Test public void resultCompletionRequiresImageAndAnyPresentInteraction() {
