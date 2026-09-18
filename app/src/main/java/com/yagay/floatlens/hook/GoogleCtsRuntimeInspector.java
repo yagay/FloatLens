@@ -14,6 +14,8 @@ import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.View;
+import android.view.ViewGroup;
 
 import com.yagay.floatlens.GoogleCtsContract;
 
@@ -89,6 +91,7 @@ final class GoogleCtsRuntimeInspector {
         hooks += hookGoogle1758OmnientBoundary();
         hooks += hookGoogle1758LensSelectionBoundary();
         hooks += hookGoogleTextFloatingToolbar();
+        hooks += hookGoogleMaterialFloatingToolbar();
         hooks += hookVoiceSessionShow();
         hooks += hookVoiceScreenshot();
         hooks += hookActivityLifecycle();
@@ -208,6 +211,107 @@ final class GoogleCtsRuntimeInspector {
         }
     }
 
+    /**
+     * Google 17.58 also ships Material's FloatingToolbarLayout. Circle-to-Search can use this
+     * app-owned toolbar instead of the framework FloatingToolbar, so suppress that layout as a
+     * second, more specific boundary while preserving the selection state and handles.
+     */
+    private int hookGoogleMaterialFloatingToolbar() {
+        try {
+            Class<?> toolbar = Class.forName(
+                    "com.google.android.material.floatingtoolbar.FloatingToolbarLayout",
+                    false, classLoader);
+            Class<?> viewClass = Class.forName("android.view.View", false, classLoader);
+            Method setVisibility = viewClass.getDeclaredMethod("setVisibility", int.class);
+
+            module.hook(setVisibility).intercept(chain -> {
+                Object target = chain.getThisObject();
+                int visibility = (Integer) chain.getArg(0);
+                if (active() && bridgeSelectionSeen && visibility == View.VISIBLE
+                        && toolbar.isInstance(target)) {
+                    report("GOOGLE_MATERIAL_TOOLBAR_SUPPRESSED",
+                            "path=setVisibility textLen="
+                                    + (bridgeSelectionText == null ? 0
+                                    : bridgeSelectionText.length())
+                                    + " bounds=" + String.valueOf(bridgeSelectionBounds));
+                    return null;
+                }
+                return chain.proceed();
+            });
+
+            // The layout has an internal no-arg update method in 17.58. Hide it again after any
+            // update in case it was already visible before setVisibility was intercepted.
+            int count = 1;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(toolbar)) {
+                if (!(executable instanceof Method method)) continue;
+                if (!"a".equals(method.getName()) || method.getParameterCount() != 0) continue;
+                module.hook(method).intercept(chain -> {
+                    Object result = chain.proceed();
+                    if (active() && bridgeSelectionSeen
+                            && chain.getThisObject() instanceof View view) {
+                        view.setVisibility(View.GONE);
+                        report("GOOGLE_MATERIAL_TOOLBAR_SUPPRESSED",
+                                "path=layoutUpdate class="
+                                        + chain.getThisObject().getClass().getName());
+                    }
+                    return result;
+                });
+                count++;
+            }
+
+            module.log(Log.INFO, TAG,
+                    "Google Material floating toolbar hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google Material floating toolbar boundary unavailable", t);
+            return 0;
+        }
+    }
+
+    private void hideGoogleMaterialFloatingToolbarSoon() {
+        Activity activity = markedActivity.get();
+        if (activity == null) return;
+        Runnable hide = () -> {
+            try {
+                View root = activity.getWindow() == null
+                        ? null : activity.getWindow().getDecorView();
+                int hidden = hideGoogleMaterialFloatingToolbar(root);
+                if (hidden > 0) {
+                    report("GOOGLE_MATERIAL_TOOLBAR_SUPPRESSED",
+                            "path=decorTraversal hidden=" + hidden
+                                    + " textLen="
+                                    + (bridgeSelectionText == null ? 0
+                                    : bridgeSelectionText.length()));
+                }
+            } catch (Throwable t) {
+                module.log(Log.WARN, TAG,
+                        "Failed to hide Google Material toolbar", t);
+            }
+        };
+        activity.runOnUiThread(hide);
+        mainHandler.postDelayed(() -> activity.runOnUiThread(hide), 48L);
+        mainHandler.postDelayed(() -> activity.runOnUiThread(hide), 140L);
+    }
+
+    private int hideGoogleMaterialFloatingToolbar(View view) {
+        if (view == null) return 0;
+        int hidden = 0;
+        if ("com.google.android.material.floatingtoolbar.FloatingToolbarLayout"
+                .equals(view.getClass().getName())) {
+            if (view.getVisibility() != View.GONE) {
+                view.setVisibility(View.GONE);
+            }
+            hidden++;
+        }
+        if (view instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) {
+                hidden += hideGoogleMaterialFloatingToolbar(group.getChildAt(i));
+            }
+        }
+        return hidden;
+    }
+
     /** Google 17.58.16.ve Lens user-selection/query boundary from classes8.dex. */
     private int hookGoogle1758LensSelectionBoundary() {
         try {
@@ -241,7 +345,13 @@ final class GoogleCtsRuntimeInspector {
                             sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
                                     selection.text(), selection.detail(), selectionBounds);
                         }
-                        return chain.proceed();
+                        Object result = chain.proceed();
+                        if (active() && bridgeSelectionSeen
+                                && bridgeSelectionText != null
+                                && !bridgeSelectionText.isBlank()) {
+                            hideGoogleMaterialFloatingToolbarSoon();
+                        }
+                        return result;
                     });
                     count++;
                     continue;
