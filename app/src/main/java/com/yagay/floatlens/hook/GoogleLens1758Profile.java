@@ -7,6 +7,7 @@ import android.graphics.RectF;
 
 import org.lsposed.hiddenapibypass.HiddenApiBypass;
 
+import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
@@ -39,7 +40,8 @@ final class GoogleLens1758Profile {
             boolean selection = false;
             boolean pending = false;
             boolean result = false;
-            for (Method method : HiddenApiBypass.getDeclaredMethods(controller)) {
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
+                if (!(executable instanceof Method method)) continue;
                 selection |= isSelectionMethod(method);
                 pending |= isPendingQueryMethod(method);
                 result |= isQueryResultMethod(method);
@@ -126,7 +128,8 @@ final class GoogleLens1758Profile {
 
     private static boolean hasNoArgMethod(Class<?> cls, String name, String returnTypeName) {
         if (cls == null || name == null || returnTypeName == null) return false;
-        for (Method method : HiddenApiBypass.getDeclaredMethods(cls)) {
+        for (Executable executable : HiddenApiBypass.getDeclaredMethods(cls)) {
+            if (!(executable instanceof Method method)) continue;
             if (name.equals(method.getName())
                     && method.getParameterCount() == 0
                     && returnTypeName.equals(method.getReturnType().getName())) {
