@@ -51,4 +51,22 @@ public class GoogleLens1758ProfileTest {
         assertFalse(GoogleLens1758Profile.shouldSuppressPostSelectionResult(true, "   "));
         assertTrue(GoogleLens1758Profile.shouldSuppressPostSelectionResult(true, "KernelSU"));
     }
+
+    @Test public void anyFloatLensSelectionSuppressesGooglePostSelectionUi() {
+        assertFalse(GoogleLens1758Profile.shouldSuppressAnyPostSelectionResult(false));
+        assertTrue(GoogleLens1758Profile.shouldSuppressAnyPostSelectionResult(true));
+    }
+
+    @Test public void nonTextSelectionCommitsOnCompleteInteractionWithoutPresentation() {
+        assertFalse(GoogleLens1758Profile.shouldCommitNonTextSelection(
+                false, "", true, true));
+        assertFalse(GoogleLens1758Profile.shouldCommitNonTextSelection(
+                true, "KernelSU", true, true));
+        assertFalse(GoogleLens1758Profile.shouldCommitNonTextSelection(
+                true, "", false, true));
+        assertFalse(GoogleLens1758Profile.shouldCommitNonTextSelection(
+                true, "", true, false));
+        assertTrue(GoogleLens1758Profile.shouldCommitNonTextSelection(
+                true, "", true, true));
+    }
 }
