@@ -33,9 +33,7 @@ import java.lang.reflect.Modifier;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.Locale;
-import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -60,7 +58,6 @@ final class GoogleCtsRuntimeInspector {
     private final XposedModule module;
     private final LsposedRuntimeProvider provider;
     private final ClassLoader classLoader;
-    private final Set<String> seenClasses = new HashSet<>();
     private final AtomicInteger eventCount = new AtomicInteger();
     private final ThreadLocal<Boolean> traceDispatching = new ThreadLocal<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -103,8 +100,13 @@ final class GoogleCtsRuntimeInspector {
         hooks += hookGoogleFrozenImageAutoFocus();
         hooks += hookGoogle1758LensSelectionBoundary();
         // v169 device/APK analysis proved the visible menu is Lens' own ActionMenuView,
-        // not framework/Material FloatingToolbar. Keep those old experiments uninstalled.
-        hooks += hookGoogleWindowInspector();
+        // not framework/Material FloatingToolbar. WindowManager inspection is diagnostic-only.
+        if (provider.diagnosticsEnabled()) {
+            hooks += hookGoogleWindowInspector();
+        } else {
+            module.log(Log.INFO, TAG,
+                    "Google diagnostic WindowManager hook skipped (diagnostics disabled)");
+        }
         hooks += hookVoiceSessionShow();
         hooks += hookVoiceScreenshot();
         hooks += hookActivityLifecycle();
@@ -696,6 +698,7 @@ final class GoogleCtsRuntimeInspector {
     }
 
     private void inspectGoogleSelectionViewsSoon() {
+        if (!provider.diagnosticsEnabled()) return;
         Activity activity = markedActivity.get();
         if (activity == null) return;
         final long[] delays = {0L, 80L, 220L, 500L};
@@ -1695,8 +1698,10 @@ final class GoogleCtsRuntimeInspector {
                     if (!active()) return chain.proceed();
 
                     Intent intent = (Intent) chain.getArg(idx);
-                    report("START_ACTIVITY", describeIntent(intent)
-                            + " caller=" + googleCaller());
+                    if (provider.diagnosticsEnabled()) {
+                        report("START_ACTIVITY", describeIntent(intent)
+                                + " caller=" + googleCaller());
+                    }
 
                     if (intent == null
                             || !GoogleCtsContract.isContextualSearchAction(
@@ -1785,7 +1790,6 @@ final class GoogleCtsRuntimeInspector {
         if (id >= 0) showSessionId = id;
         if (session != null) voiceSession = session;
         eventCount.set(0);
-        seenClasses.clear();
         String header = "=== Google CTS marked session ===\n"
                 + "ACTIVE path=" + path
                 + " session=" + shortToken(sessionToken)
@@ -1819,7 +1823,6 @@ final class GoogleCtsRuntimeInspector {
         bridgeSelectionBounds = null;
         presentationAlreadyAbsentReported = false;
         markedActivity = new WeakReference<>(null);
-        seenClasses.clear();
     }
 
     private boolean active() {
@@ -1830,7 +1833,7 @@ final class GoogleCtsRuntimeInspector {
     }
 
     private void report(String event, String message) {
-        if (!active()) return;
+        if (!provider.diagnosticsEnabled() || !active()) return;
         int n = reserveEventNumber();
         if (n < 0) return;
         String line = "#" + n + " " + event + " session="
@@ -1848,7 +1851,8 @@ final class GoogleCtsRuntimeInspector {
     }
 
     private void sendTrace(String line) {
-        if (line == null || line.isBlank() || sessionToken.isBlank()) return;
+        if (!provider.diagnosticsEnabled()
+                || line == null || line.isBlank() || sessionToken.isBlank()) return;
         if (isTraceDispatching()) return;
         traceDispatching.set(Boolean.TRUE);
         try {
@@ -1974,16 +1978,6 @@ final class GoogleCtsRuntimeInspector {
         return Boolean.TRUE.equals(traceDispatching.get());
     }
 
-    private boolean internalTraceKey(String key) {
-        if (key == null) return false;
-        return GoogleCtsContract.EXTRA_TRACE_SESSION.equals(key)
-                || GoogleCtsContract.EXTRA_TRACE_LINE.equals(key)
-                || GoogleCtsContract.EXTRA_BRIDGE_SESSION.equals(key)
-                || GoogleCtsContract.EXTRA_BRIDGE_EVENT.equals(key)
-                || GoogleCtsContract.EXTRA_BRIDGE_TEXT.equals(key)
-                || GoogleCtsContract.EXTRA_BRIDGE_DETAIL.equals(key);
-    }
-
     private Context currentApplicationContext() {
         try {
             Class<?> activityThread = Class.forName("android.app.ActivityThread");
@@ -1995,7 +1989,7 @@ final class GoogleCtsRuntimeInspector {
     }
 
     private void dumpClassStructure(Class<?> cls, String reason) {
-        if (!active() || cls == null) return;
+        if (!provider.diagnosticsEnabled() || !active() || cls == null) return;
         StringBuilder out = new StringBuilder();
         out.append("reason=").append(reason).append(" class=").append(cls.getName());
         Class<?> parent = cls.getSuperclass();
@@ -2039,28 +2033,6 @@ final class GoogleCtsRuntimeInspector {
     private int findParameter(Class<?>[] params, Class<?> type) {
         for (int i = 0; i < params.length; i++) if (type.isAssignableFrom(params[i])) return i;
         return -1;
-    }
-
-    private boolean relevantKey(String key) {
-        if (key == null) return false;
-        String k = key.toLowerCase(Locale.ROOT);
-        return k.contains("omni") || k.contains("query") || k.contains("text")
-                || k.contains("select") || k.contains("image") || k.contains("bitmap")
-                || k.contains("screen") || k.contains("crop") || k.contains("region")
-                || k.contains("rect") || k.contains("polygon") || k.contains("lens")
-                || k.contains("visual") || k.contains("object") || k.contains("translate");
-    }
-
-    private boolean relevantClass(String name) {
-        if (name == null) return false;
-        String n = name.toLowerCase(Locale.ROOT);
-        return n.contains(".omnient.") || n.contains(".lens.")
-                || n.contains("contextualsearch") || n.contains("contextual_search");
-    }
-
-    private synchronized boolean markClass(String name) {
-        if (seenClasses.size() >= 160) return false;
-        return seenClasses.add(name);
     }
 
     private String googleCaller() {
