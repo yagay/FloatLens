@@ -12,6 +12,8 @@ import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
+import io.github.libxposed.api.XposedModule;
+
 /**
  * system_server boundary for suppressing only FloatLens-owned Google Contextual Search launches.
  *
