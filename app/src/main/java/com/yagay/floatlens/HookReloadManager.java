@@ -2,10 +2,9 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.content.pm.PackageInfo;
-import android.os.Handler;
-import android.os.Looper;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -13,15 +12,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
- * Reloads reloadable LSPosed targets without rebooting Android.
+ * Separates app updates from LSPosed hook updates.
  *
- * <p>Google App and SystemUI are ordinary processes and can safely pick up the newly installed
- * module after their process is recreated. system_server is deliberately never killed here.</p>
+ * <p>BuildConfig carries three fingerprints generated only from hook runtime sources. Updating UI,
+ * OCR, result dialogs, settings or other app-side code does not change these fingerprints and
+ * therefore does not require any target-process restart.</p>
  */
 final class HookReloadManager {
     private static final String PREF = "floatlens_hook_reload";
-    private static final String K_GOOGLE_UPDATE_TIME = "google_reload_apk_update_time_v1";
-    private static final String K_SYSTEMUI_UPDATE_TIME = "systemui_reload_apk_update_time_v1";
+    private static final String K_GOOGLE_APPLIED = "google_hook_fingerprint_applied_v2";
+    private static final String K_SYSTEMUI_APPLIED = "systemui_hook_fingerprint_applied_v2";
+    private static final String K_SYSTEM_SERVER_APPLIED = "system_server_hook_fingerprint_applied_v2";
+    private static final String K_BOOT_ID = "hook_fingerprint_boot_id_v2";
 
     private static final String GOOGLE = GoogleCtsContract.GOOGLE_PACKAGE;
     private static final String SYSTEM_UI = "com.android.systemui";
@@ -31,9 +33,9 @@ final class HookReloadManager {
         t.setDaemon(true);
         return t;
     });
-    private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final AtomicBoolean GOOGLE_RELOAD_RUNNING = new AtomicBoolean(false);
     private static final AtomicBoolean FULL_RELOAD_RUNNING = new AtomicBoolean(false);
+    private static volatile Context appContext;
 
     static final class Result {
         final boolean success;
@@ -57,14 +59,14 @@ final class HookReloadManager {
         String userMessage() {
             if (!success) return detail.isBlank() ? "Hook 重载失败" : detail;
             StringBuilder out = new StringBuilder();
-            if (googleReloaded) out.append("Google Hook 已重载");
+            if (googleReloaded) out.append("Google Hook 已热重载");
             if (systemUiReloaded) {
                 if (out.length() > 0) out.append("；");
-                out.append("SystemUI 已重载");
+                out.append("SystemUI Hook 已热重载");
             }
-            if (out.length() == 0) out.append("可热重载目标已是当前版本");
+            if (out.length() == 0) out.append("Google / SystemUI Hook 没有变化，无需重载");
             if (systemServerNeedsReboot) {
-                out.append("；system_server 仍是旧版本，只有安全截图 Hook 有改动时才需要重启手机");
+                out.append("；system_server Hook 有变化，需要重启手机后才会加载");
             }
             return out.toString();
         }
@@ -75,53 +77,88 @@ final class HookReloadManager {
     static void initialize(Context context) {
         if (context == null) return;
         Context app = context.getApplicationContext();
-        long current = apkUpdateTime(app);
-        if (current <= 0L) return;
-        SharedPreferences p = app.getSharedPreferences(PREF, Context.MODE_PRIVATE);
-        SharedPreferences.Editor edit = null;
-        if (!p.contains(K_GOOGLE_UPDATE_TIME)) {
-            edit = p.edit().putLong(K_GOOGLE_UPDATE_TIME, current);
+        appContext = app;
+
+        SharedPreferences p = preference(app);
+        String bootId = readBootId();
+        String oldBootId = p.getString(K_BOOT_ID, "");
+        boolean first = !p.contains(K_GOOGLE_APPLIED)
+                || !p.contains(K_SYSTEMUI_APPLIED)
+                || !p.contains(K_SYSTEM_SERVER_APPLIED);
+        boolean rebooted = !bootId.isBlank() && !oldBootId.isBlank() && !bootId.equals(oldBootId);
+
+        SharedPreferences.Editor edit = p.edit();
+        if (first || rebooted) {
+            // First rollout: current running hooks are source-identical to the baseline build.
+            // After an actual device reboot every scoped target necessarily loads current APK code.
+            edit.putString(K_GOOGLE_APPLIED, BuildConfig.GOOGLE_HOOK_FINGERPRINT)
+                    .putString(K_SYSTEMUI_APPLIED, BuildConfig.SYSTEMUI_HOOK_FINGERPRINT)
+                    .putString(K_SYSTEM_SERVER_APPLIED, BuildConfig.SYSTEM_SERVER_HOOK_FINGERPRINT);
         }
-        if (!p.contains(K_SYSTEMUI_UPDATE_TIME)) {
-            if (edit == null) edit = p.edit();
-            edit.putLong(K_SYSTEMUI_UPDATE_TIME, current);
-        }
-        if (edit != null) edit.apply();
+        if (!bootId.isBlank()) edit.putString(K_BOOT_ID, bootId);
+        edit.apply();
+
+        DiagnosticLog.i(app, "HOOK_RELOAD",
+                "init first=" + first
+                        + " rebooted=" + rebooted
+                        + " google=" + shortHash(BuildConfig.GOOGLE_HOOK_FINGERPRINT)
+                        + " systemui=" + shortHash(BuildConfig.SYSTEMUI_HOOK_FINGERPRINT)
+                        + " system=" + shortHash(BuildConfig.SYSTEM_SERVER_HOOK_FINGERPRINT));
     }
 
-    /**
-     * Same-version debug installs are detected through PackageInfo.lastUpdateTime, while LSPosed's
-     * loadedVersionCode still catches normal version bumps.
-     */
     static boolean googleNeedsReload(Context context, LsposedStatusManager.Snapshot snapshot) {
         if (context == null || snapshot == null) return false;
-        long current = apkUpdateTime(context);
-        long marked = preference(context).getLong(K_GOOGLE_UPDATE_TIME, 0L);
+        Context app = context.getApplicationContext();
+        boolean changed = !BuildConfig.GOOGLE_HOOK_FINGERPRINT.equals(
+                preference(app).getString(K_GOOGLE_APPLIED, ""));
+        if (!changed) return false;
+
         boolean running = hasProcess(snapshot.runningProcesses, GOOGLE);
-        boolean needs = needsReloadForUpdate(
-                current, marked, running, snapshot.googleTargetStale());
-        if (!needs && current > 0L && marked != current && !running) {
-            markGoogleCurrent(context);
+        if (!running) {
+            // No old process exists. The next Google process will load the current hook directly.
+            markGoogleCurrent(app);
+            return false;
         }
-        return needs;
+        return true;
     }
 
     static boolean systemUiNeedsReload(Context context, LsposedStatusManager.Snapshot snapshot) {
         if (context == null || snapshot == null || !snapshot.systemUiScopeEnabled) return false;
-        long current = apkUpdateTime(context);
-        long marked = preference(context).getLong(K_SYSTEMUI_UPDATE_TIME, 0L);
+        Context app = context.getApplicationContext();
+        boolean changed = !BuildConfig.SYSTEMUI_HOOK_FINGERPRINT.equals(
+                preference(app).getString(K_SYSTEMUI_APPLIED, ""));
+        if (!changed) return false;
+
         boolean running = hasProcess(snapshot.runningProcesses, SYSTEM_UI);
-        return needsReloadForUpdate(
-                current, marked, running, snapshot.systemUiTargetStale());
+        if (!running) {
+            markSystemUiCurrent(app);
+            return false;
+        }
+        return true;
     }
 
-    static boolean needsReloadForUpdate(
-            long currentUpdateTime, long markedUpdateTime, boolean targetRunning, boolean stale) {
-        if (stale) return true;
-        return targetRunning
-                && currentUpdateTime > 0L
-                && markedUpdateTime > 0L
-                && currentUpdateTime != markedUpdateTime;
+    static boolean systemServerNeedsReboot(Context context) {
+        if (context == null) return false;
+        Context app = context.getApplicationContext();
+        return !BuildConfig.SYSTEM_SERVER_HOOK_FINGERPRINT.equals(
+                preference(app).getString(K_SYSTEM_SERVER_APPLIED, ""));
+    }
+
+    static boolean systemServerHookCurrent() {
+        Context app = appContext;
+        return app != null && !systemServerNeedsReboot(app);
+    }
+
+    static boolean googleHookCurrent(Context context) {
+        if (context == null) return false;
+        return BuildConfig.GOOGLE_HOOK_FINGERPRINT.equals(
+                preference(context).getString(K_GOOGLE_APPLIED, ""));
+    }
+
+    static boolean systemUiHookCurrent(Context context) {
+        if (context == null) return false;
+        return BuildConfig.SYSTEMUI_HOOK_FINGERPRINT.equals(
+                preference(context).getString(K_SYSTEMUI_APPLIED, ""));
     }
 
     static boolean reloadGoogleForCtsAsync(Context context, Consumer<Result> callback) {
@@ -137,8 +174,8 @@ final class HookReloadManager {
             Result result;
             FloatSettings fs = new FloatSettings(app);
             if (!fs.canUseRoot()) {
-                result = new Result(false, false, false, false,
-                        "自动重载 Google Hook 需要启用增强模式和 Root 功能");
+                result = new Result(false, false, false, systemServerNeedsReboot(app),
+                        "Google Hook 有变化；自动热重载需要启用增强模式和 Root 功能");
             } else {
                 RootCommandExecutor.Result command = RootCommandExecutor.runText(
                         killGoogleScript(), 8L, 16 * 1024);
@@ -148,8 +185,7 @@ final class HookReloadManager {
                 if (!ok && detail.isBlank()) {
                     detail = command.failureMessage("重新加载 Google Hook 超时");
                 }
-                result = new Result(ok, ok, false,
-                        LsposedStatusManager.snapshot().systemServerTargetStale(), detail);
+                result = new Result(ok, ok, false, systemServerNeedsReboot(app), detail);
             }
 
             GOOGLE_RELOAD_RUNNING.set(false);
@@ -159,30 +195,36 @@ final class HookReloadManager {
         return true;
     }
 
-    static boolean reloadReloadableTargetsAsync(Context context, Consumer<Result> callback) {
+    static boolean reloadChangedTargetsAsync(Context context, Consumer<Result> callback) {
         if (context == null) return false;
         Context app = context.getApplicationContext();
         if (!FULL_RELOAD_RUNNING.compareAndSet(false, true)) return false;
 
         LsposedStatusManager.Snapshot before = LsposedStatusManager.snapshot();
-        boolean google = googleNeedsReload(app, before)
-                || hasProcess(before.runningProcesses, GOOGLE);
+        boolean google = googleNeedsReload(app, before);
         boolean systemUi = systemUiNeedsReload(app, before);
-        boolean systemServerNeedsReboot = before.systemServerTargetStale();
+        boolean systemServer = systemServerNeedsReboot(app);
 
-        GoogleCtsBridgeController.onNativeRelease(app, "manual_hook_reload");
-        LsposedStatusManager.clearGoogleCtsSessionRemoteNow();
+        if (!google && !systemUi) {
+            FULL_RELOAD_RUNNING.set(false);
+            deliver(app, callback, new Result(true, false, false, systemServer, ""));
+            return true;
+        }
+
+        if (google) {
+            GoogleCtsBridgeController.onNativeRelease(app, "manual_hook_reload");
+            LsposedStatusManager.clearGoogleCtsSessionRemoteNow();
+        }
 
         IO.execute(() -> {
             Result result;
             FloatSettings fs = new FloatSettings(app);
             if (!fs.canUseRoot()) {
-                result = new Result(false, false, false, systemServerNeedsReboot,
-                        "重新加载 Hook 需要启用增强模式和 Root 功能");
+                result = new Result(false, false, false, systemServer,
+                        "Hook 有变化；热重载 Google / SystemUI 需要启用增强模式和 Root 功能");
             } else {
-                String script = buildReloadScript(google, systemUi);
                 RootCommandExecutor.Result command = RootCommandExecutor.runText(
-                        script, 10L, 24 * 1024);
+                        buildReloadScript(google, systemUi), 10L, 24 * 1024);
                 boolean ok = command.success();
                 if (ok) {
                     if (google) markGoogleCurrent(app);
@@ -192,8 +234,7 @@ final class HookReloadManager {
                 if (!ok && detail.isBlank()) {
                     detail = command.failureMessage("重新加载 Hook 超时");
                 }
-                result = new Result(ok, ok && google, ok && systemUi,
-                        systemServerNeedsReboot, detail);
+                result = new Result(ok, ok && google, ok && systemUi, systemServer, detail);
             }
 
             FULL_RELOAD_RUNNING.set(false);
@@ -201,6 +242,16 @@ final class HookReloadManager {
             deliver(app, callback, result);
         });
         return true;
+    }
+
+    static String statusSummary(Context context, LsposedStatusManager.Snapshot snapshot) {
+        if (context == null) return "Hook 状态未知";
+        boolean google = googleNeedsReload(context, snapshot);
+        boolean systemUi = systemUiNeedsReload(context, snapshot);
+        boolean system = systemServerNeedsReboot(context);
+        return "Hook 代际：Google " + (google ? "需热重载" : "当前")
+                + " · SystemUI " + (systemUi ? "需热重载" : "当前")
+                + " · system_server " + (system ? "需重启" : "当前");
     }
 
     private static String buildReloadScript(boolean google, boolean systemUi) {
@@ -230,27 +281,22 @@ final class HookReloadManager {
     }
 
     private static void markGoogleCurrent(Context context) {
-        long current = apkUpdateTime(context);
-        if (current > 0L) {
-            preference(context).edit().putLong(K_GOOGLE_UPDATE_TIME, current).apply();
-        }
+        preference(context).edit()
+                .putString(K_GOOGLE_APPLIED, BuildConfig.GOOGLE_HOOK_FINGERPRINT).apply();
     }
 
     private static void markSystemUiCurrent(Context context) {
-        long current = apkUpdateTime(context);
-        if (current > 0L) {
-            preference(context).edit().putLong(K_SYSTEMUI_UPDATE_TIME, current).apply();
-        }
+        preference(context).edit()
+                .putString(K_SYSTEMUI_APPLIED, BuildConfig.SYSTEMUI_HOOK_FINGERPRINT).apply();
     }
 
-    private static long apkUpdateTime(Context context) {
-        if (context == null) return 0L;
-        try {
-            PackageInfo info = context.getPackageManager().getPackageInfo(
-                    context.getPackageName(), 0);
-            return info == null ? 0L : info.lastUpdateTime;
+    private static String readBootId() {
+        try (BufferedReader reader = new BufferedReader(
+                new FileReader("/proc/sys/kernel/random/boot_id"))) {
+            String value = reader.readLine();
+            return value == null ? "" : value.trim();
         } catch (Throwable ignored) {
-            return 0L;
+            return "";
         }
     }
 
@@ -266,7 +312,11 @@ final class HookReloadManager {
     }
 
     private static void deliver(Context app, Consumer<Result> callback, Result result) {
-        if (callback == null) return;
-        MAIN.post(() -> callback.accept(result));
+        if (callback != null) app.getMainExecutor().execute(() -> callback.accept(result));
+    }
+
+    private static String shortHash(String value) {
+        if (value == null || value.isBlank()) return "none";
+        return value.substring(0, Math.min(10, value.length()));
     }
 }
