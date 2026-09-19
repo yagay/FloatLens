@@ -39,7 +39,22 @@ final class LsposedRuntimeStore {
                 .putString(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, token)
                 .putLong(LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED, triggerElapsed)
                 .putLong(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL, armedUntilElapsed)
+                .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_TOKEN)
+                .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_ELAPSED)
                 .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL)
+                .commit();
+    }
+
+    static boolean confirmGoogleRegion(XposedService service, String token, long confirmedAtElapsed) {
+        if (token == null || token.isBlank() || confirmedAtElapsed <= 0L) return false;
+        SharedPreferences remote = open(service);
+        if (remote == null) return false;
+        String currentToken = remote.getString(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, "");
+        if (!token.equals(currentToken)) return false;
+        return remote.edit()
+                .putString(LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_TOKEN, token)
+                .putLong(LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_ELAPSED,
+                        confirmedAtElapsed)
                 .commit();
     }
 
@@ -52,6 +67,8 @@ final class LsposedRuntimeStore {
                 .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN)
                 .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED)
                 .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL)
+                .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_TOKEN)
+                .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_ELAPSED)
                 .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL)
                 .commit();
     }
