@@ -38,6 +38,8 @@ public final class GoogleCtsContract {
     public static final String EVENT_SELECTION = "selection";
     /** Region geometry changed; FloatLens should show/update its own explicit confirm button. */
     public static final String EVENT_REGION_SELECTION = "region_selection";
+    public static final String EVENT_REGION_GESTURE_START = "region_gesture_start";
+    public static final String EVENT_REGION_GESTURE_END = "region_gesture_end";
     public static final String EVENT_COMMIT = "commit";
     public static final String EVENT_QUERY_RESULT = "query_result";
     /** Finalize a text selection whose FloatLens action menu was already shown at selection time. */
