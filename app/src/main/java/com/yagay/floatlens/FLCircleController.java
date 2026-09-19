@@ -38,7 +38,7 @@ final class FLCircleController {
             synchronized (FLCircleController.class) {
                 if (gen != generation) {
                     frame.recycle();
-                    hideLease.release(app);
+                    transaction.close();
                     return;
                 }
             }
@@ -76,7 +76,7 @@ final class FLCircleController {
         }, error -> {
             synchronized (FLCircleController.class) {
                 if (gen != generation) {
-                    hideLease.release(app);
+                    transaction.close();
                     return;
                 }
             }

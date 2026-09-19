@@ -166,11 +166,11 @@ public final class ScreenshotController {
             if (!text.isEmpty()) {
                 DiagnosticLog.i(app, "VIEW_EXTRACT", "direct Accessibility text chars=" + text.length()
                         + " bounds=" + bounds);
-                shown = ResultSurfaceRouter.showCapturedViewText(app, text, crop, bounds, shadeState);
+                shown = ResultSurfaceRouter.showCapturedViewText(app, text, crop, bounds, transaction.shadeState());
             } else {
                 DiagnosticLog.i(app, "VIEW_SCREENSHOT",
                         "no Accessibility text; show cropped View bounds=" + bounds);
-                shown = ResultSurfaceRouter.showCapturedViewImage(app, crop, candidate, bounds, shadeState);
+                shown = ResultSurfaceRouter.showCapturedViewImage(app, crop, candidate, bounds, transaction.shadeState());
             }
             DiagnosticLog.i(app, "VIEW_CAPTURE", "result shown=" + shown);
             if (shown) {
