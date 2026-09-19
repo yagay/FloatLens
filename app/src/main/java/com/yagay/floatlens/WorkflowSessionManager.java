@@ -87,6 +87,19 @@ final class WorkflowSessionManager {
         return session == null ? 0L : session.id;
     }
 
+    /** True while a FloatLens-owned Google CTS flow is still being captured/selected/handed off. */
+    static boolean googleCtsInFlight() {
+        synchronized (LOCK) {
+            if (active == null || active.terminal() || active.type != Type.GOOGLE_CTS) {
+                return false;
+            }
+            return switch (active.phase) {
+                case CREATED, CAPTURING, SELECTING, RESULT_PENDING -> true;
+                default -> false;
+            };
+        }
+    }
+
     static boolean isCurrent(Session session) {
         if (session == null) return false;
         synchronized (LOCK) {
