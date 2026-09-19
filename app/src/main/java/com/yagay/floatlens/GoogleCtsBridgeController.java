@@ -454,7 +454,7 @@ final class GoogleCtsBridgeController {
             if (detail != null && !detail.isBlank()) state.detail = detail;
             finalText = state.text == null ? "" : state.text.trim();
             finalBounds = state.bounds == null ? null : new Rect(state.bounds);
-            finalScreenBounds = toScreenBounds(state, finalBounds);
+            finalScreenBounds = finalBounds == null ? null : new Rect(finalBounds);
             showMenuNow = !state.textMenuShown && !finalText.isBlank();
             state.committed = true;
             state.delivered = true;
@@ -471,7 +471,6 @@ final class GoogleCtsBridgeController {
             DiagnosticLog.i(app, "GOOGLE_TEXT_MENU",
                     "late show session=" + shortToken(token)
                             + " textLen=" + finalText.length()
-                            + " frameBounds=" + String.valueOf(finalBounds)
                             + " screenBounds=" + String.valueOf(finalScreenBounds));
         }
         clearSessionState(app, token, "text_menu_commit");
