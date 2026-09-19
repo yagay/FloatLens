@@ -24,6 +24,7 @@ final class FlOverlayWindowHost {
         LensAccessibilityService a = LensAccessibilityService.get();
         if (a != null && a.addAccessibilityOverlay(view, lp)) {
             remember(view, true);
+            bindToWorkflowScene(view, tag);
             DiagnosticLog.i(context, "FL_WINDOW", tag + " host=accessibility type=" + lp.type);
             return true;
         }
@@ -36,6 +37,7 @@ final class FlOverlayWindowHost {
             lp.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
             appWindowManager.addView(view, lp);
             remember(view, false);
+            bindToWorkflowScene(view, tag);
             DiagnosticLog.i(context, "FL_WINDOW", tag + " host=application type=" + lp.type);
             return true;
         } catch (Throwable t) {
@@ -87,6 +89,7 @@ final class FlOverlayWindowHost {
             added = a != null && a.addAccessibilityOverlay(view, lp);
             if (added) {
                 remember(view, true);
+                bindToWorkflowScene(view, tag);
                 view.setVisibility(visibility);
                 DiagnosticLog.i(context, "FL_WINDOW", tag + " migrated host=accessibility type=" + lp.type);
                 return true;
@@ -98,6 +101,7 @@ final class FlOverlayWindowHost {
                 LensAccessibilityService a = LensAccessibilityService.get();
                 if (a != null && a.addAccessibilityOverlay(view, lp)) {
                     remember(view, true);
+                    bindToWorkflowScene(view, tag);
                     added = true;
                     DiagnosticLog.i(context, "FL_WINDOW", tag + " migrate rollback host=accessibility type=" + lp.type);
                 }
@@ -110,6 +114,7 @@ final class FlOverlayWindowHost {
 
     void remove(View view, String tag) {
         if (view == null) return;
+        OverlaySceneManager.unbind(view);
         removeFromCurrentHost(view, null, tag);
         accessibilityHosted.remove(view);
         if (lastView == view) lastView = null;
@@ -148,5 +153,11 @@ final class FlOverlayWindowHost {
     private void remember(View view, boolean onAccessibility) {
         accessibilityHosted.put(view, onAccessibility);
         lastView = view;
+    }
+
+    private void bindToWorkflowScene(View view, String tag) {
+        if (view == null || !OverlaySceneManager.shouldBindWindow(tag)) return;
+        OverlaySceneManager.bindCurrent(view, () -> remove(view,
+                (tag == null ? "overlay" : tag) + "_workflow_scene"));
     }
 }
