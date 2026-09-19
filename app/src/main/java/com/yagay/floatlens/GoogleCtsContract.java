@@ -45,6 +45,16 @@ public final class GoogleCtsContract {
     /** Finalize a text selection whose FloatLens action menu was already shown at selection time. */
     public static final String EVENT_TEXT_MENU_COMMIT = "text_menu_commit";
     public static final String EVENT_END = "end";
+    public static final String EVENT_FRAME_READY = "frame_ready";
+    public static final String METHOD_ALLOCATE_SHARED_FRAME = "allocate_shared_frame";
+    public static final String EXTRA_FRAME_WIDTH =
+            "com.yagay.floatlens.extra.CTS_FRAME_WIDTH";
+    public static final String EXTRA_FRAME_HEIGHT =
+            "com.yagay.floatlens.extra.CTS_FRAME_HEIGHT";
+    public static final String EXTRA_FRAME_BYTES =
+            "com.yagay.floatlens.extra.CTS_FRAME_BYTES";
+    public static final String EXTRA_SHARED_MEMORY =
+            "com.yagay.floatlens.extra.CTS_SHARED_MEMORY";
     public static final String Q_WIDTH = "w";
     public static final String Q_HEIGHT = "h";
     public static final String Q_BYTES = "bytes";
@@ -63,6 +73,13 @@ public final class GoogleCtsContract {
 
     static boolean isFloatLensSession(boolean trigger, String token) {
         return trigger && token != null && !token.isBlank();
+    }
+
+    public static Uri bridgeBaseUri() {
+        return new Uri.Builder()
+                .scheme("content")
+                .authority(BRIDGE_AUTHORITY)
+                .build();
     }
 
     public static Uri bridgeFrameUri(String token, int width, int height, int bytes) {
