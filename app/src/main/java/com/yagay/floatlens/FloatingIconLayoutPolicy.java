@@ -14,16 +14,20 @@ import android.view.WindowManager;
 final class FloatingIconLayoutPolicy {
     private final Context app;
     private FloatSettings settings;
+    private FloatSettingsDomains.Icon icon;
 
     FloatingIconLayoutPolicy(Context c, FloatSettings settings) {
         app = c.getApplicationContext();
-        this.settings = settings;
+        updateSettings(settings);
     }
 
-    void updateSettings(FloatSettings settings) { this.settings = settings; }
+    void updateSettings(FloatSettings settings) {
+        this.settings = settings;
+        this.icon = FloatSettingsDomains.icon(settings);
+    }
 
     int iconPx() {
-        return Math.round(settings.sizeDp() * app.getResources().getDisplayMetrics().density);
+        return Math.round(icon.sizeDp() * app.getResources().getDisplayMetrics().density);
     }
 
     int[] displaySize() {
