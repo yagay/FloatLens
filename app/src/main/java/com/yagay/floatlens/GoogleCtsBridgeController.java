@@ -69,7 +69,7 @@ final class GoogleCtsBridgeController {
                 return;
             }
             if (state.frame != null && !state.frame.isRecycled()
-                    && !shouldReplaceCanonicalFrame(
+                    && !CanonicalFramePolicy.shouldReplace(
                     state.frame.getWidth(), state.frame.getHeight(), width, height)) {
                 DiagnosticLog.i(context, "GOOGLE_CANONICAL_FRAME",
                         "candidate ignored session=" + shortToken(token)
@@ -806,13 +806,6 @@ final class GoogleCtsBridgeController {
         CanonicalSessionGeometry geometry = state == null ? null : state.geometry;
         if (geometry == null) return new Rect(frameBounds);
         return geometry.frameToScreen(frameBounds);
-    }
-
-    static boolean shouldReplaceCanonicalFrame(
-            int currentWidth, int currentHeight, int candidateWidth, int candidateHeight) {
-        long currentArea = Math.max(0L, (long) currentWidth * currentHeight);
-        long candidateArea = Math.max(0L, (long) candidateWidth * candidateHeight);
-        return currentArea <= 0L || candidateArea > currentArea;
     }
 
     private static Rect normalize(Rect candidate, Bitmap frame) {
