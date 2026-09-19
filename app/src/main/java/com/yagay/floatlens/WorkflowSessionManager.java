@@ -65,6 +65,12 @@ final class WorkflowSessionManager {
                     externalKey, Phase.CREATED, safe(reason));
             active = next;
         }
+        if (previous != null) {
+            int released = OverlaySceneManager.close(previous.id, "workflow_replaced");
+            log(context, "overlay scene close id=" + previous.id + " released=" + released
+                    + " reason=workflow_replaced");
+        }
+        OverlaySceneManager.open(next.id);
         log(context, "begin " + describe(next)
                 + (previous == null ? "" : " replaced=" + previous.id));
         return next;
@@ -176,8 +182,9 @@ final class WorkflowSessionManager {
             session.reason = safe(reason);
             active = null;
         }
+        int released = OverlaySceneManager.close(session.id, safe(reason));
         log(context, "end id=" + session.id + " " + old + "->" + terminal
-                + " reason=" + safe(reason));
+                + " reason=" + safe(reason) + " overlayReleased=" + released);
     }
 
     private static String describe(Session s) {
