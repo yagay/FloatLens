@@ -76,6 +76,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     private final GoogleBridgeSender bridgeSender;
     private final GoogleLensDiagnosticsHooks diagnosticsHooks;
     private final GoogleLensViewportHook viewportHook;
+    private final GoogleCanonicalFrameLayer canonicalFrameLayer;
     private final GoogleCtsLifecycleHooks lifecycleHooks;
     private final GoogleLensFrameCapture frameCapture;
     private final GoogleRegionGestureHook regionGestureHook;
@@ -103,6 +104,8 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                 module, classLoader, this::active, () -> bridgeSelectionSeen,
                 () -> bridgeRegionSelectionActive,
                 () -> markedActivity.get(), this::report);
+        this.canonicalFrameLayer = new GoogleCanonicalFrameLayer(
+                this::active, () -> markedActivity.get(), this::report);
         this.lifecycleHooks = new GoogleCtsLifecycleHooks(module, provider, this);
         this.frameCapture = new GoogleLensFrameCapture(
                 module, classLoader, this::active, this::sendBridgeFrame, this::report);
@@ -437,7 +440,9 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         if (name.endsWith(".LensientActivity") || current == null || current.isFinishing()) {
             markedActivity = new WeakReference<>(activity);
             uiSanitizer.attach(activity);
-            report("GOOGLE_UI_OWNER", "activity=" + name + " sanitizer=attached");
+            canonicalFrameLayer.onActivityAvailable();
+            report("GOOGLE_UI_OWNER", "activity=" + name
+                    + " sanitizer=attached canonicalLayer=armed");
         }
     }
 
@@ -526,7 +531,8 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
             uiSanitizer.detach();
             bridgeSender.reset();
             regionGestureHook.reset();
-        viewportHook.reset();
+            viewportHook.reset();
+            canonicalFrameLayer.reset();
             bridgeCommitted = false;
             bridgeSelectionSeen = false;
             bridgeRegionSelectionActive = false;
@@ -567,6 +573,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         bridgeSender.reset();
         regionGestureHook.reset();
         viewportHook.reset();
+        canonicalFrameLayer.reset();
         bridgeCommitted = false;
         bridgeSelectionSeen = false;
         bridgeRegionSelectionActive = false;
@@ -622,6 +629,10 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     }
 
     @Override public void sendBridgeFrame(Bitmap bitmap) {
+        // Keep a private immutable visual source in the Lens process before the bridge performs
+        // any cross-process transport. Google may later mutate FrozenImageView's internal viewport,
+        // but the pixels presented by FloatLens remain tied to this canonical frame.
+        canonicalFrameLayer.offer(bitmap);
         bridgeSender.sendFrame(bitmap);
     }
 
