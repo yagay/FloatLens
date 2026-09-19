@@ -20,6 +20,10 @@ import java.util.concurrent.ConcurrentHashMap;
 final class GoogleCtsBridgeController {
     private static final long FRAME_WAIT_MS = 900L;
     private static final long MENU_UPDATE_DELAY_MS = 90L;
+    /** Region confirm appears only after Google's rectangle stops changing for this long. */
+    private static final long REGION_CONFIRM_STABLE_MS = 360L;
+    /** Give the Google hook a brief chance to consume the remote confirm before local fallback. */
+    private static final long REGION_REMOTE_GRACE_MS = 220L;
     private static final long STATE_TTL_MS = 150_000L;
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final Map<String, State> STATES = new ConcurrentHashMap<>();
@@ -35,6 +39,8 @@ final class GoogleCtsBridgeController {
         boolean regionPending;
         boolean regionConfirmRequested;
         int selectionRevision;
+        Runnable regionConfirmShowTask;
+        Runnable regionFallbackTask;
         Runnable cleanupTask;
     }
 
@@ -70,6 +76,8 @@ final class GoogleCtsBridgeController {
             if (state.delivered) return;
             state.regionPending = false;
             state.regionConfirmRequested = false;
+            cancelRegionConfirmShowLocked(state);
+            cancelRegionFallbackLocked(state);
             state.text = text == null ? "" : text.trim();
             if (bounds != null && !bounds.isEmpty()) {
                 state.bounds = new Rect(bounds);
@@ -132,80 +140,154 @@ final class GoogleCtsBridgeController {
 
         Context app = context.getApplicationContext();
         State state = state(token);
-        Rect selectedBounds;
-        boolean alreadyConfirmed;
+        final int revision;
+        final Rect selectedBounds;
         synchronized (state) {
             if (state.delivered) return;
             state.text = "";
             state.bounds = new Rect(bounds);
             state.detail = detail == null ? "" : detail;
             state.regionPending = true;
+            state.regionConfirmRequested = false;
             state.textMenuShown = false;
-            state.selectionRevision++;
+            revision = ++state.selectionRevision;
             selectedBounds = new Rect(state.bounds);
-            alreadyConfirmed = state.regionConfirmRequested;
+            cancelRegionConfirmShowLocked(state);
+            cancelRegionFallbackLocked(state);
         }
+
+        // Any new region geometry means the user is still drawing/refining. Hide immediately;
+        // only re-show after the rectangle has stayed unchanged for REGION_CONFIRM_STABLE_MS.
+        GoogleRegionConfirmOverlay.dismiss(token, "region_adjusting");
         FloatActionMenu.dismiss();
+
         WorkflowSessionManager.Session workflow = WorkflowSessionManager.current();
         if (workflow != null && token.equals(workflow.externalKey())) {
             WorkflowSessionManager.transition(app, workflow,
                     WorkflowSessionManager.Phase.SELECTING, "google_region_selection");
         }
         scheduleCleanup(app, token, state);
-        if (!alreadyConfirmed) {
-            MAIN.post(() -> GoogleRegionConfirmOverlay.show(
-                    app, token, selectedBounds,
-                    () -> confirmRegion(app, token)));
-        }
+        scheduleStableRegionConfirm(app, token, state, revision, selectedBounds);
+
         DiagnosticLog.i(app, "GOOGLE_REGION",
                 "selection session=" + shortToken(token)
+                        + " revision=" + revision
                         + " bounds=" + selectedBounds
-                        + " confirmVisible=" + !alreadyConfirmed);
+                        + " confirmVisible=false state=adjusting");
+    }
+
+    private static void scheduleStableRegionConfirm(
+            Context app, String token, State state, int revision, Rect selectedBounds) {
+        final Runnable[] holder = new Runnable[1];
+        holder[0] = () -> {
+            synchronized (state) {
+                if (state.regionConfirmShowTask != holder[0]) return;
+                state.regionConfirmShowTask = null;
+                if (state.delivered || !state.regionPending
+                        || state.regionConfirmRequested
+                        || state.selectionRevision != revision) {
+                    return;
+                }
+            }
+
+            GoogleRegionConfirmOverlay.show(
+                    app, token, selectedBounds,
+                    () -> confirmRegion(app, token));
+            DiagnosticLog.i(app, "GOOGLE_REGION",
+                    "confirm stable-show session=" + shortToken(token)
+                            + " revision=" + revision
+                            + " stableMs=" + REGION_CONFIRM_STABLE_MS
+                            + " bounds=" + selectedBounds);
+        };
+        synchronized (state) {
+            cancelRegionConfirmShowLocked(state);
+            state.regionConfirmShowTask = holder[0];
+        }
+        MAIN.postDelayed(holder[0], REGION_CONFIRM_STABLE_MS);
     }
 
     private static void confirmRegion(Context app, String token) {
         State state = STATES.get(token);
         if (app == null || state == null) return;
+
         Rect bounds;
         synchronized (state) {
             if (state.delivered || !state.regionPending || state.regionConfirmRequested) return;
             state.regionConfirmRequested = true;
+            cancelRegionConfirmShowLocked(state);
+            cancelRegionFallbackLocked(state);
             bounds = state.bounds == null ? null : new Rect(state.bounds);
         }
+
         GoogleRegionConfirmOverlay.dismiss(token, "confirm_requested");
         DiagnosticLog.i(app, "GOOGLE_REGION",
                 "confirm requested session=" + shortToken(token)
                         + " bounds=" + String.valueOf(bounds));
+
+        // Preferred path: tell the Google hook that the user explicitly confirmed this region.
+        // If that cross-process signal is not observed quickly, FloatLens already owns the frozen
+        // frame and region geometry, so fall back to the same result pipeline locally.
         LsposedStatusManager.confirmGoogleCtsRegionRemoteAsync(token, success -> {
+            State current = STATES.get(token);
+            if (current != state) return;
             if (success) {
                 DiagnosticLog.i(app, "GOOGLE_REGION",
-                        "confirm bridged session=" + shortToken(token));
-                return;
-            }
-            Rect retryBounds;
-            synchronized (state) {
-                if (state.delivered) return;
-                state.regionConfirmRequested = false;
-                retryBounds = state.bounds == null ? null : new Rect(state.bounds);
-            }
-            DiagnosticLog.i(app, "GOOGLE_REGION",
-                    "confirm bridge failed session=" + shortToken(token));
-            if (retryBounds != null && !retryBounds.isEmpty()) {
-                GoogleRegionConfirmOverlay.show(
-                        app, token, retryBounds,
-                        () -> confirmRegion(app, token));
+                        "confirm remote-write-ok session=" + shortToken(token)
+                                + " graceMs=" + REGION_REMOTE_GRACE_MS);
+                scheduleRegionFallback(app, token, state,
+                        "remote_no_query_result", REGION_REMOTE_GRACE_MS);
+            } else {
+                DiagnosticLog.i(app, "GOOGLE_REGION",
+                        "confirm remote-write-failed session=" + shortToken(token)
+                                + " fallback=local");
+                scheduleRegionFallback(app, token, state,
+                        "remote_write_failed", 0L);
             }
         });
+    }
+
+    private static void scheduleRegionFallback(
+            Context app, String token, State state, String reason, long delayMs) {
+        final Runnable[] holder = new Runnable[1];
+        holder[0] = () -> {
+            synchronized (state) {
+                if (state.regionFallbackTask != holder[0]) return;
+                state.regionFallbackTask = null;
+                if (state.delivered || !state.regionPending) return;
+                state.regionPending = false;
+                state.committed = true;
+            }
+            DiagnosticLog.i(app, "GOOGLE_REGION",
+                    "confirm local-fallback session=" + shortToken(token)
+                            + " reason=" + reason);
+            scheduleCleanup(app, token, state);
+            tryDeliver(app, token, state, false);
+            MAIN.postDelayed(() -> tryDeliver(app, token, state, true), FRAME_WAIT_MS);
+        };
+
+        synchronized (state) {
+            cancelRegionFallbackLocked(state);
+            state.regionFallbackTask = holder[0];
+        }
+        if (delayMs <= 0L) MAIN.post(holder[0]);
+        else MAIN.postDelayed(holder[0], delayMs);
     }
 
     static void onCommit(Context context, String token, String detail) {
         if (context == null || token == null || token.isBlank()) return;
         Context app = context.getApplicationContext();
-        State state = state(token);
+        State state = STATES.get(token);
+        if (state == null) {
+            DiagnosticLog.i(app, "GOOGLE_BRIDGE",
+                    "late commit ignored session=" + shortToken(token));
+            return;
+        }
         GoogleRegionConfirmOverlay.dismiss(token, "commit");
         synchronized (state) {
             if (state.delivered) return;
             state.regionPending = false;
+            cancelRegionConfirmShowLocked(state);
+            cancelRegionFallbackLocked(state);
             state.committed = true;
             if (detail != null && !detail.isBlank()) state.detail = detail;
         }
@@ -273,11 +355,18 @@ final class GoogleCtsBridgeController {
     static void onQueryResult(Context context, String token, String text,
                               Rect bounds, String detail) {
         if (context == null || token == null || token.isBlank()) return;
-        State state = state(token);
+        State state = STATES.get(token);
+        if (state == null) {
+            DiagnosticLog.i(context, "GOOGLE_BRIDGE",
+                    "late query result ignored session=" + shortToken(token));
+            return;
+        }
         GoogleRegionConfirmOverlay.dismiss(token, "query_result");
         synchronized (state) {
             if (state.delivered) return;
             state.regionPending = false;
+            cancelRegionConfirmShowLocked(state);
+            cancelRegionFallbackLocked(state);
             if ((state.text == null || state.text.isBlank()) && text != null && !text.isBlank()) {
                 state.text = text.trim();
             }
@@ -296,7 +385,11 @@ final class GoogleCtsBridgeController {
         if (context == null || token == null || token.isBlank()) return;
         Context app = context.getApplicationContext();
         State state = STATES.remove(token);
-        if (state != null) cancelCleanup(state);
+        if (state != null) {
+            cancelRegionConfirmShow(state);
+            cancelRegionFallback(state);
+            cancelCleanup(state);
+        }
         GoogleRegionConfirmOverlay.dismiss(token, "bridge_end");
         boolean dismissTextMenu = false;
         if (state != null) {
@@ -339,6 +432,8 @@ final class GoogleCtsBridgeController {
             detail = state.detail == null ? "" : state.detail;
         }
         STATES.remove(token, state);
+        cancelRegionConfirmShow(state);
+        cancelRegionFallback(state);
         cancelCleanup(state);
         GoogleRegionConfirmOverlay.dismiss(token, "deliver");
 
@@ -410,6 +505,8 @@ final class GoogleCtsBridgeController {
             if (!STATES.remove(token, state)) return;
             boolean dismissTextMenu;
             synchronized (state) {
+                cancelRegionConfirmShowLocked(state);
+                cancelRegionFallbackLocked(state);
                 recycle(state.frame);
                 state.frame = null;
                 dismissTextMenu = state.textMenuShown && !state.committed;
@@ -430,6 +527,38 @@ final class GoogleCtsBridgeController {
         }
         if (previous != null) MAIN.removeCallbacks(previous);
         MAIN.postDelayed(holder[0], STATE_TTL_MS);
+    }
+
+    private static void cancelRegionConfirmShow(State state) {
+        if (state == null) return;
+        Runnable pending;
+        synchronized (state) {
+            pending = state.regionConfirmShowTask;
+            state.regionConfirmShowTask = null;
+        }
+        if (pending != null) MAIN.removeCallbacks(pending);
+    }
+
+    private static void cancelRegionConfirmShowLocked(State state) {
+        Runnable pending = state.regionConfirmShowTask;
+        state.regionConfirmShowTask = null;
+        if (pending != null) MAIN.removeCallbacks(pending);
+    }
+
+    private static void cancelRegionFallback(State state) {
+        if (state == null) return;
+        Runnable pending;
+        synchronized (state) {
+            pending = state.regionFallbackTask;
+            state.regionFallbackTask = null;
+        }
+        if (pending != null) MAIN.removeCallbacks(pending);
+    }
+
+    private static void cancelRegionFallbackLocked(State state) {
+        Runnable pending = state.regionFallbackTask;
+        state.regionFallbackTask = null;
+        if (pending != null) MAIN.removeCallbacks(pending);
     }
 
     private static void cancelCleanup(State state) {
