@@ -1,11 +1,15 @@
 import java.security.MessageDigest
 
+plugins {
+    id 'com.android.application'
+}
+
 def floatLensHashFiles = { Collection<File> sourceFiles ->
     MessageDigest digest = MessageDigest.getInstance("SHA-256")
     sourceFiles.findAll { it != null && it.exists() }
             .sort { a, b -> a.path <=> b.path }
             .each { File source ->
-                digest.update(source.path.replace('\\', '/').getBytes('UTF-8'))
+                digest.update(project.relativePath(source).replace('\\', '/').getBytes('UTF-8'))
                 digest.update((byte) 0)
                 digest.update(source.bytes)
                 digest.update((byte) 0)
@@ -32,10 +36,6 @@ systemServerHookFiles.add(file('src/main/java/com/yagay/floatlens/hook/SecureScr
 def googleHookFingerprint = floatLensHashFiles(googleHookFiles)
 def systemUiHookFingerprint = floatLensHashFiles(systemUiHookFiles)
 def systemServerHookFingerprint = floatLensHashFiles(systemServerHookFiles)
-
-plugins {
-    id 'com.android.application'
-}
 
 android {
     namespace 'com.yagay.floatlens'
