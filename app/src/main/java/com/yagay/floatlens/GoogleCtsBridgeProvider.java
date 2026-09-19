@@ -7,7 +7,9 @@ import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
+import android.os.SharedMemory;
 import android.os.SystemClock;
 
 import java.io.FileNotFoundException;
@@ -15,6 +17,8 @@ import java.io.FileInputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -26,14 +30,135 @@ import java.util.concurrent.Executors;
  */
 public final class GoogleCtsBridgeProvider extends ContentProvider {
     private static final long MAX_FRAME_BYTES = 64L * 1024L * 1024L;
+    private static final Map<String, SharedFrame> SHARED_FRAMES = new ConcurrentHashMap<>();
     private static final ExecutorService IO = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "FloatLens-GoogleBridge-Rx");
         t.setDaemon(true);
         return t;
     });
 
+    private static final class SharedFrame {
+        final SharedMemory memory;
+        final int width;
+        final int height;
+        final int bytes;
+
+        SharedFrame(SharedMemory memory, int width, int height, int bytes) {
+            this.memory = memory;
+            this.width = width;
+            this.height = height;
+            this.bytes = bytes;
+        }
+
+        void close() {
+            try { memory.close(); } catch (Throwable ignored) { }
+        }
+    }
+
     @Override public boolean onCreate() {
         return true;
+    }
+
+    @Override
+    public Bundle call(String method, String arg, Bundle extras) {
+        if (!GoogleCtsContract.METHOD_ALLOCATE_SHARED_FRAME.equals(method)) {
+            return super.call(method, arg, extras);
+        }
+
+        Context context = getContext();
+        Bundle out = new Bundle();
+        if (context == null || extras == null) return out;
+
+        String caller = getCallingPackage();
+        if (caller != null && !caller.isBlank()
+                && !GoogleCtsContract.GOOGLE_PACKAGE.equals(caller)) {
+            return out;
+        }
+
+        String token = extras.getString(GoogleCtsContract.EXTRA_BRIDGE_SESSION, "");
+        int width = extras.getInt(GoogleCtsContract.EXTRA_FRAME_WIDTH, -1);
+        int height = extras.getInt(GoogleCtsContract.EXTRA_FRAME_HEIGHT, -1);
+        int bytes = extras.getInt(GoogleCtsContract.EXTRA_FRAME_BYTES, -1);
+        long expected = (long) width * (long) height * 4L;
+        if (!authorized(context, token)
+                || width <= 0 || height <= 0 || expected <= 0L
+                || expected > MAX_FRAME_BYTES || bytes != expected) {
+            return out;
+        }
+
+        SharedMemory memory = null;
+        try {
+            memory = SharedMemory.create("FloatLens-Google-" + shortToken(token), bytes);
+            SharedFrame frame = new SharedFrame(memory, width, height, bytes);
+            SharedFrame previous = SHARED_FRAMES.put(token, frame);
+            if (previous != null) previous.close();
+            out.putParcelable(GoogleCtsContract.EXTRA_SHARED_MEMORY, memory);
+            out.putInt(GoogleCtsContract.EXTRA_FRAME_WIDTH, width);
+            out.putInt(GoogleCtsContract.EXTRA_FRAME_HEIGHT, height);
+            out.putInt(GoogleCtsContract.EXTRA_FRAME_BYTES, bytes);
+            DiagnosticLog.i(context, "GOOGLE_BRIDGE",
+                    "shared frame allocated session=" + shortToken(token)
+                            + " size=" + width + "x" + height + " bytes=" + bytes);
+            return out;
+        } catch (Throwable t) {
+            if (memory != null) {
+                SharedFrame current = SHARED_FRAMES.remove(token);
+                if (current != null) current.close();
+                else try { memory.close(); } catch (Throwable ignored) { }
+            }
+            DiagnosticLog.i(context, "GOOGLE_BRIDGE",
+                    "shared frame allocation failed session=" + shortToken(token)
+                            + " error=" + t.getClass().getSimpleName());
+            return out;
+        }
+    }
+
+    static void consumeSharedFrame(Context context, String token) {
+        if (context == null || token == null || token.isBlank()) return;
+        SharedFrame frame = SHARED_FRAMES.remove(token);
+        if (frame == null) {
+            DiagnosticLog.i(context, "GOOGLE_BRIDGE",
+                    "shared frame ready without allocation session=" + shortToken(token));
+            return;
+        }
+        IO.execute(() -> readSharedFrame(context.getApplicationContext(), token, frame));
+    }
+
+    static void releaseSharedFrame(String token) {
+        if (token == null || token.isBlank()) return;
+        SharedFrame frame = SHARED_FRAMES.remove(token);
+        if (frame != null) frame.close();
+    }
+
+    private static void readSharedFrame(Context context, String token, SharedFrame frame) {
+        Bitmap bitmap = null;
+        ByteBuffer pixels = null;
+        try {
+            pixels = frame.memory.mapReadOnly();
+            pixels.position(0);
+            pixels.limit(frame.bytes);
+            bitmap = Bitmap.createBitmap(frame.width, frame.height, Bitmap.Config.ARGB_8888);
+            bitmap.copyPixelsFromBuffer(pixels);
+            GoogleCtsBridgeController.onFrame(context, token, bitmap);
+            bitmap = null;
+            DiagnosticLog.i(context, "GOOGLE_BRIDGE",
+                    "shared frame received session=" + shortToken(token)
+                            + " size=" + frame.width + "x" + frame.height
+                            + " transport=shared_memory");
+        } catch (Throwable t) {
+            DiagnosticLog.i(context, "GOOGLE_BRIDGE",
+                    "shared frame receive failed session=" + shortToken(token)
+                            + " error=" + t.getClass().getSimpleName()
+                            + ":" + String.valueOf(t.getMessage()));
+        } finally {
+            if (pixels != null) {
+                try { SharedMemory.unmap(pixels); } catch (Throwable ignored) { }
+            }
+            frame.close();
+            if (bitmap != null && !bitmap.isRecycled()) {
+                try { bitmap.recycle(); } catch (Throwable ignored) { }
+            }
+        }
     }
 
     @Override
