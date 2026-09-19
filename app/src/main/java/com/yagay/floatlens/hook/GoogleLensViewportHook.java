@@ -108,22 +108,31 @@ final class GoogleLensViewportHook {
                         if (!active.getAsBoolean()) return chain.proceed();
                         Object state = chain.getArg(0);
                         boolean regionActive = regionSelectionActive.getAsBoolean();
+                        boolean fullScreenReady = frozenImageReadyForViewportLock();
                         reporter.accept("GOOGLE_FROZEN_IMAGE_VIEWPORT_STATE_PATH",
                                 "controller=duec.n selectionSeen=" + selectionSeen.getAsBoolean()
                                         + " regionActive=" + regionActive
+                                        + " fullScreenReady=" + fullScreenReady
                                         + " state=" + compact(state, 420));
                         reportTransform("beforeDuecN");
 
-                        // Region/object selection asks Lens to zoom the frozen screenshot down and
-                        // shift it vertically so its own result panel has room. FloatLens owns the
-                        // result surface, so this viewport animation is both unnecessary and causes
-                        // the visible screenshot to shrink/move. Suppress only while a marked
-                        // FloatLens region selection is active; initial CTS setup and text flows
-                        // still use Google's normal viewport state path.
-                        if (regionActive) {
+                        // v186 showed a race that the region-only guard cannot catch: duec.n can
+                        // update Lens' internal viewport after FrozenImageView is already full-screen
+                        // but before the first selection callback marks regionSelectionActive=true.
+                        // The outer View still reports scale=1/translation=0, so a pre-draw transform
+                        // guard alone cannot detect or undo that internal viewport shrink.
+                        //
+                        // Allow only the very early setup calls while FrozenImageView has no usable
+                        // full-screen geometry yet. Once the marked FloatLens session owns a real
+                        // screen-sized frozen frame, lock duec.n for the remainder of the session.
+                        // This also covers later region/object calls without waiting for selection.
+                        if (shouldSuppressViewportState(true, regionActive, fullScreenReady)) {
                             reporter.accept("GOOGLE_FROZEN_IMAGE_REGION_VIEWPORT_SUPPRESSED",
-                                    "controller=duec.n state=" + compact(state, 420));
-                            normalizeFrozenImageTransform("regionDuecNSuppressed");
+                                    "controller=duec.n reason="
+                                            + (regionActive ? "region_selection" : "session_fullscreen_ready")
+                                            + " state=" + compact(state, 420));
+                            normalizeFrozenImageTransform(regionActive
+                                    ? "regionDuecNSuppressed" : "sessionDuecNSuppressed");
                             ensureRegionTransformGuard();
                             return null;
                         }
@@ -152,7 +161,7 @@ final class GoogleLensViewportHook {
         Activity owner = activity.get();
         if (owner == null) return;
         owner.runOnUiThread(() -> {
-            if (!active.getAsBoolean() || !regionSelectionActive.getAsBoolean()) {
+            if (!active.getAsBoolean()) {
                 removeRegionTransformGuardOnMain();
                 return;
             }
@@ -170,7 +179,7 @@ final class GoogleLensViewportHook {
                 removeRegionTransformGuardOnMain();
                 guardedImage = image;
                 regionPreDrawGuard = () -> {
-                    if (!active.getAsBoolean() || !regionSelectionActive.getAsBoolean()) {
+                    if (!active.getAsBoolean()) {
                         removeRegionTransformGuardOnMain();
                         return true;
                     }
@@ -234,11 +243,11 @@ final class GoogleLensViewportHook {
     }
 
     private void normalizeFrozenImageTransform(String phase) {
-        if (!active.getAsBoolean() || !regionSelectionActive.getAsBoolean()) return;
+        if (!active.getAsBoolean()) return;
         Activity owner = activity.get();
         if (owner == null) return;
         owner.runOnUiThread(() -> {
-            if (!active.getAsBoolean() || !regionSelectionActive.getAsBoolean()) return;
+            if (!active.getAsBoolean()) return;
             try {
                 View root = owner.getWindow() == null ? null : owner.getWindow().getDecorView();
                 View image = GoogleLensViewIntrospection.findByClassName(
@@ -255,6 +264,31 @@ final class GoogleLensViewportHook {
                         "Failed to normalize FrozenImage region transform", t);
             }
         });
+    }
+
+    private boolean frozenImageReadyForViewportLock() {
+        Activity owner = activity.get();
+        if (owner == null || owner.getWindow() == null) return false;
+        try {
+            View root = owner.getWindow().getDecorView();
+            View image = GoogleLensViewIntrospection.findByClassName(
+                    root, GoogleLens1758Profile.FROZEN_IMAGE_VIEW);
+            if (root == null || image == null) return false;
+            int rootWidth = root.getWidth();
+            int rootHeight = root.getHeight();
+            int imageWidth = image.getWidth();
+            int imageHeight = image.getHeight();
+            return rootWidth > 0 && rootHeight > 0
+                    && imageWidth >= rootWidth
+                    && imageHeight >= rootHeight;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    static boolean shouldSuppressViewportState(
+            boolean active, boolean regionActive, boolean fullScreenReady) {
+        return active && (regionActive || fullScreenReady);
     }
 
     private void reportTransform(String phase) {
