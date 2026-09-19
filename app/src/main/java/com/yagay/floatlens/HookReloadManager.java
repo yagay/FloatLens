@@ -109,11 +109,12 @@ final class HookReloadManager {
     static boolean googleNeedsReload(Context context, LsposedStatusManager.Snapshot snapshot) {
         if (context == null || snapshot == null) return false;
         Context app = context.getApplicationContext();
-        boolean changed = !BuildConfig.GOOGLE_HOOK_FINGERPRINT.equals(
-                preference(app).getString(K_GOOGLE_APPLIED, ""));
+        String applied = preference(app).getString(K_GOOGLE_APPLIED, "");
+        boolean running = hasProcess(snapshot.runningProcesses, GOOGLE);
+        boolean changed = fingerprintNeedsReload(
+                BuildConfig.GOOGLE_HOOK_FINGERPRINT, applied, running);
         if (!changed) return false;
 
-        boolean running = hasProcess(snapshot.runningProcesses, GOOGLE);
         if (!running) {
             // No old process exists. The next Google process will load the current hook directly.
             markGoogleCurrent(app);
@@ -125,16 +126,24 @@ final class HookReloadManager {
     static boolean systemUiNeedsReload(Context context, LsposedStatusManager.Snapshot snapshot) {
         if (context == null || snapshot == null || !snapshot.systemUiScopeEnabled) return false;
         Context app = context.getApplicationContext();
-        boolean changed = !BuildConfig.SYSTEMUI_HOOK_FINGERPRINT.equals(
-                preference(app).getString(K_SYSTEMUI_APPLIED, ""));
+        String applied = preference(app).getString(K_SYSTEMUI_APPLIED, "");
+        boolean running = hasProcess(snapshot.runningProcesses, SYSTEM_UI);
+        boolean changed = fingerprintNeedsReload(
+                BuildConfig.SYSTEMUI_HOOK_FINGERPRINT, applied, running);
         if (!changed) return false;
 
-        boolean running = hasProcess(snapshot.runningProcesses, SYSTEM_UI);
         if (!running) {
             markSystemUiCurrent(app);
             return false;
         }
         return true;
+    }
+
+    static boolean fingerprintNeedsReload(
+            String currentFingerprint, String appliedFingerprint, boolean targetRunning) {
+        if (currentFingerprint == null || currentFingerprint.isBlank()) return false;
+        if (currentFingerprint.equals(appliedFingerprint)) return false;
+        return targetRunning;
     }
 
     static boolean systemServerNeedsReboot(Context context) {
