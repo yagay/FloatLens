@@ -59,6 +59,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     private final ClassLoader classLoader;
     private final AtomicInteger eventCount = new AtomicInteger();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final GoogleHookCapabilityMatrix capabilities;
 
     private final GoogleCtsSessionState sessionState = new GoogleCtsSessionState();
     private volatile Object voiceSession;
@@ -79,6 +80,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         this.module = module;
         this.provider = provider;
         this.classLoader = classLoader;
+        this.capabilities = GoogleHookCapabilityMatrix.resolve(classLoader);
         this.uiSanitizer = new GoogleLensUiSanitizer(
                 () -> active() && sessionState.selectionSeen(),
                 this::report);
@@ -122,9 +124,9 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         // installed now: Selection (OCR/text/region/query bridge) and Viewport (prevent text-focus
         // auto zoom). Legacy presentation/ActionMenu/InfoPanel/dujo hooks remain in source for
         // diagnostics/rollback but are intentionally not installed.
-        hooks += viewportHook.install();
-        hooks += frameCapture.install();
-        hooks += regionGestureHook.install();
+        hooks += viewportHook.install(capabilities.viewport);
+        hooks += frameCapture.install(capabilities.frame);
+        hooks += regionGestureHook.install(capabilities.regionGesture);
         hooks += hookGoogleLensSelectionBoundary();
         // v169 device/APK analysis proved the visible menu is Lens' own ActionMenuView,
         // not framework/Material FloatingToolbar. WindowManager inspection is diagnostic-only.
@@ -137,7 +139,8 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         hooks += lifecycleHooks.install();
         module.log(Log.INFO, TAG,
                 "Google CTS inspector ready hooks=" + hooks
-                        + " profile=" + GoogleLens1758Profile.NAME);
+                        + " profile=" + GoogleLens1758Profile.NAME
+                        + " capabilities={" + capabilities.detail() + "}");
     }
 
     /** Google 17.58.16.ve real Omnient invocation boundary from classes6.dex. */
@@ -217,7 +220,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
 
     /** Resolve the exact 17.58 profile or structural fallback behind one hook contract. */
     private int hookGoogleLensSelectionBoundary() {
-        GoogleSelectionAdapter.Binding binding = GoogleSelectionAdapter.resolve(classLoader);
+        GoogleSelectionAdapter.Binding binding = capabilities.selection;
         if (!binding.available()) {
             module.log(Log.WARN, TAG,
                     "Google Lens selection binding unavailable: " + binding.detail());
