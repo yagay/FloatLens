@@ -38,7 +38,9 @@ public final class PrivilegeManager {
     }
 
     public static boolean canUseRoot(FloatSettings settings) {
-        return settings != null && settings.enhancedMode() && settings.rootEnabled();
+        if (settings == null) return false;
+        FloatSettingsDomains.Privilege privilege = FloatSettingsDomains.privilege(settings);
+        return privilege.enhanced() && privilege.rootEnabled();
     }
 
     /** Generic controlled API-102 provider availability. */
@@ -57,15 +59,17 @@ public final class PrivilegeManager {
     }
 
     public static boolean canUseLsposed(FloatSettings settings) {
-        return settings != null && lsposedProviderAvailable()
-                && settings.enhancedMode() && settings.lsposedEnabled();
+        if (settings == null || !lsposedProviderAvailable()) return false;
+        FloatSettingsDomains.Privilege privilege = FloatSettingsDomains.privilege(settings);
+        return privilege.enhanced() && privilege.lsposedEnabled();
     }
 
     public static boolean canUseLsposedSecureScreenshot(FloatSettings settings) {
-        return settings != null && lsposedSecureScreenshotProviderAvailable()
-                && settings.enhancedMode()
-                && settings.lsposedEnabled()
-                && settings.lsposedSecureScreenshot();
+        if (settings == null || !lsposedSecureScreenshotProviderAvailable()) return false;
+        FloatSettingsDomains.Privilege privilege = FloatSettingsDomains.privilege(settings);
+        return privilege.enhanced()
+                && privilege.lsposedEnabled()
+                && privilege.secureScreenshotEnabled();
     }
 
     public static Mode mode(FloatSettings settings) {
