@@ -14,9 +14,10 @@ final class ScreenCaptureBackend {
     static void capture(Context c, FloatSettings settings,
                         Consumer<Bitmap> ok, Consumer<Throwable> fail) {
         Context app = c.getApplicationContext();
-        boolean rootAllowed = settings.effectiveRootScreenshot();
+        FloatSettingsDomains.Capture capture = FloatSettingsDomains.capture(settings);
+        boolean rootAllowed = capture.rootAllowed();
         boolean lsposedSecureAllowed = PrivilegeManager.canUseLsposedSecureScreenshot(settings);
-        boolean fallbackNormal = settings.privilegeFallback();
+        boolean fallbackNormal = capture.fallbackNormal();
 
         DiagnosticLog.i(app, "SCREENSHOT_BACKEND", "mode="
                 + PrivilegeManager.modeLabel(settings)
