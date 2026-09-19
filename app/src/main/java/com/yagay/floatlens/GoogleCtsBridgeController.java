@@ -32,6 +32,8 @@ final class GoogleCtsBridgeController {
         boolean committed;
         boolean delivered;
         boolean textMenuShown;
+        boolean regionPending;
+        boolean regionConfirmRequested;
         int selectionRevision;
         Runnable cleanupTask;
     }
@@ -66,6 +68,8 @@ final class GoogleCtsBridgeController {
         final Rect selectedBounds;
         synchronized (state) {
             if (state.delivered) return;
+            state.regionPending = false;
+            state.regionConfirmRequested = false;
             state.text = text == null ? "" : text.trim();
             if (bounds != null && !bounds.isEmpty()) {
                 state.bounds = new Rect(bounds);
@@ -75,6 +79,7 @@ final class GoogleCtsBridgeController {
             selectedText = state.text;
             selectedBounds = state.bounds == null ? null : new Rect(state.bounds);
         }
+        GoogleRegionConfirmOverlay.dismiss(token, "text_selection");
         WorkflowSessionManager.Session workflow = WorkflowSessionManager.current();
         if (workflow != null && token.equals(workflow.externalKey())) {
             WorkflowSessionManager.transition(app, workflow,
@@ -120,12 +125,87 @@ final class GoogleCtsBridgeController {
         }
     }
 
+    static void onRegionSelection(
+            Context context, String token, Rect bounds, String detail) {
+        if (context == null || token == null || token.isBlank()
+                || bounds == null || bounds.isEmpty()) return;
+
+        Context app = context.getApplicationContext();
+        State state = state(token);
+        Rect selectedBounds;
+        boolean alreadyConfirmed;
+        synchronized (state) {
+            if (state.delivered) return;
+            state.text = "";
+            state.bounds = new Rect(bounds);
+            state.detail = detail == null ? "" : detail;
+            state.regionPending = true;
+            state.textMenuShown = false;
+            state.selectionRevision++;
+            selectedBounds = new Rect(state.bounds);
+            alreadyConfirmed = state.regionConfirmRequested;
+        }
+        FloatActionMenu.dismiss();
+        WorkflowSessionManager.Session workflow = WorkflowSessionManager.current();
+        if (workflow != null && token.equals(workflow.externalKey())) {
+            WorkflowSessionManager.transition(app, workflow,
+                    WorkflowSessionManager.Phase.SELECTING, "google_region_selection");
+        }
+        scheduleCleanup(app, token, state);
+        if (!alreadyConfirmed) {
+            MAIN.post(() -> GoogleRegionConfirmOverlay.show(
+                    app, token, selectedBounds,
+                    () -> confirmRegion(app, token)));
+        }
+        DiagnosticLog.i(app, "GOOGLE_REGION",
+                "selection session=" + shortToken(token)
+                        + " bounds=" + selectedBounds
+                        + " confirmVisible=" + !alreadyConfirmed);
+    }
+
+    private static void confirmRegion(Context app, String token) {
+        State state = STATES.get(token);
+        if (app == null || state == null) return;
+        Rect bounds;
+        synchronized (state) {
+            if (state.delivered || !state.regionPending || state.regionConfirmRequested) return;
+            state.regionConfirmRequested = true;
+            bounds = state.bounds == null ? null : new Rect(state.bounds);
+        }
+        GoogleRegionConfirmOverlay.dismiss(token, "confirm_requested");
+        DiagnosticLog.i(app, "GOOGLE_REGION",
+                "confirm requested session=" + shortToken(token)
+                        + " bounds=" + String.valueOf(bounds));
+        LsposedStatusManager.confirmGoogleCtsRegionRemoteAsync(token, success -> {
+            if (success) {
+                DiagnosticLog.i(app, "GOOGLE_REGION",
+                        "confirm bridged session=" + shortToken(token));
+                return;
+            }
+            Rect retryBounds;
+            synchronized (state) {
+                if (state.delivered) return;
+                state.regionConfirmRequested = false;
+                retryBounds = state.bounds == null ? null : new Rect(state.bounds);
+            }
+            DiagnosticLog.i(app, "GOOGLE_REGION",
+                    "confirm bridge failed session=" + shortToken(token));
+            if (retryBounds != null && !retryBounds.isEmpty()) {
+                GoogleRegionConfirmOverlay.show(
+                        app, token, retryBounds,
+                        () -> confirmRegion(app, token));
+            }
+        });
+    }
+
     static void onCommit(Context context, String token, String detail) {
         if (context == null || token == null || token.isBlank()) return;
         Context app = context.getApplicationContext();
         State state = state(token);
+        GoogleRegionConfirmOverlay.dismiss(token, "commit");
         synchronized (state) {
             if (state.delivered) return;
+            state.regionPending = false;
             state.committed = true;
             if (detail != null && !detail.isBlank()) state.detail = detail;
         }
@@ -161,6 +241,7 @@ final class GoogleCtsBridgeController {
         }
         STATES.remove(token, state);
         cancelCleanup(state);
+        GoogleRegionConfirmOverlay.dismiss(token, "text_menu_commit");
         recycle(frame);
         if (showMenuNow) {
             FloatActionMenu.showTextAt(app, finalText, null, finalBounds);
@@ -181,6 +262,7 @@ final class GoogleCtsBridgeController {
 
     private static void clearSessionState(Context app, String token, String reason) {
         if (app == null) return;
+        GoogleRegionConfirmOverlay.dismiss(token, reason);
         new FloatSettings(app).clearGoogleCtsSession();
         LsposedStatusManager.clearGoogleCtsSessionRemote(token);
         WorkflowSessionManager.finishExternal(app, token, reason);
@@ -192,8 +274,10 @@ final class GoogleCtsBridgeController {
                               Rect bounds, String detail) {
         if (context == null || token == null || token.isBlank()) return;
         State state = state(token);
+        GoogleRegionConfirmOverlay.dismiss(token, "query_result");
         synchronized (state) {
             if (state.delivered) return;
+            state.regionPending = false;
             if ((state.text == null || state.text.isBlank()) && text != null && !text.isBlank()) {
                 state.text = text.trim();
             }
@@ -213,6 +297,7 @@ final class GoogleCtsBridgeController {
         Context app = context.getApplicationContext();
         State state = STATES.remove(token);
         if (state != null) cancelCleanup(state);
+        GoogleRegionConfirmOverlay.dismiss(token, "bridge_end");
         boolean dismissTextMenu = false;
         if (state != null) {
             synchronized (state) {
@@ -255,6 +340,7 @@ final class GoogleCtsBridgeController {
         }
         STATES.remove(token, state);
         cancelCleanup(state);
+        GoogleRegionConfirmOverlay.dismiss(token, "deliver");
 
         Bitmap display = frame;
         Rect normalized = normalize(bounds, frame);
@@ -330,6 +416,7 @@ final class GoogleCtsBridgeController {
                 state.delivered = true;
             }
             if (dismissTextMenu) FloatActionMenu.dismiss();
+            GoogleRegionConfirmOverlay.dismiss(token, "state_expired");
             clearSessionState(app, token, "state_expired");
             DiagnosticLog.i(app, "GOOGLE_BRIDGE",
                     "state expired session=" + shortToken(token)
