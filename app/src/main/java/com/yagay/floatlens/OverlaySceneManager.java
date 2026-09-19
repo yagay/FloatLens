@@ -86,7 +86,9 @@ final class OverlaySceneManager {
         // Persistent service surfaces and result/action menus intentionally outlive a workflow.
         if (normalized.startsWith("float_icon")
                 || normalized.contains("action_menu")
-                || normalized.contains("edge_wake")) {
+                || normalized.contains("edge_wake")
+                || normalized.contains("circle_active_border")
+                || normalized.contains("google_region_confirm")) {
             return false;
         }
         return true;
