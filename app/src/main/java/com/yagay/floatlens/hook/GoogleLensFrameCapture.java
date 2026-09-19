@@ -39,6 +39,62 @@ final class GoogleLensFrameCapture {
     private final Consumer<Bitmap> sink;
     private final BiConsumer<String, String> reporter;
 
+    static final class Binding {
+        final boolean voiceScreenshot;
+        final boolean initialActivityData;
+        final boolean initialActivityParser;
+        final boolean inProcessBitmap;
+        final int confidence;
+        final String detail;
+
+        Binding(boolean voiceScreenshot, boolean initialActivityData,
+                boolean initialActivityParser, boolean inProcessBitmap,
+                int confidence, String detail) {
+            this.voiceScreenshot = voiceScreenshot;
+            this.initialActivityData = initialActivityData;
+            this.initialActivityParser = initialActivityParser;
+            this.inProcessBitmap = inProcessBitmap;
+            this.confidence = confidence;
+            this.detail = detail == null ? "" : detail;
+        }
+
+        boolean available() {
+            return voiceScreenshot || initialActivityData || initialActivityParser
+                    || inProcessBitmap;
+        }
+
+        String source() {
+            StringBuilder out = new StringBuilder();
+            if (voiceScreenshot) out.append("voice");
+            if (initialActivityData) append(out, "initial-data");
+            if (initialActivityParser) append(out, "initial-parser");
+            if (inProcessBitmap) append(out, "in-process");
+            return out.length() == 0 ? "none" : out.toString();
+        }
+
+        private static void append(StringBuilder out, String value) {
+            if (out.length() > 0) out.append('+');
+            out.append(value);
+        }
+    }
+
+    static Binding resolve(ClassLoader loader) {
+        if (loader == null) return new Binding(false, false, false, false, 0, "classLoader=null");
+        boolean voice = hasMethod(loader, VOICE_SESSION_IMPL, "onHandleScreenshot",
+                Bitmap.class, Bitmap.class);
+        boolean data = hasNoArgBitmapGetter(loader, INITIAL_ACTIVITY_DATA);
+        boolean parser = hasReturnTypeMethod(loader, INITIAL_ACTIVITY_PARSER, INITIAL_ACTIVITY_DATA);
+        boolean inProcess = hasNoArgBitmapGetter(loader, IN_PROCESS_BITMAP);
+        int confidence = 0;
+        if (voice) confidence += 35;
+        if (data) confidence += 25;
+        if (parser) confidence += 15;
+        if (inProcess) confidence += 35;
+        return new Binding(voice, data, parser, inProcess, confidence,
+                "voice=" + voice + " data=" + data + " parser=" + parser
+                        + " inProcess=" + inProcess);
+    }
+
     GoogleLensFrameCapture(XposedModule module,
                            ClassLoader classLoader,
                            BooleanSupplier active,
@@ -52,12 +108,15 @@ final class GoogleLensFrameCapture {
     }
 
     int install() {
+        Binding binding = resolve(classLoader);
         int hooks = 0;
-        hooks += hookGoogleVoiceSessionScreenshot();
-        hooks += hookInitialActivityDataBitmap();
-        hooks += hookInitialActivityParser();
-        hooks += hookInProcessBitmap();
-        module.log(Log.INFO, TAG, "Google Lens frame capture hooks=" + hooks);
+        if (binding.voiceScreenshot) hooks += hookGoogleVoiceSessionScreenshot();
+        if (binding.initialActivityData) hooks += hookInitialActivityDataBitmap();
+        if (binding.initialActivityParser) hooks += hookInitialActivityParser();
+        if (binding.inProcessBitmap) hooks += hookInProcessBitmap();
+        module.log(Log.INFO, TAG, "Google Lens frame capability source=" + binding.source()
+                + " confidence=" + binding.confidence
+                + " hooks=" + hooks + " detail=" + binding.detail);
         return hooks;
     }
 
@@ -221,6 +280,42 @@ final class GoogleLensFrameCapture {
 
         Object field = GoogleReflection.readField(value, null, Bitmap.class.getName());
         return field instanceof Bitmap bitmap && !bitmap.isRecycled() ? bitmap : null;
+    }
+
+    private static boolean hasMethod(ClassLoader loader, String className, String name,
+                                     Class<?> parameterType, Class<?> expectedParameter) {
+        try {
+            Class<?> cls = Class.forName(className, false, loader);
+            for (Method method : GoogleReflection.declaredMethods(cls)) {
+                if (!name.equals(method.getName()) || method.getParameterCount() != 1) continue;
+                Class<?> type = method.getParameterTypes()[0];
+                if (type == parameterType || type == expectedParameter) return true;
+            }
+        } catch (Throwable ignored) { }
+        return false;
+    }
+
+    private static boolean hasNoArgBitmapGetter(ClassLoader loader, String className) {
+        try {
+            Class<?> cls = Class.forName(className, false, loader);
+            for (Method method : GoogleReflection.declaredMethods(cls)) {
+                if (method.getParameterCount() == 0 && method.getReturnType() == Bitmap.class) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) { }
+        return false;
+    }
+
+    private static boolean hasReturnTypeMethod(
+            ClassLoader loader, String className, String returnTypeName) {
+        try {
+            Class<?> cls = Class.forName(className, false, loader);
+            for (Method method : GoogleReflection.declaredMethods(cls)) {
+                if (returnTypeName.equals(method.getReturnType().getName())) return true;
+            }
+        } catch (Throwable ignored) { }
+        return false;
     }
 
     private static Object safeGet(Bundle bundle, String key) {
