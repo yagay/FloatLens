@@ -663,7 +663,12 @@ public class FloatService extends Service implements android.content.SharedPrefe
     }
 
     @Override public void onConfigurationChanged(Configuration configuration) {
-        layout.persist(primaryLp);
+        // Android has already switched Resources/Configuration when this callback runs, while
+        // primaryLp still contains the OLD orientation's absolute coordinates. Persisting here
+        // writes portrait X into landscape keys (or vice versa) and can flip R->L. User moves are
+        // already committed at gesture end, so rotation should only rebuild from saved state.
+        DiagnosticLog.i(this, "POSITION",
+                "configuration change rebuild without persisting stale orientation coordinates");
         super.onConfigurationChanged(configuration);
         imeRestoreY = null;
         removeIcons();
