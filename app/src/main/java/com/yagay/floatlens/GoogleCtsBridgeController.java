@@ -24,6 +24,11 @@ final class GoogleCtsBridgeController {
     private static final long REGION_CONFIRM_STABLE_MS = 360L;
     /** After a real FrozenImageView UP/CANCEL, wait briefly for Google's final refinement Rect. */
     private static final long REGION_GESTURE_RELEASE_SETTLE_MS = 120L;
+    /**
+     * Google 17.58 can miss the terminal FrozenImageView UP/CANCEL callback on some refinement
+     * paths. If no MOVE heartbeat or Rect update arrives for this long, recover the stuck gesture.
+     */
+    private static final long REGION_GESTURE_STALE_MS = 700L;
     /** Give the Google hook a brief chance to consume the remote confirm before local fallback. */
     private static final long REGION_REMOTE_GRACE_MS = 220L;
     private static final long STATE_TTL_MS = 150_000L;
@@ -43,6 +48,7 @@ final class GoogleCtsBridgeController {
         boolean regionGestureActive;
         int selectionRevision;
         Runnable regionConfirmShowTask;
+        Runnable regionGestureWatchdogTask;
         Runnable regionFallbackTask;
         Runnable cleanupTask;
     }
@@ -81,6 +87,7 @@ final class GoogleCtsBridgeController {
             state.regionConfirmRequested = false;
             state.regionGestureActive = false;
             cancelRegionConfirmShowLocked(state);
+            cancelRegionGestureWatchdogLocked(state);
             cancelRegionFallbackLocked(state);
             state.text = text == null ? "" : text.trim();
             if (bounds != null && !bounds.isEmpty()) {
@@ -178,7 +185,9 @@ final class GoogleCtsBridgeController {
                     WorkflowSessionManager.Phase.SELECTING, "google_region_selection");
         }
         scheduleCleanup(app, token, state);
-        if (!gestureActive) {
+        if (gestureActive) {
+            scheduleRegionGestureWatchdog(app, token, state);
+        } else {
             scheduleStableRegionConfirm(
                     app, token, state, revision, selectedBounds, REGION_CONFIRM_STABLE_MS);
         }
@@ -200,15 +209,22 @@ final class GoogleCtsBridgeController {
         int revision = -1;
         Rect selectedBounds = null;
         boolean shouldSchedule = false;
+        boolean wasActive;
         synchronized (state) {
             if (state.delivered || state.regionConfirmRequested) return;
+            wasActive = state.regionGestureActive;
             state.regionGestureActive = adjusting;
             cancelRegionConfirmShowLocked(state);
-            if (!adjusting && state.regionPending
-                    && state.bounds != null && !state.bounds.isEmpty()) {
-                revision = state.selectionRevision;
-                selectedBounds = new Rect(state.bounds);
-                shouldSchedule = true;
+            if (adjusting) {
+                scheduleRegionGestureWatchdogLocked(app, token, state);
+            } else {
+                cancelRegionGestureWatchdogLocked(state);
+                if (state.regionPending
+                        && state.bounds != null && !state.bounds.isEmpty()) {
+                    revision = state.selectionRevision;
+                    selectedBounds = new Rect(state.bounds);
+                    shouldSchedule = true;
+                }
             }
         }
 
@@ -216,7 +232,8 @@ final class GoogleCtsBridgeController {
                 token, adjusting ? "gesture_adjusting" : "gesture_released");
         if (adjusting) {
             DiagnosticLog.i(app, "GOOGLE_REGION",
-                    "gesture start session=" + shortToken(token)
+                    (wasActive ? "gesture heartbeat" : "gesture start")
+                            + " session=" + shortToken(token)
                             + " detail=" + trim(detail, 300));
             return;
         }
@@ -231,6 +248,47 @@ final class GoogleCtsBridgeController {
                     app, token, state, revision, selectedBounds,
                     REGION_GESTURE_RELEASE_SETTLE_MS);
         }
+    }
+
+    private static void scheduleRegionGestureWatchdog(
+            Context app, String token, State state) {
+        synchronized (state) {
+            scheduleRegionGestureWatchdogLocked(app, token, state);
+        }
+    }
+
+    private static void scheduleRegionGestureWatchdogLocked(
+            Context app, String token, State state) {
+        cancelRegionGestureWatchdogLocked(state);
+        final Runnable[] holder = new Runnable[1];
+        holder[0] = () -> {
+            int revision;
+            Rect selectedBounds;
+            synchronized (state) {
+                if (state.regionGestureWatchdogTask != holder[0]) return;
+                state.regionGestureWatchdogTask = null;
+                if (state.delivered || state.regionConfirmRequested
+                        || !state.regionGestureActive
+                        || !state.regionPending
+                        || state.bounds == null || state.bounds.isEmpty()) {
+                    return;
+                }
+                state.regionGestureActive = false;
+                revision = state.selectionRevision;
+                selectedBounds = new Rect(state.bounds);
+            }
+
+            DiagnosticLog.i(app, "GOOGLE_REGION",
+                    "gesture watchdog recovered session=" + shortToken(token)
+                            + " revision=" + revision
+                            + " staleMs=" + REGION_GESTURE_STALE_MS
+                            + " bounds=" + selectedBounds);
+            scheduleStableRegionConfirm(
+                    app, token, state, revision, selectedBounds,
+                    REGION_GESTURE_RELEASE_SETTLE_MS);
+        };
+        state.regionGestureWatchdogTask = holder[0];
+        MAIN.postDelayed(holder[0], REGION_GESTURE_STALE_MS);
     }
 
     private static void scheduleStableRegionConfirm(
@@ -272,7 +330,9 @@ final class GoogleCtsBridgeController {
         synchronized (state) {
             if (state.delivered || !state.regionPending || state.regionConfirmRequested) return;
             state.regionConfirmRequested = true;
+            state.regionGestureActive = false;
             cancelRegionConfirmShowLocked(state);
+            cancelRegionGestureWatchdogLocked(state);
             cancelRegionFallbackLocked(state);
             bounds = state.bounds == null ? null : new Rect(state.bounds);
         }
@@ -344,7 +404,9 @@ final class GoogleCtsBridgeController {
         synchronized (state) {
             if (state.delivered) return;
             state.regionPending = false;
+            state.regionGestureActive = false;
             cancelRegionConfirmShowLocked(state);
+            cancelRegionGestureWatchdogLocked(state);
             cancelRegionFallbackLocked(state);
             state.committed = true;
             if (detail != null && !detail.isBlank()) state.detail = detail;
@@ -423,7 +485,9 @@ final class GoogleCtsBridgeController {
         synchronized (state) {
             if (state.delivered) return;
             state.regionPending = false;
+            state.regionGestureActive = false;
             cancelRegionConfirmShowLocked(state);
+            cancelRegionGestureWatchdogLocked(state);
             cancelRegionFallbackLocked(state);
             if ((state.text == null || state.text.isBlank()) && text != null && !text.isBlank()) {
                 state.text = text.trim();
@@ -445,6 +509,7 @@ final class GoogleCtsBridgeController {
         State state = STATES.remove(token);
         if (state != null) {
             cancelRegionConfirmShow(state);
+            cancelRegionGestureWatchdog(state);
             cancelRegionFallback(state);
             cancelCleanup(state);
         }
@@ -491,6 +556,7 @@ final class GoogleCtsBridgeController {
         }
         STATES.remove(token, state);
         cancelRegionConfirmShow(state);
+        cancelRegionGestureWatchdog(state);
         cancelRegionFallback(state);
         cancelCleanup(state);
         GoogleRegionConfirmOverlay.dismiss(token, "deliver");
@@ -564,6 +630,7 @@ final class GoogleCtsBridgeController {
             boolean dismissTextMenu;
             synchronized (state) {
                 cancelRegionConfirmShowLocked(state);
+                cancelRegionGestureWatchdogLocked(state);
                 cancelRegionFallbackLocked(state);
                 recycle(state.frame);
                 state.frame = null;
@@ -600,6 +667,22 @@ final class GoogleCtsBridgeController {
     private static void cancelRegionConfirmShowLocked(State state) {
         Runnable pending = state.regionConfirmShowTask;
         state.regionConfirmShowTask = null;
+        if (pending != null) MAIN.removeCallbacks(pending);
+    }
+
+    private static void cancelRegionGestureWatchdog(State state) {
+        if (state == null) return;
+        Runnable pending;
+        synchronized (state) {
+            pending = state.regionGestureWatchdogTask;
+            state.regionGestureWatchdogTask = null;
+        }
+        if (pending != null) MAIN.removeCallbacks(pending);
+    }
+
+    private static void cancelRegionGestureWatchdogLocked(State state) {
+        Runnable pending = state.regionGestureWatchdogTask;
+        state.regionGestureWatchdogTask = null;
         if (pending != null) MAIN.removeCallbacks(pending);
     }
 
