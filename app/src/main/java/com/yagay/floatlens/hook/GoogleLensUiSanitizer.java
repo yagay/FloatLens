@@ -27,6 +27,10 @@ final class GoogleLensUiSanitizer {
             "com.google.android.libraries.lens.view.omnibox.OmniBoxView";
     private static final String MATERIAL_FLOATING_TOOLBAR =
             "com.google.android.material.floatingtoolbar.FloatingToolbarLayout";
+    private static final String MATERIAL_CHIP =
+            "com.google.android.material.chip.Chip";
+    private static final String MATERIAL_CHIP_GROUP =
+            "com.google.android.material.chip.ChipGroup";
 
     private static final String[] CHROME_ID_SUFFIXES = {
             ":id/lens_overlay_back_button",
@@ -122,7 +126,9 @@ final class GoogleLensUiSanitizer {
         if (ACTION_MENU_VIEW.equals(className)
                 || INFO_PANEL_VIEW.equals(className)
                 || OMNIBOX_VIEW.equals(className)
-                || MATERIAL_FLOATING_TOOLBAR.equals(className)) {
+                || MATERIAL_FLOATING_TOOLBAR.equals(className)
+                || MATERIAL_CHIP.equals(className)
+                || MATERIAL_CHIP_GROUP.equals(className)) {
             return true;
         }
 
