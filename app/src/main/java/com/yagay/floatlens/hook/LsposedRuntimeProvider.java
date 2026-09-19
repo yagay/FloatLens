@@ -13,6 +13,10 @@ import io.github.libxposed.api.XposedModule;
 
 /** Process-local LSPosed provider gate backed by framework Remote Preferences. */
 final class LsposedRuntimeProvider {
+    interface Observer {
+        void onGoogleRegionConfirm(String token, long confirmedAtElapsed);
+    }
+
     private static final String TAG = "FloatLens-LSPosed";
 
     private final XposedModule module;
@@ -20,6 +24,9 @@ final class LsposedRuntimeProvider {
     private SharedPreferences preferences;
     private SharedPreferences.OnSharedPreferenceChangeListener listener;
     private volatile boolean active;
+    private volatile Observer observer;
+    private String lastConfirmToken = "";
+    private long lastConfirmElapsed;
 
     LsposedRuntimeProvider(XposedModule module, String processName) {
         this.module = module;
@@ -50,6 +57,10 @@ final class LsposedRuntimeProvider {
                         || LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_TOKEN.equals(key)
                         || LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_ELAPSED.equals(key)) {
                     refresh();
+                    if (LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_TOKEN.equals(key)
+                            || LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_ELAPSED.equals(key)) {
+                        dispatchGoogleRegionConfirmIfNeeded();
+                    }
                 }
             };
             preferences.registerOnSharedPreferenceChangeListener(listener);
@@ -65,6 +76,11 @@ final class LsposedRuntimeProvider {
             module.log(Log.ERROR, TAG,
                     "Failed to initialize controlled provider in " + displayProcess(), t);
         }
+    }
+
+    void setObserver(Observer next) {
+        observer = next;
+        if (next != null) dispatchGoogleRegionConfirmIfNeeded();
     }
 
     boolean isActive() {
@@ -160,6 +176,33 @@ final class LsposedRuntimeProvider {
             module.log(Log.ERROR, TAG,
                     "Failed to read secure capture lease in " + displayProcess(), t);
             return false;
+        }
+    }
+
+
+    private void dispatchGoogleRegionConfirmIfNeeded() {
+        Observer currentObserver = observer;
+        if (!active || preferences == null || currentObserver == null) return;
+        try {
+            String sessionToken = preferences.getString(
+                    LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, "");
+            String confirmToken = preferences.getString(
+                    LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_TOKEN, "");
+            long confirmedAt = preferences.getLong(
+                    LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_ELAPSED, 0L);
+            if (!LsposedRuntimeConfig.isGoogleRegionConfirmRequested(
+                    sessionToken, confirmToken, confirmedAt, SystemClock.elapsedRealtime())) {
+                return;
+            }
+            synchronized (this) {
+                if (confirmToken.equals(lastConfirmToken) && confirmedAt == lastConfirmElapsed) return;
+                lastConfirmToken = confirmToken;
+                lastConfirmElapsed = confirmedAt;
+            }
+            currentObserver.onGoogleRegionConfirm(confirmToken, confirmedAt);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Failed to dispatch Google region confirmation in " + displayProcess(), t);
         }
     }
 
