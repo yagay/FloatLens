@@ -17,6 +17,7 @@ public final class FloatLensApp extends Application implements Application.Activ
             DiagnosticLog.i(this, "APP_MIGRATION", "settings migration failed=" + t);
         }
         ThemeSettings.applySavedMode(this);
+        HookReloadManager.initialize(this);
         try {
             RemovedFeatureMigration.run(this);
         } catch (Throwable t) {
