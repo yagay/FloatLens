@@ -1,5 +1,6 @@
 package com.yagay.floatlens.hook;
 
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.MotionEvent;
 
@@ -18,7 +19,10 @@ final class GoogleRegionGestureHook {
     private final BooleanSupplier active;
     private final BiConsumer<Boolean, String> stateSink;
 
+    private static final long MOVE_HEARTBEAT_MS = 120L;
+
     private boolean gestureActive;
+    private long lastHeartbeatElapsed;
 
     GoogleRegionGestureHook(XposedModule module,
                             ClassLoader classLoader,
@@ -59,32 +63,47 @@ final class GoogleRegionGestureHook {
 
     synchronized void reset() {
         gestureActive = false;
+        lastHeartbeatElapsed = 0L;
     }
 
     private synchronized void dispatchGestureState(MotionEvent event, String methodName) {
         int action = event.getActionMasked();
-        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE
-                || action == MotionEvent.ACTION_POINTER_DOWN) {
-            if (!gestureActive) {
-                gestureActive = true;
-                stateSink.accept(true,
-                        "action=" + actionName(action)
-                                + " method=" + methodName
-                                + " pointers=" + event.getPointerCount()
-                                + " downTime=" + event.getDownTime());
+        long now = SystemClock.elapsedRealtime();
+
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
+            gestureActive = true;
+            lastHeartbeatElapsed = now;
+            stateSink.accept(true, describe(event, methodName, action, "start"));
+            return;
+        }
+
+        if (action == MotionEvent.ACTION_MOVE) {
+            if (!gestureActive) gestureActive = true;
+            if (now - lastHeartbeatElapsed >= MOVE_HEARTBEAT_MS) {
+                lastHeartbeatElapsed = now;
+                stateSink.accept(true, describe(event, methodName, action, "heartbeat"));
             }
             return;
         }
 
-        if ((action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)
-                && gestureActive) {
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
             gestureActive = false;
-            stateSink.accept(false,
-                    "action=" + actionName(action)
-                            + " method=" + methodName
-                            + " pointers=" + event.getPointerCount()
-                            + " downTime=" + event.getDownTime());
+            lastHeartbeatElapsed = 0L;
+            // Emit the end even if an earlier Google-internal method already altered our state.
+            // Different 17.58 FrozenImageView paths can observe DOWN and terminal events in
+            // different methods; the app-side state machine de-duplicates harmless duplicates.
+            stateSink.accept(false, describe(event, methodName, action, "end"));
         }
+    }
+
+    private static String describe(
+            MotionEvent event, String methodName, int action, String phase) {
+        return "phase=" + phase
+                + " action=" + actionName(action)
+                + " method=" + methodName
+                + " pointers=" + event.getPointerCount()
+                + " downTime=" + event.getDownTime()
+                + " eventTime=" + event.getEventTime();
     }
 
     private static int motionEventIndex(Class<?>[] parameters) {
