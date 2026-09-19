@@ -996,7 +996,7 @@ final class GoogleCtsRuntimeInspector {
     /** Google 17.58.16.ve Lens user-selection/query boundary from classes8.dex. */
     private int hookGoogle1758LensSelectionBoundary() {
         try {
-            String profileError = GoogleLens1758Profile.validationError(classLoader);
+            String profileError = GoogleLens1758Profile.selectionValidationError(classLoader);
             if (!profileError.isBlank()) {
                 module.log(Log.WARN, TAG,
                         "Google " + GoogleLens1758Profile.NAME
