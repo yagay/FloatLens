@@ -38,24 +38,19 @@ public final class GoogleCtsBridgeReceiver extends BroadcastReceiver {
         switch (event) {
             case GoogleCtsContract.EVENT_SELECTION ->
                     GoogleCtsBridgeController.onSelection(context, token, text, bounds, detail);
-            case GoogleCtsContract.EVENT_COMMIT -> {
-                LsposedStatusManager.clearGoogleCtsSessionRemote(token);
-                GoogleCtsBridgeController.onCommit(context, token, detail);
-            }
-            case GoogleCtsContract.EVENT_QUERY_RESULT -> {
-                LsposedStatusManager.clearGoogleCtsSessionRemote(token);
-                GoogleCtsBridgeController.onQueryResult(
-                        context, token, text, bounds, detail);
-            }
-            case GoogleCtsContract.EVENT_TEXT_MENU_COMMIT -> {
-                LsposedStatusManager.clearGoogleCtsSessionRemote(token);
-                GoogleCtsBridgeController.onTextMenuCommit(
-                        context, token, text, bounds, detail);
-            }
-            case GoogleCtsContract.EVENT_END -> {
-                LsposedStatusManager.clearGoogleCtsSessionRemote(token);
-                GoogleCtsBridgeController.onEnd(context, token, detail);
-            }
+            case GoogleCtsContract.EVENT_REGION_SELECTION ->
+                    GoogleCtsBridgeController.onRegionSelection(
+                            context, token, bounds, detail);
+            case GoogleCtsContract.EVENT_COMMIT ->
+                    GoogleCtsBridgeController.onCommit(context, token, detail);
+            case GoogleCtsContract.EVENT_QUERY_RESULT ->
+                    GoogleCtsBridgeController.onQueryResult(
+                            context, token, text, bounds, detail);
+            case GoogleCtsContract.EVENT_TEXT_MENU_COMMIT ->
+                    GoogleCtsBridgeController.onTextMenuCommit(
+                            context, token, text, bounds, detail);
+            case GoogleCtsContract.EVENT_END ->
+                    GoogleCtsBridgeController.onEnd(context, token, detail);
             default -> DiagnosticLog.i(context, "GOOGLE_BRIDGE",
                     "unknown event=" + event + " session=" + shortToken(token));
         }
