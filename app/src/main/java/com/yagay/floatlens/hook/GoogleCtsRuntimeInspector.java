@@ -59,19 +59,12 @@ final class GoogleCtsRuntimeInspector {
     private final LsposedRuntimeProvider provider;
     private final ClassLoader classLoader;
     private final AtomicInteger eventCount = new AtomicInteger();
-    private final ThreadLocal<Boolean> traceDispatching = new ThreadLocal<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final ExecutorService bridgeIo = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "FloatLens-GoogleBridge-Tx");
-        t.setDaemon(true);
-        return t;
-    });
 
     private volatile long activeUntil;
     private volatile String sessionToken = "";
     private volatile int showSessionId = -1;
     private volatile Object voiceSession;
-    private volatile boolean bridgeFrameQueued;
     private volatile boolean bridgeCommitted;
     private volatile boolean bridgeSelectionSeen;
     private volatile boolean bridgePendingSeen;
@@ -80,6 +73,7 @@ final class GoogleCtsRuntimeInspector {
     private volatile boolean presentationAlreadyAbsentReported;
     private volatile WeakReference<Activity> markedActivity = new WeakReference<>(null);
     private final GoogleLensUiSanitizer uiSanitizer;
+    private final GoogleBridgeSender bridgeSender;
 
     GoogleCtsRuntimeInspector(XposedModule module,
                               LsposedRuntimeProvider provider,
@@ -90,6 +84,9 @@ final class GoogleCtsRuntimeInspector {
         this.uiSanitizer = new GoogleLensUiSanitizer(
                 () -> active() && bridgeSelectionSeen,
                 this::report);
+        this.bridgeSender = new GoogleBridgeSender(
+                module, this::currentApplicationContext, () -> sessionToken,
+                this::active, provider::diagnosticsEnabled);
     }
 
     void install() {
@@ -100,7 +97,7 @@ final class GoogleCtsRuntimeInspector {
         // auto zoom). Legacy presentation/ActionMenu/InfoPanel/dujo hooks remain in source for
         // diagnostics/rollback but are intentionally not installed.
         hooks += hookGoogleFrozenImageAutoFocus();
-        hooks += hookGoogle1758LensSelectionBoundary();
+        hooks += hookGoogleLensSelectionBoundary();
         // v169 device/APK analysis proved the visible menu is Lens' own ActionMenuView,
         // not framework/Material FloatingToolbar. WindowManager inspection is diagnostic-only.
         if (provider.diagnosticsEnabled()) {
@@ -993,115 +990,26 @@ final class GoogleCtsRuntimeInspector {
         return null;
     }
 
-    /** Google 17.58.16.ve core selection boundary from classes8.dex. */
-    private int hookGoogle1758LensSelectionBoundary() {
-        try {
-            String profileError = GoogleLens1758Profile.selectionValidationError(classLoader);
-            if (!profileError.isBlank()) {
-                module.log(Log.WARN, TAG,
-                        "Google " + GoogleLens1758Profile.NAME
-                                + " selection profile rejected: " + profileError
-                                + "; trying dynamic structural selection resolver");
-                return hookDynamicLensSelectionBoundary(profileError);
-            }
-
-            Class<?> controller = Class.forName(
-                    GoogleLens1758Profile.CONTROLLER, false, classLoader);
-            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
-                if (!(executable instanceof Method method)
-                        || !GoogleLens1758Profile.isSelectionMethod(method)) {
-                    continue;
-                }
-
-                module.hook(method).intercept(chain -> {
-                    GoogleLens1758Profile.SelectionSnapshot selection = null;
-                    Rect selectionBounds = null;
-                    if (active()) {
-                        selection = GoogleLens1758Profile.selection(chain.getArg(0));
-                        selectionBounds = selectionBoundsForDisplay(selection);
-                        bridgeSelectionSeen = true;
-                        bridgeSelectionText = selection.text();
-                        if (selectionBounds != null && !selectionBounds.isEmpty()) {
-                            bridgeSelectionBounds = selectionBounds;
-                        }
-                        Rect effectiveBounds = bridgeSelectionBounds == null
-                                ? null : new Rect(bridgeSelectionBounds);
-                        report("USER_SELECTION",
-                                selection.detail()
-                                        + " pixelBounds=" + String.valueOf(selectionBounds)
-                                        + " effectiveBounds=" + String.valueOf(effectiveBounds)
-                                        + " primary=" + chain.getArg(1));
-                        sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
-                                selection.text(), selection.detail(), effectiveBounds);
-                    }
-
-                    boolean directRegionCommit = active()
-                            && selection != null
-                            && selection.isDirectRegionSelection()
-                            && selectionBounds != null
-                            && !selectionBounds.isEmpty();
-
-                    Object result = chain.proceed();
-
-                    if (active() && bridgeSelectionSeen) {
-                        uiSanitizer.sanitizeNow();
-                    }
-
-                    if (directRegionCommit && active() && !bridgeCommitted) {
-                        report("LENS_REGION_SELECTION_COMMIT",
-                                "class=" + selection.userSelectionClass()
-                                        + " bounds=" + String.valueOf(bridgeSelectionBounds)
-                                        + " source=selection_boundary");
-                        commitBridgeResult("", selection.detail(), "lens_region_selection");
-                    }
-
-                    if (active() && bridgeSelectionSeen
-                            && bridgeSelectionText != null
-                            && !bridgeSelectionText.isBlank()) {
-                        uiSanitizer.sanitizeNow();
-                        inspectGoogleSelectionViewsSoon();
-                    }
-                    return result;
-                });
-
-                module.log(Log.INFO, TAG,
-                        "Google " + GoogleLens1758Profile.NAME
-                                + " core selection hook=1 method=" + method.getName());
-                return 1;
-            }
-
-            module.log(Log.WARN, TAG,
-                    "Google " + GoogleLens1758Profile.NAME
-                            + " core selection method not found after validation");
-            return 0;
-        } catch (Throwable t) {
-            module.log(Log.WARN, TAG,
-                    "Google " + GoogleLens1758Profile.NAME
-                            + " core selection boundary unavailable", t);
-            return 0;
-        }
-    }
-
-    private int hookDynamicLensSelectionBoundary(String profileError) {
-        GoogleLensDynamicResolver.SelectionBinding binding =
-                GoogleLensDynamicResolver.discoverSelection(classLoader);
+    /** Resolve the exact 17.58 profile or structural fallback behind one hook contract. */
+    private int hookGoogleLensSelectionBoundary() {
+        GoogleSelectionAdapter.Binding binding = GoogleSelectionAdapter.resolve(classLoader);
         if (!binding.available()) {
             module.log(Log.WARN, TAG,
-                    "Dynamic Google Lens selection resolver unavailable: "
-                            + binding.detail() + " profileError=" + profileError);
+                    "Google Lens selection binding unavailable: " + binding.detail());
             return 0;
         }
 
         module.log(Log.INFO, TAG,
-                "Dynamic Google Lens selection hook accepted confidence="
-                        + binding.confidence() + " " + binding.detail());
+                "Google Lens selection binding source=" + binding.source()
+                        + " confidence=" + binding.confidence()
+                        + " detail=" + binding.detail());
         try {
             module.hook(binding.method()).intercept(chain -> {
-                GoogleLensDynamicResolver.DynamicSelectionSnapshot selection = null;
+                GoogleSelectionAdapter.Snapshot selection = null;
                 Rect selectionBounds = null;
                 if (active()) {
-                    selection = binding.snapshot(chain.getArg(0));
-                    selectionBounds = dynamicSelectionBoundsForDisplay(selection.rawBounds());
+                    selection = binding.snapshot(chain.getArg(0), currentApplicationContext());
+                    selectionBounds = selection.bounds();
                     bridgeSelectionSeen = true;
                     bridgeSelectionText = selection.text();
                     if (selectionBounds != null && !selectionBounds.isEmpty()) {
@@ -1110,22 +1018,31 @@ final class GoogleCtsRuntimeInspector {
                     Rect effectiveBounds = bridgeSelectionBounds == null
                             ? null : new Rect(bridgeSelectionBounds);
                     String detail = selection.detail()
-                            + " resolver=" + binding.detail()
+                            + " source=" + binding.source()
                             + " pixelBounds=" + String.valueOf(selectionBounds)
                             + " effectiveBounds=" + String.valueOf(effectiveBounds)
                             + " primary=" + chain.getArg(1);
-                    report("USER_SELECTION_DYNAMIC", detail);
+                    report("USER_SELECTION_" + binding.source().toUpperCase(Locale.ROOT), detail);
                     sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
                             selection.text(), detail, effectiveBounds);
                 }
 
-                // Dynamic discovery is allowed to drive text selection immediately, but it
-                // does not auto-commit non-text/region selections yet. Empty-text selections are
-                // too ambiguous until a runtime validator has observed the new Google version.
+                boolean directRegionCommit = active()
+                        && selection != null
+                        && selection.directRegionCommit()
+                        && selectionBounds != null
+                        && !selectionBounds.isEmpty();
+
                 Object result = chain.proceed();
 
-                if (active() && bridgeSelectionSeen) {
-                    uiSanitizer.sanitizeNow();
+                if (active() && bridgeSelectionSeen) uiSanitizer.sanitizeNow();
+
+                if (directRegionCommit && active() && !bridgeCommitted) {
+                    report("LENS_REGION_SELECTION_COMMIT",
+                            "class=" + selection.selectionClass()
+                                    + " bounds=" + String.valueOf(bridgeSelectionBounds)
+                                    + " source=selection_adapter");
+                    commitBridgeResult("", selection.detail(), "lens_region_selection");
                 }
 
                 if (active() && bridgeSelectionSeen
@@ -1138,8 +1055,7 @@ final class GoogleCtsRuntimeInspector {
             });
             return 1;
         } catch (Throwable t) {
-            module.log(Log.WARN, TAG,
-                    "Dynamic Google Lens selection hook install failed", t);
+            module.log(Log.WARN, TAG, "Google Lens selection hook install failed", t);
             return 0;
         }
     }
@@ -1158,7 +1074,7 @@ final class GoogleCtsRuntimeInspector {
 
     private synchronized boolean commitBridgeResult(String text, String detail, String reason) {
         if (!active() || bridgeCommitted
-                || (!bridgeSelectionSeen && !bridgePendingSeen && !bridgeFrameQueued)) {
+                || (!bridgeSelectionSeen && !bridgePendingSeen && !bridgeSender.frameQueued())) {
             return false;
         }
 
@@ -1167,7 +1083,7 @@ final class GoogleCtsRuntimeInspector {
         // treating those as a settled result closed the UI and delivered nothing.
         String finalText = bridgeSelectionText == null || bridgeSelectionText.isBlank()
                 ? text : bridgeSelectionText;
-        if ((finalText == null || finalText.isBlank()) && !bridgeFrameQueued) {
+        if ((finalText == null || finalText.isBlank()) && !bridgeSender.frameQueued()) {
             report("LENS_QUERY_NO_PAYLOAD",
                     "keep Google UI open reason=" + reason
                             + " detail=" + safe(detail));
@@ -1236,46 +1152,6 @@ final class GoogleCtsRuntimeInspector {
                 clear(reason + "_" + stage);
             }
         });
-    }
-
-    private Rect selectionBoundsForDisplay(
-            GoogleLens1758Profile.SelectionSnapshot selection) {
-        if (selection == null) return null;
-        Rect direct = selection.bounds();
-        if (direct != null) return direct;
-        try {
-            Context context = currentApplicationContext();
-            if (context == null) return null;
-            android.util.DisplayMetrics metrics =
-                    context.getResources().getDisplayMetrics();
-            return selection.boundsForFrame(metrics.widthPixels, metrics.heightPixels);
-        } catch (Throwable t) {
-            return null;
-        }
-    }
-
-    private Rect dynamicSelectionBoundsForDisplay(RectF rawBounds) {
-        if (rawBounds == null || rawBounds.width() <= 0f || rawBounds.height() <= 0f) return null;
-        RectF working = new RectF(rawBounds);
-        boolean normalized = working.left >= -0.05f && working.top >= -0.05f
-                && working.right <= 1.05f && working.bottom <= 1.05f;
-        if (normalized) {
-            try {
-                Context context = currentApplicationContext();
-                if (context == null) return null;
-                android.util.DisplayMetrics metrics = context.getResources().getDisplayMetrics();
-                working.set(
-                        working.left * metrics.widthPixels,
-                        working.top * metrics.heightPixels,
-                        working.right * metrics.widthPixels,
-                        working.bottom * metrics.heightPixels);
-            } catch (Throwable ignored) {
-                return null;
-            }
-        }
-        Rect out = new Rect();
-        working.roundOut(out);
-        return out.isEmpty() ? null : out;
     }
 
     private void rememberMarkedActivity(Object value) {
@@ -1521,7 +1397,7 @@ final class GoogleCtsRuntimeInspector {
                         contextualFrame = captureContextualSearchFrame(intent);
                         boolean hasText = bridgeSelectionText != null
                                 && !bridgeSelectionText.isBlank();
-                        contextualPayload = hasText || bridgeFrameQueued;
+                        contextualPayload = hasText || bridgeSender.frameQueued();
                         contextualDetail = "source=activity_lifecycle"
                                 + " activityClass="
                                 + (activity == null ? "null" : activity.getClass().getName())
@@ -1618,7 +1494,7 @@ final class GoogleCtsRuntimeInspector {
             report("CONTEXTUAL_SCREENSHOT",
                     "bitmap=" + bitmapSummary(bitmap));
             sendBridgeFrame(bitmap);
-            return bridgeFrameQueued;
+            return bridgeSender.frameQueued();
         }
         report("CONTEXTUAL_SCREENSHOT",
                 "valueClass=" + (value == null ? "null" : value.getClass().getName())
@@ -1653,7 +1529,7 @@ final class GoogleCtsRuntimeInspector {
                     boolean frameQueued = captureContextualSearchFrame(intent);
                     boolean hasText = bridgeSelectionText != null
                             && !bridgeSelectionText.isBlank();
-                    boolean hasRenderablePayload = hasText || bridgeFrameQueued;
+                    boolean hasRenderablePayload = hasText || bridgeSender.frameQueued();
 
                     String detail = "action=" + intent.getAction()
                             + " selectionSeen=" + bridgeSelectionSeen
@@ -1720,7 +1596,7 @@ final class GoogleCtsRuntimeInspector {
         sessionToken = nextToken;
         if (newBridgeSession) {
             uiSanitizer.detach();
-            bridgeFrameQueued = false;
+            bridgeSender.reset();
             bridgeCommitted = false;
             bridgeSelectionSeen = false;
             bridgePendingSeen = false;
@@ -1757,7 +1633,7 @@ final class GoogleCtsRuntimeInspector {
         sessionToken = "";
         showSessionId = -1;
         voiceSession = null;
-        bridgeFrameQueued = false;
+        bridgeSender.reset();
         bridgeCommitted = false;
         bridgeSelectionSeen = false;
         bridgePendingSeen = false;
@@ -1794,131 +1670,15 @@ final class GoogleCtsRuntimeInspector {
     }
 
     private void sendTrace(String line) {
-        if (!provider.diagnosticsEnabled()
-                || line == null || line.isBlank() || sessionToken.isBlank()) return;
-        if (isTraceDispatching()) return;
-        traceDispatching.set(Boolean.TRUE);
-        try {
-            Context context = currentApplicationContext();
-            if (context == null) return;
-            Intent intent = new Intent(GoogleCtsContract.ACTION_TRACE)
-                    .setClassName("com.yagay.floatlens", GoogleCtsContract.TRACE_RECEIVER_CLASS)
-                    .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
-                    .putExtra(GoogleCtsContract.EXTRA_TRACE_SESSION, sessionToken)
-                    .putExtra(GoogleCtsContract.EXTRA_TRACE_LINE,
-                            line.length() > 8000 ? line.substring(0, 8000) : line);
-            context.sendBroadcast(intent);
-        } catch (Throwable t) {
-            module.log(Log.WARN, TAG, "CTS trace broadcast failed", t);
-        } finally {
-            traceDispatching.remove();
-        }
+        bridgeSender.sendTrace(line);
     }
 
     private void sendBridgeEvent(String event, String text, String detail, Rect bounds) {
-        String token = sessionToken;
-        if (token == null || token.isBlank() || event == null || event.isBlank()) return;
-        try {
-            Context context = currentApplicationContext();
-            if (context == null) return;
-            Intent intent = new Intent(GoogleCtsContract.ACTION_BRIDGE)
-                    .setClassName("com.yagay.floatlens", GoogleCtsContract.BRIDGE_RECEIVER_CLASS)
-                    .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
-                    .putExtra(GoogleCtsContract.EXTRA_BRIDGE_SESSION, token)
-                    .putExtra(GoogleCtsContract.EXTRA_BRIDGE_EVENT, event);
-            if (text != null && !text.isBlank()) {
-                intent.putExtra(GoogleCtsContract.EXTRA_BRIDGE_TEXT,
-                        text.length() > 20_000 ? text.substring(0, 20_000) : text);
-            }
-            if (detail != null && !detail.isBlank()) {
-                intent.putExtra(GoogleCtsContract.EXTRA_BRIDGE_DETAIL,
-                        detail.length() > 8_000 ? detail.substring(0, 8_000) : detail);
-            }
-            if (bounds != null && !bounds.isEmpty()) {
-                intent.putExtra(GoogleCtsContract.EXTRA_LEFT, bounds.left);
-                intent.putExtra(GoogleCtsContract.EXTRA_TOP, bounds.top);
-                intent.putExtra(GoogleCtsContract.EXTRA_RIGHT, bounds.right);
-                intent.putExtra(GoogleCtsContract.EXTRA_BOTTOM, bounds.bottom);
-            }
-            context.sendBroadcast(intent);
-        } catch (Throwable t) {
-            module.log(Log.WARN, TAG, "CTS bridge event failed event=" + event, t);
-        }
+        bridgeSender.sendEvent(event, text, detail, bounds);
     }
 
-    private synchronized void sendBridgeFrame(Bitmap bitmap) {
-        if (!active() || bridgeFrameQueued || bitmap == null || bitmap.isRecycled()) return;
-        String token = sessionToken;
-        int width = bitmap.getWidth();
-        int height = bitmap.getHeight();
-        ByteBuffer pixels = snapshotPixels(bitmap);
-        if (pixels == null) return;
-        bridgeFrameQueued = true;
-        bridgeIo.execute(() -> writeBridgeFrame(token, width, height, pixels));
-    }
-
-    private ByteBuffer snapshotPixels(Bitmap bitmap) {
-        Bitmap normalized = null;
-        try {
-            int width = bitmap.getWidth();
-            int height = bitmap.getHeight();
-            long byteCountLong = (long) width * (long) height * 4L;
-            if (width <= 0 || height <= 0 || byteCountLong <= 0L
-                    || byteCountLong > 64L * 1024L * 1024L) {
-                return null;
-            }
-            int bytes = (int) byteCountLong;
-            Bitmap source = bitmap;
-            if (bitmap.getConfig() != Bitmap.Config.ARGB_8888
-                    || bitmap.getRowBytes() != width * 4) {
-                normalized = bitmap.copy(Bitmap.Config.ARGB_8888, false);
-                if (normalized == null) return null;
-                source = normalized;
-            }
-            ByteBuffer pixels = ByteBuffer.allocateDirect(bytes);
-            source.copyPixelsToBuffer(pixels);
-            pixels.flip();
-            if (pixels.remaining() != bytes) return null;
-            return pixels;
-        } catch (Throwable t) {
-            module.log(Log.WARN, TAG, "Google bridge pixel snapshot failed", t);
-            return null;
-        } finally {
-            if (normalized != null && !normalized.isRecycled()) {
-                try { normalized.recycle(); } catch (Throwable ignored) {}
-            }
-        }
-    }
-
-    private void writeBridgeFrame(String token, int width, int height, ByteBuffer pixels) {
-        int bytes = pixels == null ? 0 : pixels.remaining();
-        try {
-            Context context = currentApplicationContext();
-            if (context == null || bytes <= 0) {
-                throw new IllegalStateException("context/pixels unavailable");
-            }
-            Uri uri = GoogleCtsContract.bridgeFrameUri(token, width, height, bytes);
-            ParcelFileDescriptor descriptor =
-                    context.getContentResolver().openFileDescriptor(uri, "w");
-            if (descriptor == null) throw new IllegalStateException("bridge pipe unavailable");
-            try (FileOutputStream out = new ParcelFileDescriptor.AutoCloseOutputStream(descriptor)) {
-                FileChannel channel = out.getChannel();
-                while (pixels.hasRemaining()) channel.write(pixels);
-            }
-            module.log(Log.INFO, TAG,
-                    "Google bridge frame sent session=" + shortToken(token)
-                            + " size=" + width + "x" + height + " bytes=" + bytes);
-        } catch (Throwable t) {
-            if (token != null && token.equals(sessionToken) && !bridgeCommitted) {
-                bridgeFrameQueued = false;
-            }
-            module.log(Log.WARN, TAG,
-                    "Google bridge frame send failed session=" + shortToken(token), t);
-        }
-    }
-
-    private boolean isTraceDispatching() {
-        return Boolean.TRUE.equals(traceDispatching.get());
+    private void sendBridgeFrame(Bitmap bitmap) {
+        bridgeSender.sendFrame(bitmap);
     }
 
     private Context currentApplicationContext() {
