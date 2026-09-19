@@ -327,10 +327,17 @@ public final class FloatSettings {
     public String posXKey() { return isLandscape() ? K_POS_X_LANDSCAPE : K_POS_X_PORTRAIT; }
     public String posYKey() { return isLandscape() ? K_POS_Y_LANDSCAPE : K_POS_Y_PORTRAIT; }
     public String gravityKey() { return isLandscape() ? K_GRAVITY_LAND : K_GRAVITY; }
-    public boolean hasSavedX() { return p.contains(posXKey()) || p.contains(K_POS_X); }
+    public boolean hasOrientationSavedX() { return p.contains(posXKey()); }
+    public boolean hasSavedX() { return hasOrientationSavedX() || p.contains(K_POS_X); }
+    public boolean hasAnySavedSide() { return p.contains(K_GRAVITY) || p.contains(K_GRAVITY_LAND); }
     public int savedX(int def) { return p.getInt(posXKey(), p.getInt(K_POS_X, def)); }
     public int savedY(int def) { return p.getInt(posYKey(), p.getInt(K_POS_Y, def)); }
     public int savedSide(int def) { return p.getInt(gravityKey(), def); }
+    public int savedSideWithOrientationFallback(int def) {
+        if (p.contains(gravityKey())) return p.getInt(gravityKey(), def);
+        String other = isLandscape() ? K_GRAVITY : K_GRAVITY_LAND;
+        return p.getInt(other, def);
+    }
     public void saveSide(boolean left) { setInt(gravityKey(), left ? 0 : 1); }
 
     /** Position moves are user initiated; persist side and orientation-specific coordinates atomically. */
