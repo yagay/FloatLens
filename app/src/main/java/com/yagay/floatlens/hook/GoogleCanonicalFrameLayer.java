@@ -2,8 +2,15 @@ package com.yagay.floatlens.hook;
 
 import android.app.Activity;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.PointF;
+import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
@@ -37,7 +44,10 @@ final class GoogleCanonicalFrameLayer {
     private Bitmap canonicalFrame;
     private final List<Bitmap> retiredFrames = new ArrayList<>();
     private WeakReference<ImageView> layerRef = new WeakReference<>(null);
+    private WeakReference<SelectionView> selectionRef = new WeakReference<>(null);
     private WeakReference<ViewGroup> parentRef = new WeakReference<>(null);
+    private Rect selectionBounds;
+    private final List<PointF> gesturePoints = new ArrayList<>();
 
     GoogleCanonicalFrameLayer(BooleanSupplier active,
                               Supplier<Activity> activity,
@@ -80,6 +90,51 @@ final class GoogleCanonicalFrameLayer {
         schedulePresent();
     }
 
+    void updateSelection(Rect frameBounds, boolean regionSelection, String text) {
+        synchronized (this) {
+            selectionBounds = frameBounds == null || frameBounds.isEmpty()
+                    ? null : new Rect(frameBounds);
+            if (selectionBounds != null) gesturePoints.clear();
+        }
+        main.post(() -> {
+            SelectionView view = selectionRef.get();
+            if (view != null) view.invalidate();
+        });
+        reporter.accept("GOOGLE_CANONICAL_SELECTION",
+                "bounds=" + String.valueOf(frameBounds)
+                        + " region=" + regionSelection
+                        + " textLen=" + (text == null ? 0 : text.length()));
+    }
+
+    void onGesturePoint(int action, float x, float y) {
+        synchronized (this) {
+            if (action == MotionEvent.ACTION_DOWN
+                    || action == MotionEvent.ACTION_POINTER_DOWN) {
+                gesturePoints.clear();
+                selectionBounds = null;
+            }
+            if (action == MotionEvent.ACTION_DOWN
+                    || action == MotionEvent.ACTION_POINTER_DOWN
+                    || action == MotionEvent.ACTION_MOVE
+                    || action == MotionEvent.ACTION_UP
+                    || action == MotionEvent.ACTION_CANCEL) {
+                if (gesturePoints.size() >= 192) gesturePoints.remove(0);
+                gesturePoints.add(new PointF(x, y));
+            }
+        }
+        main.post(() -> {
+            SelectionView view = selectionRef.get();
+            if (view != null) view.invalidate();
+        });
+    }
+
+    boolean attached() {
+        ImageView layer = layerRef.get();
+        SelectionView selection = selectionRef.get();
+        return layer != null && layer.getParent() != null
+                && selection != null && selection.getParent() != null;
+    }
+
     void onActivityAvailable() {
         if (!active.getAsBoolean()) return;
         schedulePresent();
@@ -93,6 +148,8 @@ final class GoogleCanonicalFrameLayer {
             canonicalFrame = null;
             retired = new ArrayList<>(retiredFrames);
             retiredFrames.clear();
+            selectionBounds = null;
+            gesturePoints.clear();
         }
         main.post(() -> {
             // Detach the ImageView before recycling any bitmap it may still reference.
@@ -132,10 +189,15 @@ final class GoogleCanonicalFrameLayer {
         if (frozenIndex < 0) return;
 
         ImageView existing = layerRef.get();
+        SelectionView existingSelection = selectionRef.get();
         ViewGroup previousParent = parentRef.get();
-        if (existing != null && previousParent == parent && existing.getParent() == parent) {
+        if (existing != null && existingSelection != null
+                && previousParent == parent
+                && existing.getParent() == parent
+                && existingSelection.getParent() == parent) {
             existing.setImageBitmap(frame);
             normalizeLayer(existing, frozen);
+            existingSelection.invalidate();
             return;
         }
 
@@ -163,12 +225,24 @@ final class GoogleCanonicalFrameLayer {
                     Math.max(1, frozen.getHeight()));
         }
 
-        // Insert directly after the mutable FrozenImageView. Siblings Google added later (selection
-        // highlights/gesture surfaces) keep drawing above this stable background.
+        // Insert directly after the mutable FrozenImageView. FloatLens draws its own selection
+        // feedback above the immutable frame; later Google siblings remain above both and can keep
+        // handling touch/recognition without owning the visible screenshot.
         int insertIndex = Math.min(parent.getChildCount(), frozenIndex + 1);
+        SelectionView selectionLayer = new SelectionView(owner);
+        selectionLayer.setTag("floatlens_google_selection");
+        selectionLayer.setClickable(false);
+        selectionLayer.setFocusable(false);
+        selectionLayer.setEnabled(false);
+        selectionLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         try {
             parent.addView(layer, insertIndex, params);
+            parent.addView(selectionLayer,
+                    Math.min(parent.getChildCount(), insertIndex + 1), params);
         } catch (Throwable t) {
+            try {
+                if (layer.getParent() instanceof ViewGroup actual) actual.removeView(layer);
+            } catch (Throwable ignored) { }
             reporter.accept("GOOGLE_CANONICAL_LAYER",
                     "attach_failed parent=" + parent.getClass().getName()
                             + " error=" + t.getClass().getSimpleName());
@@ -176,6 +250,7 @@ final class GoogleCanonicalFrameLayer {
         }
 
         layerRef = new WeakReference<>(layer);
+        selectionRef = new WeakReference<>(selectionLayer);
         parentRef = new WeakReference<>(parent);
         normalizeLayer(layer, frozen);
         reporter.accept("GOOGLE_CANONICAL_LAYER",
@@ -184,6 +259,7 @@ final class GoogleCanonicalFrameLayer {
                         + " parent=" + parent.getClass().getName()
                         + " frozenIndex=" + frozenIndex
                         + " layerIndex=" + parent.indexOfChild(layer)
+                        + " selectionIndex=" + parent.indexOfChild(selectionLayer)
                         + " siblings=" + parent.getChildCount());
     }
 
@@ -205,18 +281,78 @@ final class GoogleCanonicalFrameLayer {
 
     private void removeLayerOnMain() {
         ImageView layer = layerRef.get();
+        SelectionView selection = selectionRef.get();
         ViewGroup parent = parentRef.get();
         layerRef = new WeakReference<>(null);
+        selectionRef = new WeakReference<>(null);
         parentRef = new WeakReference<>(null);
-        if (layer == null) return;
         try {
-            if (layer.getParent() instanceof ViewGroup actual) {
+            if (selection != null && selection.getParent() instanceof ViewGroup actual) {
+                actual.removeView(selection);
+            } else if (selection != null && parent != null) {
+                parent.removeView(selection);
+            }
+        } catch (Throwable ignored) { }
+        try {
+            if (layer != null && layer.getParent() instanceof ViewGroup actual) {
                 actual.removeView(layer);
-            } else if (parent != null) {
+            } else if (layer != null && parent != null) {
                 parent.removeView(layer);
             }
         } catch (Throwable ignored) { }
-        try { layer.setImageDrawable(null); } catch (Throwable ignored) { }
+        try { if (layer != null) layer.setImageDrawable(null); } catch (Throwable ignored) { }
+    }
+
+    private final class SelectionView extends View {
+        private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint trail = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        SelectionView(Activity context) {
+            super(context);
+            float density = Math.max(1f, getResources().getDisplayMetrics().density);
+            border.setStyle(Paint.Style.STROKE);
+            border.setStrokeWidth(2f * density);
+            border.setColor(Color.WHITE);
+            border.setShadowLayer(1.5f * density, 0f, 0f, 0xAA000000);
+            trail.setStyle(Paint.Style.STROKE);
+            trail.setStrokeCap(Paint.Cap.ROUND);
+            trail.setStrokeJoin(Paint.Join.ROUND);
+            trail.setStrokeWidth(3f * density);
+            trail.setColor(Color.WHITE);
+            trail.setShadowLayer(1.5f * density, 0f, 0f, 0xAA000000);
+            setLayerType(LAYER_TYPE_SOFTWARE, null);
+            setBackgroundColor(Color.TRANSPARENT);
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            Bitmap frame;
+            Rect bounds;
+            List<PointF> points;
+            synchronized (GoogleCanonicalFrameLayer.this) {
+                frame = canonicalFrame;
+                bounds = selectionBounds == null ? null : new Rect(selectionBounds);
+                points = new ArrayList<>(gesturePoints);
+            }
+
+            if (frame != null && !frame.isRecycled() && bounds != null && !bounds.isEmpty()) {
+                float sx = getWidth() / (float) Math.max(1, frame.getWidth());
+                float sy = getHeight() / (float) Math.max(1, frame.getHeight());
+                canvas.drawRect(bounds.left * sx, bounds.top * sy,
+                        bounds.right * sx, bounds.bottom * sy, border);
+            }
+
+            if (points.size() >= 2) {
+                Path path = new Path();
+                PointF first = points.get(0);
+                path.moveTo(first.x, first.y);
+                for (int i = 1; i < points.size(); i++) {
+                    PointF point = points.get(i);
+                    path.lineTo(point.x, point.y);
+                }
+                canvas.drawPath(path, trail);
+            }
+        }
     }
 
     static boolean shouldReplace(
