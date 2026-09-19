@@ -38,24 +38,47 @@ final class FloatingIconLayoutPolicy {
         int defaultY = wh[1] / 3;
         WindowManager.LayoutParams lp = baseLayout(px);
 
+        boolean hasOrientationX = settings.hasOrientationSavedX();
         boolean hasSavedX = settings.hasSavedX();
         int savedX = settings.savedX(defaultX);
         lp.x = savedX;
         lp.y = settings.savedY(defaultY);
 
-        // A persisted X coordinate is the most reliable source of truth for the side. Older builds
-        // wrote gravity and X/Y using separate asynchronous apply() calls, so gravity could remain
-        // stale (for example L) while X had already been saved on the right. Prefer any explicit
-        // saved X (including the legacy global key) and keep gravity only as a fallback.
+        // Only an X saved for the CURRENT orientation may be used to infer left/right. A portrait
+        // right-edge coordinate (for example x=1219 on 1272px) is near the middle of a 2772px
+        // landscape display and would otherwise be misclassified as LEFT during rotation.
         int inferredSide = savedX + px / 2 < wh[0] / 2 ? 0 : 1;
-        int side = hasSavedX ? inferredSide : settings.savedSide(inferredSide);
+        int inheritedSide = settings.savedSideWithOrientationFallback(inferredSide);
+        int side = resolveRestoreSide(savedX, px, wh[0],
+                hasOrientationX, hasSavedX, settings.hasAnySavedSide(), inheritedSide);
+        String source = hasOrientationX ? "orientation_x"
+                : settings.hasAnySavedSide() ? "side_fallback"
+                : hasSavedX ? "legacy_x_safe"
+                : "default";
         lp.x = side == 0 ? 0 : wh[0] - px;
         clamp(lp, false);
         DiagnosticLog.i(app, "POSITION", "restore x=" + savedX + " y=" + lp.y
                 + " side=" + (side == 0 ? "L" : "R")
-                + " source=" + (hasSavedX ? "saved_x" : "gravity_fallback")
+                + " source=" + source
                 + " landscape=" + settings.isLandscape());
         return lp;
+    }
+
+    static int resolveRestoreSide(int savedX, int iconPx, int screenWidth,
+                                  boolean hasOrientationX, boolean hasAnySavedX,
+                                  boolean hasAnySavedSide, int savedSide) {
+        int inferred = savedX + iconPx / 2 < screenWidth / 2 ? 0 : 1;
+        if (hasOrientationX) return inferred;
+        if (hasAnySavedSide) return savedSide == 0 ? 0 : 1;
+        if (hasAnySavedX) {
+            // Legacy global X has no orientation. Trust it only when it is unmistakably at an edge
+            // of the current display; otherwise keep the historical default on the right.
+            int center = savedX + iconPx / 2;
+            int edgeBand = Math.max(iconPx * 2, 1);
+            if (center <= edgeBand) return 0;
+            if (center >= screenWidth - edgeBand) return 1;
+        }
+        return 1;
     }
 
     WindowManager.LayoutParams createMirror(WindowManager.LayoutParams primary) {
