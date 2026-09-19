@@ -392,9 +392,11 @@ public final class PrivilegeSettingsPanel {
                 + " · Provider " + (s.remoteProviderEnabled() ? "已开启" : "已关闭");
         String secureLine = "安全窗口截图：" + (s.remoteSecureScreenshotEnabled ? "已启用" : "未启用")
                 + " · 短时授权 " + (s.remoteSecureCaptureArmed() ? "进行中" : "空闲");
-        String googleLine = "Google 圈画：" + (new FloatSettings(activity).circleEngine() == 1 ? "已启用" : "未启用")
-                + " · Hook " + (s.googleTargetLoaded() ? "当前版本已加载"
-                : (s.googleTargetStale() ? "旧版本 STALE" : "未加载"));
+        boolean googleHookChanged = HookReloadManager.googleNeedsReload(activity, s);
+        String googleLine = "Google 圈画："
+                + (new FloatSettings(activity).circleEngine() == 1 ? "已启用" : "未启用")
+                + " · Hook " + (googleHookChanged ? "代码有变化，需热重载"
+                : (s.googleTargetLoaded() ? "已加载，可继续使用" : "未运行"));
         String updatedLine = s.remoteUpdatedAt <= 0L ? ""
                 : " · " + DateFormat.format("HH:mm:ss", s.remoteUpdatedAt);
         String hookGenerationLine = HookReloadManager.statusSummary(activity, s);
