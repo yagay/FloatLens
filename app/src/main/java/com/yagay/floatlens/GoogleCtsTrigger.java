@@ -2,7 +2,9 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.widget.Toast;
 
@@ -43,14 +45,27 @@ final class GoogleCtsTrigger {
             Toast.makeText(app, "请在 LSPosed 作用域勾选 Google App", Toast.LENGTH_LONG).show();
             return false;
         }
-        if (status.googleTargetStale()) {
+        if (HookReloadManager.googleNeedsReload(app, status)) {
             DiagnosticLog.i(app, "GOOGLE_CTS_TRIGGER",
-                    "blocked stale Google LSPosed target currentVersion=" + BuildConfig.VERSION_CODE
-                            + " running=" + status.runningProcesses);
-            Toast.makeText(app,
-                    "Google Hook 仍是旧版本，请先强制停止 Google App 或重启手机",
-                    Toast.LENGTH_LONG).show();
-            return false;
+                    "hook fingerprint changed; hot reload before CTS");
+            boolean started = HookReloadManager.reloadGoogleForCtsAsync(app, result -> {
+                DiagnosticLog.i(app, "HOOK_RELOAD",
+                        "google auto success=" + result.success
+                                + " detail=" + result.detail);
+                if (!result.success) {
+                    Toast.makeText(app, result.userMessage(), Toast.LENGTH_LONG).show();
+                    return;
+                }
+                new Handler(Looper.getMainLooper()).postDelayed(() -> trigger(app), 280L);
+            });
+            if (!started) {
+                Toast.makeText(app, "Google Hook 正在重新加载", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(app, "检测到 Hook 更新，正在热重载 Google…",
+                        Toast.LENGTH_SHORT).show();
+            }
+            // The gesture is handled; never fall back to native FloatLens circle during reload.
+            return true;
         }
 
         Bundle args = new Bundle();
