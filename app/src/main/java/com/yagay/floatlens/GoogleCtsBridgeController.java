@@ -59,17 +59,33 @@ final class GoogleCtsBridgeController {
             return;
         }
         State state = state(token);
+        int width = frame.getWidth();
+        int height = frame.getHeight();
+        boolean replaced = false;
         synchronized (state) {
             if (state.delivered) {
                 recycle(frame);
                 return;
             }
+            if (state.frame != null && !state.frame.isRecycled()
+                    && !shouldReplaceCanonicalFrame(
+                    state.frame.getWidth(), state.frame.getHeight(), width, height)) {
+                DiagnosticLog.i(context, "GOOGLE_CANONICAL_FRAME",
+                        "candidate ignored session=" + shortToken(token)
+                                + " kept=" + state.frame.getWidth() + "x"
+                                + state.frame.getHeight()
+                                + " candidate=" + width + "x" + height);
+                recycle(frame);
+                return;
+            }
+            replaced = state.frame != null;
             recycle(state.frame);
             state.frame = frame;
         }
-        DiagnosticLog.i(context, "GOOGLE_BRIDGE",
-                "frame ready session=" + shortToken(token)
-                        + " size=" + frame.getWidth() + "x" + frame.getHeight());
+        DiagnosticLog.i(context, "GOOGLE_CANONICAL_FRAME",
+                (replaced ? "larger frame replaced previous" : "canonical frame accepted")
+                        + " session=" + shortToken(token)
+                        + " size=" + width + "x" + height);
         scheduleCleanup(context.getApplicationContext(), token, state);
         MAIN.post(() -> tryDeliver(context.getApplicationContext(), token, state, false));
     }
@@ -760,6 +776,13 @@ final class GoogleCtsBridgeController {
             state.cleanupTask = null;
         }
         if (pending != null) MAIN.removeCallbacks(pending);
+    }
+
+    static boolean shouldReplaceCanonicalFrame(
+            int currentWidth, int currentHeight, int candidateWidth, int candidateHeight) {
+        long currentArea = Math.max(0L, (long) currentWidth * currentHeight);
+        long candidateArea = Math.max(0L, (long) candidateWidth * candidateHeight);
+        return currentArea <= 0L || candidateArea > currentArea;
     }
 
     private static Rect normalize(Rect candidate, Bitmap frame) {
