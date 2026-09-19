@@ -82,12 +82,12 @@ final class GoogleBridgeSender {
         }
     }
 
-    void sendEvent(String event, String text, String detail, Rect bounds) {
+    boolean sendEvent(String event, String text, String detail, Rect bounds) {
         String token = token();
-        if (token.isBlank() || event == null || event.isBlank()) return;
+        if (token.isBlank() || event == null || event.isBlank()) return false;
         try {
             Context context = contextSupplier.get();
-            if (context == null) return;
+            if (context == null) return false;
             Intent intent = new Intent(GoogleCtsContract.ACTION_BRIDGE)
                     .setClassName("com.yagay.floatlens", GoogleCtsContract.BRIDGE_RECEIVER_CLASS)
                     .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
@@ -108,20 +108,23 @@ final class GoogleBridgeSender {
                 intent.putExtra(GoogleCtsContract.EXTRA_BOTTOM, bounds.bottom);
             }
             context.sendBroadcast(intent);
+            return true;
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "CTS bridge event failed event=" + event, t);
+            return false;
         }
     }
 
-    synchronized void sendFrame(Bitmap bitmap) {
-        if (!active.getAsBoolean() || frameQueued || bitmap == null || bitmap.isRecycled()) return;
+    synchronized boolean sendFrame(Bitmap bitmap) {
+        if (!active.getAsBoolean() || frameQueued || bitmap == null || bitmap.isRecycled()) return false;
         String token = token();
         int width = bitmap.getWidth();
         int height = bitmap.getHeight();
         ByteBuffer pixels = snapshotPixels(bitmap);
-        if (pixels == null) return;
+        if (pixels == null) return false;
         frameQueued = true;
         io.execute(() -> writeFrame(token, width, height, pixels));
+        return true;
     }
 
     private ByteBuffer snapshotPixels(Bitmap bitmap) {
@@ -189,8 +192,11 @@ final class GoogleBridgeSender {
             source.limit(pixels.limit());
             mapped.position(0);
             mapped.put(source);
-            sendEvent(GoogleCtsContract.EVENT_FRAME_READY, "",
-                    "transport=shared_memory size=" + width + "x" + height, null);
+            if (!sendEvent(GoogleCtsContract.EVENT_FRAME_READY, "",
+                    "transport=shared_memory size=" + width + "x" + height, null)) {
+                releaseSharedFrame(context, token);
+                return false;
+            }
             module.log(Log.INFO, TAG,
                     "Google bridge frame sent session=" + shortToken(token)
                             + " size=" + width + "x" + height
@@ -209,6 +215,19 @@ final class GoogleBridgeSender {
                 try { memory.close(); } catch (Throwable ignored) { }
             }
         }
+    }
+
+    private void releaseSharedFrame(Context context, String token) {
+        if (context == null || token == null || token.isBlank()) return;
+        try {
+            Bundle request = new Bundle();
+            request.putString(GoogleCtsContract.EXTRA_BRIDGE_SESSION, token);
+            context.getContentResolver().call(
+                    GoogleCtsContract.bridgeBaseUri(),
+                    GoogleCtsContract.METHOD_RELEASE_SHARED_FRAME,
+                    null,
+                    request);
+        } catch (Throwable ignored) { }
     }
 
     private void writeFramePipe(String token, int width, int height, ByteBuffer pixels) {
