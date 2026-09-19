@@ -39,7 +39,8 @@ public class OverlaySceneManagerTest {
         assertEquals(false, OverlaySceneManager.shouldBindWindow("float_action_menu"));
         assertEquals(false, OverlaySceneManager.shouldBindWindow("image_action_menu"));
         assertEquals(false, OverlaySceneManager.shouldBindWindow("float_icon"));
-        assertEquals(true, OverlaySceneManager.shouldBindWindow("google_region_confirm"));
+        assertEquals(false, OverlaySceneManager.shouldBindWindow("google_region_confirm"));
+        assertEquals(false, OverlaySceneManager.shouldBindWindow("circle_active_border"));
         assertEquals(true, OverlaySceneManager.shouldBindWindow("probe"));
     }
 }
