@@ -714,17 +714,7 @@ final class GoogleLens1758Profile {
      * a fallback for unusual runtime implementations.
      */
     private static Object readField(Object target, String name, String typeName) {
-        if (target == null) return null;
-        for (Field field : instanceFields(target.getClass())) {
-            if (name != null && !name.equals(field.getName())) continue;
-            if (typeName != null && !typeName.equals(field.getType().getName())) continue;
-            try {
-                field.setAccessible(true);
-                return field.get(target);
-            } catch (Throwable ignored) {
-            }
-        }
-        return null;
+        return GoogleReflection.readField(target, name, typeName);
     }
 
     private static Object firstFieldByType(Object target, String typeName) {
@@ -737,56 +727,15 @@ final class GoogleLens1758Profile {
     }
 
     private static Object invokeNoArg(Object target, String methodName) {
-        if (target == null || methodName == null) return null;
-        for (Method method : methodsOf(target.getClass())) {
-            if (!methodName.equals(method.getName()) || method.getParameterCount() != 0) continue;
-            try {
-                method.setAccessible(true);
-                return method.invoke(target);
-            } catch (Throwable ignored) {
-            }
-        }
-        try {
-            return HiddenApiBypass.invoke(target.getClass(), target, methodName);
-        } catch (Throwable ignored) {
-            return null;
-        }
+        return GoogleReflection.invokeNoArg(target, methodName);
     }
 
     private static List<Field> instanceFields(Class<?> cls) {
-        ArrayList<Field> out = new ArrayList<>();
-        for (Class<?> current = cls; current != null; current = current.getSuperclass()) {
-            try {
-                for (Field field : current.getDeclaredFields()) {
-                    if (!Modifier.isStatic(field.getModifiers())) out.add(field);
-                }
-            } catch (Throwable ignored) {
-            }
-        }
-        if (!out.isEmpty()) return out;
-        try {
-            for (Field field : HiddenApiBypass.getInstanceFields(cls)) out.add(field);
-        } catch (Throwable ignored) {
-        }
-        return out;
+        return GoogleReflection.instanceFieldsInHierarchy(cls);
     }
 
     private static List<Method> methodsOf(Class<?> cls) {
-        ArrayList<Method> out = new ArrayList<>();
-        for (Class<?> current = cls; current != null; current = current.getSuperclass()) {
-            try {
-                for (Method method : current.getDeclaredMethods()) out.add(method);
-            } catch (Throwable ignored) {
-            }
-        }
-        if (!out.isEmpty()) return out;
-        try {
-            for (Executable executable : HiddenApiBypass.getDeclaredMethods(cls)) {
-                if (executable instanceof Method method) out.add(method);
-            }
-        } catch (Throwable ignored) {
-        }
-        return out;
+        return GoogleReflection.methodsInHierarchy(cls);
     }
 
     private static Boolean invokeBooleanNoArg(Object target, String methodName) {
