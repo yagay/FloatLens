@@ -108,7 +108,11 @@ final class GoogleLensFrameCapture {
     }
 
     int install() {
-        Binding binding = resolve(classLoader);
+        return install(resolve(classLoader));
+    }
+
+    int install(Binding binding) {
+        if (binding == null) binding = resolve(classLoader);
         int hooks = 0;
         if (binding.voiceScreenshot) hooks += hookGoogleVoiceSessionScreenshot();
         if (binding.initialActivityData) hooks += hookInitialActivityDataBitmap();
