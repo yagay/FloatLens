@@ -8,8 +8,36 @@ import org.junit.Test;
 
 public class GoogleLens1758ProfileTest {
 
+    private static class ResolverUserSelection {
+        String renamedTextAccessor() { return "hello"; }
+        android.graphics.RectF renamedBoundsAccessor() { return new android.graphics.RectF(0, 0, 1, 1); }
+        android.graphics.PointF renamedPointAccessor() { return new android.graphics.PointF(0.5f, 0.5f); }
+    }
+
+    private static class ResolverMetadata {
+        final ResolverUserSelection x = new ResolverUserSelection();
+    }
+
+    private static class ResolverController {
+        void totallyRenamedMethod(ResolverMetadata metadata, boolean primary) {}
+        int wrongReturnType(ResolverMetadata metadata, boolean primary) { return 0; }
+    }
+
     private static class OptionalBase {}
     private static final class OptionalImpl extends OptionalBase {}
+
+    @Test public void dynamicSelectionResolverUsesSemanticShapeNotMethodName() throws Exception {
+        java.lang.reflect.Method target = ResolverController.class.getDeclaredMethod(
+                "totallyRenamedMethod", ResolverMetadata.class, boolean.class);
+        GoogleLensDynamicResolver.Candidate candidate =
+                GoogleLensDynamicResolver.scoreSelectionMethod(target);
+        assertTrue(candidate != null);
+        assertTrue(candidate.score >= GoogleLensDynamicResolver.MIN_SELECTION_CONFIDENCE);
+
+        java.lang.reflect.Method wrong = ResolverController.class.getDeclaredMethod(
+                "wrongReturnType", ResolverMetadata.class, boolean.class);
+        assertTrue(GoogleLensDynamicResolver.scoreSelectionMethod(wrong) == null);
+    }
 
     @Test public void optionalRuntimeSubclassMatchesDeclaredBaseType() {
         assertTrue(GoogleLens1758Profile.hasTypeInHierarchy(
