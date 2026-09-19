@@ -22,6 +22,8 @@ final class GoogleCtsBridgeController {
     private static final long MENU_UPDATE_DELAY_MS = 90L;
     /** Region confirm appears only after Google's rectangle stops changing for this long. */
     private static final long REGION_CONFIRM_STABLE_MS = 360L;
+    /** After a real FrozenImageView UP/CANCEL, wait briefly for Google's final refinement Rect. */
+    private static final long REGION_GESTURE_RELEASE_SETTLE_MS = 120L;
     /** Give the Google hook a brief chance to consume the remote confirm before local fallback. */
     private static final long REGION_REMOTE_GRACE_MS = 220L;
     private static final long STATE_TTL_MS = 150_000L;
@@ -38,6 +40,7 @@ final class GoogleCtsBridgeController {
         boolean textMenuShown;
         boolean regionPending;
         boolean regionConfirmRequested;
+        boolean regionGestureActive;
         int selectionRevision;
         Runnable regionConfirmShowTask;
         Runnable regionFallbackTask;
@@ -76,6 +79,7 @@ final class GoogleCtsBridgeController {
             if (state.delivered) return;
             state.regionPending = false;
             state.regionConfirmRequested = false;
+            state.regionGestureActive = false;
             cancelRegionConfirmShowLocked(state);
             cancelRegionFallbackLocked(state);
             state.text = text == null ? "" : text.trim();
@@ -142,6 +146,7 @@ final class GoogleCtsBridgeController {
         State state = state(token);
         final int revision;
         final Rect selectedBounds;
+        final boolean gestureActive;
         synchronized (state) {
             if (state.delivered) return;
             if (state.regionConfirmRequested) {
@@ -157,6 +162,7 @@ final class GoogleCtsBridgeController {
             state.textMenuShown = false;
             revision = ++state.selectionRevision;
             selectedBounds = new Rect(state.bounds);
+            gestureActive = state.regionGestureActive;
             cancelRegionConfirmShowLocked(state);
             cancelRegionFallbackLocked(state);
         }
@@ -172,17 +178,64 @@ final class GoogleCtsBridgeController {
                     WorkflowSessionManager.Phase.SELECTING, "google_region_selection");
         }
         scheduleCleanup(app, token, state);
-        scheduleStableRegionConfirm(app, token, state, revision, selectedBounds);
+        if (!gestureActive) {
+            scheduleStableRegionConfirm(
+                    app, token, state, revision, selectedBounds, REGION_CONFIRM_STABLE_MS);
+        }
 
         DiagnosticLog.i(app, "GOOGLE_REGION",
                 "selection session=" + shortToken(token)
                         + " revision=" + revision
                         + " bounds=" + selectedBounds
+                        + " gestureActive=" + gestureActive
                         + " confirmVisible=false state=adjusting");
     }
 
+    static void onRegionGesture(
+            Context context, String token, boolean adjusting, String detail) {
+        if (context == null || token == null || token.isBlank()) return;
+        Context app = context.getApplicationContext();
+        State state = state(token);
+
+        int revision = -1;
+        Rect selectedBounds = null;
+        boolean shouldSchedule = false;
+        synchronized (state) {
+            if (state.delivered || state.regionConfirmRequested) return;
+            state.regionGestureActive = adjusting;
+            cancelRegionConfirmShowLocked(state);
+            if (!adjusting && state.regionPending
+                    && state.bounds != null && !state.bounds.isEmpty()) {
+                revision = state.selectionRevision;
+                selectedBounds = new Rect(state.bounds);
+                shouldSchedule = true;
+            }
+        }
+
+        GoogleRegionConfirmOverlay.dismiss(
+                token, adjusting ? "gesture_adjusting" : "gesture_released");
+        if (adjusting) {
+            DiagnosticLog.i(app, "GOOGLE_REGION",
+                    "gesture start session=" + shortToken(token)
+                            + " detail=" + trim(detail, 300));
+            return;
+        }
+
+        DiagnosticLog.i(app, "GOOGLE_REGION",
+                "gesture end session=" + shortToken(token)
+                        + " revision=" + revision
+                        + " bounds=" + String.valueOf(selectedBounds)
+                        + " detail=" + trim(detail, 300));
+        if (shouldSchedule) {
+            scheduleStableRegionConfirm(
+                    app, token, state, revision, selectedBounds,
+                    REGION_GESTURE_RELEASE_SETTLE_MS);
+        }
+    }
+
     private static void scheduleStableRegionConfirm(
-            Context app, String token, State state, int revision, Rect selectedBounds) {
+            Context app, String token, State state, int revision,
+            Rect selectedBounds, long delayMs) {
         final Runnable[] holder = new Runnable[1];
         holder[0] = () -> {
             synchronized (state) {
@@ -201,14 +254,14 @@ final class GoogleCtsBridgeController {
             DiagnosticLog.i(app, "GOOGLE_REGION",
                     "confirm stable-show session=" + shortToken(token)
                             + " revision=" + revision
-                            + " stableMs=" + REGION_CONFIRM_STABLE_MS
+                            + " stableMs=" + delayMs
                             + " bounds=" + selectedBounds);
         };
         synchronized (state) {
             cancelRegionConfirmShowLocked(state);
             state.regionConfirmShowTask = holder[0];
         }
-        MAIN.postDelayed(holder[0], REGION_CONFIRM_STABLE_MS);
+        MAIN.postDelayed(holder[0], Math.max(0L, delayMs));
     }
 
     private static void confirmRegion(Context app, String token) {
