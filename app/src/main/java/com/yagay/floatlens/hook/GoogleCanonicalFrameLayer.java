@@ -1,5 +1,6 @@
 package com.yagay.floatlens.hook;
 
+import com.yagay.floatlens.CanonicalFramePolicy;
 import android.app.Activity;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -65,7 +66,8 @@ final class GoogleCanonicalFrameLayer {
         synchronized (this) {
             if (!active.getAsBoolean()) return;
             if (canonicalFrame != null && !canonicalFrame.isRecycled()
-                    && !shouldReplace(canonicalFrame.getWidth(), canonicalFrame.getHeight(),
+                    && !CanonicalFramePolicy.shouldReplace(
+                    canonicalFrame.getWidth(), canonicalFrame.getHeight(),
                     candidate.getWidth(), candidate.getHeight())) {
                 reporter.accept("GOOGLE_CANONICAL_FRAME",
                         "candidate_ignored existing=" + canonicalFrame.getWidth() + "x"
@@ -353,13 +355,6 @@ final class GoogleCanonicalFrameLayer {
                 canvas.drawPath(path, trail);
             }
         }
-    }
-
-    static boolean shouldReplace(
-            int currentWidth, int currentHeight, int candidateWidth, int candidateHeight) {
-        long currentArea = Math.max(0L, (long) currentWidth * currentHeight);
-        long candidateArea = Math.max(0L, (long) candidateWidth * candidateHeight);
-        return currentArea <= 0L || candidateArea > currentArea;
     }
 
     private static boolean usable(Bitmap bitmap) {
