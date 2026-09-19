@@ -31,8 +31,9 @@ final class FloatVisibilityController {
 
     void applySettings(FloatSettings settings) {
         if (settings == null) return;
-        appHidden = settings.shouldHideForPackage(topPackage);
-        fullscreenHidden = settings.hideWhenFullscreen() && rawFullscreen;
+        FloatSettingsDomains.Visibility visibility = FloatSettingsDomains.visibility(settings);
+        appHidden = visibility.hideForPackage(topPackage);
+        fullscreenHidden = visibility.hideWhenFullscreen() && rawFullscreen;
     }
 
     boolean visible() {
@@ -41,7 +42,7 @@ final class FloatVisibilityController {
 
     boolean wakeEdgesNeeded(FloatSettings settings) {
         return manualHidden && settings != null
-                && settings.edgeSwipeRecallEnabled()
+                && FloatSettingsDomains.visibility(settings).edgeSwipeRecallEnabled()
                 && !screenshotHidden && !lockHidden;
     }
 
