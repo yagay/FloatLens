@@ -144,11 +144,16 @@ final class GoogleCtsBridgeController {
         final Rect selectedBounds;
         synchronized (state) {
             if (state.delivered) return;
+            if (state.regionConfirmRequested) {
+                DiagnosticLog.i(app, "GOOGLE_REGION",
+                        "late region update ignored after confirm session="
+                                + shortToken(token) + " bounds=" + bounds);
+                return;
+            }
             state.text = "";
             state.bounds = new Rect(bounds);
             state.detail = detail == null ? "" : detail;
             state.regionPending = true;
-            state.regionConfirmRequested = false;
             state.textMenuShown = false;
             revision = ++state.selectionRevision;
             selectedBounds = new Rect(state.bounds);
