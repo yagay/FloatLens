@@ -130,7 +130,15 @@ final class GoogleLensUiSanitizer {
         for (String suffix : CHROME_ID_SUFFIXES) {
             if (id.endsWith(suffix)) return true;
         }
-        return false;
+
+        // Google has historically implemented the fixed "Select all" / "Listen all" controls
+        // in an obfuscated Fragment. Match their semantic resource names instead of that Fragment
+        // class so ordinary R8 class renaming does not bring the chips back.
+        String lowerId = id.toLowerCase(java.util.Locale.ROOT);
+        return lowerId.contains("select_all")
+                || lowerId.contains("listen_all")
+                || lowerId.contains("selection_chip")
+                || lowerId.contains("selection_action_chip");
     }
 
     private boolean hide(View view) {
