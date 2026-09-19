@@ -15,10 +15,14 @@ public final class LsposedRuntimeConfig {
     public static final String K_GOOGLE_CTS_SESSION_TOKEN = "google_cts_session_token_v1";
     public static final String K_GOOGLE_CTS_TRIGGER_ELAPSED = "google_cts_trigger_elapsed_v1";
     public static final String K_GOOGLE_CTS_SESSION_UNTIL = "google_cts_session_until_elapsed_v1";
+    public static final String K_GOOGLE_CTS_REGION_CONFIRM_TOKEN =
+            "google_cts_region_confirm_token_v1";
+    public static final String K_GOOGLE_CTS_REGION_CONFIRM_ELAPSED =
+            "google_cts_region_confirm_elapsed_v1";
     /** Legacy v159 key retained only so current builds can scrub stale Remote Preferences. */
     public static final String K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL =
             "google_cts_component_block_until_elapsed_v1";
-    public static final int SCHEMA_VERSION = 6;
+    public static final int SCHEMA_VERSION = 7;
 
     /** Short lease: never leave secure capture armed after a stalled/aborted capture. */
     public static final long SECURE_CAPTURE_LEASE_MS = 3_000L;
@@ -26,6 +30,8 @@ public final class LsposedRuntimeConfig {
     /** Marker fallback is intentionally much shorter than the diagnostic receiver TTL. */
     public static final long GOOGLE_CTS_FALLBACK_WINDOW_MS = 5_000L;
     public static final long GOOGLE_CTS_MAX_FUTURE_MS = 10_000L;
+    /** User confirmation is a short one-shot request bound to the currently owned CTS token. */
+    public static final long GOOGLE_CTS_REGION_CONFIRM_TTL_MS = 10_000L;
     /** Standard Google invocation timestamp should remain tied to the FloatLens trigger. */
     public static final long GOOGLE_CTS_INVOCATION_MATCH_TOLERANCE_MS = 1_000L;
     public static final int GOOGLE_CTS_EXPECTED_OMNI_ENTRY_POINT = 1;
@@ -57,6 +63,20 @@ public final class LsposedRuntimeConfig {
                 && age <= GOOGLE_CTS_FALLBACK_WINDOW_MS
                 && remaining >= 0L
                 && remaining <= GOOGLE_CTS_MAX_FUTURE_MS;
+    }
+
+    public static boolean isGoogleRegionConfirmRequested(
+            String sessionToken,
+            String confirmToken,
+            long confirmedAtElapsed,
+            long nowElapsed) {
+        if (sessionToken == null || sessionToken.isBlank()
+                || confirmToken == null || !sessionToken.equals(confirmToken)
+                || confirmedAtElapsed <= 0L) {
+            return false;
+        }
+        long age = nowElapsed - confirmedAtElapsed;
+        return age >= -250L && age <= GOOGLE_CTS_REGION_CONFIRM_TTL_MS;
     }
 
     public static boolean matchesGoogleCtsFallbackInvocation(
