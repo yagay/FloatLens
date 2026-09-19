@@ -2,11 +2,8 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /** Central privilege gate for optional Root / LSPosed enhancements. */
@@ -103,35 +100,11 @@ public final class PrivilegeManager {
     }
 
     private static RootStatus runRootCheck() {
-        Process process = null;
-        try {
-            process = new ProcessBuilder("su", "-c", "id").redirectErrorStream(true).start();
-            boolean finished = process.waitFor(5, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
-                return new RootStatus(false, "授权检测超时");
-            }
-            StringBuilder out = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null && out.length() < 512) {
-                    if (out.length() > 0) out.append(' ');
-                    out.append(line);
-                }
-            }
-            String detail = out.toString().trim();
-            boolean granted = process.exitValue() == 0 && detail.contains("uid=0");
-            if (detail.isBlank()) detail = "su exit=" + process.exitValue();
-            return new RootStatus(granted, detail);
-        } catch (Throwable t) {
-            String message = t.getMessage();
-            return new RootStatus(false,
-                    (message == null || message.isBlank()) ? t.getClass().getSimpleName() : message);
-        } finally {
-            if (process != null) {
-                try { process.destroy(); } catch (Throwable ignored) {}
-            }
-        }
+        RootCommandExecutor.Result result = RootCommandExecutor.runText("id", 5, 4 * 1024);
+        String detail = result.text();
+        boolean granted = result.success() && detail.contains("uid=0");
+        if (detail.isBlank()) detail = result.failureMessage("授权检测超时");
+        return new RootStatus(granted, detail);
     }
 
     /** Human-readable stored Root test result; does not execute su. */

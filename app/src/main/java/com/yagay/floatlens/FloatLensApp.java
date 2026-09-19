@@ -11,6 +11,11 @@ import android.widget.TextView;
 public final class FloatLensApp extends Application implements Application.ActivityLifecycleCallbacks {
     @Override public void onCreate() {
         super.onCreate();
+        try {
+            SettingsMigrator.run(this);
+        } catch (Throwable t) {
+            DiagnosticLog.i(this, "APP_MIGRATION", "settings migration failed=" + t);
+        }
         ThemeSettings.applySavedMode(this);
         try {
             RemovedFeatureMigration.run(this);

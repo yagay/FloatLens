@@ -15,7 +15,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -302,27 +301,10 @@ public final class FlSystemPanelController {
             return;
         }
         ROOT_IO.execute(() -> {
-            int code = -1;
-            String error = "";
-            Process process = null;
-            try {
-                process = new ProcessBuilder("su", "-c", "cmd statusbar collapse")
-                        .redirectErrorStream(true)
-                        .start();
-                if (!process.waitFor(ROOT_COLLAPSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                    process.destroy();
-                    if (process.isAlive()) process.destroyForcibly();
-                    throw new IllegalStateException("root shade collapse timeout");
-                }
-                code = process.exitValue();
-            } catch (Throwable t) {
-                error = String.valueOf(t);
-                if (process != null && process.isAlive()) {
-                    try { process.destroyForcibly(); } catch (Throwable ignored) { }
-                }
-            }
-            final int exitCode = code;
-            final String failure = error;
+            RootCommandExecutor.Result command = RootCommandExecutor.runText(
+                    "cmd statusbar collapse", ROOT_COLLAPSE_TIMEOUT_SECONDS, 4 * 1024);
+            int exitCode = command.exitCode;
+            String failure = command.success() ? "" : command.failureMessage("root shade collapse timeout");
             MAIN.post(() -> DiagnosticLog.i(app, "FL_SHADE",
                     "root collapse reason=" + reason + " exit=" + exitCode
                             + (failure.isEmpty() ? "" : " error=" + failure)));

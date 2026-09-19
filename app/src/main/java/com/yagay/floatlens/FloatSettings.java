@@ -83,11 +83,11 @@ public final class FloatSettings {
     public static final String K_ROOT_LAST_CHECK = "privilege_root_last_check_ms_v1";
     public static final String K_ROOT_LAST_DETAIL = "privilege_root_last_detail_v1";
 
-    private static final String K_MIGRATE_LONG_PRESS_CONFIG_V1 = "migrate_long_press_config_v1";
+    static final String K_MIGRATE_LONG_PRESS_CONFIG_V1 = "migrate_long_press_config_v1";
     private static final String K_CIRCLE_CANCEL_X_BP = "circle_cancel_x_bp_v1";
     private static final String K_CIRCLE_CANCEL_Y_BP = "circle_cancel_y_bp_v1";
 
-    private static final int POSITION_SCHEMA_VERSION = 2;
+    static final int POSITION_SCHEMA_VERSION = 2;
     public static final String K_POSITION_SCHEMA = "float_position_schema_v2";
     public static final String K_POSITION_SIDE = "float_position_side_v2";
     public static final String K_POSITION_Y_BP = "float_position_y_bp_v2";
@@ -115,75 +115,6 @@ public final class FloatSettings {
     public FloatSettings(Context c) {
         context = c.getApplicationContext();
         p = context.getSharedPreferences(PREF, Context.MODE_PRIVATE);
-        migrateOnce();
-    }
-
-    private void migrateOnce() {
-        if (!p.contains(K_SHOW_PERCENT) && p.contains("float_edge_hide_percent")) {
-            int hidden = clamp(p.getInt("float_edge_hide_percent", 28), 0, 90);
-            p.edit().putInt(K_SHOW_PERCENT, 100 - hidden).apply();
-        }
-        if (!p.contains(K_KEEP_IN_SCREENSHOT) && p.contains("setting_screenshot_keep_float_icon")) {
-            p.edit().putBoolean(K_KEEP_IN_SCREENSHOT, p.getBoolean("setting_screenshot_keep_float_icon", false)).apply();
-        }
-        Object old = p.getAll().get(K_HIDE_FULLSCREEN);
-        if (old instanceof Boolean b) p.edit().putInt(K_HIDE_FULLSCREEN, b ? 2 : 0).apply();
-        if (!p.getBoolean(K_MIGRATE_LONG_PRESS_CONFIG_V1, false)) {
-            SharedPreferences.Editor e = p.edit();
-            if (ActionId.OCR.equals(p.getString(K_ACTION_LONG, null))) e.remove(K_ACTION_LONG);
-            e.putBoolean(K_MIGRATE_LONG_PRESS_CONFIG_V1, true).apply();
-        }
-        migratePositionModel();
-    }
-
-    /**
-     * Migrate the old orientation-specific absolute X/Y model once.
-     *
-     * <p>The legacy landscape X can be written while Android is already reporting the new
-     * orientation, which makes an old portrait X look like a left-edge coordinate. V2 never
-     * derives the side from an absolute X. It trusts the old portrait side when available and
-     * stores only side + normalized vertical position. Legacy keys are intentionally left intact
-     * but become inert, making rollback safe and avoiding preference-change side effects.</p>
-     */
-    private void migratePositionModel() {
-        int schema = legacyInt(K_POSITION_SCHEMA, 0);
-        if (schema >= POSITION_SCHEMA_VERSION
-                && p.contains(K_POSITION_SIDE) && p.contains(K_POSITION_Y_BP)) {
-            return;
-        }
-
-        int side = validSide(K_GRAVITY);
-        if (side < 0) side = validSide(K_GRAVITY_LAND);
-        if (side < 0) side = 1; // historical/default placement is right
-
-        int yBp = 3333;
-        android.graphics.Rect bounds = ScreenGeometry.displayBounds(context);
-        int iconPx = Math.round(sizeDp() * context.getResources().getDisplayMetrics().density);
-        int portraitAvailable = Math.max(0, Math.max(bounds.width(), bounds.height()) - iconPx);
-        int landscapeAvailable = Math.max(0, Math.min(bounds.width(), bounds.height()) - iconPx);
-
-        if (p.contains(K_POS_Y_PORTRAIT) && portraitAvailable > 0) {
-            yBp = toBasisPoints(legacyInt(K_POS_Y_PORTRAIT, portraitAvailable / 3),
-                    portraitAvailable);
-        } else if (p.contains(K_POS_Y) && portraitAvailable > 0) {
-            yBp = toBasisPoints(legacyInt(K_POS_Y, portraitAvailable / 3),
-                    portraitAvailable);
-        } else if (p.contains(K_POS_Y_LANDSCAPE) && landscapeAvailable > 0) {
-            yBp = toBasisPoints(legacyInt(K_POS_Y_LANDSCAPE, landscapeAvailable / 3),
-                    landscapeAvailable);
-        }
-
-        p.edit()
-                .putInt(K_POSITION_SCHEMA, POSITION_SCHEMA_VERSION)
-                .putInt(K_POSITION_SIDE, side)
-                .putInt(K_POSITION_Y_BP, yBp)
-                .commit();
-    }
-
-    private int validSide(String key) {
-        if (!p.contains(key)) return -1;
-        int side = legacyInt(key, -1);
-        return side == 0 || side == 1 ? side : -1;
     }
 
     private int legacyInt(String key, int def) {

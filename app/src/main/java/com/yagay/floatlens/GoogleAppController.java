@@ -2,11 +2,8 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /** Root-only lifecycle control for the Google App package used by Circle to Search. */
@@ -91,43 +88,13 @@ public final class GoogleAppController {
         };
 
         String script = shellPrelude() + body + statusBody();
-        Process process = null;
-        try {
-            process = new ProcessBuilder("su", "-c", script)
-                    .redirectErrorStream(true)
-                    .start();
-            boolean finished = process.waitFor(operation == Operation.QUERY ? 5 : 10,
-                    TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
-                return new Result(false, State.UNKNOWN, "Root 命令超时");
-            }
-
-            StringBuilder out = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null && out.length() < 4096) {
-                    if (out.length() > 0) out.append('\n');
-                    out.append(line);
-                }
-            }
-
-            String detail = out.toString().trim();
-            State state = parseState(detail);
-            boolean success = process.exitValue() == 0 && operationSucceeded(operation, state);
-            if (detail.isBlank()) detail = "su exit=" + process.exitValue();
-            return new Result(success, state, detail);
-        } catch (Throwable t) {
-            String message = t.getMessage();
-            return new Result(false, State.UNKNOWN,
-                    message == null || message.isBlank()
-                            ? t.getClass().getSimpleName() : message);
-        } finally {
-            if (process != null) {
-                try { process.destroy(); } catch (Throwable ignored) {}
-            }
-        }
+        RootCommandExecutor.Result command = RootCommandExecutor.runText(
+                script, operation == Operation.QUERY ? 5 : 10, 16 * 1024);
+        String detail = command.text();
+        State state = parseState(detail);
+        boolean success = command.success() && operationSucceeded(operation, state);
+        if (detail.isBlank()) detail = command.failureMessage("Root 命令超时");
+        return new Result(success, state, detail);
     }
 
     private static String shellPrelude() {
