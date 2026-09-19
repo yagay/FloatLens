@@ -37,6 +37,7 @@ final class GoogleCtsBridgeController {
 
     private static final class State {
         Bitmap frame;
+        CanonicalSessionGeometry geometry;
         String text = "";
         Rect bounds;
         String detail = "";
@@ -81,6 +82,7 @@ final class GoogleCtsBridgeController {
             replaced = state.frame != null;
             recycle(state.frame);
             state.frame = frame;
+            state.geometry = CanonicalSessionGeometry.forFrame(context, width, height);
         }
         DiagnosticLog.i(context, "GOOGLE_CANONICAL_FRAME",
                 (replaced ? "larger frame replaced previous" : "canonical frame accepted")
@@ -97,6 +99,7 @@ final class GoogleCtsBridgeController {
         final int revision;
         final String selectedText;
         final Rect selectedBounds;
+        final Rect selectedScreenBounds;
         synchronized (state) {
             if (state.delivered) return;
             state.regionPending = false;
@@ -113,6 +116,7 @@ final class GoogleCtsBridgeController {
             revision = ++state.selectionRevision;
             selectedText = state.text;
             selectedBounds = state.bounds == null ? null : new Rect(state.bounds);
+            selectedScreenBounds = toScreenBounds(state, selectedBounds);
         }
         GoogleRegionConfirmOverlay.dismiss(token, "text_selection");
         WorkflowSessionManager.Session workflow = WorkflowSessionManager.current();
@@ -123,7 +127,8 @@ final class GoogleCtsBridgeController {
         DiagnosticLog.i(app, "GOOGLE_BRIDGE",
                 "selection session=" + shortToken(token)
                         + " textLen=" + selectedText.length()
-                        + " bounds=" + String.valueOf(selectedBounds));
+                        + " frameBounds=" + String.valueOf(selectedBounds)
+                        + " screenBounds=" + String.valueOf(selectedScreenBounds));
         // v177 deliberately does not renew any system_server component-block lease.
         // Google UI suppression is scoped inside the marked Google App process so native CTS
         // remains independently usable immediately after a FloatLens session.
@@ -139,12 +144,13 @@ final class GoogleCtsBridgeController {
                     if (state.delivered || state.selectionRevision != revision) return;
                     state.textMenuShown = true;
                 }
-                FloatActionMenu.showTextAt(app, selectedText, null, selectedBounds);
+                FloatActionMenu.showTextAt(app, selectedText, null, selectedScreenBounds);
                 DiagnosticLog.i(app, "GOOGLE_TEXT_MENU",
                         "show session=" + shortToken(token)
                                 + " revision=" + revision
                                 + " textLen=" + selectedText.length()
-                                + " bounds=" + String.valueOf(selectedBounds)
+                                + " frameBounds=" + String.valueOf(selectedBounds)
+                                + " screenBounds=" + String.valueOf(selectedScreenBounds)
                                 + " debouncedMs=" + MENU_UPDATE_DELAY_MS);
             }, MENU_UPDATE_DELAY_MS);
         } else {
@@ -169,6 +175,7 @@ final class GoogleCtsBridgeController {
         State state = state(token);
         final int revision;
         final Rect selectedBounds;
+        final Rect selectedScreenBounds;
         final boolean gestureActive;
         synchronized (state) {
             if (state.delivered) return;
@@ -185,6 +192,7 @@ final class GoogleCtsBridgeController {
             state.textMenuShown = false;
             revision = ++state.selectionRevision;
             selectedBounds = new Rect(state.bounds);
+            selectedScreenBounds = toScreenBounds(state, selectedBounds);
             gestureActive = state.regionGestureActive;
             cancelRegionConfirmShowLocked(state);
             cancelRegionFallbackLocked(state);
@@ -205,13 +213,14 @@ final class GoogleCtsBridgeController {
             scheduleRegionGestureWatchdog(app, token, state);
         } else {
             scheduleStableRegionConfirm(
-                    app, token, state, revision, selectedBounds, REGION_CONFIRM_STABLE_MS);
+                    app, token, state, revision, selectedScreenBounds, REGION_CONFIRM_STABLE_MS);
         }
 
         DiagnosticLog.i(app, "GOOGLE_REGION",
                 "selection session=" + shortToken(token)
                         + " revision=" + revision
-                        + " bounds=" + selectedBounds
+                        + " frameBounds=" + selectedBounds
+                        + " screenBounds=" + selectedScreenBounds
                         + " gestureActive=" + gestureActive
                         + " confirmVisible=false state=adjusting");
     }
@@ -238,8 +247,8 @@ final class GoogleCtsBridgeController {
                 if (state.regionPending
                         && state.bounds != null && !state.bounds.isEmpty()) {
                     revision = state.selectionRevision;
-                    selectedBounds = new Rect(state.bounds);
-                    shouldSchedule = true;
+                    selectedBounds = toScreenBounds(state, state.bounds);
+                    shouldSchedule = selectedBounds != null && !selectedBounds.isEmpty();
                 }
             }
         }
@@ -291,7 +300,7 @@ final class GoogleCtsBridgeController {
                 }
                 state.regionGestureActive = false;
                 revision = state.selectionRevision;
-                selectedBounds = new Rect(state.bounds);
+                selectedBounds = toScreenBounds(state, state.bounds);
             }
 
             DiagnosticLog.i(app, "GOOGLE_REGION",
@@ -442,6 +451,7 @@ final class GoogleCtsBridgeController {
         Bitmap frame = null;
         String finalText;
         Rect finalBounds;
+        Rect finalScreenBounds;
         boolean showMenuNow;
         synchronized (state) {
             if (state.delivered) return;
@@ -450,6 +460,7 @@ final class GoogleCtsBridgeController {
             if (detail != null && !detail.isBlank()) state.detail = detail;
             finalText = state.text == null ? "" : state.text.trim();
             finalBounds = state.bounds == null ? null : new Rect(state.bounds);
+            finalScreenBounds = toScreenBounds(state, finalBounds);
             showMenuNow = !state.textMenuShown && !finalText.isBlank();
             state.committed = true;
             state.delivered = true;
@@ -462,11 +473,12 @@ final class GoogleCtsBridgeController {
         GoogleRegionConfirmOverlay.dismiss(token, "text_menu_commit");
         recycle(frame);
         if (showMenuNow) {
-            FloatActionMenu.showTextAt(app, finalText, null, finalBounds);
+            FloatActionMenu.showTextAt(app, finalText, null, finalScreenBounds);
             DiagnosticLog.i(app, "GOOGLE_TEXT_MENU",
                     "late show session=" + shortToken(token)
                             + " textLen=" + finalText.length()
-                            + " bounds=" + String.valueOf(finalBounds));
+                            + " frameBounds=" + String.valueOf(finalBounds)
+                            + " screenBounds=" + String.valueOf(finalScreenBounds));
         }
         clearSessionState(app, token, "text_menu_commit");
         FloatService service = FloatService.get();
@@ -542,6 +554,7 @@ final class GoogleCtsBridgeController {
             synchronized (state) {
                 recycle(state.frame);
                 state.frame = null;
+                state.geometry = null;
                 state.regionPending = false;
                 state.regionGestureActive = false;
                 state.delivered = true;
@@ -586,6 +599,7 @@ final class GoogleCtsBridgeController {
                 if (detail != null && !detail.isBlank()) state.detail = detail;
                 recycle(state.frame);
                 state.frame = null;
+                state.geometry = null;
                 dismissTextMenu = state.textMenuShown && !state.committed;
                 state.delivered = true;
             }
@@ -603,6 +617,8 @@ final class GoogleCtsBridgeController {
         Bitmap frame;
         String text;
         Rect bounds;
+        Rect screenBounds;
+        CanonicalSessionGeometry geometry;
         String detail;
         synchronized (state) {
             if (state.delivered || !state.committed) return;
@@ -618,6 +634,9 @@ final class GoogleCtsBridgeController {
             state.frame = null;
             text = state.text == null ? "" : state.text.trim();
             bounds = state.bounds == null ? null : new Rect(state.bounds);
+            geometry = state.geometry;
+            screenBounds = geometry == null ? (bounds == null ? null : new Rect(bounds))
+                    : geometry.frameToScreen(bounds);
             detail = state.detail == null ? "" : state.detail;
         }
         STATES.remove(token, state);
@@ -628,7 +647,8 @@ final class GoogleCtsBridgeController {
         GoogleRegionConfirmOverlay.dismiss(token, "deliver");
 
         Bitmap display = frame;
-        Rect normalized = normalize(bounds, frame);
+        Rect normalized = geometry == null ? normalize(bounds, frame)
+                : geometry.normalizeFrameBounds(bounds);
         if (frame != null && normalized != null
                 && (normalized.width() < frame.getWidth() || normalized.height() < frame.getHeight())) {
             Bitmap cropped = crop(frame, normalized);
@@ -646,9 +666,9 @@ final class GoogleCtsBridgeController {
 
         ResultSession session;
         if (!text.isBlank()) {
-            session = ResultSession.viewText(text, display, normalized);
+            session = ResultSession.viewText(text, display, screenBounds);
         } else if (display != null) {
-            session = ResultSession.screenshot(display, normalized);
+            session = ResultSession.screenshot(display, screenBounds);
         } else {
             DiagnosticLog.i(app, "GOOGLE_BRIDGE",
                     "nothing to show session=" + shortToken(token)
@@ -678,7 +698,8 @@ final class GoogleCtsBridgeController {
                         + " shown=" + shown
                         + " release=" + (shown ? "deferred_first_frame" : "immediate_failed")
                         + " textLen=" + text.length()
-                        + " bounds=" + String.valueOf(normalized));
+                        + " frameBounds=" + String.valueOf(normalized)
+                        + " screenBounds=" + String.valueOf(screenBounds));
     }
 
     private static State state(String token) {
@@ -776,6 +797,13 @@ final class GoogleCtsBridgeController {
             state.cleanupTask = null;
         }
         if (pending != null) MAIN.removeCallbacks(pending);
+    }
+
+    private static Rect toScreenBounds(State state, Rect frameBounds) {
+        if (frameBounds == null || frameBounds.isEmpty()) return null;
+        CanonicalSessionGeometry geometry = state == null ? null : state.geometry;
+        if (geometry == null) return new Rect(frameBounds);
+        return geometry.frameToScreen(frameBounds);
     }
 
     static boolean shouldReplaceCanonicalFrame(
