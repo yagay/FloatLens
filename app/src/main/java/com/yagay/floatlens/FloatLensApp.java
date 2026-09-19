@@ -9,6 +9,9 @@ import android.widget.TextView;
 
 /** Installs FloatLens' app-wide text menu. Result popup geometry belongs only to the dialog host. */
 public final class FloatLensApp extends Application implements Application.ActivityLifecycleCallbacks {
+    private final LsposedStatusManager.Listener hookReloadListener =
+            snapshot -> HookReloadManager.autoReloadChangedTargets(this, snapshot);
+
     @Override public void onCreate() {
         super.onCreate();
         try {
@@ -17,6 +20,7 @@ public final class FloatLensApp extends Application implements Application.Activ
             DiagnosticLog.i(this, "APP_MIGRATION", "settings migration failed=" + t);
         }
         ThemeSettings.applySavedMode(this);
+        HookReloadManager.initialize(this);
         try {
             RemovedFeatureMigration.run(this);
         } catch (Throwable t) {
@@ -24,6 +28,7 @@ public final class FloatLensApp extends Application implements Application.Activ
         }
         // App-side framework/status/config bridge only; this does not install Xposed hooks.
         LsposedStatusManager.initialize(this);
+        LsposedStatusManager.addListener(hookReloadListener, true);
         registerActivityLifecycleCallbacks(this);
     }
 

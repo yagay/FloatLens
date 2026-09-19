@@ -51,7 +51,8 @@ public final class PrivilegeManager {
     /** Secure screenshot is a system_server capability, so SystemUI-only loading is not enough. */
     public static boolean lsposedSecureScreenshotProviderAvailable() {
         LsposedStatusManager.Snapshot s = LsposedStatusManager.snapshot();
-        return s.serviceConnected && s.remoteConfigReady && s.systemLoaded;
+        return s.serviceConnected && s.remoteConfigReady && s.systemLoaded
+                && HookReloadManager.systemServerHookCurrent();
     }
 
     public static boolean canUseLsposed(Context context) {

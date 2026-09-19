@@ -1,6 +1,41 @@
+import java.security.MessageDigest
+
 plugins {
     id 'com.android.application'
 }
+
+def floatLensHashFiles = { Collection<File> sourceFiles ->
+    MessageDigest digest = MessageDigest.getInstance("SHA-256")
+    sourceFiles.findAll { it != null && it.exists() }
+            .sort { a, b -> a.path <=> b.path }
+            .each { File source ->
+                digest.update(project.relativePath(source).replace('\\', '/').getBytes('UTF-8'))
+                digest.update((byte) 0)
+                digest.update(source.bytes)
+                digest.update((byte) 0)
+            }
+    return digest.digest().encodeHex().toString()
+}
+
+def hookRoot = file('src/main/java/com/yagay/floatlens/hook')
+def hookCommonFiles = [
+        file('src/main/java/com/yagay/floatlens/hook/FloatLensModule.java'),
+        file('src/main/java/com/yagay/floatlens/hook/LsposedRuntimeProvider.java'),
+        file('src/main/java/com/yagay/floatlens/LsposedRuntimeConfig.java'),
+        file('src/main/resources/META-INF/xposed/java_init.list'),
+        file('src/main/resources/META-INF/xposed/module.prop'),
+        file('src/main/resources/META-INF/xposed/scope.list')
+]
+def googleHookFiles = new ArrayList<File>(hookCommonFiles)
+googleHookFiles.addAll(fileTree(hookRoot) { include 'Google*.java' }.files)
+googleHookFiles.add(file('src/main/java/com/yagay/floatlens/GoogleCtsContract.java'))
+def systemUiHookFiles = new ArrayList<File>(hookCommonFiles)
+def systemServerHookFiles = new ArrayList<File>(hookCommonFiles)
+systemServerHookFiles.add(file('src/main/java/com/yagay/floatlens/hook/SecureScreenshotHook.java'))
+
+def googleHookFingerprint = floatLensHashFiles(googleHookFiles)
+def systemUiHookFingerprint = floatLensHashFiles(systemUiHookFiles)
+def systemServerHookFingerprint = floatLensHashFiles(systemServerHookFiles)
 
 android {
     namespace 'com.yagay.floatlens'
@@ -10,8 +45,11 @@ android {
         applicationId 'com.yagay.floatlens'
         minSdk 31
         targetSdk 37
-        versionCode 185
-        versionName '3.1.33'
+        versionCode 186
+        versionName '3.1.34'
+        buildConfigField 'String', 'GOOGLE_HOOK_FINGERPRINT', '"'+googleHookFingerprint+'"'
+        buildConfigField 'String', 'SYSTEMUI_HOOK_FINGERPRINT', '"'+systemUiHookFingerprint+'"'
+        buildConfigField 'String', 'SYSTEM_SERVER_HOOK_FINGERPRINT', '"'+systemServerHookFingerprint+'"'
         ndk {
             // FloatLens targets modern Android phones; keep only the ABI actually used on current devices.
             abiFilters 'arm64-v8a'
