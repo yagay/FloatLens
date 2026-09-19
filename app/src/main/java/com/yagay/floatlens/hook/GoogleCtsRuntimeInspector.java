@@ -993,244 +993,91 @@ final class GoogleCtsRuntimeInspector {
         return null;
     }
 
-    /** Google 17.58.16.ve Lens user-selection/query boundary from classes8.dex. */
+    /** Google 17.58.16.ve core selection boundary from classes8.dex. */
     private int hookGoogle1758LensSelectionBoundary() {
         try {
             String profileError = GoogleLens1758Profile.selectionValidationError(classLoader);
             if (!profileError.isBlank()) {
                 module.log(Log.WARN, TAG,
                         "Google " + GoogleLens1758Profile.NAME
-                                + " Lens profile rejected: " + profileError
+                                + " selection profile rejected: " + profileError
                                 + "; trying dynamic structural selection resolver");
                 return hookDynamicLensSelectionBoundary(profileError);
             }
 
             Class<?> controller = Class.forName(
                     GoogleLens1758Profile.CONTROLLER, false, classLoader);
-            int count = 0;
             for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
-                if (!(executable instanceof Method method)) continue;
-
-                if (GoogleLens1758Profile.isSelectionMethod(method)) {
-                    module.hook(method).intercept(chain -> {
-                        GoogleLens1758Profile.SelectionSnapshot selection = null;
-                        Rect selectionBounds = null;
-                        if (active()) {
-                            selection = GoogleLens1758Profile.selection(chain.getArg(0));
-                            selectionBounds = selectionBoundsForDisplay(selection);
-                            bridgeSelectionSeen = true;
-                            bridgeSelectionText = selection.text();
-                            if (selectionBounds != null && !selectionBounds.isEmpty()) {
-                                bridgeSelectionBounds = selectionBounds;
-                            }
-                            Rect effectiveBounds = bridgeSelectionBounds == null
-                                    ? null : new Rect(bridgeSelectionBounds);
-                            report("USER_SELECTION",
-                                    selection.detail()
-                                            + " pixelBounds=" + String.valueOf(selectionBounds)
-                                            + " effectiveBounds=" + String.valueOf(effectiveBounds)
-                                            + " primary=" + chain.getArg(1));
-                            sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
-                                    selection.text(), selection.detail(), effectiveBounds);
-                        }
-                        boolean directRegionCommit = active()
-                                && selection != null
-                                && selection.isDirectRegionSelection()
-                                && selectionBounds != null
-                                && !selectionBounds.isEmpty();
-                        Object result = chain.proceed();
-
-                        if (active() && bridgeSelectionSeen) {
-                            uiSanitizer.sanitizeNow();
-                        }
-
-                        if (directRegionCommit && active() && !bridgeCommitted) {
-                            report("LENS_REGION_SELECTION_COMMIT",
-                                    "class=" + selection.userSelectionClass()
-                                            + " bounds=" + String.valueOf(bridgeSelectionBounds)
-                                            + " presentationWait=false");
-                            if (commitBridgeResult("", selection.detail(),
-                                    "lens_region_selection")) {
-                                return result;
-                            }
-                        }
-
-                        if (active() && bridgeSelectionSeen
-                                && bridgeSelectionText != null
-                                && !bridgeSelectionText.isBlank()) {
-                            uiSanitizer.sanitizeNow();
-                            // Keep the old decor traversal only as a short transition fallback for
-                            // Material toolbar implementations that live outside the known Lens views.
-                            hideGoogleMaterialFloatingToolbarSoon();
-                            inspectGoogleSelectionViewsSoon();
-                        }
-                        return result;
-                    });
-                    count++;
+                if (!(executable instanceof Method method)
+                        || !GoogleLens1758Profile.isSelectionMethod(method)) {
                     continue;
                 }
 
-                if (GoogleLens1758Profile.isPendingQueryMethod(method)) {
-                    module.hook(method).intercept(chain -> {
-                        if (!active()) return chain.proceed();
-
-                        Object pending = chain.getArg(0);
-                        if (pending == null) {
-                            report("LENS_QUERY_STATE",
-                                    "pending=null ignored (LensUiController initial state)");
-                            return chain.proceed();
+                module.hook(method).intercept(chain -> {
+                    GoogleLens1758Profile.SelectionSnapshot selection = null;
+                    Rect selectionBounds = null;
+                    if (active()) {
+                        selection = GoogleLens1758Profile.selection(chain.getArg(0));
+                        selectionBounds = selectionBoundsForDisplay(selection);
+                        bridgeSelectionSeen = true;
+                        bridgeSelectionText = selection.text();
+                        if (selectionBounds != null && !selectionBounds.isEmpty()) {
+                            bridgeSelectionBounds = selectionBounds;
                         }
+                        Rect effectiveBounds = bridgeSelectionBounds == null
+                                ? null : new Rect(bridgeSelectionBounds);
+                        report("USER_SELECTION",
+                                selection.detail()
+                                        + " pixelBounds=" + String.valueOf(selectionBounds)
+                                        + " effectiveBounds=" + String.valueOf(effectiveBounds)
+                                        + " primary=" + chain.getArg(1));
+                        sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
+                                selection.text(), selection.detail(), effectiveBounds);
+                    }
 
-                        if (bridgeSelectionSeen) {
-                            GoogleLens1758Profile.PresentationRequestSuppression suppression =
-                                    GoogleLens1758Profile
-                                            .suppressSelectionPresentationRequest(pending);
-                            report(suppression.suppressed()
-                                            ? "GOOGLE_PRESENTATION_REQUEST_SUPPRESSED"
-                                            : "GOOGLE_PRESENTATION_REQUEST_UNCHANGED",
-                                    "selectionTextLen="
-                                            + (bridgeSelectionText == null ? 0
-                                            : bridgeSelectionText.length())
-                                            + " " + suppression.detail());
-                        }
+                    boolean directRegionCommit = active()
+                            && selection != null
+                            && selection.isDirectRegionSelection()
+                            && selectionBounds != null
+                            && !selectionBounds.isEmpty();
 
-                        GoogleLens1758Profile.PendingSnapshot snapshot =
-                                GoogleLens1758Profile.pending(pending);
-                        bridgePendingSeen = true;
-                        // Keep the query itself alive for OCR/selection updates. Only the
-                        // requestPresentationResult bit is disabled for FloatLens-owned text
-                        // selections so Google does not ask for its native action presentation.
-                        report("LENS_QUERY_START", snapshot.detail());
-                        sendBridgeFrame(snapshot.frame());
+                    Object result = chain.proceed();
 
-                        // Do not suppress 17.58 p(PendingLensQuery). Google still needs to finish
-                        // Lens processing so FloatLens can consume the real LensQueryResult.
-                        return chain.proceed();
-                    });
-                    count++;
-                    continue;
-                }
+                    if (active() && bridgeSelectionSeen) {
+                        uiSanitizer.sanitizeNow();
+                    }
 
-                if (GoogleLens1758Profile.isQueryResultMethod(method)) {
-                    module.hook(method).intercept(chain -> {
-                        if (!active()) return chain.proceed();
+                    if (directRegionCommit && active() && !bridgeCommitted) {
+                        report("LENS_REGION_SELECTION_COMMIT",
+                                "class=" + selection.userSelectionClass()
+                                        + " bounds=" + String.valueOf(bridgeSelectionBounds)
+                                        + " source=selection_boundary");
+                        commitBridgeResult("", selection.detail(), "lens_region_selection");
+                    }
 
-                        Object queryResult = chain.getArg(0);
-                        if (queryResult == null) {
-                            report("LENS_QUERY_STATE",
-                                    "result=null ignored (LensUiController initial state)");
-                            return chain.proceed();
-                        }
+                    if (active() && bridgeSelectionSeen
+                            && bridgeSelectionText != null
+                            && !bridgeSelectionText.isBlank()) {
+                        uiSanitizer.sanitizeNow();
+                        inspectGoogleSelectionViewsSoon();
+                    }
+                    return result;
+                });
 
-                        // Constructor-level stripping is the earliest boundary. Repeat the
-                        // native-presentation strip here as a fail-soft fallback in case a future
-                        // Google path materializes InteractionDataResult before this process hook
-                        // observes its constructor.
-                        if (bridgeSelectionSeen) {
-                            GoogleLens1758Profile.NativePresentationSuppression suppression =
-                                    GoogleLens1758Profile
-                                            .suppressNativeRenderedPresentationFromQueryResult(
-                                                    queryResult);
-                            if (suppression.suppressed()) {
-                                report("GOOGLE_NATIVE_PRESENTATION_STRIPPED",
-                                        "path=queryResult " + suppression.detail());
-                            }
-                        }
-
-                        // Parse before invoking Google. In 17.58 the final q(dtqi) already contains
-                        // InteractionPresentationResult/LensResultPanelResponse. If FloatLens owns
-                        // the session we can consume this final state before Google renders LRP.
-                        GoogleLens1758Profile.ResultSnapshot snapshot =
-                                GoogleLens1758Profile.result(queryResult);
-                        sendBridgeFrame(snapshot.frame());
-
-                        boolean userInteractionSeen = bridgeSelectionSeen;
-                        boolean presentationBoundary =
-                                GoogleLens1758Profile.isPresentationBoundary(
-                                        snapshot.complete(),
-                                        snapshot.interactionPresent(),
-                                        snapshot.presentationPresent());
-                        boolean renderablePayload = bridgeFrameQueued
-                                || (bridgeSelectionText != null
-                                && !bridgeSelectionText.isBlank());
-
-                        report("LENS_QUERY_RESULT",
-                                "complete=" + snapshot.complete()
-                                        + " selectionSeen=" + bridgeSelectionSeen
-                                        + " pendingSeen=" + bridgePendingSeen
-                                        + " interactionSeen=" + userInteractionSeen
-                                        + " presentationBoundary=" + presentationBoundary
-                                        + " renderablePayload=" + renderablePayload
-                                        + " " + snapshot.detail());
-
-                        if (!userInteractionSeen) {
-                            report("LENS_QUERY_PRESELECTION",
-                                    "result allowed until USER_SELECTION");
-                            return chain.proceed();
-                        }
-
-                        boolean textSelection =
-                                GoogleLens1758Profile.shouldSuppressPostSelectionResult(
-                                        bridgeSelectionSeen, bridgeSelectionText);
-                        boolean anySelection =
-                                GoogleLens1758Profile.shouldSuppressAnyPostSelectionResult(
-                                        bridgeSelectionSeen);
-
-                        if (textSelection && renderablePayload) {
-                            report("LENS_POST_SELECTION_RESULT_SUPPRESSED",
-                                    "type=text complete=" + snapshot.complete()
-                                            + " presentationPresent="
-                                            + snapshot.presentationPresent()
-                                            + " keepSelectionAlive=true textLen="
-                                            + bridgeSelectionText.length());
-                            suppressBridgeTextPresentation(snapshot.detail());
-
-                            // Keep Google's OCR/highlight/drag-handle state alive, but never let its
-                            // post-selection result consumer build ActionMenu/InfoPanel/WebX.
-                            return null;
-                        }
-
-                        if (anySelection && renderablePayload) {
-                            boolean commitNonText =
-                                    GoogleLens1758Profile.shouldCommitNonTextSelection(
-                                            bridgeSelectionSeen, bridgeSelectionText,
-                                            snapshot.complete(), snapshot.interactionPresent());
-                            if (commitNonText) {
-                                report("LENS_NON_TEXT_COMPLETE",
-                                        "presentationPresent=" + snapshot.presentationPresent()
-                                                + " committing without waiting for Google LRP");
-                                if (commitBridgeResult(snapshot.text(), snapshot.detail(),
-                                        "lens_non_text_complete")) {
-                                    return null;
-                                }
-                            }
-
-                            report("LENS_POST_SELECTION_RESULT_SUPPRESSED",
-                                    "type=non_text complete=" + snapshot.complete()
-                                            + " interactionPresent="
-                                            + snapshot.interactionPresent()
-                                            + " presentationPresent="
-                                            + snapshot.presentationPresent());
-                            // Region/object selections no longer wait for
-                            // InteractionPresentationResult/LensResultPanelResponse. Suppress every
-                            // post-selection q(dtqi); commit as soon as Lens itself reports a
-                            // complete interaction result.
-                            return null;
-                        }
-
-                        return chain.proceed();
-                    });
-                    count++;
-                }
+                module.log(Log.INFO, TAG,
+                        "Google " + GoogleLens1758Profile.NAME
+                                + " core selection hook=1 method=" + method.getName());
+                return 1;
             }
-            module.log(Log.INFO, TAG,
+
+            module.log(Log.WARN, TAG,
                     "Google " + GoogleLens1758Profile.NAME
-                            + " Lens selection hooks=" + count);
-            return count;
+                            + " core selection method not found after validation");
+            return 0;
         } catch (Throwable t) {
             module.log(Log.WARN, TAG,
                     "Google " + GoogleLens1758Profile.NAME
-                            + " Lens selection boundary unavailable", t);
+                            + " core selection boundary unavailable", t);
             return 0;
         }
     }
@@ -1311,7 +1158,9 @@ final class GoogleCtsRuntimeInspector {
 
     private synchronized boolean commitBridgeResult(String text, String detail, String reason) {
         if (!active() || bridgeCommitted
-                || (!bridgeSelectionSeen && !bridgePendingSeen)) return false;
+                || (!bridgeSelectionSeen && !bridgePendingSeen && !bridgeFrameQueued)) {
+            return false;
+        }
 
         // Never close Google's marked Lens UI unless FloatLens actually has something it can
         // display. v155 showed non-null dtqi placeholders with frame/text/LensResult all null;
