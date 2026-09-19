@@ -107,7 +107,11 @@ final class GoogleLensViewportHook {
     }
 
     int install() {
-        Binding binding = resolve(classLoader);
+        return install(resolve(classLoader));
+    }
+
+    int install(Binding binding) {
+        if (binding == null) binding = resolve(classLoader);
         if (!binding.available()) {
             module.log(Log.WARN, TAG,
                     "Google viewport capability unavailable: " + binding.detail);
