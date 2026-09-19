@@ -493,6 +493,7 @@ final class GoogleCtsBridgeController {
     private static void clearSessionState(Context app, String token, String reason) {
         if (app == null) return;
         GoogleRegionConfirmOverlay.dismiss(token, reason);
+        GoogleCtsBridgeProvider.releaseSharedFrame(token);
         new FloatSettings(app).clearGoogleCtsSession();
         LsposedStatusManager.clearGoogleCtsSessionRemote(token);
         WorkflowSessionManager.finishExternal(app, token, reason);
@@ -551,6 +552,7 @@ final class GoogleCtsBridgeController {
             cancelRegionGestureWatchdog(state);
             cancelRegionFallback(state);
             cancelCleanup(state);
+            GoogleCtsBridgeProvider.releaseSharedFrame(token);
             synchronized (state) {
                 recycle(state.frame);
                 state.frame = null;
