@@ -14,12 +14,17 @@ import io.github.libxposed.api.XposedModule;
 
 /** Tracks real FrozenImageView touch lifecycle so FloatLens confirm UI never covers refinements. */
 final class GoogleRegionGestureHook {
+    interface GesturePointSink {
+        void onGesturePoint(int action, float x, float y, String detail);
+    }
+
     private static final String TAG = "FloatLens-GoogleCTS";
 
     private final XposedModule module;
     private final ClassLoader classLoader;
     private final BooleanSupplier active;
     private final BiConsumer<Boolean, String> stateSink;
+    private final GesturePointSink pointSink;
 
     private static final long MOVE_HEARTBEAT_MS = 120L;
 
@@ -67,11 +72,13 @@ final class GoogleRegionGestureHook {
     GoogleRegionGestureHook(XposedModule module,
                             ClassLoader classLoader,
                             BooleanSupplier active,
-                            BiConsumer<Boolean, String> stateSink) {
+                            BiConsumer<Boolean, String> stateSink,
+                            GesturePointSink pointSink) {
         this.module = module;
         this.classLoader = classLoader;
         this.active = active;
         this.stateSink = stateSink;
+        this.pointSink = pointSink;
     }
 
     int install() {
@@ -120,6 +127,12 @@ final class GoogleRegionGestureHook {
     private synchronized void dispatchGestureState(MotionEvent event, String methodName) {
         int action = event.getActionMasked();
         long now = SystemClock.elapsedRealtime();
+        String pointDetail = describe(event, methodName, action, "point");
+        if (pointSink != null) {
+            try {
+                pointSink.onGesturePoint(action, event.getX(), event.getY(), pointDetail);
+            } catch (Throwable ignored) { }
+        }
 
         if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
             gestureActive = true;
