@@ -214,19 +214,46 @@ public final class PrivilegeSettingsPanel {
         LinearLayout lsposedButtons = AppUi.buttonRow(activity);
         MaterialButton refreshLsposed = AppUi.secondaryButton(activity, "刷新状态");
         refreshLsposed.setOnClickListener(v -> {
-            lsposedStatus.setText("正在读取 LSPosed 框架与 Provider 状态…");
+            lsposedStatus.setText("正在读取 LSPosed 框架与 Hook 代际状态…");
             LsposedStatusManager.syncRuntimeConfigAsync();
         });
         lsposedButtons.addView(refreshLsposed, new LinearLayout.LayoutParams(0, -2, 1f));
 
+        MaterialButton reloadHooks = AppUi.primaryButton(activity, "重载已变化 Hook");
+        reloadHooks.setOnClickListener(v -> {
+            if (!fs.canUseRoot()) {
+                Toast.makeText(activity,
+                        "热重载 Google / SystemUI Hook 需要启用增强模式和 Root 功能",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            reloadHooks.setEnabled(false);
+            lsposedStatus.setText("正在重新加载发生变化的 Google / SystemUI Hook…");
+            boolean started = HookReloadManager.reloadChangedTargetsAsync(activity, result -> {
+                reloadHooks.setEnabled(true);
+                Toast.makeText(activity, result.userMessage(), Toast.LENGTH_LONG).show();
+                LsposedStatusManager.refreshAsync();
+                refreshLsposed(activity, lsposedStatus);
+            });
+            if (!started) {
+                reloadHooks.setEnabled(true);
+                Toast.makeText(activity, "Hook 重载任务正在执行", Toast.LENGTH_SHORT).show();
+            }
+        });
+        lsposedButtons.addView(reloadHooks, new LinearLayout.LayoutParams(0, -2, 1f));
+        AppUi.addRow(lsposedSection.body, lsposedButtons);
+
+        LinearLayout lsposedTools = AppUi.buttonRow(activity);
         MaterialButton probeSecure = AppUi.secondaryButton(activity, "测试安全截图");
         probeSecure.setOnClickListener(v -> activity.startActivity(
                 new Intent(activity, SecureCaptureProbeActivity.class)));
-        lsposedButtons.addView(probeSecure, new LinearLayout.LayoutParams(0, -2, 1f));
-        AppUi.addRow(lsposedSection.body, lsposedButtons);
+        lsposedTools.addView(probeSecure, new LinearLayout.LayoutParams(0, -2, 1f));
+        AppUi.addRow(lsposedSection.body, lsposedTools);
 
         TextView lsposedNote = AppUi.caption(activity,
-                "推荐作用域：system + com.android.systemui + com.google.android.googlequicksearchbox。system 仅用于安全截图；Google App 作用域只用于 FloatLens 主动发起并带 floatlens_trigger 标记的 Google 圈画会话。系统 Home / 小白条原生启动没有该标记，会完全放行。",
+                "Hook 与普通 App 代码已分离判断：UI、OCR、弹窗、设置等普通更新不会重启任何目标。"
+                        + " Google Hook 变化只热重启 Google 进程；SystemUI Hook 变化只热重启 SystemUI；"
+                        + " 只有 system_server Hook 变化才需要重启手机。推荐作用域：system + com.android.systemui + com.google.android.googlequicksearchbox。",
                 12);
         AppUi.addRow(lsposedSection.body, simpleBlock(activity, lsposedNote));
 
@@ -370,6 +397,7 @@ public final class PrivilegeSettingsPanel {
                 : (s.googleTargetStale() ? "旧版本 STALE" : "未加载"));
         String updatedLine = s.remoteUpdatedAt <= 0L ? ""
                 : " · " + DateFormat.format("HH:mm:ss", s.remoteUpdatedAt);
+        String hookGenerationLine = HookReloadManager.statusSummary(activity, s);
         String processLine = s.runningProcesses.isEmpty()
                 ? "已加载进程：无"
                 : "已加载进程：" + String.join(", ", s.runningProcesses);
@@ -378,6 +406,7 @@ public final class PrivilegeSettingsPanel {
                 + "\n" + remoteLine + updatedLine
                 + "\n" + secureLine
                 + "\n" + googleLine
+                + "\n" + hookGenerationLine
                 + "\n" + scopeLine
                 + "\n" + loadedLine
                 + "\n" + processLine
