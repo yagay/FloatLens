@@ -503,6 +503,56 @@ final class GoogleCtsBridgeController {
         MAIN.postDelayed(() -> tryDeliver(app, token, state, true), FRAME_WAIT_MS);
     }
 
+    /**
+     * App-side hard release when the user leaves Google's frozen-selection surface without
+     * pressing FloatLens' confirm button. Remote Preferences alone cannot remove our accessibility
+     * overlay, so navigation must synchronously tear down every pending Google bridge state.
+     */
+    static void onNativeRelease(Context context, String reason) {
+        if (context == null) return;
+        Context app = context.getApplicationContext();
+        String why = reason == null || reason.isBlank() ? "native_release" : reason;
+
+        int cleared = 0;
+        for (Map.Entry<String, State> entry : STATES.entrySet()) {
+            String token = entry.getKey();
+            State state = entry.getValue();
+            if (token == null || state == null || !STATES.remove(token, state)) continue;
+            cleared++;
+            cancelRegionConfirmShow(state);
+            cancelRegionGestureWatchdog(state);
+            cancelRegionFallback(state);
+            cancelCleanup(state);
+            synchronized (state) {
+                recycle(state.frame);
+                state.frame = null;
+                state.regionPending = false;
+                state.regionGestureActive = false;
+                state.delivered = true;
+            }
+        }
+
+        GoogleRegionConfirmOverlay.dismiss(null, why);
+        FloatActionMenu.dismiss();
+
+        WorkflowSessionManager.Session workflow = WorkflowSessionManager.current();
+        String token = workflow != null
+                && workflow.type() == WorkflowSessionManager.Type.GOOGLE_CTS
+                ? workflow.externalKey() : "";
+        new FloatSettings(app).clearGoogleCtsSession();
+        if (!token.isBlank()) LsposedStatusManager.clearGoogleCtsSessionRemote(token);
+        if (workflow != null && workflow.type() == WorkflowSessionManager.Type.GOOGLE_CTS) {
+            WorkflowSessionManager.cancel(app, workflow, why);
+        }
+
+        FloatService service = FloatService.get();
+        if (service != null) service.onCircleFinished("google_" + why);
+        DiagnosticLog.i(app, "GOOGLE_CTS_APP_RELEASE",
+                "appStateCleared=true reason=" + why
+                        + " states=" + cleared
+                        + " session=" + shortToken(token));
+    }
+
     static void onEnd(Context context, String token, String detail) {
         if (context == null || token == null || token.isBlank()) return;
         Context app = context.getApplicationContext();

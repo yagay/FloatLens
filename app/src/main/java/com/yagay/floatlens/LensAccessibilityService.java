@@ -127,6 +127,7 @@ public class LensAccessibilityService extends AccessibilityService {
                     DiagnosticLog.i(this, "GOOGLE_CTS_NATIVE_RELEASE",
                             "reason=system_navigation remoteCleared=" + remoteCleared
                                     + " pkg=" + pkg + " cls=" + cls);
+                    GoogleCtsBridgeController.onNativeRelease(this, "system_navigation");
                     FLCircleInlineOverlay.dismissActive("system_navigation");
                 }
             }
@@ -138,6 +139,25 @@ public class LensAccessibilityService extends AccessibilityService {
                 if (!pkg.equals(getPackageName()) && !pkg.equals("com.android.systemui")) top = pkg;
             }
             boolean topChanged = !top.equals(oldTop);
+
+            // A pending FloatLens confirm is an app-owned accessibility overlay. If the user
+            // leaves Google Lens for any other app without pressing 完成, the Google process may
+            // never emit our bridge END event. Tear down the app-side session on the package
+            // transition instead of letting the button survive on the next screen.
+            if (topChanged
+                    && WorkflowSessionManager.googleCtsInFlight()
+                    && GoogleCtsContract.GOOGLE_PACKAGE.equals(oldTop)
+                    && !GoogleCtsContract.GOOGLE_PACKAGE.equals(top)
+                    && !getPackageName().equals(top)
+                    && !"com.android.systemui".equals(top)) {
+                new FloatSettings(this).clearGoogleCtsSession();
+                boolean remoteCleared = LsposedStatusManager.clearGoogleCtsSessionRemoteNow();
+                GoogleCtsBridgeController.onNativeRelease(this, "top_package_changed");
+                DiagnosticLog.i(this, "GOOGLE_CTS_NATIVE_RELEASE",
+                        "reason=top_package_changed remoteCleared=" + remoteCleared
+                                + " from=" + oldTop + " to=" + top);
+            }
+
             long now = SystemClock.uptimeMillis();
             if (!topChanged && now - lastEnvironmentInspectAt < ENV_INSPECT_MIN_MS) return;
             lastEnvironmentInspectAt = now;
