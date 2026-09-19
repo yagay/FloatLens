@@ -26,7 +26,12 @@ final class ResultUi {
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(c, BOX_HPAD_DP), dp(c, 8), dp(c, BOX_HPAD_DP), dp(c, 8));
         box.setBackground(popupBackground(c, UiTokens.resultSurface(c)));
-        box.setElevation(dp(c, 10));
+        // Do not use platform elevation here. The result card fills the dialog window closely,
+        // so Android clips the elevation shadow at the rectangular window bounds and leaves
+        // square dark corners outside the rounded surface.
+        box.setElevation(0f);
+        box.setTranslationZ(0f);
+        box.setStateListAnimator(null);
         final float radius = dp(c, POPUP_RADIUS_DP);
         box.setOutlineProvider(new ViewOutlineProvider() {
             @Override public void getOutline(android.view.View view, android.graphics.Outline outline) {
@@ -43,6 +48,7 @@ final class ResultUi {
         background.setShape(GradientDrawable.RECTANGLE);
         background.setColor(color);
         background.setCornerRadius(dp(c, POPUP_RADIUS_DP));
+        background.setStroke(dp(c, 1), UiTokens.outline(c));
         return background;
     }
 
