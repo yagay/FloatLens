@@ -5,12 +5,15 @@ import android.widget.Toast;
 
 /** Entry point for the FloatLens exact content-selection workflow. */
 final class FLCircleController {
-    private static long generation;
     private static CaptureTransaction pendingTransaction;
+    private static WorkflowSessionManager.Session pendingSession;
 
     static synchronized void show(Context c) {
         Context app = c.getApplicationContext();
-        long gen = ++generation;
+        WorkflowSessionManager.Session session = WorkflowSessionManager.begin(
+                app, WorkflowSessionManager.Type.CIRCLE, "fl_circle");
+        WorkflowSessionManager.transition(app, session,
+                WorkflowSessionManager.Phase.CAPTURING, "fl_circle_capture");
 
         FLCircleInlineOverlay.dismissActive("restart");
         CircleActiveBorderOverlay.hide(app, "restart");
@@ -19,6 +22,7 @@ final class FLCircleController {
         CaptureTransaction transaction = CaptureTransaction.begin(app, "fl_circle")
                 .hideFloatingIcon("fl_circle_" + gen);
         pendingTransaction = transaction;
+        pendingSession = session;
         FloatSettings fs = new FloatSettings(app);
         DiagnosticLog.i(app, "FL_CIRCLE", "start gen=" + gen
                 + " phase=capture_then_fullscreen_ocr"
@@ -35,12 +39,10 @@ final class FLCircleController {
                 + " circleMode=editable_screenshot autoExpand=false");
 
         FLCircleCapture.capture(app, frame -> {
-            synchronized (FLCircleController.class) {
-                if (gen != generation) {
-                    frame.recycle();
-                    transaction.close();
-                    return;
-                }
+            if (!session.current()) {
+                frame.recycle();
+                transaction.close();
+                return;
             }
 
             // Initialize per-frame OCR state. Full-screen recognition starts on the first text
@@ -50,38 +52,37 @@ final class FLCircleController {
             boolean shown = FLCircleInlineOverlay.show(app, frame, () -> {
                 FLCircleTextResolver.release(app, frame, "workspace_closed");
                 CircleActiveBorderOverlay.hide(app, "workspace_closed");
-                restore(app, transaction, gen, "closed");
+                restore(app, transaction, session, "closed");
             });
             if (!shown) {
                 FLCircleTextResolver.release(app, frame, "overlay_failed");
                 frame.recycle();
                 CircleActiveBorderOverlay.hide(app, "overlay_failed");
-                restore(app, transaction, gen, "overlay_failed");
+                restore(app, transaction, session, "overlay_failed");
                 Toast.makeText(app, "圈画识别启动失败", Toast.LENGTH_SHORT).show();
                 return;
             }
 
             CircleActiveBorderOverlay.show(app);
+            WorkflowSessionManager.transition(app, session,
+                    WorkflowSessionManager.Phase.SELECTING, "circle_overlay_visible");
 
             transaction.overlayReady("fl_circle",
                     collapsed -> {
-                        synchronized (FLCircleController.class) {
-                            if (gen != generation) return;
-                        }
+                        if (!session.current()) return;
                         DiagnosticLog.i(app, "FL_CIRCLE", "shade cleanup collapsed="
-                                + collapsed + " gen=" + gen);
+                                + collapsed + " workflow=" + session.id());
                         FLCircleInlineOverlay.promoteActiveFocus(
                                 collapsed ? "shade_collapsed" : "shade_cleanup_finished");
                     });
         }, error -> {
-            synchronized (FLCircleController.class) {
-                if (gen != generation) {
-                    transaction.close();
-                    return;
-                }
+            if (!session.current()) {
+                transaction.close();
+                return;
             }
             CircleActiveBorderOverlay.hide(app, "capture_failed");
-            restore(app, transaction, gen, "capture_failed");
+            WorkflowSessionManager.fail(app, session, "capture_failed");
+            restore(app, transaction, session, "capture_failed");
             DiagnosticLog.i(app, "FL_CIRCLE", "capture failed="
                     + ScreenCaptureBackend.safeMessage(error));
             Toast.makeText(app, "圈画识别截图失败: "
@@ -90,19 +91,26 @@ final class FLCircleController {
     }
 
     private static void restore(Context app, CaptureTransaction transaction,
-                                long gen, String reason) {
+                                WorkflowSessionManager.Session session, String reason) {
         transaction.close();
         synchronized (FLCircleController.class) {
             if (pendingTransaction == transaction) pendingTransaction = null;
-            if (gen != generation) return;
+            if (pendingSession == session) pendingSession = null;
         }
-        DiagnosticLog.i(app, "FL_CIRCLE", "finish gen=" + gen + " reason=" + reason);
+        if (session.current()) WorkflowSessionManager.finish(app, session, reason);
+        DiagnosticLog.i(app, "FL_CIRCLE", "finish workflow=" + session.id()
+                + " reason=" + reason);
     }
 
     private static void cancelPendingLocked(Context app) {
         CaptureTransaction transaction = pendingTransaction;
+        WorkflowSessionManager.Session session = pendingSession;
         pendingTransaction = null;
+        pendingSession = null;
         if (transaction != null) transaction.close();
+        if (session != null && session.current()) {
+            WorkflowSessionManager.cancel(app, session, "circle_replaced");
+        }
     }
 
     private FLCircleController() {}

@@ -58,7 +58,7 @@ final class FLCircleTextResolver {
     }
 
     private static final class PreloadState {
-        final long generation;
+        final long workflowId;
         final Context app;
         final WeakReference<FLCircleCapture.Frame> frameRef;
         OcrDocument fullScreenDocument;
@@ -67,15 +67,14 @@ final class FLCircleTextResolver {
         Callback pendingCallback;
         boolean pendingReplaced;
 
-        PreloadState(long generation, Context app, FLCircleCapture.Frame frame) {
-            this.generation = generation;
+        PreloadState(long workflowId, Context app, FLCircleCapture.Frame frame) {
+            this.workflowId = workflowId;
             this.app = app;
             this.frameRef = new WeakReference<>(frame);
         }
     }
 
     private static final Object STATE_LOCK = new Object();
-    private static long generation;
     private static PreloadState current;
 
     static void preload(Context context, FLCircleCapture.Frame frame) {
@@ -85,11 +84,11 @@ final class FLCircleTextResolver {
         synchronized (STATE_LOCK) {
             if (sameFrame(current, frame)) return;
             if (current != null) clearLocked(current);
-            created = new PreloadState(++generation, app, frame);
+            created = new PreloadState(WorkflowSessionManager.currentId(), app, frame);
             current = created;
         }
         FloatSettings fs = new FloatSettings(app);
-        DiagnosticLog.i(app, "FL_CIRCLE_OCR", "ready generation=" + created.generation
+        DiagnosticLog.i(app, "FL_CIRCLE_OCR", "ready workflow=" + created.generation
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
                 + " fullEngine=" + CircleStableOcr.fullModeLabel(app)
                 + " correctionEngine=" + CircleStableOcr.correctionModeLabel(app)
@@ -167,11 +166,10 @@ final class FLCircleTextResolver {
             if (!sameFrame(current, frame)) return;
             released = current;
             current = null;
-            generation++;
             clearLocked(released);
         }
         DiagnosticLog.i(app == null ? released.app : app, "FL_CIRCLE_OCR",
-                "release generation=" + released.generation
+                "release workflow=" + released.generation
                         + " reason=" + (reason == null ? "unknown" : reason));
     }
 

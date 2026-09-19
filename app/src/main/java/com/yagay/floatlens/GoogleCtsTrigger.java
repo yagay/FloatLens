@@ -40,6 +40,10 @@ final class GoogleCtsTrigger {
 
         Bundle args = new Bundle();
         String token = UUID.randomUUID().toString();
+        WorkflowSessionManager.Session workflow = WorkflowSessionManager.beginExternal(
+                app, WorkflowSessionManager.Type.GOOGLE_CTS, token, "google_cts_trigger");
+        WorkflowSessionManager.transition(app, workflow,
+                WorkflowSessionManager.Phase.CAPTURING, "google_cts_trigger");
         long nowElapsed = SystemClock.elapsedRealtime();
         fs.armGoogleCtsSession(token, nowElapsed + GoogleCtsContract.TRACE_SESSION_TTL_MS);
         long fallbackUntil = nowElapsed + LsposedRuntimeConfig.GOOGLE_CTS_FALLBACK_WINDOW_MS;
@@ -84,12 +88,17 @@ final class GoogleCtsTrigger {
             if (!ok) {
                 fs.clearGoogleCtsSession();
                 LsposedStatusManager.clearGoogleCtsSessionRemote(token);
+                WorkflowSessionManager.fail(app, workflow, "google_cts_start_failed");
                 Toast.makeText(app, "Google 圈画启动失败", Toast.LENGTH_SHORT).show();
+            } else {
+                WorkflowSessionManager.transition(app, workflow,
+                        WorkflowSessionManager.Phase.SELECTING, "google_cts_visible");
             }
             return ok;
         } catch (Throwable t) {
             fs.clearGoogleCtsSession();
             LsposedStatusManager.clearGoogleCtsSessionRemote(token);
+            WorkflowSessionManager.fail(app, workflow, "google_cts_exception");
             DiagnosticLog.i(app, "GOOGLE_CTS_TRIGGER",
                     "failed=" + t.getClass().getSimpleName() + ":" + String.valueOf(t.getMessage()));
             Toast.makeText(app, "Google 圈画启动失败: " + t.getClass().getSimpleName(),

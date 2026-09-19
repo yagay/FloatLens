@@ -2,19 +2,11 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 
-/**
- * One state owner for screenshot/OCR/Circle recognition work.
- *
- * UI surfaces may differ, but lifecycle semantics do not: a workflow is idle, capturing/selecting,
- * recognizing, showing results, or finished. A new generation starts only when work begins from
- * IDLE; phase changes within the same workflow keep that generation.
- */
+/** Compatibility facade over the process-wide WorkflowSessionManager. */
 final class RecognitionWorkflowState {
     enum State { IDLE, CAPTURING, RECOGNIZING, RESULTS }
 
     private final Context context;
-    private State state = State.IDLE;
-    private long generation;
 
     RecognitionWorkflowState(Context context) {
         this.context = context == null ? null : context.getApplicationContext();
@@ -22,48 +14,57 @@ final class RecognitionWorkflowState {
 
     RecognitionWorkflowState() { this(null); }
 
-    synchronized State state() { return state; }
-    synchronized long generation() { return generation; }
-    synchronized boolean active() { return state != State.IDLE; }
+    synchronized State state() {
+        WorkflowSessionManager.Session session = WorkflowSessionManager.current();
+        if (session == null) return State.IDLE;
+        return switch (session.phase()) {
+            case CAPTURING, CREATED, SELECTING -> State.CAPTURING;
+            case RECOGNIZING -> State.RECOGNIZING;
+            case RESULT_PENDING, RESULT_VISIBLE -> State.RESULTS;
+            case FINISHED, CANCELLED, FAILED -> State.IDLE;
+        };
+    }
+
+    synchronized long generation() {
+        return WorkflowSessionManager.currentId();
+    }
+
+    synchronized boolean active() {
+        return WorkflowSessionManager.current() != null;
+    }
 
     synchronized long captureStarted(String reason) {
-        beginIfIdle(reason == null ? "capture" : reason);
-        transition(State.CAPTURING, reason == null ? "capture" : reason);
-        return generation;
+        WorkflowSessionManager.Session session = WorkflowSessionManager.ensureCurrent(
+                context, WorkflowSessionManager.Type.RECOGNITION,
+                reason == null ? "capture" : reason);
+        WorkflowSessionManager.transition(context, session,
+                WorkflowSessionManager.Phase.CAPTURING,
+                reason == null ? "capture" : reason);
+        return session.id();
     }
 
     synchronized long recognitionStarted(String reason) {
-        beginIfIdle(reason == null ? "recognition" : reason);
-        transition(State.RECOGNIZING, reason == null ? "recognition" : reason);
-        return generation;
+        WorkflowSessionManager.Session session = WorkflowSessionManager.ensureCurrent(
+                context, WorkflowSessionManager.Type.OCR,
+                reason == null ? "recognition" : reason);
+        WorkflowSessionManager.transition(context, session,
+                WorkflowSessionManager.Phase.RECOGNIZING,
+                reason == null ? "recognition" : reason);
+        return session.id();
     }
 
     synchronized long resultsReady(int candidates, String reason) {
-        beginIfIdle(reason == null ? "results" : reason);
-        transition(State.RESULTS, (reason == null ? "results" : reason)
-                + " candidates=" + Math.max(0, candidates));
-        return generation;
+        WorkflowSessionManager.Session session = WorkflowSessionManager.ensureCurrent(
+                context, WorkflowSessionManager.Type.RECOGNITION,
+                reason == null ? "results" : reason);
+        WorkflowSessionManager.transition(context, session,
+                WorkflowSessionManager.Phase.RESULT_VISIBLE,
+                (reason == null ? "results" : reason)
+                        + " candidates=" + Math.max(0, candidates));
+        return session.id();
     }
 
     synchronized void finish(String reason) {
-        transition(State.IDLE, reason == null ? "finish" : reason);
-    }
-
-    private void beginIfIdle(String reason) {
-        if (state != State.IDLE) return;
-        generation++;
-        log("gen=" + generation + " begin reason=" + reason);
-    }
-
-    private void transition(State next, String reason) {
-        State old = state;
-        state = next == null ? State.IDLE : next;
-        if (old != state || state == State.IDLE) {
-            log("gen=" + generation + " " + old + "->" + state + " reason=" + reason);
-        }
-    }
-
-    private void log(String message) {
-        if (context != null) DiagnosticLog.i(context, "WORKFLOW_STATE", message);
+        WorkflowSessionManager.finishCurrent(context, reason == null ? "finish" : reason);
     }
 }

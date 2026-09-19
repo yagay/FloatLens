@@ -75,6 +75,11 @@ final class GoogleCtsBridgeController {
             selectedText = state.text;
             selectedBounds = state.bounds == null ? null : new Rect(state.bounds);
         }
+        WorkflowSessionManager.Session workflow = WorkflowSessionManager.current();
+        if (workflow != null && token.equals(workflow.externalKey())) {
+            WorkflowSessionManager.transition(app, workflow,
+                    WorkflowSessionManager.Phase.SELECTING, "google_selection");
+        }
         DiagnosticLog.i(app, "GOOGLE_BRIDGE",
                 "selection session=" + shortToken(token)
                         + " textLen=" + selectedText.length()
@@ -177,6 +182,7 @@ final class GoogleCtsBridgeController {
         if (app == null) return;
         new FloatSettings(app).clearGoogleCtsSession();
         LsposedStatusManager.clearGoogleCtsSessionRemote(token);
+        WorkflowSessionManager.finishExternal(app, token, reason);
         DiagnosticLog.i(app, "GOOGLE_CTS_LEASE",
                 "cleared session=" + shortToken(token) + " reason=" + reason);
     }
@@ -256,6 +262,12 @@ final class GoogleCtsBridgeController {
                 recycle(frame);
                 display = cropped;
             }
+        }
+
+        WorkflowSessionManager.Session workflow = WorkflowSessionManager.current();
+        if (workflow != null && token.equals(workflow.externalKey())) {
+            WorkflowSessionManager.transition(app, workflow,
+                    WorkflowSessionManager.Phase.RESULT_PENDING, "google_result_pending");
         }
 
         ResultSession session;

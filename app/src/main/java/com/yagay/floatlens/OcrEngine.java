@@ -43,25 +43,34 @@ public final class OcrEngine {
         final boolean ui;
         final long requestId;
         final long epoch;
+        final long workflowId;
 
-        private RequestToken(boolean ui, long requestId, long epoch) {
+        private RequestToken(boolean ui, long requestId, long epoch, long workflowId) {
             this.ui = ui;
             this.requestId = requestId;
             this.epoch = epoch;
+            this.workflowId = workflowId;
         }
 
-        static RequestToken ui() {
+        static RequestToken ui(Context app) {
+            WorkflowSessionManager.Session workflow = WorkflowSessionManager.ensureCurrent(
+                    app, WorkflowSessionManager.Type.OCR, "ocr_ui_request");
+            WorkflowSessionManager.transition(app, workflow,
+                    WorkflowSessionManager.Phase.RECOGNIZING, "ocr_ui_request");
             long request = UI_GENERATION.incrementAndGet();
-            return new RequestToken(true, request, request);
+            return new RequestToken(true, request, request, workflow.id());
         }
 
         static RequestToken document() {
             return new RequestToken(false, DOCUMENT_REQUEST_SEQUENCE.incrementAndGet(),
-                    DOCUMENT_EPOCH.get());
+                    DOCUMENT_EPOCH.get(), WorkflowSessionManager.currentId());
         }
 
         boolean current() {
-            return ui ? requestId == UI_GENERATION.get() : epoch == DOCUMENT_EPOCH.get();
+            return ui
+                    ? requestId == UI_GENERATION.get()
+                            && WorkflowSessionManager.isCurrent(workflowId)
+                    : epoch == DOCUMENT_EPOCH.get();
         }
 
         long currentMarker() { return ui ? UI_GENERATION.get() : DOCUMENT_EPOCH.get(); }
@@ -99,9 +108,10 @@ public final class OcrEngine {
         if (c == null) return;
         Context app = c.getApplicationContext();
         FloatService service = deliverUi ? FloatService.get() : null;
-        RequestToken request = deliverUi ? RequestToken.ui() : RequestToken.document();
+        RequestToken request = deliverUi ? RequestToken.ui(app) : RequestToken.document();
         DiagnosticLog.i(app, "OCR_REQUEST", "request=" + request.requestId
                 + " lane=" + request.lane()
+                + " workflow=" + request.workflowId
                 + (request.ui ? "" : " epoch=" + request.epoch)
                 + " bitmap=" + bitmapSize(b)
                 + " anchor=" + (anchor == null ? "none" : anchor.toShortString()));
