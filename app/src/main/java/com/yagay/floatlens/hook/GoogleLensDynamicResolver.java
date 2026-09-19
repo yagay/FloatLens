@@ -167,54 +167,15 @@ final class GoogleLensDynamicResolver {
     }
 
     private static Method[] declaredMethods(Class<?> cls) {
-        try {
-            return cls.getDeclaredMethods();
-        } catch (Throwable ignored) {
-            try {
-                java.util.ArrayList<Method> out = new java.util.ArrayList<>();
-                for (Executable executable : HiddenApiBypass.getDeclaredMethods(cls)) {
-                    if (executable instanceof Method method) out.add(method);
-                }
-                return out.toArray(new Method[0]);
-            } catch (Throwable ignoredAgain) {
-                return new Method[0];
-            }
-        }
+        return GoogleReflection.declaredMethods(cls);
     }
 
     private static Field[] instanceFields(Class<?> cls) {
-        try {
-            return java.util.Arrays.stream(cls.getDeclaredFields())
-                    .filter(field -> !Modifier.isStatic(field.getModifiers()))
-                    .toArray(Field[]::new);
-        } catch (Throwable ignored) {
-            try {
-                return HiddenApiBypass.getInstanceFields(cls).toArray(new Field[0]);
-            } catch (Throwable ignoredAgain) {
-                return new Field[0];
-            }
-        }
+        return GoogleReflection.instanceFields(cls);
     }
 
     private static Object readNamedField(Object target, String name) {
-        if (target == null || name == null) return null;
-        for (Class<?> current = target.getClass(); current != null; current = current.getSuperclass()) {
-            try {
-                Field field = current.getDeclaredField(name);
-                field.setAccessible(true);
-                return field.get(target);
-            } catch (Throwable ignored) {
-            }
-        }
-        try {
-            for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
-                if (!name.equals(field.getName())) continue;
-                field.setAccessible(true);
-                return field.get(target);
-            }
-        } catch (Throwable ignored) {
-        }
-        return null;
+        return GoogleReflection.readNamedField(target, name);
     }
 
     static final class SelectionBinding {
