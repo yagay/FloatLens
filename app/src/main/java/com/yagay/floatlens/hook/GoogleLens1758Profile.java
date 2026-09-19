@@ -63,6 +63,36 @@ final class GoogleLens1758Profile {
     static final String ROTATED_BOX = "dnpt";
     static final String GEOMETRY_UTIL = "dnpv";
 
+    static String selectionValidationError(ClassLoader loader) {
+        if (loader == null) return "classLoader=null";
+        try {
+            Class<?> controller = Class.forName(CONTROLLER, false, loader);
+            boolean selection = false;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
+                if (executable instanceof Method method) {
+                    selection |= isSelectionMethod(method);
+                }
+            }
+            if (!selection) return "Lens selection method mismatch";
+
+            Class<?> selectionMetadata = Class.forName(SELECTION_METADATA, false, loader);
+            if (!hasField(selectionMetadata, "a", USER_SELECTION)) {
+                return "SelectionWithMetadata UserSelection missing";
+            }
+
+            Class<?> userSelection = Class.forName(USER_SELECTION, false, loader);
+            if (!hasNoArgMethod(userSelection, "b", RectF.class.getName())
+                    || !hasNoArgMethod(userSelection, "k", String.class.getName())) {
+                return "UserSelection String/RectF semantic methods mismatch";
+            }
+            return "";
+        } catch (Throwable t) {
+            String message = t.getMessage();
+            return t.getClass().getSimpleName()
+                    + (message == null || message.isBlank() ? "" : ":" + message);
+        }
+    }
+
     static String validationError(ClassLoader loader) {
         if (loader == null) return "classLoader=null";
         try {
