@@ -207,6 +207,12 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         INSTANCE.clearGoogleCtsSession(token);
     }
 
+    /** Sends one user-confirmed region commit request to the hooked Google process. */
+    public static void confirmGoogleCtsRegionRemoteAsync(
+            String token, Consumer<Boolean> callback) {
+        INSTANCE.confirmGoogleCtsRegion(token, callback);
+    }
+
     /**
      * Synchronous safety release used immediately before native Home/gesture navigation.
      * This guarantees Google-process hooks lose ownership before the native CTS Activity starts.
@@ -292,6 +298,26 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         if (!snapshot.remoteProviderEnabled() || !snapshot.googleScopeEnabled()) return false;
         return callIoBoolean(() -> LsposedRuntimeStore.armGoogle(
                 current, token, triggerElapsed, armedUntilElapsed));
+    }
+
+    private void confirmGoogleCtsRegion(String token, Consumer<Boolean> callback) {
+        XposedService current = service;
+        Snapshot currentSnapshot = snapshot;
+        if (current == null || token == null || token.isBlank()
+                || !currentSnapshot.remoteProviderEnabled()
+                || !currentSnapshot.googleScopeEnabled()) {
+            complete(callback, false);
+            return;
+        }
+        long confirmedAt = SystemClock.elapsedRealtime();
+        IO.execute(() -> {
+            boolean success = false;
+            try {
+                success = LsposedRuntimeStore.confirmGoogleRegion(
+                        current, token, confirmedAt);
+            } catch (Throwable ignored) { }
+            complete(callback, success);
+        });
     }
 
     private void clearGoogleCtsSession(String token) {
