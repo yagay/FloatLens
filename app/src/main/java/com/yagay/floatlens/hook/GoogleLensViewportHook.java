@@ -34,6 +34,62 @@ final class GoogleLensViewportHook {
     private View guardedImage;
     private ViewTreeObserver.OnPreDrawListener regionPreDrawGuard;
 
+    static final class Binding {
+        final Class<?> controller;
+        final Class<?> requestClass;
+        final Class<?> stateClass;
+        final int confidence;
+        final String source;
+        final String detail;
+
+        Binding(Class<?> controller, Class<?> requestClass, Class<?> stateClass,
+                int confidence, String source, String detail) {
+            this.controller = controller;
+            this.requestClass = requestClass;
+            this.stateClass = stateClass;
+            this.confidence = confidence;
+            this.source = source == null ? "none" : source;
+            this.detail = detail == null ? "" : detail;
+        }
+
+        boolean available() {
+            return controller != null && requestClass != null && stateClass != null;
+        }
+    }
+
+    static Binding resolve(ClassLoader loader) {
+        if (loader == null) return new Binding(null, null, null, 0, "none", "classLoader=null");
+        try {
+            Class<?> controller = Class.forName(
+                    GoogleLens1758Profile.VIEWPORT_CONTROLLER, false, loader);
+            Class<?> request = Class.forName(
+                    GoogleLens1758Profile.VIEWPORT_REQUEST, false, loader);
+            Class<?> state = Class.forName(
+                    GoogleLens1758Profile.VIEWPORT_STATE, false, loader);
+            boolean focus = false;
+            boolean viewport = false;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
+                if (!(executable instanceof Method method)) continue;
+                Class<?>[] params = method.getParameterTypes();
+                focus |= "r".equals(method.getName())
+                        && params.length == 1 && params[0] == request
+                        && method.getReturnType() == void.class;
+                viewport |= "n".equals(method.getName())
+                        && params.length == 1 && params[0] == state
+                        && method.getReturnType() == void.class;
+            }
+            int confidence = focus && viewport ? 100 : (focus || viewport ? 55 : 0);
+            return new Binding(controller, request, state, confidence,
+                    "profile-viewport",
+                    "focus=" + focus + " viewport=" + viewport
+                            + " controller=" + controller.getName());
+        } catch (Throwable t) {
+            return new Binding(null, null, null, 0, "none",
+                    "resolve=" + t.getClass().getSimpleName()
+                            + ":" + String.valueOf(t.getMessage()));
+        }
+    }
+
     GoogleLensViewportHook(XposedModule module,
                            ClassLoader classLoader,
                            BooleanSupplier active,
@@ -51,13 +107,16 @@ final class GoogleLensViewportHook {
     }
 
     int install() {
+        Binding binding = resolve(classLoader);
+        if (!binding.available()) {
+            module.log(Log.WARN, TAG,
+                    "Google viewport capability unavailable: " + binding.detail);
+            return 0;
+        }
         try {
-            Class<?> controller = Class.forName(
-                    GoogleLens1758Profile.VIEWPORT_CONTROLLER, false, classLoader);
-            Class<?> requestClass = Class.forName(
-                    GoogleLens1758Profile.VIEWPORT_REQUEST, false, classLoader);
-            Class<?> stateClass = Class.forName(
-                    GoogleLens1758Profile.VIEWPORT_STATE, false, classLoader);
+            Class<?> controller = binding.controller;
+            Class<?> requestClass = binding.requestClass;
+            Class<?> stateClass = binding.stateClass;
             int count = 0;
 
             for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
@@ -145,7 +204,10 @@ final class GoogleLensViewportHook {
                 }
             }
 
-            module.log(Log.INFO, TAG, "Google FrozenImage viewport hooks=" + count);
+            module.log(Log.INFO, TAG,
+                    "Google viewport capability source=" + binding.source
+                            + " confidence=" + binding.confidence
+                            + " hooks=" + count + " detail=" + binding.detail);
             return count;
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "Google FrozenImage viewport boundary unavailable", t);
