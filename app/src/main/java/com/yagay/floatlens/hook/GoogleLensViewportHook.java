@@ -6,6 +6,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.view.View;
+import android.view.ViewTreeObserver;
 
 import org.lsposed.hiddenapibypass.HiddenApiBypass;
 
@@ -29,6 +30,9 @@ final class GoogleLensViewportHook {
     private final Supplier<Activity> activity;
     private final BiConsumer<String, String> reporter;
     private final Handler main = new Handler(Looper.getMainLooper());
+
+    private View guardedImage;
+    private ViewTreeObserver.OnPreDrawListener regionPreDrawGuard;
 
     GoogleLensViewportHook(XposedModule module,
                            ClassLoader classLoader,
@@ -120,12 +124,7 @@ final class GoogleLensViewportHook {
                             reporter.accept("GOOGLE_FROZEN_IMAGE_REGION_VIEWPORT_SUPPRESSED",
                                     "controller=duec.n state=" + compact(state, 420));
                             normalizeFrozenImageTransform("regionDuecNSuppressed");
-                            main.postDelayed(
-                                    () -> normalizeFrozenImageTransform("regionGuard16ms"), 16L);
-                            main.postDelayed(
-                                    () -> normalizeFrozenImageTransform("regionGuard64ms"), 64L);
-                            main.postDelayed(
-                                    () -> normalizeFrozenImageTransform("regionGuard160ms"), 160L);
+                            ensureRegionTransformGuard();
                             return null;
                         }
 
@@ -145,6 +144,95 @@ final class GoogleLensViewportHook {
         }
     }
 
+    void reset() {
+        main.post(this::removeRegionTransformGuardOnMain);
+    }
+
+    private void ensureRegionTransformGuard() {
+        Activity owner = activity.get();
+        if (owner == null) return;
+        owner.runOnUiThread(() -> {
+            if (!active.getAsBoolean() || !regionSelectionActive.getAsBoolean()) {
+                removeRegionTransformGuardOnMain();
+                return;
+            }
+            try {
+                View root = owner.getWindow() == null ? null : owner.getWindow().getDecorView();
+                View image = GoogleLensViewIntrospection.findByClassName(
+                        root, GoogleLens1758Profile.FROZEN_IMAGE_VIEW);
+                if (image == null) return;
+
+                if (guardedImage == image && regionPreDrawGuard != null) {
+                    normalizeViewTransform(image, "regionGuardAttachRefresh", false);
+                    return;
+                }
+
+                removeRegionTransformGuardOnMain();
+                guardedImage = image;
+                regionPreDrawGuard = () -> {
+                    if (!active.getAsBoolean() || !regionSelectionActive.getAsBoolean()) {
+                        removeRegionTransformGuardOnMain();
+                        return true;
+                    }
+                    normalizeViewTransform(image, "regionPreDrawGuard", false);
+                    return true;
+                };
+                ViewTreeObserver observer = image.getViewTreeObserver();
+                if (observer.isAlive()) observer.addOnPreDrawListener(regionPreDrawGuard);
+                normalizeViewTransform(image, "regionGuardAttached", true);
+                reporter.accept("GOOGLE_FROZEN_IMAGE_REGION_GUARD",
+                        "state=attached view=" + image.getClass().getName()
+                                + " wh=" + image.getWidth() + "x" + image.getHeight());
+            } catch (Throwable t) {
+                module.log(Log.WARN, TAG, "Failed to attach FrozenImage region guard", t);
+            }
+        });
+    }
+
+    private void removeRegionTransformGuardOnMain() {
+        View image = guardedImage;
+        ViewTreeObserver.OnPreDrawListener listener = regionPreDrawGuard;
+        guardedImage = null;
+        regionPreDrawGuard = null;
+        if (image == null || listener == null) return;
+        try {
+            ViewTreeObserver observer = image.getViewTreeObserver();
+            if (observer.isAlive()) observer.removeOnPreDrawListener(listener);
+        } catch (Throwable ignored) { }
+    }
+
+    private void normalizeViewTransform(View image, String phase, boolean alwaysReport) {
+        if (image == null) return;
+        float oldScaleX = image.getScaleX();
+        float oldScaleY = image.getScaleY();
+        float oldTranslationX = image.getTranslationX();
+        float oldTranslationY = image.getTranslationY();
+
+        boolean changed = Math.abs(oldScaleX - 1f) > 0.0001f
+                || Math.abs(oldScaleY - 1f) > 0.0001f
+                || Math.abs(oldTranslationX) > 0.05f
+                || Math.abs(oldTranslationY) > 0.05f;
+
+        try { image.animate().cancel(); } catch (Throwable ignored) { }
+        try { image.clearAnimation(); } catch (Throwable ignored) { }
+        image.setScaleX(1f);
+        image.setScaleY(1f);
+        image.setTranslationX(0f);
+        image.setTranslationY(0f);
+
+        if (!alwaysReport && !changed) return;
+        int[] loc = new int[2];
+        try { image.getLocationOnScreen(loc); } catch (Throwable ignored) { }
+        reporter.accept("GOOGLE_FROZEN_IMAGE_REGION_NORMALIZE",
+                "phase=" + phase
+                        + " fromScale=" + oldScaleX + "," + oldScaleY
+                        + " fromTranslation=" + oldTranslationX + "," + oldTranslationY
+                        + " nowScale=" + image.getScaleX() + "," + image.getScaleY()
+                        + " nowTranslation=" + image.getTranslationX() + ","
+                        + image.getTranslationY()
+                        + " xy=" + loc[0] + "," + loc[1]);
+    }
+
     private void normalizeFrozenImageTransform(String phase) {
         if (!active.getAsBoolean() || !regionSelectionActive.getAsBoolean()) return;
         Activity owner = activity.get();
@@ -161,27 +249,7 @@ final class GoogleLensViewportHook {
                     return;
                 }
 
-                float oldScaleX = image.getScaleX();
-                float oldScaleY = image.getScaleY();
-                float oldTranslationX = image.getTranslationX();
-                float oldTranslationY = image.getTranslationY();
-                try { image.animate().cancel(); } catch (Throwable ignored) { }
-                try { image.clearAnimation(); } catch (Throwable ignored) { }
-                image.setScaleX(1f);
-                image.setScaleY(1f);
-                image.setTranslationX(0f);
-                image.setTranslationY(0f);
-
-                int[] loc = new int[2];
-                try { image.getLocationOnScreen(loc); } catch (Throwable ignored) { }
-                reporter.accept("GOOGLE_FROZEN_IMAGE_REGION_NORMALIZE",
-                        "phase=" + phase
-                                + " fromScale=" + oldScaleX + "," + oldScaleY
-                                + " fromTranslation=" + oldTranslationX + "," + oldTranslationY
-                                + " nowScale=" + image.getScaleX() + "," + image.getScaleY()
-                                + " nowTranslation=" + image.getTranslationX() + ","
-                                + image.getTranslationY()
-                                + " xy=" + loc[0] + "," + loc[1]);
+                normalizeViewTransform(image, phase, true);
             } catch (Throwable t) {
                 module.log(Log.WARN, TAG,
                         "Failed to normalize FrozenImage region transform", t);
