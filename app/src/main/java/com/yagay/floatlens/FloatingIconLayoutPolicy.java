@@ -41,7 +41,7 @@ final class FloatingIconLayoutPolicy {
         // Position V2 has one invariant representation: side + normalized Y. System geometry
         // changes only project that state into pixels; they never infer/rewrite the side from X.
         int side = settings.savedSide(1);
-        lp.x = side == 0 ? 0 : wh[0] - px;
+        lp.x = FloatingPositionMath.edgeX(side, wh[0], px);
         lp.y = settings.savedPositionY(availableHeight, defaultY);
         clamp(lp, false);
         DiagnosticLog.i(app, "POSITION", "restore x=" + lp.x + " y=" + lp.y
@@ -56,7 +56,7 @@ final class FloatingIconLayoutPolicy {
         if (primary == null) return null;
         WindowManager.LayoutParams lp = baseLayout(iconPx());
         int[] wh = displaySize();
-        lp.x = isLeft(primary) ? wh[0] - lp.width : 0;
+        lp.x = FloatingPositionMath.edgeX(isLeft(primary) ? 1 : 0, wh[0], lp.width);
         lp.y = primary.y;
         clamp(lp, false);
         return lp;
@@ -85,7 +85,8 @@ final class FloatingIconLayoutPolicy {
     void clamp(WindowManager.LayoutParams lp, boolean allowHidden) {
         if (lp == null) return;
         int[] wh = displaySize();
-        int hidden = allowHidden ? Math.round(lp.width * settings.hiddenPercent() / 100f) : 0;
+        int hidden = allowHidden
+                ? FloatingPositionMath.hiddenPixels(lp.width, settings.hiddenPercent()) : 0;
         lp.x = Math.max(-hidden, Math.min(lp.x, wh[0] - lp.width + hidden));
         lp.y = Math.max(0, Math.min(lp.y, wh[1] - lp.height));
     }
@@ -94,7 +95,7 @@ final class FloatingIconLayoutPolicy {
     void snapToVisibleEdge(WindowManager.LayoutParams lp) {
         if (lp == null) return;
         int[] wh = displaySize();
-        lp.x = isLeft(lp) ? 0 : wh[0] - lp.width;
+        lp.x = FloatingPositionMath.edgeX(isLeft(lp) ? 0 : 1, wh[0], lp.width);
         clamp(lp, false);
     }
 
@@ -105,8 +106,8 @@ final class FloatingIconLayoutPolicy {
         if (hiddenPercent <= 0) return;
         int[] wh = displaySize();
         boolean left = isLeft(lp);
-        int hidden = Math.round(lp.width * hiddenPercent / 100f);
-        lp.x = left ? -hidden : wh[0] - lp.width + hidden;
+        int hidden = FloatingPositionMath.hiddenPixels(lp.width, hiddenPercent);
+        lp.x = FloatingPositionMath.hiddenEdgeX(left, wh[0], lp.width, hiddenPercent);
         clamp(lp, true);
         DiagnosticLog.i(app, "EDGE", "side=" + (left ? "L" : "R")
                 + " visiblePct=" + settings.showPercentage()
@@ -116,7 +117,8 @@ final class FloatingIconLayoutPolicy {
     void syncMirror(WindowManager.LayoutParams primary, WindowManager.LayoutParams secondary) {
         if (primary == null || secondary == null) return;
         int[] wh = displaySize();
-        secondary.x = isLeft(primary) ? wh[0] - secondary.width : 0;
+        secondary.x = FloatingPositionMath.edgeX(
+                isLeft(primary) ? 1 : 0, wh[0], secondary.width);
         secondary.y = primary.y;
         edgeHide(secondary);
     }

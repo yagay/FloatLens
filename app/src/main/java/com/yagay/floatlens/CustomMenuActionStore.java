@@ -7,7 +7,6 @@ import android.content.SharedPreferences;
 import android.net.Uri;
 import android.widget.Toast;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
@@ -73,15 +72,10 @@ public final class CustomMenuActionStore {
     public static List<Item> load(Context c) {
         ArrayList<Item> out = new ArrayList<>();
         if (c == null) return out;
-        String raw = prefs(c).getString(KEY_ITEMS, "[]");
-        try {
-            JSONArray a = new JSONArray(raw == null ? "[]" : raw);
-            for (int i = 0; i < a.length(); i++) {
-                Item item = Item.fromJson(a.optJSONObject(i));
-                if (item != null && !item.packageName.isBlank()) out.add(item);
-            }
-        } catch (Throwable t) {
-            DiagnosticLog.i(c, "CUSTOM_MENU", "load failed=" + t);
+        List<Item> decoded = MenuStoreCodec.loadList(
+                c, prefs(c), KEY_ITEMS, Item::fromJson, "CUSTOM_MENU");
+        for (Item item : decoded) {
+            if (item != null && !item.packageName.isBlank()) out.add(item);
         }
         return out;
     }
@@ -156,9 +150,7 @@ public final class CustomMenuActionStore {
     }
 
     private static void save(Context c, List<Item> items) {
-        JSONArray a = new JSONArray();
-        if (items != null) for (Item item : items) a.put(item.toJson());
-        prefs(c).edit().putString(KEY_ITEMS, a.toString()).apply();
+        MenuStoreCodec.saveList(prefs(c), KEY_ITEMS, items, Item::toJson);
     }
 
     private static SharedPreferences prefs(Context c) {

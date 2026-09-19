@@ -3,13 +3,11 @@ package com.yagay.floatlens;
 import android.content.Context;
 import android.content.SharedPreferences;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -57,16 +55,11 @@ public final class TargetMenuStore {
     }
 
     public static List<Item> load(Context c, String mode) {
+        List<Item> decoded = MenuStoreCodec.loadList(
+                c, prefs(c), itemsKey(mode), Item::fromJson, "TARGET_MENU");
         ArrayList<Item> out = new ArrayList<>();
-        String raw = prefs(c).getString(itemsKey(mode), "[]");
-        try {
-            JSONArray a = new JSONArray(raw == null ? "[]" : raw);
-            for (int i = 0; i < a.length(); i++) {
-                Item item = Item.fromJson(a.optJSONObject(i));
-                if (item != null && !item.packageName.isBlank() && !item.className.isBlank()) out.add(item);
-            }
-        } catch (Throwable t) {
-            DiagnosticLog.i(c, "TARGET_MENU", "load " + mode + " failed=" + t);
+        for (Item item : decoded) {
+            if (item != null && !item.packageName.isBlank() && !item.className.isBlank()) out.add(item);
         }
         return out;
     }
@@ -111,12 +104,9 @@ public final class TargetMenuStore {
 
     /** Save only FloatLens ordering. Hidden targets and display aliases are kept separately. */
     public static void save(Context c, String mode, List<Item> items) {
-        JSONArray a = new JSONArray();
-        if (items != null) for (Item item : items) a.put(item.toJson());
-        prefs(c).edit()
-                .putBoolean(customizedKey(mode), true)
-                .putString(itemsKey(mode), a.toString())
-                .apply();
+        SharedPreferences preferences = prefs(c);
+        MenuStoreCodec.saveList(preferences, itemsKey(mode), items, Item::toJson);
+        preferences.edit().putBoolean(customizedKey(mode), true).apply();
     }
 
     /** Restore Android ordering/hide state without discarding custom display names. */
@@ -229,31 +219,12 @@ public final class TargetMenuStore {
     }
 
     private static Map<String, String> loadAliases(Context c, String mode) {
-        HashMap<String, String> out = new HashMap<>();
-        String raw = prefs(c).getString(aliasesKey(mode), "{}");
-        try {
-            JSONObject o = new JSONObject(raw == null ? "{}" : raw);
-            Iterator<String> keys = o.keys();
-            while (keys.hasNext()) {
-                String key = keys.next();
-                String value = o.optString(key, "").trim();
-                if (!key.isBlank() && !value.isBlank()) out.put(key, value);
-            }
-        } catch (Throwable t) {
-            DiagnosticLog.i(c, "TARGET_MENU", "load aliases " + mode + " failed=" + t);
-        }
-        return out;
+        return MenuStoreCodec.loadStringMap(
+                c, prefs(c), aliasesKey(mode), "TARGET_MENU");
     }
 
     private static void saveAliases(Context c, String mode, Map<String, String> aliases) {
-        JSONObject o = new JSONObject();
-        if (aliases != null) {
-            for (Map.Entry<String, String> entry : aliases.entrySet()) {
-                try { o.put(entry.getKey(), entry.getValue()); }
-                catch (Throwable ignored) {}
-            }
-        }
-        prefs(c).edit().putString(aliasesKey(mode), o.toString()).apply();
+        MenuStoreCodec.saveStringMap(prefs(c), aliasesKey(mode), aliases);
     }
 
     private static int indexOf(List<Item> items, String key) {

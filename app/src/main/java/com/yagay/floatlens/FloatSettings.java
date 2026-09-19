@@ -123,8 +123,7 @@ public final class FloatSettings {
     }
 
     private static int toBasisPoints(int y, int availableHeight) {
-        if (availableHeight <= 0) return 3333;
-        return clamp(Math.round(Math.max(0, y) * 10000f / availableHeight), 0, 10000);
+        return FloatingPositionMath.basisPointsFromY(y, availableHeight, 3333);
     }
 
     public float alpha() { return clamp(p.getInt(K_ALPHA, 62), 10, 100) / 100f; }
@@ -342,7 +341,7 @@ public final class FloatSettings {
         if (availableHeight <= 0) return Math.max(0, defaultY);
         int defBp = toBasisPoints(defaultY, availableHeight);
         int yBp = clamp(legacyInt(K_POSITION_Y_BP, defBp), 0, 10000);
-        return Math.round(availableHeight * (yBp / 10000f));
+        return FloatingPositionMath.yFromBasisPoints(yBp, availableHeight);
     }
 
     public int savedPositionYBasisPoints() {
