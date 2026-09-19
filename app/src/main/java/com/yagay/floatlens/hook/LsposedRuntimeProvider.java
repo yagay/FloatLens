@@ -46,7 +46,9 @@ final class LsposedRuntimeProvider {
                         || LsposedRuntimeConfig.K_DIAGNOSTIC_ENABLED.equals(key)
                         || LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN.equals(key)
                         || LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED.equals(key)
-                        || LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL.equals(key)) {
+                        || LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL.equals(key)
+                        || LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_TOKEN.equals(key)
+                        || LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_ELAPSED.equals(key)) {
                     refresh();
                 }
             };
@@ -87,6 +89,25 @@ final class LsposedRuntimeProvider {
         } catch (Throwable t) {
             module.log(Log.WARN, TAG,
                     "Failed to verify Google CTS session ownership in " + displayProcess(), t);
+            return false;
+        }
+    }
+
+    boolean googleRegionConfirmRequested(String token) {
+        if (!active || preferences == null || token == null || token.isBlank()) return false;
+        try {
+            String current = preferences.getString(
+                    LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, "");
+            if (!token.equals(current)) return false;
+            String confirm = preferences.getString(
+                    LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_TOKEN, "");
+            long confirmedAt = preferences.getLong(
+                    LsposedRuntimeConfig.K_GOOGLE_CTS_REGION_CONFIRM_ELAPSED, 0L);
+            return LsposedRuntimeConfig.isGoogleRegionConfirmRequested(
+                    token, confirm, confirmedAt, SystemClock.elapsedRealtime());
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Failed to read Google region confirmation in " + displayProcess(), t);
             return false;
         }
     }
