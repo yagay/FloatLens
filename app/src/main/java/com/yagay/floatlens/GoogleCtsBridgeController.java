@@ -547,7 +547,7 @@ final class GoogleCtsBridgeController {
 
         FloatService service = FloatService.get();
         if (service != null) service.onCircleFinished("google_" + why);
-        DiagnosticLog.i(app, "GOOGLE_CTS_NATIVE_RELEASE",
+        DiagnosticLog.i(app, "GOOGLE_CTS_APP_RELEASE",
                 "appStateCleared=true reason=" + why
                         + " states=" + cleared
                         + " session=" + shortToken(token));
