@@ -14,6 +14,8 @@ import android.widget.TextView;
 final class GoogleRegionConfirmOverlay {
     interface ConfirmAction { void onConfirm(); }
 
+    private static final Object SCENE_KEY = new Object();
+
     private static Context app;
     private static String token = "";
     private static Rect selection;
@@ -45,6 +47,8 @@ final class GoogleRegionConfirmOverlay {
         if (button == null || host == null || lp == null) createLocked();
         else updatePositionLocked("selection_update");
         OverlayRegistry.register("google_region_confirm", OVERLAY_OWNER);
+        OverlaySceneManager.bindCurrent(SCENE_KEY,
+                () -> dismiss(null, "workflow_scene"));
     }
 
     static synchronized void dismiss(String sessionToken, String reason) {
@@ -56,6 +60,7 @@ final class GoogleRegionConfirmOverlay {
         selection = null;
         action = null;
         OverlayRegistry.unregister("google_region_confirm", OVERLAY_OWNER);
+        OverlaySceneManager.unbind(SCENE_KEY);
     }
 
     private static void createLocked() {
