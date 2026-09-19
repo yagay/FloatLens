@@ -47,6 +47,7 @@ public final class GoogleCtsContract {
     public static final String EVENT_END = "end";
     public static final String EVENT_FRAME_READY = "frame_ready";
     public static final String METHOD_ALLOCATE_SHARED_FRAME = "allocate_shared_frame";
+    public static final String METHOD_RELEASE_SHARED_FRAME = "release_shared_frame";
     public static final String EXTRA_FRAME_WIDTH =
             "com.yagay.floatlens.extra.CTS_FRAME_WIDTH";
     public static final String EXTRA_FRAME_HEIGHT =
