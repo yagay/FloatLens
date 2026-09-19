@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * The dashed stroke continuously advances around the physical display edge as a marching-ants cue.
  */
 final class CircleActiveBorderOverlay {
+    private static final Object SCENE_KEY = new Object();
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static BorderView activeView;
     private static FlOverlayWindowHost activeHost;
@@ -52,6 +53,8 @@ final class CircleActiveBorderOverlay {
         circleActive = true;
         activeContext = app;
         OverlayRegistry.register("circle_active_border", OVERLAY_OWNER);
+        OverlaySceneManager.bindCurrent(SCENE_KEY,
+                () -> hide(app, "workflow_scene"));
         removeLocked("replace");
 
         FloatSettings settings = new FloatSettings(app);
@@ -101,6 +104,7 @@ final class CircleActiveBorderOverlay {
         removeLocked(reason == null ? "hide" : reason);
         activeContext = null;
         OverlayRegistry.unregister("circle_active_border", OVERLAY_OWNER);
+        OverlaySceneManager.unbind(SCENE_KEY);
         if (app != null) DiagnosticLog.i(app, "CIRCLE_BORDER", "hidden reason=" + safe(reason));
     }
 
