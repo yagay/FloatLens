@@ -20,11 +20,11 @@ final class FLCircleController {
         cancelPendingLocked(app);
 
         CaptureTransaction transaction = CaptureTransaction.begin(app, "fl_circle")
-                .hideFloatingIcon("fl_circle_" + gen);
+                .hideFloatingIcon("fl_circle_" + session.id());
         pendingTransaction = transaction;
         pendingSession = session;
         FloatSettings fs = new FloatSettings(app);
-        DiagnosticLog.i(app, "FL_CIRCLE", "start gen=" + gen
+        DiagnosticLog.i(app, "FL_CIRCLE", "start workflow=" + session.id()
                 + " phase=capture_then_fullscreen_ocr"
                 + " fullEngine=" + CircleStableOcr.fullModeLabel(app)
                 + " fullMode=" + fs.circleFullOcrEngine()

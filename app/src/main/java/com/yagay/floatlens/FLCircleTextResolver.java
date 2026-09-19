@@ -88,7 +88,7 @@ final class FLCircleTextResolver {
             current = created;
         }
         FloatSettings fs = new FloatSettings(app);
-        DiagnosticLog.i(app, "FL_CIRCLE_OCR", "ready workflow=" + created.generation
+        DiagnosticLog.i(app, "FL_CIRCLE_OCR", "ready workflow=" + created.workflowId
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
                 + " fullEngine=" + CircleStableOcr.fullModeLabel(app)
                 + " correctionEngine=" + CircleStableOcr.correctionModeLabel(app)
@@ -169,7 +169,7 @@ final class FLCircleTextResolver {
             clearLocked(released);
         }
         DiagnosticLog.i(app == null ? released.app : app, "FL_CIRCLE_OCR",
-                "release workflow=" + released.generation
+                "release workflow=" + released.workflowId
                         + " reason=" + (reason == null ? "unknown" : reason));
     }
 
