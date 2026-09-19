@@ -304,7 +304,7 @@ final class GoogleCtsRuntimeInspector {
                                 && hideGoogleShellView(view)) {
                             report("GOOGLE_ACTION_MENU_ROOT_SUPPRESSED",
                                     "controller=dokz.a visibility="
-                                            + visibilityName(view.getVisibility()));
+                                            + GoogleLensViewIntrospection.visibilityName(view.getVisibility()));
                         }
                         return result;
                     });
@@ -437,7 +437,7 @@ final class GoogleCtsRuntimeInspector {
                                 && hideGoogleShellView(view)) {
                             report("GOOGLE_INFO_PANEL_OWNER_SUPPRESSED",
                                     "owner=dqpx.d visibility="
-                                            + visibilityName(view.getVisibility()));
+                                            + GoogleLensViewIntrospection.visibilityName(view.getVisibility()));
                         }
                         return result;
                     });
@@ -499,14 +499,14 @@ final class GoogleCtsRuntimeInspector {
                     return chain.proceed();
                 }
                 int requested = (Integer) chain.getArg(0);
-                if (requested != View.VISIBLE || !isGoogleLensChromeView(view)) {
+                if (requested != View.VISIBLE || !GoogleLensViewIntrospection.isChromeView(view)) {
                     return chain.proceed();
                 }
 
                 boolean changed = hideGoogleShellView(view);
                 if (changed) {
                     report("GOOGLE_CHROME_VISIBILITY_BLOCKED",
-                            "target=" + googleLensChromeLabel(view)
+                            "target=" + GoogleLensViewIntrospection.chromeLabel(view)
                                     + " requested=VISIBLE forced=GONE");
                 }
                 return null;
@@ -643,7 +643,7 @@ final class GoogleCtsRuntimeInspector {
     private int hideGoogleLensShellViews(View view) {
         if (view == null) return 0;
         int hidden = 0;
-        if (isGoogleLensShellView(view) || isGoogleLensChromeView(view)) {
+        if (GoogleLensViewIntrospection.isShellView(view) || GoogleLensViewIntrospection.isChromeView(view)) {
             if (hideGoogleShellView(view)) hidden++;
         }
         if (view instanceof ViewGroup group) {
@@ -681,8 +681,8 @@ final class GoogleCtsRuntimeInspector {
                     Object rawLp = lIdx >= 0 ? chain.getArg(lIdx) : null;
                     if (rawView instanceof View view) {
                         report("GOOGLE_WINDOW_ADD",
-                                describeView(view, true)
-                                        + " lp=" + describeWindowLayoutParams(rawLp));
+                                GoogleLensViewIntrospection.describeView(view, true)
+                                        + " lp=" + GoogleLensViewIntrospection.describeWindowLayoutParams(rawLp));
                     }
                     return result;
                 });
@@ -825,7 +825,7 @@ final class GoogleCtsRuntimeInspector {
             try {
                 View root = activity.getWindow() == null
                         ? null : activity.getWindow().getDecorView();
-                View image = findViewByClassName(root, GoogleLens1758Profile.FROZEN_IMAGE_VIEW);
+                View image = GoogleLensViewIntrospection.findByClassName(root, GoogleLens1758Profile.FROZEN_IMAGE_VIEW);
                 if (image == null) {
                     report("GOOGLE_FROZEN_IMAGE_TRANSFORM",
                             "phase=" + phase + " view=missing");
