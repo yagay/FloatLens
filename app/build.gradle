@@ -45,8 +45,8 @@ android {
         applicationId 'com.yagay.floatlens'
         minSdk 31
         targetSdk 37
-        versionCode 186
-        versionName '3.1.34'
+        versionCode 187
+        versionName '3.1.35'
         buildConfigField 'String', 'GOOGLE_HOOK_FINGERPRINT', '"'+googleHookFingerprint+'"'
         buildConfigField 'String', 'SYSTEMUI_HOOK_FINGERPRINT', '"'+systemUiHookFingerprint+'"'
         buildConfigField 'String', 'SYSTEM_SERVER_HOOK_FINGERPRINT', '"'+systemServerHookFingerprint+'"'
