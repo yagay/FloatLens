@@ -17,6 +17,21 @@ final class GoogleCtsTrigger {
     static boolean trigger(Context c) {
         if (c == null) return false;
         Context app = c.getApplicationContext();
+        if (WorkflowSessionManager.googleCtsInFlight()) {
+            WorkflowSessionManager.Session current = WorkflowSessionManager.current();
+            DiagnosticLog.i(app, "GOOGLE_CTS_TRIGGER",
+                    "duplicate ignored current="
+                            + (current == null ? "none" : current.phase())
+                            + " session="
+                            + (current == null || current.externalKey().isBlank()
+                                    ? "none"
+                                    : current.externalKey().substring(
+                                            0, Math.min(8, current.externalKey().length()))));
+            // Treat the duplicate gesture as handled so ActionExecutor does not fall back to the
+            // native FloatLens circle workflow while Google CTS is already on screen.
+            return true;
+        }
+
         FloatSettings fs = new FloatSettings(app);
         if (!fs.enhancedMode() || !fs.lsposedEnabled()) {
             Toast.makeText(app, "Google 圈画模式需要启用 LSPosed 增强", Toast.LENGTH_SHORT).show();
