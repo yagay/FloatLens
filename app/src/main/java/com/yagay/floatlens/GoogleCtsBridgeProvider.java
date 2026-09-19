@@ -61,13 +61,18 @@ public final class GoogleCtsBridgeProvider extends ContentProvider {
 
     @Override
     public Bundle call(String method, String arg, Bundle extras) {
-        if (!GoogleCtsContract.METHOD_ALLOCATE_SHARED_FRAME.equals(method)) {
-            return super.call(method, arg, extras);
-        }
-
         Context context = getContext();
         Bundle out = new Bundle();
         if (context == null || extras == null) return out;
+
+        if (GoogleCtsContract.METHOD_RELEASE_SHARED_FRAME.equals(method)) {
+            String token = extras.getString(GoogleCtsContract.EXTRA_BRIDGE_SESSION, "");
+            if (authorized(context, token)) releaseSharedFrame(token);
+            return out;
+        }
+        if (!GoogleCtsContract.METHOD_ALLOCATE_SHARED_FRAME.equals(method)) {
+            return super.call(method, arg, extras);
+        }
 
         String caller = getCallingPackage();
         if (caller != null && !caller.isBlank()
