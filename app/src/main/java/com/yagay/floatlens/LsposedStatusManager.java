@@ -36,9 +36,9 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         public final List<String> runningProcesses;
         public final boolean systemScopeEnabled;
         public final boolean systemUiScopeEnabled;
-        /** True only when the current APK version is UP_TO_DATE in system_server. */
+        /** True when system_server currently has a FloatLens module generation loaded. */
         public final boolean systemLoaded;
-        /** True only when the current APK version is UP_TO_DATE in SystemUI. */
+        /** True when SystemUI currently has a FloatLens module generation loaded. */
         public final boolean systemUiLoaded;
         public final boolean remoteConfigReady;
         public final boolean remoteEnhancedMode;
@@ -103,12 +103,12 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
             return false;
         }
 
-        /** True when at least one Google target is already running with the current module. */
+        /** True when at least one hooked Google target is currently running. */
         public boolean googleTargetLoaded() {
-            String expected = "[UP_TO_DATE v" + BuildConfig.VERSION_CODE + "]";
             for (String process : runningProcesses) {
-                if (process != null && process.startsWith(GoogleCtsContract.GOOGLE_PACKAGE)
-                        && process.contains(expected)) return true;
+                if (process != null && process.startsWith(GoogleCtsContract.GOOGLE_PACKAGE)) {
+                    return true;
+                }
             }
             return false;
         }
@@ -443,13 +443,13 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
 
                     HookedTarget.State state = target.getState();
                     long loadedVersion = target.getLoadedVersionCode();
-                    boolean currentVersion = loadedVersion == BuildConfig.VERSION_CODE;
-                    boolean upToDate = state == HookedTarget.State.UP_TO_DATE;
-                    boolean currentTarget = currentVersion && upToDate;
+                    boolean hookLoaded = loadedVersion > 0L;
 
                     running.add(process + "[" + state.name() + " v" + loadedVersion + "]");
-                    if (currentTarget && isSystemProcess(process)) systemLoaded = true;
-                    if (currentTarget && isSystemUiProcess(process)) systemUiLoaded = true;
+                    // APK version drift is informational only. HookReloadManager decides whether
+                    // the actually loaded hook code changed by comparing hook-only fingerprints.
+                    if (hookLoaded && isSystemProcess(process)) systemLoaded = true;
+                    if (hookLoaded && isSystemUiProcess(process)) systemUiLoaded = true;
                 }
             }
             Collections.sort(running);
