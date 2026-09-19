@@ -74,6 +74,8 @@ final class GoogleCtsRuntimeInspector {
     private volatile WeakReference<Activity> markedActivity = new WeakReference<>(null);
     private final GoogleLensUiSanitizer uiSanitizer;
     private final GoogleBridgeSender bridgeSender;
+    private final GoogleLensDiagnosticsHooks diagnosticsHooks;
+    private final GoogleLensViewportHook viewportHook;
 
     GoogleCtsRuntimeInspector(XposedModule module,
                               LsposedRuntimeProvider provider,
@@ -87,6 +89,14 @@ final class GoogleCtsRuntimeInspector {
         this.bridgeSender = new GoogleBridgeSender(
                 module, this::currentApplicationContext, () -> sessionToken,
                 this::active, provider::diagnosticsEnabled);
+        this.diagnosticsHooks = new GoogleLensDiagnosticsHooks(
+                module, classLoader, provider::diagnosticsEnabled, this::active,
+                () -> bridgeSelectionSeen, () -> markedActivity.get(),
+                () -> bridgeSelectionBounds == null ? null : new Rect(bridgeSelectionBounds),
+                this::report);
+        this.viewportHook = new GoogleLensViewportHook(
+                module, classLoader, this::active, () -> bridgeSelectionSeen,
+                () -> markedActivity.get(), this::report);
     }
 
     void install() {
@@ -96,12 +106,12 @@ final class GoogleCtsRuntimeInspector {
         // installed now: Selection (OCR/text/region/query bridge) and Viewport (prevent text-focus
         // auto zoom). Legacy presentation/ActionMenu/InfoPanel/dujo hooks remain in source for
         // diagnostics/rollback but are intentionally not installed.
-        hooks += hookGoogleFrozenImageAutoFocus();
+        hooks += viewportHook.install();
         hooks += hookGoogleLensSelectionBoundary();
         // v169 device/APK analysis proved the visible menu is Lens' own ActionMenuView,
         // not framework/Material FloatingToolbar. WindowManager inspection is diagnostic-only.
         if (provider.diagnosticsEnabled()) {
-            hooks += hookGoogleWindowInspector();
+            hooks += diagnosticsHooks.installWindowInspector();
         } else {
             module.log(Log.INFO, TAG,
                     "Google diagnostic WindowManager hook skipped (diagnostics disabled)");
@@ -190,195 +200,6 @@ final class GoogleCtsRuntimeInspector {
     // source after the selection-only architecture stabilized. Git history remains the rollback
     // source; runtime behavior now depends only on selection, viewport and optional diagnostics.
 
-    private int hookGoogleWindowInspector() {
-        try {
-            Class<?> global = Class.forName("android.view.WindowManagerGlobal", false, classLoader);
-            int count = 0;
-            for (Executable executable : HiddenApiBypass.getDeclaredMethods(global)) {
-                if (!(executable instanceof Method method)) continue;
-                if (!"addView".equals(method.getName())) continue;
-                Class<?>[] params = method.getParameterTypes();
-                int viewIndex = findParameter(params, View.class);
-                int lpIndex = findParameter(params, ViewGroup.LayoutParams.class);
-                if (viewIndex < 0) continue;
-                final int vIdx = viewIndex;
-                final int lIdx = lpIndex;
-
-                module.hook(method).intercept(chain -> {
-                    Object result = chain.proceed();
-                    if (!active() || !bridgeSelectionSeen) return result;
-
-                    Object rawView = chain.getArg(vIdx);
-                    Object rawLp = lIdx >= 0 ? chain.getArg(lIdx) : null;
-                    if (rawView instanceof View view) {
-                        report("GOOGLE_WINDOW_ADD",
-                                GoogleLensViewIntrospection.describeView(view, true)
-                                        + " lp=" + GoogleLensViewIntrospection.describeWindowLayoutParams(rawLp));
-                    }
-                    return result;
-                });
-                count++;
-            }
-            module.log(Log.INFO, TAG, "Google window inspector hooks=" + count);
-            return count;
-        } catch (Throwable t) {
-            module.log(Log.WARN, TAG, "Google window inspector unavailable", t);
-            return 0;
-        }
-    }
-
-    private void inspectGoogleSelectionViewsSoon() {
-        if (!provider.diagnosticsEnabled()) return;
-        Activity activity = markedActivity.get();
-        if (activity == null) return;
-        final long[] delays = {0L, 80L, 220L, 500L};
-        for (long delay : delays) {
-            Runnable scan = () -> {
-                if (!active() || !bridgeSelectionSeen) return;
-                try {
-                    View root = activity.getWindow() == null
-                            ? null : activity.getWindow().getDecorView();
-                    if (root == null) return;
-                    GoogleLensViewIntrospection.Dump dump =
-                            GoogleLensViewIntrospection.dumpInteresting(root);
-                    report("GOOGLE_VIEW_SNAPSHOT",
-                            "delayMs=" + delay
-                                    + " activity=" + activity.getClass().getName()
-                                    + " selectedBounds=" + String.valueOf(bridgeSelectionBounds)
-                                    + " nodes=" + dump.nodes
-                                    + "\n" + dump.text);
-                } catch (Throwable t) {
-                    module.log(Log.WARN, TAG, "Google view snapshot failed", t);
-                }
-            };
-            if (delay == 0L) activity.runOnUiThread(scan);
-            else mainHandler.postDelayed(() -> activity.runOnUiThread(scan), delay);
-        }
-    }
-
-    /**
-     * Google 17.58 classes8.dex: dsfk.Q() builds a TEXT AreaOfInterest and calls duec.r(dudp)
-     * before the user-selection callback reaches dscu.y(). Therefore the first focus animation
-     * must be rejected from dudp's own source enum rather than waiting for bridgeSelectionSeen.
-     * APK mapping: dudp.c=RectF region, dudp.e=int source, source 1=TEXT.
-     *
-     * duec.n(dsyc) is a second path into duec.ai(). v176 only traces it so we can distinguish
-     * independent viewport changes without suppressing unrelated initialization/region behavior.
-     */
-    private int hookGoogleFrozenImageAutoFocus() {
-        try {
-            Class<?> controller = Class.forName(
-                    GoogleLens1758Profile.VIEWPORT_CONTROLLER, false, classLoader);
-            Class<?> requestClass = Class.forName(
-                    GoogleLens1758Profile.VIEWPORT_REQUEST, false, classLoader);
-            Class<?> stateClass = Class.forName(
-                    GoogleLens1758Profile.VIEWPORT_STATE, false, classLoader);
-            int count = 0;
-            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
-                if (!(executable instanceof Method method)) continue;
-                Class<?>[] params = method.getParameterTypes();
-
-                if ("r".equals(method.getName())
-                        && params.length == 1
-                        && params[0] == requestClass
-                        && method.getReturnType() == void.class) {
-                    module.hook(method).intercept(chain -> {
-                        Object request = chain.getArg(0);
-                        Object rawBounds = fieldByName(request, "c");
-                        RectF focusBounds = rawBounds instanceof RectF rect
-                                ? new RectF(rect) : null;
-                        boolean hasBounds = focusBounds != null
-                                && focusBounds.width() > 0f
-                                && focusBounds.height() > 0f;
-                        Object rawSource = fieldByName(request, "e");
-                        int source = rawSource instanceof Integer value ? value : -1;
-
-                        if (!active()
-                                || !GoogleLens1758Profile.shouldSuppressTextViewportFocus(
-                                        request == null ? "" : request.getClass().getName(),
-                                        source,
-                                        hasBounds)) {
-                            return chain.proceed();
-                        }
-
-                        report("GOOGLE_FROZEN_IMAGE_TEXT_FOCUS_SUPPRESSED_EARLY",
-                                "controller=duec.r source=" + source
-                                        + " selectionSeen=" + bridgeSelectionSeen
-                                        + " bounds=" + focusBounds
-                                        + " request=" + compactObject(request, 360));
-                        reportFrozenImageTransform("beforeEarlyTextFocus");
-                        mainHandler.postDelayed(
-                                () -> reportFrozenImageTransform("after120ms"), 120L);
-                        mainHandler.postDelayed(
-                                () -> reportFrozenImageTransform("after300ms"), 300L);
-                        return null;
-                    });
-                    count++;
-                    continue;
-                }
-
-                if ("n".equals(method.getName())
-                        && params.length == 1
-                        && params[0] == stateClass
-                        && method.getReturnType() == void.class) {
-                    module.hook(method).intercept(chain -> {
-                        if (!active()) return chain.proceed();
-
-                        Object state = chain.getArg(0);
-                        report("GOOGLE_FROZEN_IMAGE_VIEWPORT_STATE_PATH",
-                                "controller=duec.n selectionSeen=" + bridgeSelectionSeen
-                                        + " state=" + compactObject(state, 420));
-                        reportFrozenImageTransform("beforeDuecN");
-                        Object result = chain.proceed();
-                        mainHandler.postDelayed(
-                                () -> reportFrozenImageTransform("afterDuecN120ms"), 120L);
-                        return result;
-                    });
-                    count++;
-                }
-            }
-            module.log(Log.INFO, TAG,
-                    "Google FrozenImage viewport hooks=" + count);
-            return count;
-        } catch (Throwable t) {
-            module.log(Log.WARN, TAG,
-                    "Google FrozenImage viewport boundary unavailable", t);
-            return 0;
-        }
-    }
-
-    private void reportFrozenImageTransform(String phase) {
-        if (!active()) return;
-        Activity activity = markedActivity.get();
-        if (activity == null) return;
-        activity.runOnUiThread(() -> {
-            if (!active()) return;
-            try {
-                View root = activity.getWindow() == null
-                        ? null : activity.getWindow().getDecorView();
-                View image = GoogleLensViewIntrospection.findByClassName(root, GoogleLens1758Profile.FROZEN_IMAGE_VIEW);
-                if (image == null) {
-                    report("GOOGLE_FROZEN_IMAGE_TRANSFORM",
-                            "phase=" + phase + " view=missing");
-                    return;
-                }
-                int[] loc = new int[2];
-                try { image.getLocationOnScreen(loc); } catch (Throwable ignored) {}
-                report("GOOGLE_FROZEN_IMAGE_TRANSFORM",
-                        "phase=" + phase
-                                + " scaleX=" + image.getScaleX()
-                                + " scaleY=" + image.getScaleY()
-                                + " translationX=" + image.getTranslationX()
-                                + " translationY=" + image.getTranslationY()
-                                + " xy=" + loc[0] + "," + loc[1]
-                                + " wh=" + image.getWidth() + "x" + image.getHeight());
-            } catch (Throwable t) {
-                module.log(Log.WARN, TAG,
-                        "Failed to inspect FrozenImage transform", t);
-            }
-        });
-    }
-
     /** Resolve the exact 17.58 profile or structural fallback behind one hook contract. */
     private int hookGoogleLensSelectionBoundary() {
         GoogleSelectionAdapter.Binding binding = GoogleSelectionAdapter.resolve(classLoader);
@@ -438,7 +259,7 @@ final class GoogleCtsRuntimeInspector {
                         && bridgeSelectionText != null
                         && !bridgeSelectionText.isBlank()) {
                     uiSanitizer.sanitizeNow();
-                    inspectGoogleSelectionViewsSoon();
+                    diagnosticsHooks.inspectSelectionViewsSoon();
                 }
                 return result;
             });
@@ -579,19 +400,7 @@ final class GoogleCtsRuntimeInspector {
         }
     }
 
-    private Object fieldByName(Object target, String fieldName) {
-        if (target == null || fieldName == null) return null;
-        for (Class<?> current = target.getClass();
-             current != null; current = current.getSuperclass()) {
-            try {
-                Field field = current.getDeclaredField(fieldName);
-                field.setAccessible(true);
-                return field.get(target);
-            } catch (Throwable ignored) {
-            }
-        }
-        return null;
-    }
+
 
     private Object fieldByTypeName(Object target, String typeName) {
         if (target == null || typeName == null) return null;
@@ -624,17 +433,7 @@ final class GoogleCtsRuntimeInspector {
         return null;
     }
 
-    private String compactObject(Object value, int max) {
-        if (value == null) return "null";
-        String text;
-        try {
-            text = value.getClass().getName() + "{" + String.valueOf(value) + "}";
-        } catch (Throwable t) {
-            text = value.getClass().getName();
-        }
-        text = safe(text).replace("\n", " ").replace("\r", " ");
-        return text.length() <= max ? text : text.substring(0, max) + "…";
-    }
+
 
 
 
