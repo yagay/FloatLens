@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** One bounded, timeout-safe implementation for every FloatLens su command. */
@@ -66,13 +67,15 @@ final class RootCommandExecutor {
             ByteArrayOutputStream stderr = new ByteArrayOutputStream(
                     Math.min(maxStderrBytes, 16 * 1024));
             AtomicReference<Throwable> readFailure = new AtomicReference<>();
+            AtomicBoolean stdoutOverflow = new AtomicBoolean(false);
+            AtomicBoolean stderrOverflow = new AtomicBoolean(false);
 
             stdoutReader = readerThread("FloatLens-root-stdout", active.getInputStream(),
-                    stdout, maxStdoutBytes, readFailure);
+                    stdout, maxStdoutBytes, readFailure, stdoutOverflow);
             stdoutReader.start();
             if (!mergeError) {
                 stderrReader = readerThread("FloatLens-root-stderr", active.getErrorStream(),
-                        stderr, maxStderrBytes, readFailure);
+                        stderr, maxStderrBytes, readFailure, stderrOverflow);
                 stderrReader.start();
             }
 
@@ -95,6 +98,11 @@ final class RootCommandExecutor {
                         new String(stderr.toByteArray(), StandardCharsets.UTF_8),
                         streamError, false);
             }
+            if (stdoutOverflow.get() || stderrOverflow.get()) {
+                return new Result(active.exitValue(), stdout.toByteArray(),
+                        new String(stderr.toByteArray(), StandardCharsets.UTF_8),
+                        new IllegalStateException("Root command output exceeds limit"), false);
+            }
             return new Result(active.exitValue(), stdout.toByteArray(),
                     new String(stderr.toByteArray(), StandardCharsets.UTF_8),
                     null, false);
@@ -115,7 +123,8 @@ final class RootCommandExecutor {
 
     private static Thread readerThread(String name, InputStream input,
                                        ByteArrayOutputStream output, int maxBytes,
-                                       AtomicReference<Throwable> failure) {
+                                       AtomicReference<Throwable> failure,
+                                       AtomicBoolean overflow) {
         Thread thread = new Thread(() -> {
             try (InputStream in = input) {
                 byte[] buffer = new byte[64 * 1024];
@@ -124,14 +133,13 @@ final class RootCommandExecutor {
                 while ((n = in.read(buffer)) >= 0) {
                     if (n == 0) continue;
                     int remaining = Math.max(0, maxBytes - stored);
-                    if (remaining > 0) {
-                        int keep = Math.min(remaining, n);
+                    int keep = Math.min(remaining, n);
+                    if (keep > 0) {
                         output.write(buffer, 0, keep);
                         stored += keep;
                     }
-                    if (stored >= maxBytes) {
-                        // Continue draining the pipe so the child cannot block, but keep memory bounded.
-                    }
+                    if (keep < n) overflow.set(true);
+                    // Always continue draining so the child process cannot block on a full pipe.
                 }
             } catch (Throwable t) {
                 failure.compareAndSet(null, t);

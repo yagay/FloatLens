@@ -20,11 +20,10 @@ final class ScreenshotCaptureSession {
                         Consumer<Bitmap> ok, Consumer<Throwable> fail) {
         Context app = c.getApplicationContext();
         boolean hideIcon = !settings.keepInScreenshot() && FloatService.get() != null;
-        ScreenshotHideCoordinator.Lease hideLease = hideIcon
-                ? ScreenshotHideCoordinator.acquire(app, "screenshot_session") : null;
-        CircleActiveBorderOverlay.CaptureLease borderLease =
-                CircleActiveBorderOverlay.acquireCaptureHidden(app, "screenshot_session");
-        boolean hideBorder = borderLease.requiresSettle();
+        CaptureTransaction visuals = CaptureTransaction.visual(app, "screenshot_session");
+        if (hideIcon) visuals.hideFloatingIcon("screenshot_session");
+        visuals.hideCircleBorder("screenshot_session");
+        boolean hideBorder = visuals.circleBorderHidden();
         long settleMs = (hideIcon || hideBorder) ? HIDE_SETTLE_MS : 0L;
 
         DiagnosticLog.i(app, "SCREENSHOT_SESSION", "begin hideIcon=" + hideIcon
@@ -36,25 +35,22 @@ final class ScreenshotCaptureSession {
             DiagnosticLog.i(app, "SCREENSHOT_SESSION", "capture after settleMs=" + settleMs);
             ScreenCaptureBackend.capture(app, settings, raw -> {
                 DiagnosticLog.i(app, "SCREENSHOT_SESSION", "backend success bitmap=" + size(raw));
-                restore(app, hideLease, borderLease);
+                restore(app, visuals);
                 ok.accept(raw);
             }, error -> {
                 DiagnosticLog.i(app, "SCREENSHOT_SESSION", "backend failed error="
                         + ScreenCaptureBackend.safeMessage(error));
-                restore(app, hideLease, borderLease);
+                restore(app, visuals);
                 fail.accept(error);
             });
         }, settleMs);
     }
 
-    private static void restore(Context app,
-                                ScreenshotHideCoordinator.Lease iconLease,
-                                CircleActiveBorderOverlay.CaptureLease borderLease) {
+    private static void restore(Context app, CaptureTransaction visuals) {
         MAIN.postDelayed(() -> {
-            if (iconLease != null) iconLease.release(app);
-            if (borderLease != null) borderLease.release(app);
+            visuals.close();
             DiagnosticLog.i(app, "SCREENSHOT_SESSION",
-                    "visual hide leases released delayMs=" + RESTORE_DELAY_MS);
+                    "visual hide transaction released delayMs=" + RESTORE_DELAY_MS);
         }, RESTORE_DELAY_MS);
     }
 

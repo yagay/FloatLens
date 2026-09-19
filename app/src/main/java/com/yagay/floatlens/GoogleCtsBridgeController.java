@@ -33,7 +33,7 @@ final class GoogleCtsBridgeController {
         boolean delivered;
         boolean textMenuShown;
         int selectionRevision;
-        int cleanupRevision;
+        Runnable cleanupTask;
     }
 
     static void onFrame(Context context, String token, Bitmap frame) {
@@ -160,6 +160,7 @@ final class GoogleCtsBridgeController {
             state.frame = null;
         }
         STATES.remove(token, state);
+        cancelCleanup(state);
         recycle(frame);
         if (showMenuNow) {
             FloatActionMenu.showTextAt(app, finalText, null, finalBounds);
@@ -211,6 +212,7 @@ final class GoogleCtsBridgeController {
         if (context == null || token == null || token.isBlank()) return;
         Context app = context.getApplicationContext();
         State state = STATES.remove(token);
+        if (state != null) cancelCleanup(state);
         boolean dismissTextMenu = false;
         if (state != null) {
             synchronized (state) {
@@ -252,6 +254,7 @@ final class GoogleCtsBridgeController {
             detail = state.detail == null ? "" : state.detail;
         }
         STATES.remove(token, state);
+        cancelCleanup(state);
 
         Bitmap display = frame;
         Rect normalized = normalize(bounds, frame);
@@ -312,13 +315,11 @@ final class GoogleCtsBridgeController {
     }
 
     private static void scheduleCleanup(Context app, String token, State state) {
-        final int revision;
-        synchronized (state) {
-            revision = ++state.cleanupRevision;
-        }
-        MAIN.postDelayed(() -> {
+        final Runnable[] holder = new Runnable[1];
+        holder[0] = () -> {
             synchronized (state) {
-                if (state.cleanupRevision != revision) return;
+                if (state.cleanupTask != holder[0]) return;
+                state.cleanupTask = null;
             }
             if (!STATES.remove(token, state)) return;
             boolean dismissTextMenu;
@@ -332,9 +333,26 @@ final class GoogleCtsBridgeController {
             clearSessionState(app, token, "state_expired");
             DiagnosticLog.i(app, "GOOGLE_BRIDGE",
                     "state expired session=" + shortToken(token)
-                            + " menuDismissed=" + dismissTextMenu
-                            + " cleanupRevision=" + revision);
-        }, STATE_TTL_MS);
+                            + " menuDismissed=" + dismissTextMenu);
+        };
+
+        Runnable previous;
+        synchronized (state) {
+            previous = state.cleanupTask;
+            state.cleanupTask = holder[0];
+        }
+        if (previous != null) MAIN.removeCallbacks(previous);
+        MAIN.postDelayed(holder[0], STATE_TTL_MS);
+    }
+
+    private static void cancelCleanup(State state) {
+        if (state == null) return;
+        Runnable pending;
+        synchronized (state) {
+            pending = state.cleanupTask;
+            state.cleanupTask = null;
+        }
+        if (pending != null) MAIN.removeCallbacks(pending);
     }
 
     private static Rect normalize(Rect candidate, Bitmap frame) {

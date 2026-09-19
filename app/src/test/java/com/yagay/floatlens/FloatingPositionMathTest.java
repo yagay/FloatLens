@@ -1,6 +1,7 @@
 package com.yagay.floatlens;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
@@ -14,8 +15,8 @@ public class FloatingPositionMathTest {
 
     @Test public void normalizedYRoundTripsAcrossDifferentHeights() {
         int bp = FloatingPositionMath.basisPointsFromY(600, 1800, 3333);
-        assertEquals(3333, bp, 1);
-        assertEquals(900, FloatingPositionMath.yFromBasisPoints(bp, 2700), 1);
+        assertTrue(Math.abs(bp - 3333) <= 1);
+        assertTrue(Math.abs(FloatingPositionMath.yFromBasisPoints(bp, 2700) - 900) <= 1);
     }
 
     @Test public void hiddenEdgeUsesSameSideWithoutReclassification() {
