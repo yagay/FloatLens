@@ -62,6 +62,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     private final GoogleHookCapabilityMatrix capabilities;
 
     private final GoogleCtsSessionState sessionState = new GoogleCtsSessionState();
+    private final GoogleSessionTimeline timeline = new GoogleSessionTimeline();
     private volatile Object voiceSession;
     private volatile WeakReference<Activity> markedActivity = new WeakReference<>(null);
     private final GoogleLensUiSanitizer uiSanitizer;
@@ -497,6 +498,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
             regionConfirmDetail = "";
             sessionState.begin(nextToken, id, now + SESSION_TTL_MS);
             eventCount.set(0);
+            timeline.reset(sessionState.generation(), nextToken);
         } else {
             sessionState.extend(now + SESSION_TTL_MS);
             sessionState.setShowSessionId(id);
@@ -531,6 +533,9 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         if (!committed && !token.isBlank()) {
             sendBridgeEvent(GoogleCtsContract.EVENT_END, "", reason, null);
         }
+        String timelineSummary = "GOOGLE_SESSION_TIMELINE " + timeline.summary();
+        sendTrace(timelineSummary);
+        module.log(Log.INFO, TAG, timelineSummary);
         sendTrace(end);
         module.log(Log.INFO, TAG, end);
         sessionState.finish();
@@ -562,11 +567,13 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         if (!provider.diagnosticsEnabled() || !active()) return;
         int n = reserveEventNumber();
         if (n < 0) return;
+        String safeMessage = GoogleHookFormatting.safe(message);
+        timeline.record(n, event, sessionState.phase(), safeMessage);
         String line = "#" + n + " " + event + " session="
                 + GoogleHookFormatting.shortToken(sessionState.token())
                 + " generation=" + sessionState.generation()
                 + " phase=" + sessionState.phase()
-                + " " + GoogleHookFormatting.safe(message);
+                + " " + safeMessage;
         sendTrace(line);
         module.log(Log.INFO, TAG, line);
     }
