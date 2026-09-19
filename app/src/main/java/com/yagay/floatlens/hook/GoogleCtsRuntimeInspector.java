@@ -66,6 +66,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     private volatile Object voiceSession;
     private volatile boolean bridgeCommitted;
     private volatile boolean bridgeSelectionSeen;
+    private volatile boolean bridgeRegionSelectionActive;
     private volatile boolean bridgePendingSeen;
     private volatile String bridgeSelectionText = "";
     private volatile Rect bridgeSelectionBounds;
@@ -98,6 +99,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                 this::report);
         this.viewportHook = new GoogleLensViewportHook(
                 module, classLoader, this::active, () -> bridgeSelectionSeen,
+                () -> bridgeRegionSelectionActive,
                 () -> markedActivity.get(), this::report);
         this.lifecycleHooks = new GoogleCtsLifecycleHooks(module, provider, this);
     }
@@ -234,6 +236,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                             + " primary=" + chain.getArg(1);
                     boolean regionSelection = selection.directRegionCommit()
                             && selectionBounds != null && !selectionBounds.isEmpty();
+                    bridgeRegionSelectionActive = regionSelection;
                     report("USER_SELECTION_" + binding.source().toUpperCase(Locale.ROOT), detail);
                     sendBridgeEvent(regionSelection
                                     ? GoogleCtsContract.EVENT_REGION_SELECTION
@@ -492,6 +495,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
             bridgeSender.reset();
             bridgeCommitted = false;
             bridgeSelectionSeen = false;
+            bridgeRegionSelectionActive = false;
             bridgePendingSeen = false;
             bridgeSelectionText = "";
             bridgeSelectionBounds = null;
@@ -529,6 +533,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         bridgeSender.reset();
         bridgeCommitted = false;
         bridgeSelectionSeen = false;
+        bridgeRegionSelectionActive = false;
         bridgePendingSeen = false;
         bridgeSelectionText = "";
         bridgeSelectionBounds = null;
