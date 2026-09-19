@@ -75,7 +75,11 @@ final class GoogleRegionGestureHook {
     }
 
     int install() {
-        Binding binding = resolve(classLoader);
+        return install(resolve(classLoader));
+    }
+
+    int install(Binding binding) {
+        if (binding == null) binding = resolve(classLoader);
         if (!binding.available()) {
             module.log(Log.WARN, TAG,
                     "Google region gesture capability unavailable: " + binding.detail);
