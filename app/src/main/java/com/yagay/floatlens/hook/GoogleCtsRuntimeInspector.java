@@ -526,6 +526,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
             uiSanitizer.detach();
             bridgeSender.reset();
             regionGestureHook.reset();
+        viewportHook.reset();
             bridgeCommitted = false;
             bridgeSelectionSeen = false;
             bridgeRegionSelectionActive = false;
@@ -565,6 +566,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         voiceSession = null;
         bridgeSender.reset();
         regionGestureHook.reset();
+        viewportHook.reset();
         bridgeCommitted = false;
         bridgeSelectionSeen = false;
         bridgeRegionSelectionActive = false;
