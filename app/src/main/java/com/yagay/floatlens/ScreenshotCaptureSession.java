@@ -19,7 +19,8 @@ final class ScreenshotCaptureSession {
     static void capture(Context c, FloatSettings settings,
                         Consumer<Bitmap> ok, Consumer<Throwable> fail) {
         Context app = c.getApplicationContext();
-        boolean hideIcon = !settings.keepInScreenshot() && FloatService.get() != null;
+        FloatSettingsDomains.Capture capture = FloatSettingsDomains.capture(settings);
+        boolean hideIcon = !capture.keepIcon() && FloatService.get() != null;
         CaptureTransaction visuals = CaptureTransaction.visual(app, "screenshot_session");
         if (hideIcon) visuals.hideFloatingIcon("screenshot_session");
         visuals.hideCircleBorder("screenshot_session");
