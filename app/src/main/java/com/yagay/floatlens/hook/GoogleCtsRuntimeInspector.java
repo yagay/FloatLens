@@ -77,6 +77,8 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     private final GoogleLensDiagnosticsHooks diagnosticsHooks;
     private final GoogleLensViewportHook viewportHook;
     private final GoogleCtsLifecycleHooks lifecycleHooks;
+    private final GoogleLensFrameCapture frameCapture;
+    private final GoogleRegionGestureHook regionGestureHook;
     private Runnable regionConfirmPollTask;
     private String regionConfirmDetail = "";
 
@@ -102,6 +104,19 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                 () -> bridgeRegionSelectionActive,
                 () -> markedActivity.get(), this::report);
         this.lifecycleHooks = new GoogleCtsLifecycleHooks(module, provider, this);
+        this.frameCapture = new GoogleLensFrameCapture(
+                module, classLoader, this::active, this::sendBridgeFrame, this::report);
+        this.regionGestureHook = new GoogleRegionGestureHook(
+                module, classLoader, this::active,
+                (adjusting, detail) -> {
+                    report(adjusting ? "GOOGLE_REGION_GESTURE_START"
+                                    : "GOOGLE_REGION_GESTURE_END",
+                            detail);
+                    sendBridgeEvent(adjusting
+                                    ? GoogleCtsContract.EVENT_REGION_GESTURE_START
+                                    : GoogleCtsContract.EVENT_REGION_GESTURE_END,
+                            "", detail, bridgeSelectionBounds);
+                });
     }
 
     void install() {
@@ -112,6 +127,8 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         // auto zoom). Legacy presentation/ActionMenu/InfoPanel/dujo hooks remain in source for
         // diagnostics/rollback but are intentionally not installed.
         hooks += viewportHook.install();
+        hooks += frameCapture.install();
+        hooks += regionGestureHook.install();
         hooks += hookGoogleLensSelectionBoundary();
         // v169 device/APK analysis proved the visible menu is Lens' own ActionMenuView,
         // not framework/Material FloatingToolbar. WindowManager inspection is diagnostic-only.
@@ -493,6 +510,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
             stopRegionConfirmWait();
             uiSanitizer.detach();
             bridgeSender.reset();
+            regionGestureHook.reset();
             bridgeCommitted = false;
             bridgeSelectionSeen = false;
             bridgeRegionSelectionActive = false;
@@ -531,6 +549,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         showSessionId = -1;
         voiceSession = null;
         bridgeSender.reset();
+        regionGestureHook.reset();
         bridgeCommitted = false;
         bridgeSelectionSeen = false;
         bridgeRegionSelectionActive = false;
@@ -587,6 +606,10 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
 
     @Override public void sendBridgeFrame(Bitmap bitmap) {
         bridgeSender.sendFrame(bitmap);
+    }
+
+    @Override public void captureFrameFromIntent(Intent intent) {
+        frameCapture.captureFromIntent(intent);
     }
 
     private Context currentApplicationContext() {
