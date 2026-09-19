@@ -35,6 +35,7 @@ final class HookReloadManager {
     });
     private static final AtomicBoolean GOOGLE_RELOAD_RUNNING = new AtomicBoolean(false);
     private static final AtomicBoolean FULL_RELOAD_RUNNING = new AtomicBoolean(false);
+    private static final AtomicBoolean AUTO_RELOAD_RUNNING = new AtomicBoolean(false);
     private static volatile Context appContext;
 
     static final class Result {
@@ -104,6 +105,37 @@ final class HookReloadManager {
                         + " google=" + shortHash(BuildConfig.GOOGLE_HOOK_FINGERPRINT)
                         + " systemui=" + shortHash(BuildConfig.SYSTEMUI_HOOK_FINGERPRINT)
                         + " system=" + shortHash(BuildConfig.SYSTEM_SERVER_HOOK_FINGERPRINT));
+    }
+
+    static void autoReloadChangedTargets(
+            Context context, LsposedStatusManager.Snapshot snapshot) {
+        if (context == null || snapshot == null || !snapshot.serviceConnected) return;
+        Context app = context.getApplicationContext();
+        FloatSettings settings = new FloatSettings(app);
+        if (!settings.enhancedMode() || !settings.lsposedEnabled() || !settings.canUseRoot()) {
+            return;
+        }
+
+        boolean google = googleNeedsReload(app, snapshot);
+        boolean systemUi = systemUiNeedsReload(app, snapshot);
+        if (!google && !systemUi) return;
+        if (!AUTO_RELOAD_RUNNING.compareAndSet(false, true)) return;
+
+        DiagnosticLog.i(app, "HOOK_RELOAD",
+                "auto begin google=" + google
+                        + " systemui=" + systemUi
+                        + " systemServerNeedsReboot=" + systemServerNeedsReboot(app));
+
+        boolean started = reloadChangedTargetsAsync(app, result -> {
+            AUTO_RELOAD_RUNNING.set(false);
+            DiagnosticLog.i(app, "HOOK_RELOAD",
+                    "auto end success=" + result.success
+                            + " google=" + result.googleReloaded
+                            + " systemui=" + result.systemUiReloaded
+                            + " systemServerNeedsReboot=" + result.systemServerNeedsReboot
+                            + " detail=" + result.detail);
+        });
+        if (!started) AUTO_RELOAD_RUNNING.set(false);
     }
 
     static boolean googleNeedsReload(Context context, LsposedStatusManager.Snapshot snapshot) {
