@@ -5,7 +5,9 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
+import android.os.SharedMemory;
 import android.util.Log;
 
 import com.yagay.floatlens.GoogleCtsContract;
@@ -153,23 +155,84 @@ final class GoogleBridgeSender {
     }
 
     private void writeFrame(String token, int width, int height, ByteBuffer pixels) {
+        if (tryWriteSharedFrame(token, width, height, pixels)) return;
+        writeFramePipe(token, width, height, pixels);
+    }
+
+    private boolean tryWriteSharedFrame(
+            String token, int width, int height, ByteBuffer pixels) {
+        int bytes = pixels == null ? 0 : pixels.remaining();
+        SharedMemory memory = null;
+        ByteBuffer mapped = null;
+        try {
+            Context context = contextSupplier.get();
+            if (context == null || bytes <= 0) return false;
+
+            Bundle request = new Bundle();
+            request.putString(GoogleCtsContract.EXTRA_BRIDGE_SESSION, token);
+            request.putInt(GoogleCtsContract.EXTRA_FRAME_WIDTH, width);
+            request.putInt(GoogleCtsContract.EXTRA_FRAME_HEIGHT, height);
+            request.putInt(GoogleCtsContract.EXTRA_FRAME_BYTES, bytes);
+            Bundle response = context.getContentResolver().call(
+                    GoogleCtsContract.bridgeBaseUri(),
+                    GoogleCtsContract.METHOD_ALLOCATE_SHARED_FRAME,
+                    null,
+                    request);
+            if (response == null) return false;
+            Object raw = response.getParcelable(GoogleCtsContract.EXTRA_SHARED_MEMORY);
+            if (!(raw instanceof SharedMemory shared)) return false;
+            memory = shared;
+
+            mapped = memory.mapReadWrite();
+            ByteBuffer source = pixels.duplicate();
+            source.position(pixels.position());
+            source.limit(pixels.limit());
+            mapped.position(0);
+            mapped.put(source);
+            sendEvent(GoogleCtsContract.EVENT_FRAME_READY, "",
+                    "transport=shared_memory size=" + width + "x" + height, null);
+            module.log(Log.INFO, TAG,
+                    "Google bridge frame sent session=" + shortToken(token)
+                            + " size=" + width + "x" + height
+                            + " bytes=" + bytes + " transport=shared_memory");
+            return true;
+        } catch (Throwable t) {
+            module.log(Log.INFO, TAG,
+                    "SharedMemory frame transport unavailable; fallback=pipe session="
+                            + shortToken(token) + " error=" + t.getClass().getSimpleName());
+            return false;
+        } finally {
+            if (mapped != null) {
+                try { SharedMemory.unmap(mapped); } catch (Throwable ignored) { }
+            }
+            if (memory != null) {
+                try { memory.close(); } catch (Throwable ignored) { }
+            }
+        }
+    }
+
+    private void writeFramePipe(String token, int width, int height, ByteBuffer pixels) {
         int bytes = pixels == null ? 0 : pixels.remaining();
         try {
             Context context = contextSupplier.get();
             if (context == null || bytes <= 0) {
                 throw new IllegalStateException("context/pixels unavailable");
             }
+            ByteBuffer source = pixels.duplicate();
+            source.position(pixels.position());
+            source.limit(pixels.limit());
             Uri uri = GoogleCtsContract.bridgeFrameUri(token, width, height, bytes);
             ParcelFileDescriptor descriptor =
                     context.getContentResolver().openFileDescriptor(uri, "w");
             if (descriptor == null) throw new IllegalStateException("bridge pipe unavailable");
             try (FileOutputStream out = new ParcelFileDescriptor.AutoCloseOutputStream(descriptor)) {
                 FileChannel channel = out.getChannel();
-                while (pixels.hasRemaining()) channel.write(pixels);
+                while (source.hasRemaining()) channel.write(source);
             }
             module.log(Log.INFO, TAG,
                     "Google bridge frame sent session=" + shortToken(token)
-                            + " size=" + width + "x" + height + " bytes=" + bytes);
+                            + " size=" + width + "x" + height + " bytes=" + bytes
+                            + " transport=pipe");
         } catch (Throwable t) {
             if (token != null && token.equals(token())) frameQueued = false;
             module.log(Log.WARN, TAG,
