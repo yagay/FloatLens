@@ -6,23 +6,25 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 public class HookReloadManagerTest {
-    @Test public void staleTargetAlwaysNeedsReload() {
-        assertTrue(HookReloadManager.needsReloadForUpdate(
-                100L, 100L, true, true));
+    @Test public void unchangedHookNeverNeedsReload() {
+        assertFalse(HookReloadManager.fingerprintNeedsReload(
+                "hook-a", "hook-a", true));
     }
 
-    @Test public void sameVersionDebugInstallNeedsReloadWhenTargetIsRunning() {
-        assertTrue(HookReloadManager.needsReloadForUpdate(
-                200L, 100L, true, false));
+    @Test public void appOnlyUpdateDoesNotMatterWhenHookFingerprintMatches() {
+        assertFalse(HookReloadManager.fingerprintNeedsReload(
+                "same-hook", "same-hook", true));
     }
 
-    @Test public void updatedApkDoesNotNeedKillWhenTargetIsNotRunning() {
-        assertFalse(HookReloadManager.needsReloadForUpdate(
-                200L, 100L, false, false));
+    @Test public void changedHookNeedsReloadOnlyWhenOldTargetIsRunning() {
+        assertTrue(HookReloadManager.fingerprintNeedsReload(
+                "hook-b", "hook-a", true));
+        assertFalse(HookReloadManager.fingerprintNeedsReload(
+                "hook-b", "hook-a", false));
     }
 
-    @Test public void matchingApkUpdateMarkerDoesNotNeedReload() {
-        assertFalse(HookReloadManager.needsReloadForUpdate(
-                200L, 200L, true, false));
+    @Test public void missingFingerprintDoesNotForceRestart() {
+        assertFalse(HookReloadManager.fingerprintNeedsReload(
+                "", "hook-a", true));
     }
 }
