@@ -32,6 +32,16 @@ final class CircleActiveBorderOverlay {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static BorderView activeView;
     private static FlOverlayWindowHost activeHost;
+    private static Context activeContext;
+    private static final OverlayRegistry.Owner OVERLAY_OWNER = new OverlayRegistry.Owner() {
+        @Override public void onAccessibilityHostChanged(boolean available) {
+            rebuildForEnvironment("accessibility_host_" + (available ? "available" : "lost"));
+        }
+
+        @Override public void onDisplayGeometryChanged() {
+            rebuildForEnvironment("display_geometry_changed");
+        }
+    };
     private static int captureHideLeases;
     private static long nextLeaseId;
     private static boolean circleActive;
@@ -40,6 +50,8 @@ final class CircleActiveBorderOverlay {
         if (c == null) return;
         Context app = c.getApplicationContext();
         circleActive = true;
+        activeContext = app;
+        OverlayRegistry.register("circle_active_border", OVERLAY_OWNER);
         removeLocked("replace");
 
         FloatSettings settings = new FloatSettings(app);
@@ -85,8 +97,10 @@ final class CircleActiveBorderOverlay {
 
     static synchronized void hide(Context c, String reason) {
         circleActive = false;
-        Context app = c == null ? null : c.getApplicationContext();
+        Context app = c == null ? activeContext : c.getApplicationContext();
         removeLocked(reason == null ? "hide" : reason);
+        activeContext = null;
+        OverlayRegistry.unregister("circle_active_border", OVERLAY_OWNER);
         if (app != null) DiagnosticLog.i(app, "CIRCLE_BORDER", "hidden reason=" + safe(reason));
     }
 
@@ -135,6 +149,22 @@ final class CircleActiveBorderOverlay {
             DiagnosticLog.i(app, "CIRCLE_BORDER", "capture hide release id=" + lease.id
                     + " count=" + captureHideLeases + " reason=" + safe(lease.reason));
         }
+    }
+
+    private static void rebuildForEnvironment(String reason) {
+        final Context app;
+        synchronized (CircleActiveBorderOverlay.class) {
+            if (!circleActive || activeContext == null) return;
+            app = activeContext;
+        }
+        MAIN.post(() -> {
+            synchronized (CircleActiveBorderOverlay.class) {
+                if (!circleActive || activeContext != app) return;
+                DiagnosticLog.i(app, "CIRCLE_BORDER", "rebuild reason=" + safe(reason)
+                        + " hideLeases=" + captureHideLeases);
+                show(app);
+            }
+        });
     }
 
     private static void applyVisibilityLocked() {
