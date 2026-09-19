@@ -29,6 +29,17 @@ import java.util.ArrayList;
  */
 final class FLCircleInlineOverlay {
     private static WorkspaceView active;
+    private static final OverlayRegistry.Owner OVERLAY_OWNER = new OverlayRegistry.Owner() {
+        @Override public void onAccessibilityHostChanged(boolean available) {
+            WorkspaceView view = active;
+            if (!available && view != null && view.host.isAccessibilityHosted(view)) {
+                dismissActive("accessibility_host_lost");
+            }
+        }
+        @Override public void onDisplayGeometryChanged() {
+            if (active != null) dismissActive("display_geometry_changed");
+        }
+    };
 
     static synchronized boolean show(Context c, FLCircleCapture.Frame frame, Runnable onClosed) {
         if (c == null || frame == null || frame.bitmap == null || frame.bitmap.isRecycled()) {
@@ -59,6 +70,7 @@ final class FLCircleInlineOverlay {
         if (!host.add(view, lp, "fl_circle_inline")) return false;
 
         active = view;
+        OverlayRegistry.register("circle_workspace", OVERLAY_OWNER);
         if (!shadeExpanded) view.promoteKeyFocus("initial");
         DiagnosticLog.i(app, "FL_CIRCLE_INLINE", "overlay shown frame=" + bounds.toShortString()
                 + " bitmap=" + frame.bitmap.getWidth() + "x" + frame.bitmap.getHeight()
@@ -77,11 +89,15 @@ final class FLCircleInlineOverlay {
     static synchronized void dismissActive(String reason) {
         WorkspaceView view = active;
         active = null;
+        OverlayRegistry.unregister("circle_workspace", OVERLAY_OWNER);
         if (view != null) view.close(reason == null ? "dismiss" : reason);
     }
 
     private static synchronized void onClosed(WorkspaceView view) {
-        if (active == view) active = null;
+        if (active == view) {
+            active = null;
+            OverlayRegistry.unregister("circle_workspace", OVERLAY_OWNER);
+        }
     }
 
     private static final class WorkspaceView extends View {

@@ -64,11 +64,13 @@ public class LensAccessibilityService extends AccessibilityService {
         }
         FloatService service = FloatService.get();
         if (service != null) service.onAccessibilityOverlayHostChanged(true);
+        OverlayRegistry.onAccessibilityHostChanged(true);
     }
 
     @Override public void onDestroy() {
         FloatService service = FloatService.get();
         if (service != null) service.onAccessibilityOverlayHostChanged(false);
+        OverlayRegistry.onAccessibilityHostChanged(false);
         FlSystemPanelController.onAccessibilityDisconnected(this);
         if (s == this) s = null;
         super.onDestroy();

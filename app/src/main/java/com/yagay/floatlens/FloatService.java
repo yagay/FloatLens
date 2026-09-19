@@ -669,6 +669,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
         DiagnosticLog.i(this, "POSITION",
                 "configuration change rebuild without persisting stale orientation coordinates");
         super.onConfigurationChanged(configuration);
+        OverlayRegistry.onDisplayGeometryChanged();
         imeRestoreY = null;
         removeIcons();
         fs = new FloatSettings(this);

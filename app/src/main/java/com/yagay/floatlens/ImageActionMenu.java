@@ -15,6 +15,13 @@ import android.widget.TextView;
 public final class ImageActionMenu {
     private static FlOverlayWindowHost activeHost;
     private static View activeView;
+    private static final OverlayRegistry.Owner OVERLAY_OWNER = new OverlayRegistry.Owner() {
+        @Override public void onAccessibilityHostChanged(boolean available) {
+            FlOverlayWindowHost host = activeHost;
+            if (!available && host != null && host.isAccessibilityHosted()) dismiss();
+        }
+        @Override public void onDisplayGeometryChanged() { dismiss(); }
+    };
 
     public static synchronized void show(Context c, Bitmap image, Rect anchor) {
         if (c == null || image == null || image.isRecycled()) return;
@@ -66,6 +73,7 @@ public final class ImageActionMenu {
         if (host.add(root, lp, "image_action_menu")) {
             activeHost = host;
             activeView = root;
+            OverlayRegistry.register("image_action_menu", OVERLAY_OWNER);
             DiagnosticLog.i(app, "IMAGE_ACTION_MENU", "SHOW anchor="
                     + (anchor == null ? "none" : anchor.toShortString())
                     + " pos=" + lp.x + "," + lp.y
@@ -101,6 +109,7 @@ public final class ImageActionMenu {
         FlOverlayWindowHost host = activeHost;
         activeView = null;
         activeHost = null;
+        OverlayRegistry.unregister("image_action_menu", OVERLAY_OWNER);
         if (view != null && host != null) host.remove(view, "image_action_menu");
     }
 

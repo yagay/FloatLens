@@ -41,6 +41,13 @@ public final class FloatActionMenu {
     private static int activeTopY = NO_POSITION;
     private static int lockedCenterX = NO_POSITION;
     private static int lockedTopY = NO_POSITION;
+    private static final OverlayRegistry.Owner OVERLAY_OWNER = new OverlayRegistry.Owner() {
+        @Override public void onAccessibilityHostChanged(boolean available) {
+            FlOverlayWindowHost host = activeHost;
+            if (!available && host != null && host.isAccessibilityHosted()) dismiss();
+        }
+        @Override public void onDisplayGeometryChanged() { dismiss(); }
+    };
 
     public static void showText(Context c, String value, Runnable selectAll) {
         resetLockedRow();
@@ -142,6 +149,7 @@ public final class FloatActionMenu {
             activeView = root;
             activeCenterX = lp.x + menuWidth / 2;
             activeTopY = lp.y;
+            OverlayRegistry.register("text_action_menu", OVERLAY_OWNER);
             DiagnosticLog.i(app, "FLOAT_ACTION_MENU", "show system-style mode=" + mode
                     + " chars=" + text.length()
                     + " anchor=" + (anchor == null ? "none" : anchor.toShortString())
@@ -475,6 +483,7 @@ public final class FloatActionMenu {
         activeHost = null;
         activeCenterX = NO_POSITION;
         activeTopY = NO_POSITION;
+        OverlayRegistry.unregister("text_action_menu", OVERLAY_OWNER);
         if (v != null && host != null) host.remove(v, "float_action_menu");
     }
 

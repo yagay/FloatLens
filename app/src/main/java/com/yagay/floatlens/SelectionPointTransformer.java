@@ -6,7 +6,6 @@ import android.graphics.Rect;
 import android.graphics.RectF;
 import android.os.SystemClock;
 import android.view.MotionEvent;
-import android.view.WindowManager;
 
 /** Converts the original floating-icon touch stream into FL selection coordinates. */
 public final class SelectionPointTransformer {
@@ -172,11 +171,6 @@ public final class SelectionPointTransformer {
     private float dp(float value) { return value * density; }
 
     private Rect currentScreenBounds() {
-        try {
-            WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
-            return new Rect(wm.getCurrentWindowMetrics().getBounds());
-        } catch (Throwable t) {
-            return new Rect();
-        }
+        return ScreenGeometry.displayBounds(context);
     }
 }
