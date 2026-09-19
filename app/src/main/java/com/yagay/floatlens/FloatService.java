@@ -660,6 +660,10 @@ public class FloatService extends Service implements android.content.SharedPrefe
             case APPEARANCE_LAYOUT -> refreshAppearance();
             case VISIBILITY -> refreshVisibilitySettings();
             case ICON_SETTINGS -> refreshIconSettingsOnly();
+            case CIRCLE_OVERLAY -> {
+                CircleActiveBorderOverlay.refreshStyle(this);
+                updateNotification();
+            }
             case SERVICE_SETTINGS -> updateNotification();
             case IGNORE -> { }
         }

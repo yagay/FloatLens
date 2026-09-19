@@ -3,6 +3,10 @@ package com.yagay.floatlens;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 
 public class FloatPreferenceImpactTest {
     @Test
@@ -31,6 +35,31 @@ public class FloatPreferenceImpactTest {
                 FloatPreferenceImpact.classify(FloatSettings.K_LONG_PRESS));
         assertEquals(FloatPreferenceImpact.Impact.ICON_SETTINGS,
                 FloatPreferenceImpact.classify(FloatSettings.K_GESTURE_START_DISTANCE));
+    }
+
+    @Test
+    public void circleBorderChangesRefreshOnlyCircleOverlay() {
+        assertEquals(FloatPreferenceImpact.Impact.CIRCLE_OVERLAY,
+                FloatPreferenceImpact.classify(FloatSettings.K_CIRCLE_BORDER_ENABLED));
+        assertEquals(FloatPreferenceImpact.Impact.CIRCLE_OVERLAY,
+                FloatPreferenceImpact.classify(FloatSettings.K_CIRCLE_BORDER_COLOR));
+        assertEquals(FloatPreferenceImpact.Impact.CIRCLE_OVERLAY,
+                FloatPreferenceImpact.classify(FloatSettings.K_CIRCLE_BORDER_WIDTH_DP));
+    }
+
+    @Test
+    public void everyPublicSettingKeyHasExplicitImpact() throws Exception {
+        for (Field field : FloatSettings.class.getDeclaredFields()) {
+            int modifiers = field.getModifiers();
+            if (!Modifier.isPublic(modifiers) || !Modifier.isStatic(modifiers)
+                    || !Modifier.isFinal(modifiers) || field.getType() != String.class
+                    || !field.getName().startsWith("K_")) {
+                continue;
+            }
+            String key = (String) field.get(null);
+            assertTrue("Missing impact classification for " + field.getName() + "=" + key,
+                    FloatPreferenceImpact.isExplicitlyClassified(key));
+        }
     }
 
     @Test
