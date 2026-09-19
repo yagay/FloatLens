@@ -29,6 +29,7 @@ def hookCommonFiles = [
 def googleHookFiles = new ArrayList<File>(hookCommonFiles)
 googleHookFiles.addAll(fileTree(hookRoot) { include 'Google*.java' }.files)
 googleHookFiles.add(file('src/main/java/com/yagay/floatlens/GoogleCtsContract.java'))
+googleHookFiles.add(file('src/main/java/com/yagay/floatlens/CanonicalFramePolicy.java'))
 def systemUiHookFiles = new ArrayList<File>(hookCommonFiles)
 def systemServerHookFiles = new ArrayList<File>(hookCommonFiles)
 systemServerHookFiles.add(file('src/main/java/com/yagay/floatlens/hook/SecureScreenshotHook.java'))
