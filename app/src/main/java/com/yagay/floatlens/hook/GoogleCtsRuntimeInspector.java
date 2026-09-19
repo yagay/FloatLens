@@ -599,8 +599,9 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         // any cross-process transport. Google may later mutate FrozenImageView's internal viewport,
         // but the pixels presented by FloatLens remain tied to this canonical frame.
         canonicalFrameLayer.offer(bitmap);
-        sessionState.onFrameQueued();
-        bridgeSender.sendFrame(bitmap);
+        if (bridgeSender.sendFrame(bitmap)) {
+            sessionState.onFrameQueued();
+        }
     }
 
     @Override public void captureFrameFromIntent(Intent intent) {
