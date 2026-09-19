@@ -46,6 +46,19 @@ public class LsposedRuntimeConfigTest {
                 LsposedRuntimeConfig.GOOGLE_CTS_EXPECTED_OMNI_ENTRY_POINT + 1));
     }
 
+    @Test public void googleRegionConfirmIsTokenBoundAndShortLived() {
+        long now = 80_000L;
+        assertTrue(LsposedRuntimeConfig.isGoogleRegionConfirmRequested(
+                "session", "session", now - 100L, now));
+        assertFalse(LsposedRuntimeConfig.isGoogleRegionConfirmRequested(
+                "session", "other", now - 100L, now));
+        assertFalse(LsposedRuntimeConfig.isGoogleRegionConfirmRequested(
+                "session", "session",
+                now - LsposedRuntimeConfig.GOOGLE_CTS_REGION_CONFIRM_TTL_MS - 1L, now));
+        assertFalse(LsposedRuntimeConfig.isGoogleRegionConfirmRequested(
+                "", "", now - 100L, now));
+    }
+
     @Test public void googleCtsFallbackLeaseIsShortAndTokenBound() {
         long now = 10_000L;
         assertTrue(LsposedRuntimeConfig.isGoogleCtsFallbackArmed(
