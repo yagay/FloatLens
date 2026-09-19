@@ -39,6 +39,7 @@ final class GoogleCtsLifecycleHooks {
         boolean commitBridgeResult(String text, String detail, String reason);
         void report(String event, String message);
         void sendBridgeFrame(Bitmap bitmap);
+        void captureFrameFromIntent(Intent intent);
     }
 
     private final XposedModule module;
@@ -194,6 +195,10 @@ final class GoogleCtsLifecycleHooks {
                                 + " activityClass="
                                 + (activity == null ? "null" : activity.getClass().getName())
                                 + " " + GoogleHookFormatting.describeIntent(intent));
+                    }
+
+                    if (host.active() && intent != null) {
+                        host.captureFrameFromIntent(intent);
                     }
 
                     boolean contextualBoundary = host.active() && intent != null
