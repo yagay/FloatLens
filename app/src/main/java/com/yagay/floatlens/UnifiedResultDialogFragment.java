@@ -149,6 +149,12 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
         Window w = d == null ? null : d.getWindow();
         if (w == null) return;
         w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        w.setElevation(0f);
+        View decor = w.getDecorView();
+        decor.setBackgroundColor(Color.TRANSPARENT);
+        decor.setElevation(0f);
+        decor.setTranslationZ(0f);
+        decor.setStateListAnimator(null);
         w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
         WindowManager.LayoutParams lp = w.getAttributes();
         lp.gravity = Gravity.CENTER;
