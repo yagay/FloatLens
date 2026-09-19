@@ -339,16 +339,33 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
             return false;
         }
 
-        // Never close Google's marked Lens UI unless FloatLens actually has something it can
-        // display. v155 showed non-null dtqi placeholders with frame/text/LensResult all null;
-        // treating those as a settled result closed the UI and delivered nothing.
+        // Pixel data can be captured in a different Google process (for example :interactor
+        // via eggn.onHandleScreenshot) and already be queued in the FloatLens app while this Lens
+        // process owns the final region selection. For an explicitly confirmed region, the current
+        // Google process only needs to deliver the final Rect; app-side state joins it with the
+        // previously received frozen frame.
+        Rect finalBounds = bridgeSelectionBounds == null
+                ? null : new Rect(bridgeSelectionBounds);
+        boolean regionMetadataCommit = bridgeRegionSelectionActive
+                && finalBounds != null && !finalBounds.isEmpty()
+                && "lens_region_confirmed".equals(reason);
+
+        // Keep the old no-payload safety rule for text/general query results. Only the explicit
+        // region-confirm path may commit metadata without a frame in this process.
         String finalText = bridgeSelectionText == null || bridgeSelectionText.isBlank()
                 ? text : bridgeSelectionText;
-        if ((finalText == null || finalText.isBlank()) && !bridgeSender.frameQueued()) {
+        if ((finalText == null || finalText.isBlank())
+                && !bridgeSender.frameQueued()
+                && !regionMetadataCommit) {
             report("LENS_QUERY_NO_PAYLOAD",
                     "keep Google UI open reason=" + reason
                             + " detail=" + GoogleHookFormatting.safe(detail));
             return false;
+        }
+        if (regionMetadataCommit && !bridgeSender.frameQueued()) {
+            report("LENS_REGION_METADATA_COMMIT",
+                    "crossProcessFrame=true bounds=" + finalBounds
+                            + " reason=" + reason);
         }
 
         bridgeCommitted = true;
@@ -356,8 +373,6 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         // Make the final event self-contained. Explicit broadcasts are asynchronous; carrying the
         // latest selection again prevents a query-result delivery from racing ahead of the earlier
         // selection event in the FloatLens process.
-        Rect finalBounds = bridgeSelectionBounds == null
-                ? null : new Rect(bridgeSelectionBounds);
         String committedToken = sessionToken;
         sendBridgeEvent(GoogleCtsContract.EVENT_QUERY_RESULT,
                 finalText, detail, finalBounds);
