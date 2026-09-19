@@ -25,6 +25,7 @@ final class GoogleLensViewportHook {
     private final ClassLoader classLoader;
     private final BooleanSupplier active;
     private final BooleanSupplier selectionSeen;
+    private final BooleanSupplier regionSelectionActive;
     private final Supplier<Activity> activity;
     private final BiConsumer<String, String> reporter;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -33,12 +34,14 @@ final class GoogleLensViewportHook {
                            ClassLoader classLoader,
                            BooleanSupplier active,
                            BooleanSupplier selectionSeen,
+                           BooleanSupplier regionSelectionActive,
                            Supplier<Activity> activity,
                            BiConsumer<String, String> reporter) {
         this.module = module;
         this.classLoader = classLoader;
         this.active = active;
         this.selectionSeen = selectionSeen;
+        this.regionSelectionActive = regionSelectionActive;
         this.activity = activity;
         this.reporter = reporter;
     }
@@ -100,10 +103,32 @@ final class GoogleLensViewportHook {
                     module.hook(method).intercept(chain -> {
                         if (!active.getAsBoolean()) return chain.proceed();
                         Object state = chain.getArg(0);
+                        boolean regionActive = regionSelectionActive.getAsBoolean();
                         reporter.accept("GOOGLE_FROZEN_IMAGE_VIEWPORT_STATE_PATH",
                                 "controller=duec.n selectionSeen=" + selectionSeen.getAsBoolean()
+                                        + " regionActive=" + regionActive
                                         + " state=" + compact(state, 420));
                         reportTransform("beforeDuecN");
+
+                        // Region/object selection asks Lens to zoom the frozen screenshot down and
+                        // shift it vertically so its own result panel has room. FloatLens owns the
+                        // result surface, so this viewport animation is both unnecessary and causes
+                        // the visible screenshot to shrink/move. Suppress only while a marked
+                        // FloatLens region selection is active; initial CTS setup and text flows
+                        // still use Google's normal viewport state path.
+                        if (regionActive) {
+                            reporter.accept("GOOGLE_FROZEN_IMAGE_REGION_VIEWPORT_SUPPRESSED",
+                                    "controller=duec.n state=" + compact(state, 420));
+                            normalizeFrozenImageTransform("regionDuecNSuppressed");
+                            main.postDelayed(
+                                    () -> normalizeFrozenImageTransform("regionGuard16ms"), 16L);
+                            main.postDelayed(
+                                    () -> normalizeFrozenImageTransform("regionGuard64ms"), 64L);
+                            main.postDelayed(
+                                    () -> normalizeFrozenImageTransform("regionGuard160ms"), 160L);
+                            return null;
+                        }
+
                         Object result = chain.proceed();
                         main.postDelayed(() -> reportTransform("afterDuecN120ms"), 120L);
                         return result;
@@ -118,6 +143,50 @@ final class GoogleLensViewportHook {
             module.log(Log.WARN, TAG, "Google FrozenImage viewport boundary unavailable", t);
             return 0;
         }
+    }
+
+    private void normalizeFrozenImageTransform(String phase) {
+        if (!active.getAsBoolean() || !regionSelectionActive.getAsBoolean()) return;
+        Activity owner = activity.get();
+        if (owner == null) return;
+        owner.runOnUiThread(() -> {
+            if (!active.getAsBoolean() || !regionSelectionActive.getAsBoolean()) return;
+            try {
+                View root = owner.getWindow() == null ? null : owner.getWindow().getDecorView();
+                View image = GoogleLensViewIntrospection.findByClassName(
+                        root, GoogleLens1758Profile.FROZEN_IMAGE_VIEW);
+                if (image == null) {
+                    reporter.accept("GOOGLE_FROZEN_IMAGE_REGION_NORMALIZE",
+                            "phase=" + phase + " view=missing");
+                    return;
+                }
+
+                float oldScaleX = image.getScaleX();
+                float oldScaleY = image.getScaleY();
+                float oldTranslationX = image.getTranslationX();
+                float oldTranslationY = image.getTranslationY();
+                try { image.animate().cancel(); } catch (Throwable ignored) { }
+                try { image.clearAnimation(); } catch (Throwable ignored) { }
+                image.setScaleX(1f);
+                image.setScaleY(1f);
+                image.setTranslationX(0f);
+                image.setTranslationY(0f);
+
+                int[] loc = new int[2];
+                try { image.getLocationOnScreen(loc); } catch (Throwable ignored) { }
+                reporter.accept("GOOGLE_FROZEN_IMAGE_REGION_NORMALIZE",
+                        "phase=" + phase
+                                + " fromScale=" + oldScaleX + "," + oldScaleY
+                                + " fromTranslation=" + oldTranslationX + "," + oldTranslationY
+                                + " nowScale=" + image.getScaleX() + "," + image.getScaleY()
+                                + " nowTranslation=" + image.getTranslationX() + ","
+                                + image.getTranslationY()
+                                + " xy=" + loc[0] + "," + loc[1]);
+            } catch (Throwable t) {
+                module.log(Log.WARN, TAG,
+                        "Failed to normalize FrozenImage region transform", t);
+            }
+        });
     }
 
     private void reportTransform(String phase) {
