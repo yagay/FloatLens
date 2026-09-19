@@ -47,9 +47,8 @@ import io.github.libxposed.api.XposedModule;
  * after a FloatLens marker is observed in either the VIS show Bundle or the Omnient Activity
  * launch Intent. The inspector then traces the whole marked session in one run.</p>
  */
-final class GoogleCtsRuntimeInspector {
+final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     private static final String TAG = "FloatLens-GoogleCTS";
-    private static final String SHOW_SESSION_ID = "android.service.voice.SHOW_SESSION_ID";
     private static final long SESSION_TTL_MS = 120_000L;
     private static final long RESULT_HANDOFF_TIMEOUT_MS = 2_500L;
     private static final long RESULT_HANDOFF_POLL_MS = 16L;
@@ -76,6 +75,7 @@ final class GoogleCtsRuntimeInspector {
     private final GoogleBridgeSender bridgeSender;
     private final GoogleLensDiagnosticsHooks diagnosticsHooks;
     private final GoogleLensViewportHook viewportHook;
+    private final GoogleCtsLifecycleHooks lifecycleHooks;
 
     GoogleCtsRuntimeInspector(XposedModule module,
                               LsposedRuntimeProvider provider,
@@ -97,6 +97,7 @@ final class GoogleCtsRuntimeInspector {
         this.viewportHook = new GoogleLensViewportHook(
                 module, classLoader, this::active, () -> bridgeSelectionSeen,
                 () -> markedActivity.get(), this::report);
+        this.lifecycleHooks = new GoogleCtsLifecycleHooks(module, provider, this);
     }
 
     void install() {
@@ -116,10 +117,7 @@ final class GoogleCtsRuntimeInspector {
             module.log(Log.INFO, TAG,
                     "Google diagnostic WindowManager hook skipped (diagnostics disabled)");
         }
-        hooks += hookVoiceSessionShow();
-        hooks += hookVoiceScreenshot();
-        hooks += hookActivityLifecycle();
-        hooks += hookActivityDispatch();
+        hooks += lifecycleHooks.install();
         module.log(Log.INFO, TAG,
                 "Google CTS inspector ready hooks=" + hooks
                         + " profile=" + GoogleLens1758Profile.NAME);
@@ -141,7 +139,7 @@ final class GoogleCtsRuntimeInspector {
                         Bundle args = (Bundle) chain.getArg(1);
                         correlateGoogleBoundary(args, null, "OMNIENT_VIS");
                         if (active()) {
-                            report("OMNIENT_VIS_ENTRY", "keys=" + safeKeys(args)
+                            report("OMNIENT_VIS_ENTRY", "keys=" + GoogleHookFormatting.safeKeys(args)
                                     + " owner=" + chain.getThisObject().getClass().getName());
                         }
                         return chain.proceed();
@@ -155,7 +153,7 @@ final class GoogleCtsRuntimeInspector {
                         Intent intent = (Intent) chain.getArg(1);
                         correlateGoogleBoundary(intent == null ? null : intent.getExtras(),
                                 intent, "OMNIENT_CONTEXTUAL");
-                        if (active()) report("OMNIENT_CONTEXTUAL_ENTRY", describeIntent(intent));
+                        if (active()) report("OMNIENT_CONTEXTUAL_ENTRY", GoogleHookFormatting.describeIntent(intent));
                         return chain.proceed();
                     });
                     count++;
@@ -170,13 +168,13 @@ final class GoogleCtsRuntimeInspector {
                         Intent source = (Intent) chain.getArg(2);
                         if (active()) {
                             report("OMNIENT_BUILD_VIS_INTENT",
-                                    "bitmap=" + bitmapSummary(bitmap)
-                                            + " source=" + describeIntent(source));
+                                    "bitmap=" + GoogleHookFormatting.bitmapSummary(bitmap)
+                                            + " source=" + GoogleHookFormatting.describeIntent(source));
                             sendBridgeFrame(bitmap);
                         }
                         Object result = chain.proceed();
                         if (active() && result instanceof Intent out) {
-                            report("OMNIENT_VIS_INTENT_READY", describeIntent(out));
+                            report("OMNIENT_VIS_INTENT_READY", GoogleHookFormatting.describeIntent(out));
                         }
                         return result;
                     });
@@ -272,7 +270,7 @@ final class GoogleCtsRuntimeInspector {
 
 
 
-    private synchronized boolean commitBridgeResult(String text, String detail, String reason) {
+    @Override public synchronized boolean commitBridgeResult(String text, String detail, String reason) {
         if (!active() || bridgeCommitted
                 || (!bridgeSelectionSeen && !bridgePendingSeen && !bridgeSender.frameQueued())) {
             return false;
@@ -286,7 +284,7 @@ final class GoogleCtsRuntimeInspector {
         if ((finalText == null || finalText.isBlank()) && !bridgeSender.frameQueued()) {
             report("LENS_QUERY_NO_PAYLOAD",
                     "keep Google UI open reason=" + reason
-                            + " detail=" + safe(detail));
+                            + " detail=" + GoogleHookFormatting.safe(detail));
             return false;
         }
 
@@ -332,7 +330,7 @@ final class GoogleCtsRuntimeInspector {
                 String activityName = activity == null ? "none"
                         : activity.getClass().getName();
                 String line = "GOOGLE_UI_FINISH_AFTER_HANDOFF session="
-                        + shortToken(token)
+                        + GoogleHookFormatting.shortToken(token)
                         + " activity=" + activityName
                         + " stage=" + stage
                         + " elapsedMs=" + elapsed
@@ -354,7 +352,7 @@ final class GoogleCtsRuntimeInspector {
         });
     }
 
-    private void rememberMarkedActivity(Object value) {
+    @Override public void rememberMarkedActivity(Object value) {
         if (!(value instanceof Activity activity)) return;
         String name = activity.getClass().getName();
         Activity current = markedActivity.get();
@@ -365,7 +363,7 @@ final class GoogleCtsRuntimeInspector {
         }
     }
 
-    private void finishActivity(Activity activity, String reason) {
+    @Override public void finishActivity(Activity activity, String reason) {
         if (activity == null) return;
         String name = activity.getClass().getName();
         module.log(Log.INFO, TAG,
@@ -395,8 +393,8 @@ final class GoogleCtsRuntimeInspector {
         if (!token.isBlank()) {
             activate(token, showSessionId, voiceSession, path + "_ARMED");
             report("BOUNDARY_CORRELATION",
-                    "marker=false extras=" + safeKeys(extras)
-                            + " intent=" + describeIntent(intent));
+                    "marker=false extras=" + GoogleHookFormatting.safeKeys(extras)
+                            + " intent=" + GoogleHookFormatting.describeIntent(intent));
         }
     }
 
@@ -437,332 +435,9 @@ final class GoogleCtsRuntimeInspector {
 
 
 
-    private String bitmapSummary(Bitmap bitmap) {
-        return bitmap == null ? "null"
-                : bitmap.getWidth() + "x" + bitmap.getHeight() + "/" + bitmap.getConfig();
-    }
 
-    private int hookVoiceSessionShow() {
-        try {
-            Class<?> cls = Class.forName("android.service.voice.VoiceInteractionSession");
-            int count = 0;
-            for (Executable executable : HiddenApiBypass.getDeclaredMethods(cls)) {
-                if (!(executable instanceof Method method)) continue;
-                if (!"doShow".equals(method.getName())) continue;
-                Class<?>[] p = method.getParameterTypes();
-                if (p.length < 2 || p[0] != Bundle.class) continue;
-                module.hook(method).intercept(chain -> {
-                    Bundle args = (Bundle) chain.getArg(0);
-                    int id = args == null ? -1 : args.getInt(SHOW_SESSION_ID, -1);
-                    if (provider.isActive() && GoogleCtsContract.isFloatLensSession(args)) {
-                        activate(args.getString(GoogleCtsContract.K_SESSION_TOKEN, ""),
-                                id, chain.getThisObject(), "VIS_MARKER");
-                        report("SESSION_SHOW", "path=VIS_MARKER sessionClass="
-                                + chain.getThisObject().getClass().getName()
-                                + " flags=" + chain.getArg(1)
-                                + " keys=" + safeKeys(args));
-                        dumpClassStructure(chain.getThisObject().getClass(), "voiceSession");
-                    } else if (provider.isActive() && !active()) {
-                        String armedToken = provider.googleCtsArmedToken(args);
-                        if (!armedToken.isBlank()) {
-                            activate(armedToken, id, chain.getThisObject(), "VIS_ARMED_FALLBACK");
-                            report("SESSION_SHOW", "path=VIS_ARMED_FALLBACK marker=false sessionClass="
-                                    + chain.getThisObject().getClass().getName()
-                                    + " flags=" + chain.getArg(1)
-                                    + " keys=" + safeKeys(args));
-                            dumpClassStructure(chain.getThisObject().getClass(), "voiceSessionFallback");
-                        }
-                    } else if (active() && id >= 0 && id != showSessionId) {
-                        clear("new_unmarked_voice_session id=" + id);
-                    }
-                    return chain.proceed();
-                });
-                count++;
-            }
-            for (Executable executable : HiddenApiBypass.getDeclaredMethods(cls)) {
-                if (!(executable instanceof Method method)) continue;
-                if (!"doHide".equals(method.getName()) || method.getParameterCount() != 0) continue;
-                module.hook(method).intercept(chain -> {
-                    Object self = chain.getThisObject();
-                    Object result = chain.proceed();
-                    if (active() && self == voiceSession) clear("voice_session_hide");
-                    return result;
-                });
-                count++;
-            }
-            return count;
-        } catch (Throwable t) {
-            module.log(Log.WARN, TAG, "VIS session hooks unavailable", t);
-            return 0;
-        }
-    }
 
-    private int hookVoiceScreenshot() {
-        try {
-            Class<?> cls = Class.forName("android.service.voice.VoiceInteractionSession$MyCallbacks");
-            int count = 0;
-            for (Executable executable : HiddenApiBypass.getDeclaredMethods(cls)) {
-                if (!(executable instanceof Method method)) continue;
-                if (!"handleScreenshot".equals(method.getName())) continue;
-                Class<?>[] p = method.getParameterTypes();
-                if (p.length != 1 || p[0] != Bitmap.class) continue;
-                module.hook(method).intercept(chain -> {
-                    if (active()) {
-                        Object owner = findVoiceSessionOwner(chain.getThisObject());
-                        if (voiceSession == null || owner == voiceSession) {
-                            Bitmap bitmap = (Bitmap) chain.getArg(0);
-                            report("SCREENSHOT", bitmap == null ? "bitmap=null"
-                                    : "bitmap=" + bitmap.getWidth() + "x" + bitmap.getHeight()
-                                    + " config=" + bitmap.getConfig());
-                            sendBridgeFrame(bitmap);
-                        }
-                    }
-                    return chain.proceed();
-                });
-                count++;
-            }
-            return count;
-        } catch (Throwable t) {
-            module.log(Log.INFO, TAG, "VIS screenshot callback unavailable", t);
-            return 0;
-        }
-    }
-
-    private int hookActivityLifecycle() {
-        int count = 0;
-        try {
-            for (Executable executable : HiddenApiBypass.getDeclaredMethods(Instrumentation.class)) {
-                if (!(executable instanceof Method method)) continue;
-                String name = method.getName();
-                if (!"callActivityOnCreate".equals(name) && !"callActivityOnNewIntent".equals(name)) continue;
-                module.hook(method).intercept(chain -> {
-                    Object activity = chain.getArg(0);
-                    Intent intent = activity instanceof android.app.Activity a ? a.getIntent() : null;
-                    Bundle extras = intent == null ? null : intent.getExtras();
-                    if (provider.isActive() && GoogleCtsContract.isFloatLensSession(extras)) {
-                        String token = extras.getString(GoogleCtsContract.K_SESSION_TOKEN, "");
-                        activate(token, -1, null, "CONTEXTUAL_ACTIVITY_MARKER");
-                        report("SESSION_SHOW", "path=ContextualActivity activity="
-                                + (activity == null ? "null" : activity.getClass().getName())
-                                + " intent=" + describeIntent(intent));
-                        if (activity != null) dumpClassStructure(activity.getClass(), "activity");
-                    } else if (provider.isActive() && !active() && intent != null) {
-                        String armedToken = provider.googleCtsArmedToken(extras);
-                        if (!armedToken.isBlank()) {
-                            activate(armedToken, -1, null, "CONTEXTUAL_ACTIVITY_ARMED_FALLBACK");
-                            report("SESSION_SHOW", "path=ContextualActivityArmedFallback marker=false activity="
-                                    + (activity == null ? "null" : activity.getClass().getName())
-                                    + " intent=" + describeIntent(intent));
-                            if (activity != null) dumpClassStructure(activity.getClass(), "activityFallback");
-                        }
-                    } else if (active() && intent != null) {
-                        report("ACTIVITY_LIFECYCLE", name
-                                + " activityClass="
-                                + (activity == null ? "null" : activity.getClass().getName())
-                                + " " + describeIntent(intent));
-                    }
-
-                    boolean contextualBoundary = active() && intent != null
-                            && GoogleCtsContract.isContextualSearchAction(intent.getAction());
-                    boolean contextualFrame = false;
-                    boolean contextualPayload = false;
-                    String contextualDetail = "";
-                    if (contextualBoundary) {
-                        contextualFrame = captureContextualSearchFrame(intent);
-                        boolean hasText = bridgeSelectionText != null
-                                && !bridgeSelectionText.isBlank();
-                        contextualPayload = hasText || bridgeSender.frameQueued();
-                        contextualDetail = "source=activity_lifecycle"
-                                + " activityClass="
-                                + (activity == null ? "null" : activity.getClass().getName())
-                                + " selectionSeen=" + bridgeSelectionSeen
-                                + " textLen="
-                                + (bridgeSelectionText == null ? 0 : bridgeSelectionText.length())
-                                + " bounds=" + String.valueOf(bridgeSelectionBounds)
-                                + " frameQueued=" + contextualFrame
-                                + " extras=" + safeKeys(extras);
-                        report("CONTEXTUAL_SEARCH_BOUNDARY", contextualDetail);
-                    }
-
-                    boolean contextualText = contextualBoundary
-                            && bridgeSelectionText != null
-                            && !bridgeSelectionText.isBlank();
-
-                    // If Google reuses the original LensientActivity via onNewIntent, do not
-                    // deliver the contextual-search intent at all. Finishing that Activity would
-                    // destroy the live selection handles that FloatLens intentionally preserves.
-                    if (contextualText && "callActivityOnNewIntent".equals(name)) {
-                        report("CONTEXTUAL_TEXT_SEARCH_SUPPRESSED",
-                                "path=activity_new_intent keepSelectionAlive=true textLen="
-                                        + bridgeSelectionText.length());
-                        module.log(Log.INFO, TAG,
-                                "Contextual text-search newIntent suppressed; selection kept alive");
-                        return null;
-                    }
-
-                    // Never replace the remembered selection Activity with a later Contextual
-                    // Search Activity. The original LensientActivity owns Google's highlight and
-                    // resize handles and must remain alive for FloatLens text-menu sessions.
-                    if (active() && !contextualBoundary) rememberMarkedActivity(activity);
-                    Object result = chain.proceed();
-
-                    // Some Android builds launch Contextual Search through the framework service,
-                    // bypassing this process' execStartActivity(). Text selections already have a
-                    // live FloatLens menu, so close only this search Activity: do not commit the
-                    // bridge, do not clear the marked session, and do not finish the underlying
-                    // selection Activity. Region/image flows keep the previous result fallback.
-                    if (contextualBoundary && contextualPayload && active()) {
-                        boolean hasText = bridgeSelectionText != null
-                                && !bridgeSelectionText.isBlank();
-                        if (hasText && activity instanceof Activity contextualActivity) {
-                            report("CONTEXTUAL_TEXT_SEARCH_SUPPRESSED",
-                                    "path=activity_lifecycle keepSelectionAlive=true textLen="
-                                            + bridgeSelectionText.length());
-                            finishActivity(contextualActivity,
-                                    "contextual_text_search_suppressed");
-                            module.log(Log.INFO, TAG,
-                                    "Contextual text search activity suppressed; selection kept alive");
-                        } else {
-                            boolean consumed = commitBridgeResult("", contextualDetail,
-                                    "contextual_search_activity_intercept");
-                            if (consumed && activity instanceof Activity contextualActivity) {
-                                finishActivity(contextualActivity,
-                                        "contextual_search_activity_intercept");
-                                module.log(Log.INFO, TAG,
-                                        "Contextual search activity consumed by FloatLens");
-                            }
-                        }
-                    } else if (contextualBoundary && !contextualPayload && active()) {
-                        report("CONTEXTUAL_SEARCH_PASSTHROUGH",
-                                "activity lifecycle has no FloatLens payload");
-                    }
-                    return result;
-                });
-                count++;
-            }
-        } catch (Throwable t) {
-            module.log(Log.WARN, TAG, "Activity lifecycle hook unavailable", t);
-        }
-        return count;
-    }
-
-    private boolean captureContextualSearchFrame(Intent intent) {
-        if (!active() || intent == null
-                || !GoogleCtsContract.isContextualSearchAction(intent.getAction())) {
-            return false;
-        }
-        Bundle extras = intent.getExtras();
-        if (extras == null || !extras.containsKey(GoogleCtsContract.CONTEXTUAL_SCREENSHOT)) {
-            report("CONTEXTUAL_SCREENSHOT", "missing");
-            return false;
-        }
-        Object value;
-        try {
-            value = extras.get(GoogleCtsContract.CONTEXTUAL_SCREENSHOT);
-        } catch (Throwable t) {
-            report("CONTEXTUAL_SCREENSHOT",
-                    "read failed=" + t.getClass().getSimpleName());
-            return false;
-        }
-        if (value instanceof Bitmap bitmap && !bitmap.isRecycled()) {
-            report("CONTEXTUAL_SCREENSHOT",
-                    "bitmap=" + bitmapSummary(bitmap));
-            sendBridgeFrame(bitmap);
-            return bridgeSender.frameQueued();
-        }
-        report("CONTEXTUAL_SCREENSHOT",
-                "valueClass=" + (value == null ? "null" : value.getClass().getName())
-                        + " value=" + describeValue(value));
-        return false;
-    }
-
-    private int hookActivityDispatch() {
-        try {
-            int count = 0;
-            for (Executable executable : HiddenApiBypass.getDeclaredMethods(Instrumentation.class)) {
-                if (!(executable instanceof Method method)) continue;
-                if (!"execStartActivity".equals(method.getName())) continue;
-                int intentIndex = findParameter(method.getParameterTypes(), Intent.class);
-                if (intentIndex < 0) continue;
-                final int idx = intentIndex;
-                module.hook(method).intercept(chain -> {
-                    if (!active()) return chain.proceed();
-
-                    Intent intent = (Intent) chain.getArg(idx);
-                    if (provider.diagnosticsEnabled()) {
-                        report("START_ACTIVITY", describeIntent(intent)
-                                + " caller=" + googleCaller());
-                    }
-
-                    if (intent == null
-                            || !GoogleCtsContract.isContextualSearchAction(
-                                    intent.getAction())) {
-                        return chain.proceed();
-                    }
-
-                    boolean frameQueued = captureContextualSearchFrame(intent);
-                    boolean hasText = bridgeSelectionText != null
-                            && !bridgeSelectionText.isBlank();
-                    boolean hasRenderablePayload = hasText || bridgeSender.frameQueued();
-
-                    String detail = "action=" + intent.getAction()
-                            + " selectionSeen=" + bridgeSelectionSeen
-                            + " textLen="
-                            + (bridgeSelectionText == null ? 0 : bridgeSelectionText.length())
-                            + " bounds=" + String.valueOf(bridgeSelectionBounds)
-                            + " frameQueued=" + frameQueued
-                            + " extras=" + safeKeys(intent.getExtras());
-
-                    report("CONTEXTUAL_SEARCH_BOUNDARY", detail);
-
-                    // Suppress only when FloatLens can actually render something. This keeps the
-                    // Google flow untouched if a future Google build changes the screenshot or
-                    // selection payload shape.
-                    if (!hasRenderablePayload) {
-                        report("CONTEXTUAL_SEARCH_PASSTHROUGH",
-                                "no renderable FloatLens payload; Google search allowed");
-                        return chain.proceed();
-                    }
-
-                    if (hasText) {
-                        report("CONTEXTUAL_TEXT_SEARCH_SUPPRESSED",
-                                "path=execStartActivity keepSelectionAlive=true textLen="
-                                        + bridgeSelectionText.length());
-                        module.log(Log.INFO, TAG,
-                                "Contextual text search launch suppressed; selection kept alive");
-                        // Do not commit/clear a live text-menu session. Returning null prevents
-                        // the search Activity from launching while Google's original selection UI
-                        // and resize handles stay active underneath FloatLens.
-                        return null;
-                    }
-
-                    report("CONTEXTUAL_SEARCH_TAKEOVER",
-                            "renderable payload ready; suppressing marked Google search");
-                    boolean consumed = commitBridgeResult(
-                            "", detail, "contextual_search_intercept");
-                    if (!consumed) {
-                        report("CONTEXTUAL_SEARCH_PASSTHROUGH",
-                                "bridge commit rejected; Google search allowed");
-                        return chain.proceed();
-                    }
-
-                    module.log(Log.INFO, TAG,
-                            "Contextual search launch suppressed for FloatLens session");
-                    // Instrumentation.execStartActivity normally returns null for a successful
-                    // external launch, so null is also the safest synthetic result when we consume
-                    // this marked launch.
-                    return null;
-                });
-                count++;
-            }
-            return count;
-        } catch (Throwable t) {
-            module.log(Log.INFO, TAG, "Activity dispatch hook unavailable", t);
-            return 0;
-        }
-    }
-
-    private synchronized void activate(String token, int id, Object session, String path) {
+    @Override public synchronized void activate(String token, int id, Object session, String path) {
         String nextToken = token == null ? "" : token;
         boolean newBridgeSession = !nextToken.equals(sessionToken)
                 || SystemClock.elapsedRealtime() >= activeUntil;
@@ -784,19 +459,19 @@ final class GoogleCtsRuntimeInspector {
         eventCount.set(0);
         String header = "=== Google CTS marked session ===\n"
                 + "ACTIVE path=" + path
-                + " session=" + shortToken(sessionToken)
+                + " session=" + GoogleHookFormatting.shortToken(sessionToken)
                 + " showId=" + showSessionId
                 + " atElapsed=" + SystemClock.elapsedRealtime();
         sendTrace("=== Google CTS marked session ===");
         sendTrace("ACTIVE path=" + path
-                + " session=" + shortToken(sessionToken)
+                + " session=" + GoogleHookFormatting.shortToken(sessionToken)
                 + " showId=" + showSessionId
                 + " atElapsed=" + SystemClock.elapsedRealtime());
         module.log(Log.INFO, TAG, header.replace("\n", " | "));
     }
 
-    private synchronized void clear(String reason) {
-        String end = "END session=" + shortToken(sessionToken)
+    @Override public synchronized void clear(String reason) {
+        String end = "END session=" + GoogleHookFormatting.shortToken(sessionToken)
                 + " reason=" + reason + " events=" + eventCount.get();
         if (!bridgeCommitted && !sessionToken.isBlank()) {
             sendBridgeEvent(GoogleCtsContract.EVENT_END, "", reason, null);
@@ -818,19 +493,28 @@ final class GoogleCtsRuntimeInspector {
         markedActivity = new WeakReference<>(null);
     }
 
-    private boolean active() {
+    @Override public int showSessionId() { return showSessionId; }
+    @Override public Object voiceSession() { return voiceSession; }
+    @Override public boolean selectionSeen() { return bridgeSelectionSeen; }
+    @Override public String selectionText() { return bridgeSelectionText; }
+    @Override public Rect selectionBounds() {
+        return bridgeSelectionBounds == null ? null : new Rect(bridgeSelectionBounds);
+    }
+    @Override public boolean frameQueued() { return bridgeSender.frameQueued(); }
+
+    @Override public boolean active() {
         return provider.isActive()
                 && !sessionToken.isBlank()
                 && provider.ownsGoogleCtsSession(sessionToken)
                 && SystemClock.elapsedRealtime() < activeUntil;
     }
 
-    private void report(String event, String message) {
+    @Override public void report(String event, String message) {
         if (!provider.diagnosticsEnabled() || !active()) return;
         int n = reserveEventNumber();
         if (n < 0) return;
         String line = "#" + n + " " + event + " session="
-                + shortToken(sessionToken) + " " + safe(message);
+                + GoogleHookFormatting.shortToken(sessionToken) + " " + GoogleHookFormatting.safe(message);
         sendTrace(line);
         module.log(Log.INFO, TAG, line);
     }
@@ -851,7 +535,7 @@ final class GoogleCtsRuntimeInspector {
         bridgeSender.sendEvent(event, text, detail, bounds);
     }
 
-    private void sendBridgeFrame(Bitmap bitmap) {
+    @Override public void sendBridgeFrame(Bitmap bitmap) {
         bridgeSender.sendFrame(bitmap);
     }
 
@@ -865,98 +549,21 @@ final class GoogleCtsRuntimeInspector {
         return null;
     }
 
-    private void dumpClassStructure(Class<?> cls, String reason) {
-        if (!provider.diagnosticsEnabled() || !active() || cls == null) return;
-        StringBuilder out = new StringBuilder();
-        out.append("reason=").append(reason).append(" class=").append(cls.getName());
-        Class<?> parent = cls.getSuperclass();
-        if (parent != null) out.append(" super=").append(parent.getName());
-        int fields = 0;
-        for (Field field : HiddenApiBypass.getInstanceFields(cls)) {
-            if (fields++ >= 36) break;
-            out.append("\n F ").append(field.getName()).append(":").append(field.getType().getName());
-        }
-        int methods = 0;
-        for (Executable executable : HiddenApiBypass.getDeclaredMethods(cls)) {
-            if (!(executable instanceof Method method)) continue;
-            if (methods++ >= 60) break;
-            out.append("\n M ").append(method.getName()).append("(");
-            Class<?>[] p = method.getParameterTypes();
-            for (int i = 0; i < p.length; i++) {
-                if (i > 0) out.append(",");
-                out.append(p[i].getSimpleName());
-            }
-            out.append("):").append(method.getReturnType().getSimpleName());
-        }
-        String text = out.toString();
-        for (int i = 0; i < text.length(); i += 3000) {
-            report("CLASS_STRUCT", text.substring(i, Math.min(text.length(), i + 3000)));
-        }
-    }
 
-    private Object findVoiceSessionOwner(Object callbacks) {
-        if (callbacks == null) return null;
-        for (Field field : HiddenApiBypass.getInstanceFields(callbacks.getClass())) {
-            if (!field.getType().getName().equals("android.service.voice.VoiceInteractionSession")) continue;
-            try {
-                field.setAccessible(true);
-                return field.get(callbacks);
-            } catch (Throwable ignored) {
-            }
-        }
-        return null;
-    }
 
-    private int findParameter(Class<?>[] params, Class<?> type) {
-        for (int i = 0; i < params.length; i++) if (type.isAssignableFrom(params[i])) return i;
-        return -1;
-    }
 
-    private String googleCaller() {
-        for (StackTraceElement frame : new Throwable().getStackTrace()) {
-            String cls = frame.getClassName();
-            if (cls != null && cls.startsWith("com.google.")) {
-                return cls + "#" + frame.getMethodName() + ":" + frame.getLineNumber();
-            }
-        }
-        return "unknown";
-    }
 
-    private String describeIntent(Intent intent) {
-        if (intent == null) return "intent=null";
-        Uri data = intent.getData();
-        return "action=" + intent.getAction()
-                + " component=" + intent.getComponent()
-                + " package=" + intent.getPackage()
-                + " data=" + (data == null ? "null" : data.toString())
-                + " extras=" + safeKeys(intent.getExtras());
-    }
 
-    private String describeValue(Object value) {
-        if (value == null) return "null";
-        if (value instanceof String s) return "String(len=" + s.length() + ")";
-        if (value instanceof Bitmap b) return "Bitmap(" + b.getWidth() + "x" + b.getHeight() + ")";
-        if (value instanceof Bundle b) return "Bundle" + safeKeys(b);
-        if (value instanceof Intent i) return "Intent{" + describeIntent(i) + "}";
-        if (value instanceof Rect || value instanceof RectF) return value.toString();
-        if (value instanceof Collection<?> c) return value.getClass().getSimpleName() + "(size=" + c.size() + ")";
-        Class<?> cls = value.getClass();
-        if (cls.isArray()) return cls.getComponentType().getSimpleName() + "[]";
-        return cls.getName();
-    }
 
-    private String safeKeys(Bundle bundle) {
-        if (bundle == null) return "[]";
-        try { return bundle.keySet().toString(); } catch (Throwable t) { return "[unreadable]"; }
-    }
 
-    private String shortToken(String token) {
-        if (token == null || token.isBlank()) return "none";
-        return token.substring(0, Math.min(8, token.length()));
-    }
 
-    private String safe(String value) {
-        if (value == null) return "";
-        return value.replace("\u0000", "?");
-    }
+
+
+
+
+
+
+
+
+
 }
