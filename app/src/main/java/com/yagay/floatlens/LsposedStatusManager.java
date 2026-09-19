@@ -274,12 +274,9 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                         .putBoolean(LsposedRuntimeConfig.K_ENHANCED_MODE, enhanced)
                         .putBoolean(LsposedRuntimeConfig.K_LSPOSED_ENABLED, lsposed)
                         .putBoolean(LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED, secureScreenshot)
-                        .putLong(LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL, 0L)
                         .putBoolean(LsposedRuntimeConfig.K_DIAGNOSTIC_ENABLED, diagnostic)
-                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN)
-                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED)
-                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL)
-                        .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL)
+                        // Persistent config sync must never mutate short-lived capture/Google leases.
+                        // Those keys have their own explicit arm/disarm lifecycle.
                         .putLong(LsposedRuntimeConfig.K_UPDATED_AT, updatedAt)
                         .commit();
                 if (!committed) {

@@ -6,7 +6,7 @@ import android.widget.Toast;
 /** Entry point for the FloatLens exact content-selection workflow. */
 final class FLCircleController {
     private static long generation;
-    private static ScreenshotHideCoordinator.Lease pendingHideLease;
+    private static CaptureTransaction pendingTransaction;
 
     static synchronized void show(Context c) {
         Context app = c.getApplicationContext();
@@ -16,11 +16,9 @@ final class FLCircleController {
         CircleActiveBorderOverlay.hide(app, "restart");
         cancelPendingLocked(app);
 
-        FlSystemPanelController.CaptureState shadeState =
-                FlSystemPanelController.beginCapture(app, "fl_circle");
-        ScreenshotHideCoordinator.Lease hideLease =
-                ScreenshotHideCoordinator.acquire(app, "fl_circle_" + gen);
-        pendingHideLease = hideLease;
+        CaptureTransaction transaction = CaptureTransaction.begin(app, "fl_circle")
+                .hideFloatingIcon("fl_circle_" + gen);
+        pendingTransaction = transaction;
         FloatSettings fs = new FloatSettings(app);
         DiagnosticLog.i(app, "FL_CIRCLE", "start gen=" + gen
                 + " phase=capture_then_fullscreen_ocr"
@@ -52,20 +50,20 @@ final class FLCircleController {
             boolean shown = FLCircleInlineOverlay.show(app, frame, () -> {
                 FLCircleTextResolver.release(app, frame, "workspace_closed");
                 CircleActiveBorderOverlay.hide(app, "workspace_closed");
-                restore(app, hideLease, gen, "closed");
+                restore(app, transaction, gen, "closed");
             });
             if (!shown) {
                 FLCircleTextResolver.release(app, frame, "overlay_failed");
                 frame.recycle();
                 CircleActiveBorderOverlay.hide(app, "overlay_failed");
-                restore(app, hideLease, gen, "overlay_failed");
+                restore(app, transaction, gen, "overlay_failed");
                 Toast.makeText(app, "圈画识别启动失败", Toast.LENGTH_SHORT).show();
                 return;
             }
 
             CircleActiveBorderOverlay.show(app);
 
-            FlSystemPanelController.onOverlayReady(app, shadeState, "fl_circle",
+            transaction.overlayReady("fl_circle",
                     collapsed -> {
                         synchronized (FLCircleController.class) {
                             if (gen != generation) return;
@@ -83,7 +81,7 @@ final class FLCircleController {
                 }
             }
             CircleActiveBorderOverlay.hide(app, "capture_failed");
-            restore(app, hideLease, gen, "capture_failed");
+            restore(app, transaction, gen, "capture_failed");
             DiagnosticLog.i(app, "FL_CIRCLE", "capture failed="
                     + ScreenCaptureBackend.safeMessage(error));
             Toast.makeText(app, "圈画识别截图失败: "
@@ -91,20 +89,20 @@ final class FLCircleController {
         });
     }
 
-    private static void restore(Context app, ScreenshotHideCoordinator.Lease lease,
+    private static void restore(Context app, CaptureTransaction transaction,
                                 long gen, String reason) {
-        lease.release(app);
+        transaction.close();
         synchronized (FLCircleController.class) {
-            if (pendingHideLease == lease) pendingHideLease = null;
+            if (pendingTransaction == transaction) pendingTransaction = null;
             if (gen != generation) return;
         }
         DiagnosticLog.i(app, "FL_CIRCLE", "finish gen=" + gen + " reason=" + reason);
     }
 
     private static void cancelPendingLocked(Context app) {
-        ScreenshotHideCoordinator.Lease lease = pendingHideLease;
-        pendingHideLease = null;
-        if (lease != null) lease.release(app);
+        CaptureTransaction transaction = pendingTransaction;
+        pendingTransaction = null;
+        if (transaction != null) transaction.close();
     }
 
     private FLCircleController() {}

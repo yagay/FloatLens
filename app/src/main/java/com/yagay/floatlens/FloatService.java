@@ -710,7 +710,8 @@ public class FloatService extends Service implements android.content.SharedPrefe
     }
 
     @Override public void onDestroy() {
-        layout.persist(primaryLp);
+        // Only an explicit user drag may persist the canonical floating position. Service teardown
+        // can happen while IME avoidance or another temporary layout projection is active.
         if (workflowState != null) workflowState.finish("service_destroy");
         removeIcons();
         try { fs.unregisterChangeListener(this); } catch (Throwable ignored) { }

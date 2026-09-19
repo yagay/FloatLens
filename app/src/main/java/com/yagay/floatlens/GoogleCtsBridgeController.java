@@ -33,6 +33,7 @@ final class GoogleCtsBridgeController {
         boolean delivered;
         boolean textMenuShown;
         int selectionRevision;
+        int cleanupRevision;
     }
 
     static void onFrame(Context context, String token, Bitmap frame) {
@@ -299,7 +300,14 @@ final class GoogleCtsBridgeController {
     }
 
     private static void scheduleCleanup(Context app, String token, State state) {
+        final int revision;
+        synchronized (state) {
+            revision = ++state.cleanupRevision;
+        }
         MAIN.postDelayed(() -> {
+            synchronized (state) {
+                if (state.cleanupRevision != revision) return;
+            }
             if (!STATES.remove(token, state)) return;
             boolean dismissTextMenu;
             synchronized (state) {
@@ -312,7 +320,8 @@ final class GoogleCtsBridgeController {
             clearSessionState(app, token, "state_expired");
             DiagnosticLog.i(app, "GOOGLE_BRIDGE",
                     "state expired session=" + shortToken(token)
-                            + " menuDismissed=" + dismissTextMenu);
+                            + " menuDismissed=" + dismissTextMenu
+                            + " cleanupRevision=" + revision);
         }, STATE_TTL_MS);
     }
 
