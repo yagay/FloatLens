@@ -92,10 +92,10 @@ final class GoogleCanonicalFrameLayer {
         schedulePresent();
     }
 
-    void updateSelection(Rect frameBounds, boolean regionSelection, String text) {
+    void updateSelection(Rect screenBounds, boolean regionSelection, String text) {
         synchronized (this) {
-            selectionBounds = frameBounds == null || frameBounds.isEmpty()
-                    ? null : new Rect(frameBounds);
+            selectionBounds = screenBounds == null || screenBounds.isEmpty()
+                    ? null : new Rect(screenBounds);
             if (selectionBounds != null) gesturePoints.clear();
         }
         main.post(() -> {
@@ -103,7 +103,7 @@ final class GoogleCanonicalFrameLayer {
             if (view != null) view.invalidate();
         });
         reporter.accept("GOOGLE_CANONICAL_SELECTION",
-                "bounds=" + String.valueOf(frameBounds)
+                "screenBounds=" + String.valueOf(screenBounds)
                         + " region=" + regionSelection
                         + " textLen=" + (text == null ? 0 : text.length()));
     }
@@ -338,10 +338,14 @@ final class GoogleCanonicalFrameLayer {
             }
 
             if (frame != null && !frame.isRecycled() && bounds != null && !bounds.isEmpty()) {
-                float sx = getWidth() / (float) Math.max(1, frame.getWidth());
-                float sy = getHeight() / (float) Math.max(1, frame.getHeight());
-                canvas.drawRect(bounds.left * sx, bounds.top * sy,
-                        bounds.right * sx, bounds.bottom * sy, border);
+                int[] origin = new int[2];
+                try { getLocationOnScreen(origin); } catch (Throwable ignored) { }
+                canvas.drawRect(
+                        bounds.left - origin[0],
+                        bounds.top - origin[1],
+                        bounds.right - origin[0],
+                        bounds.bottom - origin[1],
+                        border);
             }
 
             if (points.size() >= 2) {
