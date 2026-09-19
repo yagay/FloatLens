@@ -43,7 +43,8 @@ final class CircleActiveBorderOverlay {
         removeLocked("replace");
 
         FloatSettings settings = new FloatSettings(app);
-        if (!settings.circleBorderEnabled()) {
+        FloatSettingsDomains.Circle circle = FloatSettingsDomains.circle(settings);
+        if (!circle.borderEnabled()) {
             DiagnosticLog.i(app, "CIRCLE_BORDER", "disabled by preference");
             return;
         }
@@ -94,7 +95,8 @@ final class CircleActiveBorderOverlay {
         if (c == null) return;
         Context app = c.getApplicationContext();
         FloatSettings settings = new FloatSettings(app);
-        if (!settings.circleBorderEnabled()) {
+        FloatSettingsDomains.Circle circle = FloatSettingsDomains.circle(settings);
+        if (!circle.borderEnabled()) {
             removeLocked("preference_disabled");
             return;
         }
