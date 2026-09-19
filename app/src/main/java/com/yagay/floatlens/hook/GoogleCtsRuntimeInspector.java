@@ -95,13 +95,10 @@ final class GoogleCtsRuntimeInspector {
     void install() {
         int hooks = 0;
         hooks += hookGoogle1758OmnientBoundary();
-        hooks += hookGoogleNativeRenderedPresentationData();
-        hooks += hookGoogleInteractionPresentationResult();
-        // Stable View sanitizer is now the primary post-selection UI suppression path.
-        // Keep 17.58 controller/chip hooks for one transition release as fail-soft fallback.
-        hooks += hookGoogleFixedSelectionChips();
-        hooks += hookGoogleLensActionMenuController();
-        hooks += hookGoogleLensInfoPanelController();
+        // Stable boundaries own invocation/lifecycle/UI. Only two Google-internal hook groups are
+        // installed now: Selection (OCR/text/region/query bridge) and Viewport (prevent text-focus
+        // auto zoom). Legacy presentation/ActionMenu/InfoPanel/dujo hooks remain in source for
+        // diagnostics/rollback but are intentionally not installed.
         hooks += hookGoogleFrozenImageAutoFocus();
         hooks += hookGoogle1758LensSelectionBoundary();
         // v169 device/APK analysis proved the visible menu is Lens' own ActionMenuView,
