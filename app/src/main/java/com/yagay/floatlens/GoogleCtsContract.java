@@ -36,6 +36,8 @@ public final class GoogleCtsContract {
     public static final String EXTRA_RIGHT = "com.yagay.floatlens.extra.CTS_RIGHT";
     public static final String EXTRA_BOTTOM = "com.yagay.floatlens.extra.CTS_BOTTOM";
     public static final String EVENT_SELECTION = "selection";
+    /** Region geometry changed; FloatLens should show/update its own explicit confirm button. */
+    public static final String EVENT_REGION_SELECTION = "region_selection";
     public static final String EVENT_COMMIT = "commit";
     public static final String EVENT_QUERY_RESULT = "query_result";
     /** Finalize a text selection whose FloatLens action menu was already shown at selection time. */
