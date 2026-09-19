@@ -22,6 +22,31 @@ public class WorkflowSessionManagerTest {
         assertNull(WorkflowSessionManager.current());
     }
 
+    @Test public void googleCtsInFlightCoversCaptureSelectionAndPendingOnly() {
+        WorkflowSessionManager.Session session = WorkflowSessionManager.beginExternal(
+                null, WorkflowSessionManager.Type.GOOGLE_CTS, "token-busy", "google");
+        assertTrue(WorkflowSessionManager.googleCtsInFlight());
+
+        WorkflowSessionManager.transition(
+                null, session, WorkflowSessionManager.Phase.CAPTURING, "capture");
+        assertTrue(WorkflowSessionManager.googleCtsInFlight());
+
+        WorkflowSessionManager.transition(
+                null, session, WorkflowSessionManager.Phase.SELECTING, "select");
+        assertTrue(WorkflowSessionManager.googleCtsInFlight());
+
+        WorkflowSessionManager.transition(
+                null, session, WorkflowSessionManager.Phase.RESULT_PENDING, "pending");
+        assertTrue(WorkflowSessionManager.googleCtsInFlight());
+
+        WorkflowSessionManager.transition(
+                null, session, WorkflowSessionManager.Phase.RESULT_VISIBLE, "visible");
+        assertFalse(WorkflowSessionManager.googleCtsInFlight());
+
+        WorkflowSessionManager.finish(null, session, "done");
+        assertFalse(WorkflowSessionManager.googleCtsInFlight());
+    }
+
     @Test public void externalIdentityMatchesOnlyCurrentSession() {
         WorkflowSessionManager.Session session = WorkflowSessionManager.beginExternal(
                 null, WorkflowSessionManager.Type.GOOGLE_CTS, "token-1", "google");
