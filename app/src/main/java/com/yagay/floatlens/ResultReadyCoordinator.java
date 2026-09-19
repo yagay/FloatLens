@@ -22,14 +22,17 @@ final class ResultReadyCoordinator {
      */
     static final class Ticket {
         final long id;
+        final android.content.Context app;
         final FlSystemPanelController.CaptureState state;
         final String reason;
         final long armedAt;
         final AtomicBoolean consumed = new AtomicBoolean(false);
         final AtomicBoolean attached = new AtomicBoolean(false);
 
-        Ticket(long id, FlSystemPanelController.CaptureState state, String reason) {
+        Ticket(long id, android.content.Context app,
+               FlSystemPanelController.CaptureState state, String reason) {
             this.id = id;
+            this.app = app == null ? null : app.getApplicationContext();
             this.state = state;
             this.reason = reason == null ? "result_dialog_shown" : reason;
             this.armedAt = SystemClock.uptimeMillis();
@@ -48,7 +51,7 @@ final class ResultReadyCoordinator {
     private static Ticket armInternal(android.content.Context app,
                                       FlSystemPanelController.CaptureState state, String reason) {
         if (state == null) return null;
-        Ticket ticket = new Ticket(NEXT_ID.getAndIncrement(), state, reason);
+        Ticket ticket = new Ticket(NEXT_ID.getAndIncrement(), app, state, reason);
         if (app != null) DiagnosticLog.i(app, "RESULT_READY", "arm id=" + ticket.id
                 + " reason=" + ticket.reason);
         MAIN.postDelayed(() -> expire(ticket, app), EXPIRE_MS);
@@ -57,8 +60,13 @@ final class ResultReadyCoordinator {
 
     static void cancel(Ticket ticket, android.content.Context context, String reason) {
         if (ticket == null || !ticket.consumed.compareAndSet(false, true)) return;
-        if (context != null) DiagnosticLog.i(context.getApplicationContext(), "RESULT_READY",
-                "cancel id=" + ticket.id + " reason=" + reason);
+        android.content.Context app = context == null ? ticket.app : context.getApplicationContext();
+        if (app != null) {
+            DiagnosticLog.i(app, "RESULT_READY",
+                    "cancel id=" + ticket.id + " reason=" + reason + " panelResolved=true");
+            FlSystemPanelController.onResultReady(
+                    app, ticket.state, reason == null ? ticket.reason : reason);
+        }
     }
 
     interface FirstFrameCallback {
@@ -107,8 +115,14 @@ final class ResultReadyCoordinator {
 
     private static void expire(Ticket ticket, android.content.Context app) {
         if (ticket == null || !ticket.consumed.compareAndSet(false, true)) return;
-        if (app != null) DiagnosticLog.i(app, "RESULT_READY",
-                "expire id=" + ticket.id + " reason=" + ticket.reason);
+        android.content.Context target = app == null ? ticket.app : app.getApplicationContext();
+        if (target != null) {
+            DiagnosticLog.i(target, "RESULT_READY",
+                    "expire id=" + ticket.id + " reason=" + ticket.reason
+                            + " panelResolved=true");
+            FlSystemPanelController.onResultReady(
+                    target, ticket.state, ticket.reason + "_timeout");
+        }
     }
 
     private ResultReadyCoordinator() { }

@@ -27,23 +27,23 @@ public final class ResultActivity extends AppCompatActivity {
     /** Compatibility entry points; all routes converge on ResultController. */
     public static boolean showScreenshot(Context c, Bitmap image, Rect anchor) {
         if (c == null || image == null || image.isRecycled()) return false;
-        return ResultController.show(c, ResultSession.screenshot(image, anchor));
+        return ResultSurfaceRouter.showScreenshot(c, image, anchor);
     }
 
     public static boolean showViewText(Context c, String text, Bitmap image, Rect anchor) {
         if (c == null || text == null || text.isBlank()) return false;
-        return ResultController.show(c, ResultSession.viewText(text, image, anchor));
+        return ResultSurfaceRouter.showViewText(c, text, image, anchor);
     }
 
     public static boolean showViewImage(Context c, Bitmap image, ViewNodeCandidate view, Rect anchor) {
         if (c == null || image == null || image.isRecycled()) return false;
-        return ResultController.show(c, ResultSession.viewImage(image, view, anchor));
+        return ResultSurfaceRouter.showViewImage(c, image, view, anchor);
     }
 
     public static boolean showOcr(Context c, String text, List<String> blocks,
                                   Bitmap image, Rect anchor) {
         if (c == null) return false;
-        return ResultController.show(c, ResultSession.ocr(text, blocks, image, anchor));
+        return ResultSurfaceRouter.showOcr(c, text, blocks, image, anchor);
     }
 
     public static void captureNextForImage(Bitmap image, InlineResultSink sink) {

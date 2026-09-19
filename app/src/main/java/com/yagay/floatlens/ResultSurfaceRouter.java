@@ -46,6 +46,7 @@ final class ResultSurfaceRouter {
 
     private static boolean show(Context c, ResultSession session, String kind) {
         boolean shown = ResultController.show(c, session);
+        if (!shown) session.abandonOwnership();
         log(c, kind, shown, false);
         return shown;
     }
@@ -54,6 +55,7 @@ final class ResultSurfaceRouter {
                                         FlSystemPanelController.CaptureState shadeState,
                                         String kind, String readyReason) {
         boolean shown = ResultController.showCaptured(c, session, shadeState, readyReason);
+        if (!shown) session.abandonOwnership();
         log(c, kind, shown, true);
         return shown;
     }

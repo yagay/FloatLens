@@ -109,6 +109,17 @@ final class ResultSession implements AutoCloseable {
     boolean notifyCircleOnClose() { return mode == Mode.OCR; }
 
     /**
+     * StartActivity failure returns bitmap ownership to the caller. Detach the reference so the
+     * transient ResultSession can be discarded without recycling the caller's fallback bitmap.
+     */
+    void abandonOwnership() {
+        if (closed) return;
+        closed = true;
+        image = null;
+        blocks.clear();
+    }
+
+    /**
      * A successfully delivered ResultSession owns its bitmap. Pending sessions and the visible
      * result host close the session when it is replaced, discarded or destroyed so rapid capture
      * sequences do not retain several full-resolution bitmaps until a later GC cycle.
