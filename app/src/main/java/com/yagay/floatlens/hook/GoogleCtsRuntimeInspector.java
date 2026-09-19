@@ -76,6 +76,8 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     private final GoogleLensDiagnosticsHooks diagnosticsHooks;
     private final GoogleLensViewportHook viewportHook;
     private final GoogleCtsLifecycleHooks lifecycleHooks;
+    private Runnable regionConfirmPollTask;
+    private String regionConfirmDetail = "";
 
     GoogleCtsRuntimeInspector(XposedModule module,
                               LsposedRuntimeProvider provider,
@@ -230,28 +232,21 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                             + " pixelBounds=" + String.valueOf(selectionBounds)
                             + " effectiveBounds=" + String.valueOf(effectiveBounds)
                             + " primary=" + chain.getArg(1);
+                    boolean regionSelection = selection.directRegionCommit()
+                            && selectionBounds != null && !selectionBounds.isEmpty();
                     report("USER_SELECTION_" + binding.source().toUpperCase(Locale.ROOT), detail);
-                    sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
+                    sendBridgeEvent(regionSelection
+                                    ? GoogleCtsContract.EVENT_REGION_SELECTION
+                                    : GoogleCtsContract.EVENT_SELECTION,
                             selection.text(), detail, effectiveBounds);
+                    if (regionSelection) {
+                        armRegionConfirmWait(selection.detail());
+                    }
                 }
-
-                boolean directRegionCommit = active()
-                        && selection != null
-                        && selection.directRegionCommit()
-                        && selectionBounds != null
-                        && !selectionBounds.isEmpty();
 
                 Object result = chain.proceed();
 
                 if (active() && bridgeSelectionSeen) uiSanitizer.sanitizeNow();
-
-                if (directRegionCommit && active() && !bridgeCommitted) {
-                    report("LENS_REGION_SELECTION_COMMIT",
-                            "class=" + selection.selectionClass()
-                                    + " bounds=" + String.valueOf(bridgeSelectionBounds)
-                                    + " source=selection_adapter");
-                    commitBridgeResult("", selection.detail(), "lens_region_selection");
-                }
 
                 if (active() && bridgeSelectionSeen
                         && bridgeSelectionText != null
@@ -269,6 +264,54 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     }
 
 
+
+    private synchronized void armRegionConfirmWait(String detail) {
+        if (!active() || bridgeCommitted || sessionToken.isBlank()) return;
+        regionConfirmDetail = detail == null ? "" : detail;
+        if (regionConfirmPollTask != null) return;
+
+        String token = sessionToken;
+        Runnable[] holder = new Runnable[1];
+        holder[0] = new Runnable() {
+            @Override public void run() {
+                synchronized (GoogleCtsRuntimeInspector.this) {
+                    if (regionConfirmPollTask != this
+                            || !token.equals(sessionToken)
+                            || bridgeCommitted) {
+                        if (regionConfirmPollTask == this) regionConfirmPollTask = null;
+                        return;
+                    }
+                }
+                if (!active()) {
+                    synchronized (GoogleCtsRuntimeInspector.this) {
+                        if (regionConfirmPollTask == this) regionConfirmPollTask = null;
+                    }
+                    return;
+                }
+                if (provider.googleRegionConfirmRequested(token)) {
+                    String confirmedDetail;
+                    synchronized (GoogleCtsRuntimeInspector.this) {
+                        if (regionConfirmPollTask == this) regionConfirmPollTask = null;
+                        confirmedDetail = regionConfirmDetail;
+                    }
+                    report("LENS_REGION_SELECTION_CONFIRMED",
+                            "bounds=" + String.valueOf(bridgeSelectionBounds));
+                    commitBridgeResult("", confirmedDetail, "lens_region_confirmed");
+                    return;
+                }
+                mainHandler.postDelayed(this, 24L);
+            }
+        };
+        regionConfirmPollTask = holder[0];
+        mainHandler.post(holder[0]);
+    }
+
+    private synchronized void stopRegionConfirmWait() {
+        Runnable pending = regionConfirmPollTask;
+        regionConfirmPollTask = null;
+        regionConfirmDetail = "";
+        if (pending != null) mainHandler.removeCallbacks(pending);
+    }
 
     @Override public synchronized boolean commitBridgeResult(String text, String detail, String reason) {
         if (!active() || bridgeCommitted
@@ -444,6 +487,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         activeUntil = SystemClock.elapsedRealtime() + SESSION_TTL_MS;
         sessionToken = nextToken;
         if (newBridgeSession) {
+            stopRegionConfirmWait();
             uiSanitizer.detach();
             bridgeSender.reset();
             bridgeCommitted = false;
@@ -489,6 +533,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         bridgeSelectionText = "";
         bridgeSelectionBounds = null;
         presentationAlreadyAbsentReported = false;
+        stopRegionConfirmWait();
         uiSanitizer.detach();
         markedActivity = new WeakReference<>(null);
     }
