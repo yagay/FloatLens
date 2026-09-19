@@ -112,7 +112,9 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                                     ? GoogleCtsContract.EVENT_REGION_GESTURE_START
                                     : GoogleCtsContract.EVENT_REGION_GESTURE_END,
                             "", detail, currentSelectionBounds());
-                });
+                },
+                (action, x, y, detail) ->
+                        canonicalFrameLayer.onGesturePoint(action, x, y));
         provider.setObserver((token, confirmedAtElapsed) ->
                 mainHandler.post(() -> onGoogleRegionConfirm(token, confirmedAtElapsed)));
     }
@@ -242,6 +244,8 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                             && selectionBounds != null && !selectionBounds.isEmpty();
                     sessionState.onSelection(
                             selection.text(), toSessionBounds(selectionBounds), regionSelection);
+                    canonicalFrameLayer.updateSelection(
+                            selectionBounds, regionSelection, selection.text());
                     Rect effectiveBounds = currentSelectionBounds();
                     String detail = selection.detail()
                             + " source=" + binding.source()
