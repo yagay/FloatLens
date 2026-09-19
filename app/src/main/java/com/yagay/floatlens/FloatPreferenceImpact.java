@@ -47,7 +47,10 @@ final class FloatPreferenceImpact {
                     FloatSettings.K_LONG_PRESS_DRAG,
                     FloatSettings.K_VIBRATE -> Impact.ICON_SETTINGS;
 
-            case FloatSettings.K_POS_X_PORTRAIT,
+            case FloatSettings.K_POSITION_SCHEMA,
+                    FloatSettings.K_POSITION_SIDE,
+                    FloatSettings.K_POSITION_Y_BP,
+                    FloatSettings.K_POS_X_PORTRAIT,
                     FloatSettings.K_POS_Y_PORTRAIT,
                     FloatSettings.K_POS_X_LANDSCAPE,
                     FloatSettings.K_POS_Y_LANDSCAPE,

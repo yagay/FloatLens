@@ -87,6 +87,11 @@ public final class FloatSettings {
     private static final String K_CIRCLE_CANCEL_X_BP = "circle_cancel_x_bp_v1";
     private static final String K_CIRCLE_CANCEL_Y_BP = "circle_cancel_y_bp_v1";
 
+    private static final int POSITION_SCHEMA_VERSION = 2;
+    public static final String K_POSITION_SCHEMA = "float_position_schema_v2";
+    public static final String K_POSITION_SIDE = "float_position_side_v2";
+    public static final String K_POSITION_Y_BP = "float_position_y_bp_v2";
+
     public static final String K_POS_X_PORTRAIT = "float_pos_x_portrait";
     public static final String K_POS_Y_PORTRAIT = "float_pos_y_portrait";
     public static final String K_POS_X_LANDSCAPE = "float_pos_x_landscape";
@@ -128,6 +133,67 @@ public final class FloatSettings {
             if (ActionId.OCR.equals(p.getString(K_ACTION_LONG, null))) e.remove(K_ACTION_LONG);
             e.putBoolean(K_MIGRATE_LONG_PRESS_CONFIG_V1, true).apply();
         }
+        migratePositionModel();
+    }
+
+    /**
+     * Migrate the old orientation-specific absolute X/Y model once.
+     *
+     * <p>The legacy landscape X can be written while Android is already reporting the new
+     * orientation, which makes an old portrait X look like a left-edge coordinate. V2 never
+     * derives the side from an absolute X. It trusts the old portrait side when available and
+     * stores only side + normalized vertical position. Legacy keys are intentionally left intact
+     * but become inert, making rollback safe and avoiding preference-change side effects.</p>
+     */
+    private void migratePositionModel() {
+        int schema = legacyInt(K_POSITION_SCHEMA, 0);
+        if (schema >= POSITION_SCHEMA_VERSION
+                && p.contains(K_POSITION_SIDE) && p.contains(K_POSITION_Y_BP)) {
+            return;
+        }
+
+        int side = validSide(K_GRAVITY);
+        if (side < 0) side = validSide(K_GRAVITY_LAND);
+        if (side < 0) side = 1; // historical/default placement is right
+
+        int yBp = 3333;
+        android.graphics.Rect bounds = ScreenGeometry.displayBounds(context);
+        int iconPx = Math.round(sizeDp() * context.getResources().getDisplayMetrics().density);
+        int portraitAvailable = Math.max(0, Math.max(bounds.width(), bounds.height()) - iconPx);
+        int landscapeAvailable = Math.max(0, Math.min(bounds.width(), bounds.height()) - iconPx);
+
+        if (p.contains(K_POS_Y_PORTRAIT) && portraitAvailable > 0) {
+            yBp = toBasisPoints(legacyInt(K_POS_Y_PORTRAIT, portraitAvailable / 3),
+                    portraitAvailable);
+        } else if (p.contains(K_POS_Y) && portraitAvailable > 0) {
+            yBp = toBasisPoints(legacyInt(K_POS_Y, portraitAvailable / 3),
+                    portraitAvailable);
+        } else if (p.contains(K_POS_Y_LANDSCAPE) && landscapeAvailable > 0) {
+            yBp = toBasisPoints(legacyInt(K_POS_Y_LANDSCAPE, landscapeAvailable / 3),
+                    landscapeAvailable);
+        }
+
+        p.edit()
+                .putInt(K_POSITION_SCHEMA, POSITION_SCHEMA_VERSION)
+                .putInt(K_POSITION_SIDE, side)
+                .putInt(K_POSITION_Y_BP, yBp)
+                .commit();
+    }
+
+    private int validSide(String key) {
+        if (!p.contains(key)) return -1;
+        int side = legacyInt(key, -1);
+        return side == 0 || side == 1 ? side : -1;
+    }
+
+    private int legacyInt(String key, int def) {
+        Object raw = p.getAll().get(key);
+        return raw instanceof Number n ? n.intValue() : def;
+    }
+
+    private static int toBasisPoints(int y, int availableHeight) {
+        if (availableHeight <= 0) return 3333;
+        return clamp(Math.round(Math.max(0, y) * 10000f / availableHeight), 0, 10000);
     }
 
     public float alpha() { return clamp(p.getInt(K_ALPHA, 62), 10, 100) / 100f; }
@@ -327,18 +393,45 @@ public final class FloatSettings {
     public String posXKey() { return isLandscape() ? K_POS_X_LANDSCAPE : K_POS_X_PORTRAIT; }
     public String posYKey() { return isLandscape() ? K_POS_Y_LANDSCAPE : K_POS_Y_PORTRAIT; }
     public String gravityKey() { return isLandscape() ? K_GRAVITY_LAND : K_GRAVITY; }
+
+    /** Legacy absolute-position readers kept only for rollback/source compatibility. */
     public boolean hasSavedX() { return p.contains(posXKey()) || p.contains(K_POS_X); }
     public int savedX(int def) { return p.getInt(posXKey(), p.getInt(K_POS_X, def)); }
     public int savedY(int def) { return p.getInt(posYKey(), p.getInt(K_POS_Y, def)); }
-    public int savedSide(int def) { return p.getInt(gravityKey(), def); }
-    public void saveSide(boolean left) { setInt(gravityKey(), left ? 0 : 1); }
 
-    /** Position moves are user initiated; persist side and orientation-specific coordinates atomically. */
+    /** Canonical V2 side. Orientation/fullscreen changes must never rewrite this value. */
+    public int savedSide(int def) {
+        return clamp(legacyInt(K_POSITION_SIDE, def), 0, 1);
+    }
+
+    public void saveSide(boolean left) { setInt(K_POSITION_SIDE, left ? 0 : 1); }
+
+    /** Resolve the normalized V2 vertical position against the current display. */
+    public int savedPositionY(int availableHeight, int defaultY) {
+        if (availableHeight <= 0) return Math.max(0, defaultY);
+        int defBp = toBasisPoints(defaultY, availableHeight);
+        int yBp = clamp(legacyInt(K_POSITION_Y_BP, defBp), 0, 10000);
+        return Math.round(availableHeight * (yBp / 10000f));
+    }
+
+    public int savedPositionYBasisPoints() {
+        return clamp(legacyInt(K_POSITION_Y_BP, 3333), 0, 10000);
+    }
+
+    /**
+     * User drag is the only writer for the canonical floating position.
+     * X is deliberately ignored after deciding the side in the current geometry.
+     */
     public boolean savePosition(boolean left, int x, int y) {
+        android.graphics.Rect bounds = ScreenGeometry.displayBounds(context);
+        int iconPx = Math.round(sizeDp() * context.getResources().getDisplayMetrics().density);
+        int availableHeight = Math.max(0, bounds.height() - iconPx);
+        int currentBp = savedPositionYBasisPoints();
+        int yBp = availableHeight > 0 ? toBasisPoints(y, availableHeight) : currentBp;
         return p.edit()
-                .putInt(gravityKey(), left ? 0 : 1)
-                .putInt(posXKey(), x)
-                .putInt(posYKey(), y)
+                .putInt(K_POSITION_SCHEMA, POSITION_SCHEMA_VERSION)
+                .putInt(K_POSITION_SIDE, left ? 0 : 1)
+                .putInt(K_POSITION_Y_BP, yBp)
                 .commit();
     }
 

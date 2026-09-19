@@ -34,26 +34,20 @@ final class FloatingIconLayoutPolicy {
     WindowManager.LayoutParams createPrimary() {
         int px = iconPx();
         int[] wh = displaySize();
-        int defaultX = wh[0] - px;
         int defaultY = wh[1] / 3;
+        int availableHeight = Math.max(0, wh[1] - px);
         WindowManager.LayoutParams lp = baseLayout(px);
 
-        boolean hasSavedX = settings.hasSavedX();
-        int savedX = settings.savedX(defaultX);
-        lp.x = savedX;
-        lp.y = settings.savedY(defaultY);
-
-        // A persisted X coordinate is the most reliable source of truth for the side. Older builds
-        // wrote gravity and X/Y using separate asynchronous apply() calls, so gravity could remain
-        // stale (for example L) while X had already been saved on the right. Prefer any explicit
-        // saved X (including the legacy global key) and keep gravity only as a fallback.
-        int inferredSide = savedX + px / 2 < wh[0] / 2 ? 0 : 1;
-        int side = hasSavedX ? inferredSide : settings.savedSide(inferredSide);
+        // Position V2 has one invariant representation: side + normalized Y. System geometry
+        // changes only project that state into pixels; they never infer/rewrite the side from X.
+        int side = settings.savedSide(1);
         lp.x = side == 0 ? 0 : wh[0] - px;
+        lp.y = settings.savedPositionY(availableHeight, defaultY);
         clamp(lp, false);
-        DiagnosticLog.i(app, "POSITION", "restore x=" + savedX + " y=" + lp.y
+        DiagnosticLog.i(app, "POSITION", "restore x=" + lp.x + " y=" + lp.y
                 + " side=" + (side == 0 ? "L" : "R")
-                + " source=" + (hasSavedX ? "saved_x" : "gravity_fallback")
+                + " source=normalized_v2"
+                + " yBp=" + settings.savedPositionYBasisPoints()
                 + " landscape=" + settings.isLandscape());
         return lp;
     }
@@ -131,11 +125,12 @@ final class FloatingIconLayoutPolicy {
         if (primary == null) return;
         boolean left = isLeft(primary);
 
-        // Position commits are infrequent and user initiated. Persist side + X + Y atomically and
-        // synchronously so a reboot cannot leave gravity and coordinates from different moves.
+        // Position commits are user initiated. Persist only canonical side + normalized Y; X is
+        // geometry-derived and must never survive an orientation/fullscreen transition.
         boolean saved = settings.savePosition(left, primary.x, primary.y);
         DiagnosticLog.i(app, "POSITION", "persist x=" + primary.x + " y=" + primary.y
                 + " side=" + (left ? "L" : "R")
+                + " yBp=" + settings.savedPositionYBasisPoints()
                 + " landscape=" + settings.isLandscape()
                 + " saved=" + saved);
     }

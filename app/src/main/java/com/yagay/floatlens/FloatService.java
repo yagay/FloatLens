@@ -663,7 +663,11 @@ public class FloatService extends Service implements android.content.SharedPrefe
     }
 
     @Override public void onConfigurationChanged(Configuration configuration) {
-        layout.persist(primaryLp);
+        // Never persist during a system geometry transition. At this point primaryLp still belongs
+        // to the previous coordinate space while Resources may already expose the new orientation.
+        // Persisting here is exactly how a right-edge portrait X became a left-edge landscape side.
+        DiagnosticLog.i(this, "POSITION",
+                "configuration change rebuild without persisting stale orientation coordinates");
         super.onConfigurationChanged(configuration);
         imeRestoreY = null;
         removeIcons();

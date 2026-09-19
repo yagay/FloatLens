@@ -44,6 +44,10 @@ public class FloatPreferenceImpactTest {
     @Test
     public void persistedPositionsDoNotTriggerRefreshLoop() {
         assertEquals(FloatPreferenceImpact.Impact.IGNORE,
+                FloatPreferenceImpact.classify(FloatSettings.K_POSITION_SIDE));
+        assertEquals(FloatPreferenceImpact.Impact.IGNORE,
+                FloatPreferenceImpact.classify(FloatSettings.K_POSITION_Y_BP));
+        assertEquals(FloatPreferenceImpact.Impact.IGNORE,
                 FloatPreferenceImpact.classify(FloatSettings.K_POS_X_PORTRAIT));
         assertEquals(FloatPreferenceImpact.Impact.IGNORE,
                 FloatPreferenceImpact.classify(FloatSettings.K_POS_Y_LANDSCAPE));
