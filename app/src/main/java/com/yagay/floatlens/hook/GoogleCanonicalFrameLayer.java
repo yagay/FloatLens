@@ -11,6 +11,8 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
@@ -33,6 +35,7 @@ final class GoogleCanonicalFrameLayer {
     private final Handler main = new Handler(Looper.getMainLooper());
 
     private Bitmap canonicalFrame;
+    private final List<Bitmap> retiredFrames = new ArrayList<>();
     private WeakReference<ImageView> layerRef = new WeakReference<>(null);
     private WeakReference<ViewGroup> parentRef = new WeakReference<>(null);
 
@@ -69,9 +72,9 @@ final class GoogleCanonicalFrameLayer {
             if (!usable(accepted)) return;
             old = canonicalFrame;
             canonicalFrame = accepted;
+            if (usable(old)) retiredFrames.add(old);
         }
 
-        recycle(old);
         reporter.accept("GOOGLE_CANONICAL_FRAME",
                 "accepted size=" + accepted.getWidth() + "x" + accepted.getHeight());
         schedulePresent();
@@ -83,13 +86,20 @@ final class GoogleCanonicalFrameLayer {
     }
 
     void reset() {
-        main.post(this::removeLayerOnMain);
-        Bitmap old;
+        Bitmap current;
+        List<Bitmap> retired;
         synchronized (this) {
-            old = canonicalFrame;
+            current = canonicalFrame;
             canonicalFrame = null;
+            retired = new ArrayList<>(retiredFrames);
+            retiredFrames.clear();
         }
-        recycle(old);
+        main.post(() -> {
+            // Detach the ImageView before recycling any bitmap it may still reference.
+            removeLayerOnMain();
+            recycle(current);
+            for (Bitmap bitmap : retired) recycle(bitmap);
+        });
     }
 
     private void schedulePresent() {
