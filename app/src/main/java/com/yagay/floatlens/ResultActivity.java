@@ -79,6 +79,7 @@ public final class ResultActivity extends AppCompatActivity {
         }
         ResultSession next = delivery.session;
         ResultReadyCoordinator.Ticket readyTicket = delivery.readyTicket;
+        Runnable firstFrameCallback = delivery.firstFrameCallback;
 
         Fragment existing = getSupportFragmentManager().findFragmentByTag(DIALOG_TAG);
         UnifiedResultDialogFragment dialog = existing instanceof UnifiedResultDialogFragment
@@ -91,6 +92,7 @@ public final class ResultActivity extends AppCompatActivity {
                 dialog.showNow(getSupportFragmentManager(), DIALOG_TAG);
             } catch (Throwable t) {
                 ResultReadyCoordinator.cancel(readyTicket, this, "dialog_show_failed");
+                runCallback(firstFrameCallback);
                 DiagnosticLog.i(this, "RESULT_ACTIVITY", "dialog show failed token=" + token
                         + " error=" + ScreenCaptureBackend.safeMessage(t));
                 return false;
@@ -99,12 +101,19 @@ public final class ResultActivity extends AppCompatActivity {
             dialog.showSession(next, readyTicket);
         }
 
+        dialog.runAfterFirstVisibleFrame(firstFrameCallback);
+
         DiagnosticLog.i(this, "RESULT_ACTIVITY", (reuse ? "REUSE" : "CREATED")
                 + " token=" + token + " mode=" + next.mode()
                 + " origin=" + next.originMode()
                 + " ready=" + (readyTicket == null ? "none" : readyTicket.id)
                 + " dialogHost=true");
         return true;
+    }
+
+    private void runCallback(Runnable callback) {
+        if (callback == null) return;
+        try { callback.run(); } catch (Throwable ignored) {}
     }
 
     void finishFromDialog() {

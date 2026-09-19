@@ -30,6 +30,22 @@ public class LsposedRuntimeConfigTest {
                 true, true, true, staleFuture, now));
     }
 
+    @Test public void googleCtsFallbackInvocationMatchesObservedMetadata() {
+        long trigger = 50_000L;
+        assertTrue(LsposedRuntimeConfig.matchesGoogleCtsFallbackInvocation(
+                trigger, true, trigger, true,
+                LsposedRuntimeConfig.GOOGLE_CTS_EXPECTED_OMNI_ENTRY_POINT));
+        assertTrue(LsposedRuntimeConfig.matchesGoogleCtsFallbackInvocation(
+                trigger, false, -1L, false, -1));
+        assertFalse(LsposedRuntimeConfig.matchesGoogleCtsFallbackInvocation(
+                trigger, true,
+                trigger + LsposedRuntimeConfig.GOOGLE_CTS_INVOCATION_MATCH_TOLERANCE_MS + 1L,
+                true, LsposedRuntimeConfig.GOOGLE_CTS_EXPECTED_OMNI_ENTRY_POINT));
+        assertFalse(LsposedRuntimeConfig.matchesGoogleCtsFallbackInvocation(
+                trigger, true, trigger, true,
+                LsposedRuntimeConfig.GOOGLE_CTS_EXPECTED_OMNI_ENTRY_POINT + 1));
+    }
+
     @Test public void googleCtsFallbackLeaseIsShortAndTokenBound() {
         long now = 10_000L;
         assertTrue(LsposedRuntimeConfig.isGoogleCtsFallbackArmed(

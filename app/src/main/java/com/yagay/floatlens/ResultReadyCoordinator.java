@@ -61,29 +61,40 @@ final class ResultReadyCoordinator {
                 "cancel id=" + ticket.id + " reason=" + reason);
     }
 
+    interface FirstFrameCallback {
+        void onFirstFrame(String stage);
+    }
+
+    static void afterFirstVisibleFrame(View root, FirstFrameCallback callback) {
+        if (root == null || callback == null) return;
+        root.post(() -> {
+            ViewTreeObserver observer = root.getViewTreeObserver();
+            if (!observer.isAlive()) {
+                root.postOnAnimation(() -> callback.onFirstFrame("dialog_observer_dead"));
+                return;
+            }
+            ViewTreeObserver.OnPreDrawListener listener = new ViewTreeObserver.OnPreDrawListener() {
+                @Override public boolean onPreDraw() {
+                    try {
+                        ViewTreeObserver current = root.getViewTreeObserver();
+                        if (current.isAlive()) current.removeOnPreDrawListener(this);
+                    } catch (Throwable ignored) { }
+                    root.postOnAnimation(() -> callback.onFirstFrame("dialog_first_frame"));
+                    return true;
+                }
+            };
+            observer.addOnPreDrawListener(listener);
+            root.invalidate();
+        });
+    }
+
     static void onResultDialogReady(ResultActivity activity, View root, Ticket ticket) {
         if (activity == null || root == null || ticket == null || ticket.consumed.get()) return;
         if (!ticket.attached.compareAndSet(false, true)) return;
 
         DiagnosticLog.i(activity, "RESULT_READY", "dialog attached id=" + ticket.id
                 + " reason=" + ticket.reason);
-        ViewTreeObserver observer = root.getViewTreeObserver();
-        if (!observer.isAlive()) {
-            root.post(() -> deliver(activity, ticket, "dialog_observer_dead"));
-            return;
-        }
-        ViewTreeObserver.OnPreDrawListener listener = new ViewTreeObserver.OnPreDrawListener() {
-            @Override public boolean onPreDraw() {
-                try {
-                    ViewTreeObserver current = root.getViewTreeObserver();
-                    if (current.isAlive()) current.removeOnPreDrawListener(this);
-                } catch (Throwable ignored) { }
-                root.postOnAnimation(() -> deliver(activity, ticket, "dialog_first_frame"));
-                return true;
-            }
-        };
-        observer.addOnPreDrawListener(listener);
-        root.invalidate();
+        afterFirstVisibleFrame(root, stage -> deliver(activity, ticket, stage));
     }
 
     private static void deliver(Activity activity, Ticket ticket, String stage) {

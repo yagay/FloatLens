@@ -33,7 +33,9 @@ public final class DiagnosticsActivity extends AppCompatActivity {
                 "记录 FloatLens 自身运行状态，并可直接保存到 Download/FloatLens。" );
 
         AppUi.Section logging = AppUi.section(this, "FloatLens 诊断日志",
-                "导出不再依赖系统文件选择器，Android 11+ 直接通过 MediaStore 写入下载目录。" );
+                "关闭时不会发送 Google 详细 Hook trace，也不会加载纯诊断 WindowManager Hook。"
+                        + " 开启后如需完整 Google Hook 诊断，请重启 Google App 或手机；"
+                        + " 导出通过 MediaStore 直接写入下载目录。" );
         SwitchMaterial loggingSwitch = AppUi.switchRow(this,
                 "记录诊断日志",
                 "关闭时不会持续写入 FloatLens 诊断日志",

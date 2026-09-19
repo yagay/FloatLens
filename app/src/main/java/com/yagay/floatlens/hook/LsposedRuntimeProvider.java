@@ -1,9 +1,11 @@
 package com.yagay.floatlens.hook;
 
 import android.content.SharedPreferences;
+import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Log;
 
+import com.yagay.floatlens.GoogleCtsContract;
 import com.yagay.floatlens.LsposedRuntimeConfig;
 
 import io.github.libxposed.api.XposedInterface;
@@ -41,6 +43,7 @@ final class LsposedRuntimeProvider {
                         || LsposedRuntimeConfig.K_LSPOSED_ENABLED.equals(key)
                         || LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED.equals(key)
                         || LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL.equals(key)
+                        || LsposedRuntimeConfig.K_DIAGNOSTIC_ENABLED.equals(key)
                         || LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN.equals(key)
                         || LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED.equals(key)
                         || LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL.equals(key)) {
@@ -66,7 +69,33 @@ final class LsposedRuntimeProvider {
         return active;
     }
 
+    boolean diagnosticsEnabled() {
+        if (!active || preferences == null) return false;
+        try {
+            return preferences.getBoolean(LsposedRuntimeConfig.K_DIAGNOSTIC_ENABLED, false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    boolean ownsGoogleCtsSession(String token) {
+        if (!active || preferences == null || token == null || token.isBlank()) return false;
+        try {
+            String current = preferences.getString(
+                    LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, "");
+            return token.equals(current);
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Failed to verify Google CTS session ownership in " + displayProcess(), t);
+            return false;
+        }
+    }
+
     String googleCtsArmedToken() {
+        return googleCtsArmedToken(null);
+    }
+
+    String googleCtsArmedToken(Bundle observedExtras) {
         if (!active || preferences == null) return "";
         try {
             long now = SystemClock.elapsedRealtime();
@@ -76,8 +105,23 @@ final class LsposedRuntimeProvider {
                     LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED, 0L);
             long until = preferences.getLong(
                     LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL, 0L);
-            return LsposedRuntimeConfig.isGoogleCtsFallbackArmed(
-                    active, token, trigger, until, now) ? token : "";
+            if (!LsposedRuntimeConfig.isGoogleCtsFallbackArmed(
+                    active, token, trigger, until, now)) {
+                return "";
+            }
+
+            boolean hasInvocation = observedExtras != null
+                    && observedExtras.containsKey(GoogleCtsContract.K_INVOCATION_TIME);
+            long observedInvocation = hasInvocation
+                    ? observedExtras.getLong(GoogleCtsContract.K_INVOCATION_TIME, -1L) : -1L;
+            boolean hasEntryPoint = observedExtras != null
+                    && observedExtras.containsKey(GoogleCtsContract.K_OMNI_ENTRY_POINT);
+            int observedEntryPoint = hasEntryPoint
+                    ? observedExtras.getInt(GoogleCtsContract.K_OMNI_ENTRY_POINT, -1) : -1;
+
+            return LsposedRuntimeConfig.matchesGoogleCtsFallbackInvocation(
+                    trigger, hasInvocation, observedInvocation,
+                    hasEntryPoint, observedEntryPoint) ? token : "";
         } catch (Throwable t) {
             module.log(Log.WARN, TAG,
                     "Failed to read Google CTS armed session in " + displayProcess(), t);

@@ -45,6 +45,34 @@ public final class UnifiedResultDialogFragment extends DialogFragment {
         workflowFinished = false;
     }
 
+    void runAfterFirstVisibleFrame(Runnable callback) {
+        if (callback == null) return;
+        if (panel == null) {
+            // showNow() normally creates the panel synchronously; this fallback handles lifecycle
+            // edge cases without releasing the Google session before a visible frame exists.
+            getViewLifecycleOwnerLiveData().observe(this, owner -> {
+                if (owner != null && panel != null) {
+                    ResultReadyCoordinator.afterFirstVisibleFrame(
+                            panel.root(), stage -> runFirstFrameCallback(callback, stage));
+                }
+            });
+            return;
+        }
+        ResultReadyCoordinator.afterFirstVisibleFrame(
+                panel.root(), stage -> runFirstFrameCallback(callback, stage));
+    }
+
+    private void runFirstFrameCallback(Runnable callback, String stage) {
+        try { callback.run(); }
+        catch (Throwable t) {
+            DiagnosticLog.i(requireContext(), "RESULT_HANDOFF",
+                    "callback failed stage=" + stage + " error="
+                            + ScreenCaptureBackend.safeMessage(t));
+            return;
+        }
+        DiagnosticLog.i(requireContext(), "RESULT_HANDOFF", "callback stage=" + stage);
+    }
+
     void showSession(ResultSession value, ResultReadyCoordinator.Ticket ticket) {
         if (value == null) return;
         ResultSession previous = session;

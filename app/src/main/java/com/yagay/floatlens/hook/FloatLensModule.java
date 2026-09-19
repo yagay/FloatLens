@@ -33,6 +33,11 @@ public final class FloatLensModule extends XposedModule {
             // Never let an optional screenshot enhancement destabilize system_server startup.
             log(Log.ERROR, TAG, "Failed to install controlled secure screenshot hooks", t);
         }
+        // Google CTS isolation is now handled entirely inside FloatLens-marked Google App
+        // sessions. Never hook ContextualSearch in system_server: a process-wide component block
+        // can interfere with the user's native Home/gesture Circle to Search session.
+        log(Log.INFO, TAG,
+                "Google contextual-search system_server blocker disabled; native CTS left untouched");
     }
 
     @Override

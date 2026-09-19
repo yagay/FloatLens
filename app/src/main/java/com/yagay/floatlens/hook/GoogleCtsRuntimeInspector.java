@@ -14,6 +14,11 @@ import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.ViewParent;
+import android.view.WindowManager;
+import android.widget.TextView;
 
 import com.yagay.floatlens.GoogleCtsContract;
 
@@ -28,14 +33,11 @@ import java.lang.reflect.Modifier;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.Locale;
-import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import dalvik.system.BaseDexClassLoader;
 import io.github.libxposed.api.XposedModule;
 
 /**
@@ -49,15 +51,14 @@ final class GoogleCtsRuntimeInspector {
     private static final String TAG = "FloatLens-GoogleCTS";
     private static final String SHOW_SESSION_ID = "android.service.voice.SHOW_SESSION_ID";
     private static final long SESSION_TTL_MS = 120_000L;
-    private static final long RESULT_SETTLE_MS = 1_500L;
+    private static final long RESULT_HANDOFF_TIMEOUT_MS = 2_500L;
+    private static final long RESULT_HANDOFF_POLL_MS = 16L;
     private static final int MAX_EVENT_LOGS = 500;
 
     private final XposedModule module;
     private final LsposedRuntimeProvider provider;
     private final ClassLoader classLoader;
-    private final Set<String> seenClasses = new HashSet<>();
     private final AtomicInteger eventCount = new AtomicInteger();
-    private final AtomicInteger bridgeResultGeneration = new AtomicInteger();
     private final ThreadLocal<Boolean> traceDispatching = new ThreadLocal<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService bridgeIo = Executors.newSingleThreadExecutor(r -> {
@@ -74,7 +75,11 @@ final class GoogleCtsRuntimeInspector {
     private volatile boolean bridgeCommitted;
     private volatile boolean bridgeSelectionSeen;
     private volatile boolean bridgePendingSeen;
+    private volatile String bridgeSelectionText = "";
+    private volatile Rect bridgeSelectionBounds;
+    private volatile boolean presentationAlreadyAbsentReported;
     private volatile WeakReference<Activity> markedActivity = new WeakReference<>(null);
+    private final GoogleLensUiSanitizer uiSanitizer;
 
     GoogleCtsRuntimeInspector(XposedModule module,
                               LsposedRuntimeProvider provider,
@@ -82,12 +87,28 @@ final class GoogleCtsRuntimeInspector {
         this.module = module;
         this.provider = provider;
         this.classLoader = classLoader;
+        this.uiSanitizer = new GoogleLensUiSanitizer(
+                () -> active() && bridgeSelectionSeen,
+                this::report);
     }
 
     void install() {
         int hooks = 0;
         hooks += hookGoogle1758OmnientBoundary();
+        // Stable boundaries own invocation/lifecycle/UI. Only two Google-internal hook groups are
+        // installed now: Selection (OCR/text/region/query bridge) and Viewport (prevent text-focus
+        // auto zoom). Legacy presentation/ActionMenu/InfoPanel/dujo hooks remain in source for
+        // diagnostics/rollback but are intentionally not installed.
+        hooks += hookGoogleFrozenImageAutoFocus();
         hooks += hookGoogle1758LensSelectionBoundary();
+        // v169 device/APK analysis proved the visible menu is Lens' own ActionMenuView,
+        // not framework/Material FloatingToolbar. WindowManager inspection is diagnostic-only.
+        if (provider.diagnosticsEnabled()) {
+            hooks += hookGoogleWindowInspector();
+        } else {
+            module.log(Log.INFO, TAG,
+                    "Google diagnostic WindowManager hook skipped (diagnostics disabled)");
+        }
         hooks += hookVoiceSessionShow();
         hooks += hookVoiceScreenshot();
         hooks += hookActivityLifecycle();
@@ -108,7 +129,7 @@ final class GoogleCtsRuntimeInspector {
                 if (!(executable instanceof Method method)) continue;
                 Class<?>[] p = method.getParameterTypes();
 
-                if ("f".equals(method.getName()) && p.length == 3 && p[1] == Bundle.class) {
+                if (p.length == 3 && p[1] == Bundle.class) {
                     module.hook(method).intercept(chain -> {
                         Bundle args = (Bundle) chain.getArg(1);
                         correlateGoogleBoundary(args, null, "OMNIENT_VIS");
@@ -122,7 +143,7 @@ final class GoogleCtsRuntimeInspector {
                     continue;
                 }
 
-                if ("c".equals(method.getName()) && p.length == 3 && p[1] == Intent.class) {
+                if (p.length == 3 && p[1] == Intent.class) {
                     module.hook(method).intercept(chain -> {
                         Intent intent = (Intent) chain.getArg(1);
                         correlateGoogleBoundary(intent == null ? null : intent.getExtras(),
@@ -134,7 +155,7 @@ final class GoogleCtsRuntimeInspector {
                     continue;
                 }
 
-                if ("a".equals(method.getName()) && p.length == 3
+                if (p.length == 3
                         && p[1] == Bitmap.class && p[2] == Intent.class
                         && method.getReturnType() == Intent.class) {
                     module.hook(method).intercept(chain -> {
@@ -163,128 +184,1098 @@ final class GoogleCtsRuntimeInspector {
         }
     }
 
-    /** Google 17.58.16.ve Lens user-selection/query boundary from classes8.dex. */
-    private int hookGoogle1758LensSelectionBoundary() {
+    /**
+     * 17.58 InteractionDataResult (eses) owns nativeRenderedPresentationResult in field f.
+     * Strip that server/native action presentation as soon as the value object is constructed,
+     * before any Google UI consumer can observe it. Selection geometry/state lives elsewhere.
+     */
+    private int hookGoogleNativeRenderedPresentationData() {
+        try {
+            Class<?> interactionData = Class.forName(
+                    GoogleLens1758Profile.INTERACTION_DATA, false, classLoader);
+            int count = 0;
+            for (Executable constructor : interactionData.getDeclaredConstructors()) {
+                module.hook(constructor).intercept(chain -> {
+                    Object result = chain.proceed();
+                    if (!active() || !bridgeSelectionSeen) {
+                        return result;
+                    }
+
+                    GoogleLens1758Profile.NativePresentationSuppression suppression =
+                            GoogleLens1758Profile.suppressNativeRenderedPresentationData(
+                                    chain.getThisObject());
+                    if (suppression.suppressed()) {
+                        report("GOOGLE_NATIVE_PRESENTATION_STRIPPED",
+                                "path=constructor " + suppression.detail());
+                    }
+                    return result;
+                });
+                count++;
+            }
+            module.log(Log.INFO, TAG,
+                    "Google native presentation constructors hooked=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google native presentation constructor boundary unavailable", t);
+            return 0;
+        }
+    }
+
+    /**
+     * Google 17.58 eseu is LensInteractionResult. Its six-argument constructor stores argument 3
+     * (index 2) directly into field c == presentationResult. For FloatLens-owned selections,
+     * replace that Optional with Google's canonical absent singleton before the value object exists.
+     */
+    private int hookGoogleInteractionPresentationResult() {
+        try {
+            Class<?> resultClass = Class.forName(
+                    GoogleLens1758Profile.INTERACTION_RESULT, false, classLoader);
+            Object absent = GoogleLens1758Profile.absentOptional(classLoader);
+            if (absent == null) {
+                module.log(Log.WARN, TAG,
+                        "Google presentation-result absent Optional unavailable");
+                return 0;
+            }
+
+            int count = 0;
+            for (Executable constructor : resultClass.getDeclaredConstructors()) {
+                Class<?>[] params = constructor.getParameterTypes();
+                if (params.length != 6
+                        || !GoogleLens1758Profile.hasTypeInHierarchy(
+                                params[2], GoogleLens1758Profile.OPTIONAL)) {
+                    continue;
+                }
+                module.hook(constructor).intercept(chain -> {
+                    if (!active() || !bridgeSelectionSeen) return chain.proceed();
+
+                    Object before = chain.getArg(2);
+                    if (before == absent) {
+                        Object result = chain.proceed();
+                        if (!presentationAlreadyAbsentReported) {
+                            presentationAlreadyAbsentReported = true;
+                            report("GOOGLE_PRESENTATION_RESULT_ALREADY_ABSENT",
+                                    "class=eseu ctorArg=2 value="
+                                            + absent.getClass().getName());
+                        }
+                        return result;
+                    }
+
+                    Object[] args = chain.getArgs().toArray();
+                    args[2] = absent;
+                    Object result = chain.proceed(args);
+                    report("GOOGLE_PRESENTATION_RESULT_STRIPPED",
+                            "class=eseu ctorArg=2 before="
+                                    + (before == null ? "null" : before.getClass().getName())
+                                    + " after=" + absent.getClass().getName());
+                    return result;
+                });
+                count++;
+            }
+            module.log(Log.INFO, TAG,
+                    "Google LensInteractionResult presentation hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google LensInteractionResult presentation boundary unavailable", t);
+            return 0;
+        }
+    }
+
+    /**
+     * Google 17.58 classes8.dex:
+     * dscu.q(dtqi) reaches dokz.f(), and dokz.f() reaches dokz.g(dnqv). APK call-site analysis
+     * also shows independent callers entering g(dnqv), so suppress both the menu layout wrapper
+     * and the action-population method for FloatLens-owned text sessions. Google's OCR, selection
+     * highlight and DRAG_TEXT_HANDLE live outside this controller and continue normally.
+     */
+    private int hookGoogleLensActionMenuController() {
         try {
             Class<?> controller = Class.forName(
-                    GoogleLens1758Profile.CONTROLLER, false, classLoader);
+                    GoogleLens1758Profile.ACTION_MENU_CONTROLLER, false, classLoader);
             int count = 0;
             for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
                 if (!(executable instanceof Method method)) continue;
 
-                if (GoogleLens1758Profile.isSelectionMethod(method)) {
+                if ("a".equals(method.getName())
+                        && method.getParameterCount() == 0
+                        && GoogleLens1758Profile.ACTION_MENU_VIEW
+                                .equals(method.getReturnType().getName())) {
                     module.hook(method).intercept(chain -> {
-                        if (active()) {
-                            GoogleLens1758Profile.SelectionSnapshot selection =
-                                    GoogleLens1758Profile.selection(chain.getArg(0));
-                            bridgeSelectionSeen = true;
-                            report("USER_SELECTION",
-                                    selection.detail() + " primary=" + chain.getArg(1));
-                            sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
-                                    selection.text(), selection.detail(), selection.bounds());
-                        }
-                        return chain.proceed();
-                    });
-                    count++;
-                    continue;
-                }
-
-                if (GoogleLens1758Profile.isPendingQueryMethod(method)) {
-                    module.hook(method).intercept(chain -> {
-                        if (!active()) return chain.proceed();
-
-                        Object pending = chain.getArg(0);
-                        if (pending == null) {
-                            report("LENS_QUERY_STATE",
-                                    "pending=null ignored (LensUiController initial state)");
-                            return chain.proceed();
-                        }
-
-                        GoogleLens1758Profile.PendingSnapshot snapshot =
-                                GoogleLens1758Profile.pending(pending);
-                        bridgePendingSeen = true;
-                        report("LENS_QUERY_START", snapshot.detail());
-                        sendBridgeFrame(snapshot.frame());
-
-                        // Do not suppress 17.58 p(PendingLensQuery). Google still needs to finish
-                        // Lens processing so FloatLens can consume the real LensQueryResult.
-                        return chain.proceed();
-                    });
-                    count++;
-                    continue;
-                }
-
-                if (GoogleLens1758Profile.isQueryResultMethod(method)) {
-                    module.hook(method).intercept(chain -> {
-                        if (!active()) return chain.proceed();
-
-                        Object queryResult = chain.getArg(0);
-                        if (queryResult == null) {
-                            report("LENS_QUERY_STATE",
-                                    "result=null ignored (LensUiController initial state)");
-                            return chain.proceed();
-                        }
-
                         Object result = chain.proceed();
-                        if (!active()) return result;
-
-                        GoogleLens1758Profile.ResultSnapshot snapshot =
-                                GoogleLens1758Profile.result(queryResult);
-                        sendBridgeFrame(snapshot.frame());
-
-                        int generation = bridgeResultGeneration.incrementAndGet();
-                        report("LENS_QUERY_RESULT",
-                                "complete=" + snapshot.complete()
-                                        + " selectionSeen=" + bridgeSelectionSeen
-                                        + " pendingSeen=" + bridgePendingSeen
-                                        + " " + snapshot.detail());
-
-                        if (snapshot.complete()) {
-                            commitBridgeResult(snapshot.text(), snapshot.detail(),
-                                    "bridge_query_result_complete");
-                        } else {
-                            scheduleBridgeResultSettle(generation,
-                                    snapshot.text(), snapshot.detail());
+                        if (active() && bridgeSelectionSeen && result instanceof View view
+                                && hideGoogleShellView(view)) {
+                            report("GOOGLE_ACTION_MENU_ROOT_SUPPRESSED",
+                                    "controller=dokz.a visibility="
+                                            + visibilityName(view.getVisibility()));
                         }
+                        return result;
+                    });
+                    count++;
+                    continue;
+                }
+
+                if (GoogleLens1758Profile.isActionMenuLayoutMethod(method)) {
+                    module.hook(method).intercept(chain -> {
+                        if (!active() || !GoogleLens1758Profile.shouldSuppressPostSelectionResult(
+                                bridgeSelectionSeen, bridgeSelectionText)) {
+                            return chain.proceed();
+                        }
+
+                        report("GOOGLE_ACTION_MENU_LAYOUT_SUPPRESSED",
+                                "controller=dokz.f textLen=" + bridgeSelectionText.length()
+                                        + " bounds=" + String.valueOf(bridgeSelectionBounds));
+                        // f() lays out/refreshes Lens ActionMenuView and normally reaches g(dnqv).
+                        // Keep this as a fail-safe, but do not rely on it alone: 17.58 also has
+                        // independent callers that enter g(dnqv) without going through f().
+                        return null;
+                    });
+                    count++;
+                    continue;
+                }
+
+                if (GoogleLens1758Profile.isActionMenuPopulationMethod(method)) {
+                    module.hook(method).intercept(chain -> {
+                        if (!active() || !GoogleLens1758Profile.shouldSuppressPostSelectionResult(
+                                bridgeSelectionSeen, bridgeSelectionText)) {
+                            return chain.proceed();
+                        }
+
+                        report("GOOGLE_ACTION_MENU_POPULATION_SUPPRESSED",
+                                "controller=dokz.g arg="
+                                        + (chain.getArg(0) == null
+                                        ? "null" : chain.getArg(0).getClass().getName())
+                                        + " textLen=" + bridgeSelectionText.length()
+                                        + " bounds=" + String.valueOf(bridgeSelectionBounds));
+                        // g(dnqv) is the action-population path. APK analysis shows it is called
+                        // not only by f(), but also from independent async/synthetic callbacks.
+                        // Blocking it prevents Copy/Translate/overflow from being repopulated.
+                        return null;
+                    });
+                    count++;
+                }
+            }
+            module.log(Log.INFO, TAG,
+                    "Google Lens ActionMenu controller hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google Lens ActionMenu controller unavailable", t);
+            return 0;
+        }
+    }
+
+    /**
+     * Google 17.58 classes8.dex:
+     * dqsi.e == HIDDEN and dqqt.z(dqsi,int) directly drives InfoPanelView/
+     * LensResultPanelBottomsheetBehavior. For every FloatLens-owned selection, immediately hide
+     * the actual InfoPanelView and also rewrite state to HIDDEN so WebX/SearchBox never flashes.
+     */
+    private int hookGoogleLensInfoPanelController() {
+        try {
+            Class<?> controller = Class.forName(
+                    GoogleLens1758Profile.INFO_PANEL_CONTROLLER, false, classLoader);
+            Class<?> panelState = Class.forName("dqsi", false, classLoader);
+            Field hiddenField = panelState.getDeclaredField("e");
+            hiddenField.setAccessible(true);
+            Object hiddenState = hiddenField.get(null);
+            if (hiddenState == null) {
+                module.log(Log.WARN, TAG,
+                        "Google Lens InfoPanel HIDDEN state unavailable");
+                return 0;
+            }
+
+            int count = 0;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
+                if (!(executable instanceof Method method)) continue;
+                Class<?>[] params = method.getParameterTypes();
+                if (!"z".equals(method.getName())
+                        || params.length != 2
+                        || params[0] != panelState
+                        || params[1] != int.class
+                        || method.getReturnType() != void.class) {
+                    continue;
+                }
+
+                module.hook(method).intercept(chain -> {
+                    if (!active() || !bridgeSelectionSeen) {
+                        return chain.proceed();
+                    }
+
+                    // HIDDEN alone animates the panel below the screen and leaves WebX visible for
+                    // ~80-220ms. Hide the actual InfoPanelView immediately, then also feed HIDDEN
+                    // into Google's state machine so its internal bottom-sheet state stays sane.
+                    int hiddenBefore = forceGoogleInfoPanelGone(chain.getThisObject());
+                    Object requested = chain.getArg(0);
+                    Object[] args = chain.getArgs().toArray();
+                    args[0] = hiddenState;
+                    Object result = chain.proceed(args);
+                    int hiddenAfter = forceGoogleInfoPanelGone(chain.getThisObject());
+                    report("GOOGLE_INFO_PANEL_SUPPRESSED",
+                            "controller=dqqt.z requested="
+                                    + (requested == null ? "null" : String.valueOf(requested))
+                                    + " forced=HIDDEN goneBefore=" + hiddenBefore
+                                    + " goneAfter=" + hiddenAfter
+                                    + " textLen="
+                                    + (bridgeSelectionText == null ? 0
+                                    : bridgeSelectionText.length()));
+                    return result;
+                });
+                count++;
+            }
+            try {
+                Class<?> owner = Class.forName(
+                        GoogleLens1758Profile.INFO_PANEL_OWNER, false, classLoader);
+                for (Executable executable : HiddenApiBypass.getDeclaredMethods(owner)) {
+                    if (!(executable instanceof Method method)) continue;
+                    if (!"d".equals(method.getName())
+                            || method.getParameterCount() != 0
+                            || !GoogleLens1758Profile.INFO_PANEL_VIEW
+                                    .equals(method.getReturnType().getName())) {
+                        continue;
+                    }
+                    module.hook(method).intercept(chain -> {
+                        Object result = chain.proceed();
+                        if (active() && bridgeSelectionSeen && result instanceof View view
+                                && hideGoogleShellView(view)) {
+                            report("GOOGLE_INFO_PANEL_OWNER_SUPPRESSED",
+                                    "owner=dqpx.d visibility="
+                                            + visibilityName(view.getVisibility()));
+                        }
+                        return result;
+                    });
+                    count++;
+                }
+            } catch (Throwable t) {
+                module.log(Log.WARN, TAG,
+                        "Google Lens InfoPanel owner dqpx unavailable", t);
+            }
+
+            module.log(Log.INFO, TAG,
+                    "Google Lens InfoPanel controller/owner hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google Lens InfoPanel controller unavailable", t);
+            return 0;
+        }
+    }
+
+    private int forceGoogleInfoPanelGone(Object controller) {
+        Object panel = fieldByName(controller, "b");
+        if (!(panel instanceof View)
+                || !GoogleLens1758Profile.INFO_PANEL_VIEW.equals(panel.getClass().getName())) {
+            panel = fieldByTypeName(controller, GoogleLens1758Profile.INFO_PANEL_VIEW);
+        }
+        if (!(panel instanceof View view)) return 0;
+        try {
+            return hideGoogleShellView(view) ? 1 : 0;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "Failed to hide Google InfoPanelView", t);
+            return 0;
+        }
+    }
+
+    private boolean hideGoogleShellView(View view) {
+        if (view == null) return false;
+        boolean changed = view.getVisibility() != View.GONE
+                || view.getAlpha() != 0f
+                || view.isClickable();
+        if (view.getVisibility() != View.GONE) view.setVisibility(View.GONE);
+        if (view.getAlpha() != 0f) view.setAlpha(0f);
+        if (view.isClickable()) view.setClickable(false);
+        return changed;
+    }
+
+    /**
+     * v173 diagnostics show WebX/InfoPanel is gone, while Google 17.58's independent bottom
+     * OmniBoxView and four top Lens chrome controls can remain visible. Block only those exact
+     * views from becoming VISIBLE during a FloatLens-owned selection. Selection overlay/handles
+     * use different classes/resources and are intentionally untouched.
+     */
+    private int hookGoogleLensChromeVisibility() {
+        try {
+            Method setVisibility = View.class.getDeclaredMethod("setVisibility", int.class);
+            module.hook(setVisibility).intercept(chain -> {
+                if (!active() || !bridgeSelectionSeen
+                        || !(chain.getThisObject() instanceof View view)) {
+                    return chain.proceed();
+                }
+                int requested = (Integer) chain.getArg(0);
+                if (requested != View.VISIBLE || !isGoogleLensChromeView(view)) {
+                    return chain.proceed();
+                }
+
+                boolean changed = hideGoogleShellView(view);
+                if (changed) {
+                    report("GOOGLE_CHROME_VISIBILITY_BLOCKED",
+                            "target=" + googleLensChromeLabel(view)
+                                    + " requested=VISIBLE forced=GONE");
+                }
+                return null;
+            });
+            module.log(Log.INFO, TAG, "Google Lens chrome visibility hook=1");
+            return 1;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "Google Lens chrome visibility hook unavailable", t);
+            return 0;
+        }
+    }
+
+    /**
+     * classes8.dex dujo is the fixed Google text-selection chip Fragment. Its onCreateView
+     * explicitly wires the "Select all chip clicked" and "Listen all chip clicked" controls.
+     * Hide only this Fragment's root for FloatLens-owned sessions; the Lens selection overlay and
+     * DRAG_TEXT_HANDLE implementation are separate from this Fragment.
+     */
+    private int hookGoogleFixedSelectionChips() {
+        try {
+            Class<?> fragment = Class.forName("dujo", false, classLoader);
+            int count = 0;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(fragment)) {
+                if (!(executable instanceof Method method)) continue;
+                if (!"onCreateView".equals(method.getName())
+                        || method.getParameterCount() != 3
+                        || !View.class.isAssignableFrom(method.getReturnType())) {
+                    continue;
+                }
+
+                module.hook(method).intercept(chain -> {
+                    Object result = chain.proceed();
+                    if (active() && result instanceof View view) {
+                        view.setVisibility(View.GONE);
+                        report("GOOGLE_FIXED_SELECTION_CHIPS_SUPPRESSED",
+                                "fragment=dujo root=" + view.getClass().getName());
+                    }
+                    return result;
+                });
+                count++;
+            }
+            module.log(Log.INFO, TAG,
+                    "Google fixed selection chip hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google fixed selection chip boundary unavailable", t);
+            return 0;
+        }
+    }
+
+    private void hideGoogleMaterialFloatingToolbarSoon() {
+        Activity activity = markedActivity.get();
+        if (activity == null) return;
+        Runnable hide = () -> {
+            try {
+                View root = activity.getWindow() == null
+                        ? null : activity.getWindow().getDecorView();
+                int hidden = hideGoogleMaterialFloatingToolbar(root);
+                if (hidden > 0) {
+                    report("GOOGLE_MATERIAL_TOOLBAR_SUPPRESSED",
+                            "path=decorTraversal hidden=" + hidden
+                                    + " textLen="
+                                    + (bridgeSelectionText == null ? 0
+                                    : bridgeSelectionText.length()));
+                }
+            } catch (Throwable t) {
+                module.log(Log.WARN, TAG,
+                        "Failed to hide Google Material toolbar", t);
+            }
+        };
+        activity.runOnUiThread(hide);
+        mainHandler.postDelayed(() -> activity.runOnUiThread(hide), 48L);
+        mainHandler.postDelayed(() -> activity.runOnUiThread(hide), 140L);
+    }
+
+    private int hideGoogleMaterialFloatingToolbar(View view) {
+        if (view == null) return 0;
+        int hidden = 0;
+        if ("com.google.android.material.floatingtoolbar.FloatingToolbarLayout"
+                .equals(view.getClass().getName())) {
+            if (view.getVisibility() != View.GONE) {
+                view.setVisibility(View.GONE);
+            }
+            hidden++;
+        }
+        if (view instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) {
+                hidden += hideGoogleMaterialFloatingToolbar(group.getChildAt(i));
+            }
+        }
+        return hidden;
+    }
+
+    private void hideGoogleLensShellViewsSoon() {
+        Activity activity = markedActivity.get();
+        if (activity == null) return;
+        Runnable hide = () -> {
+            if (!active() || !bridgeSelectionSeen) return;
+            try {
+                View root = activity.getWindow() == null
+                        ? null : activity.getWindow().getDecorView();
+                int hidden = hideGoogleLensShellViews(root);
+                if (hidden > 0) {
+                    report("GOOGLE_LENS_SHELLS_SUPPRESSED",
+                            "hidden=" + hidden);
+                }
+            } catch (Throwable t) {
+                module.log(Log.WARN, TAG, "Failed to hide Google Lens shell views", t);
+            }
+        };
+        activity.runOnUiThread(hide);
+        mainHandler.postDelayed(() -> activity.runOnUiThread(hide), 24L);
+        mainHandler.postDelayed(() -> activity.runOnUiThread(hide), 72L);
+        mainHandler.postDelayed(() -> activity.runOnUiThread(hide), 180L);
+    }
+
+    private void hideGoogleLensShellViewsNow() {
+        Activity activity = markedActivity.get();
+        if (activity == null || !active() || !bridgeSelectionSeen) return;
+        try {
+            View root = activity.getWindow() == null
+                    ? null : activity.getWindow().getDecorView();
+            int hidden = hideGoogleLensShellViews(root);
+            if (hidden > 0) {
+                report("GOOGLE_LENS_SHELLS_SUPPRESSED",
+                        "path=selectionImmediate hidden=" + hidden);
+            }
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "Failed immediate Google Lens shell suppression", t);
+        }
+    }
+
+    private int hideGoogleLensShellViews(View view) {
+        if (view == null) return 0;
+        int hidden = 0;
+        if (isGoogleLensShellView(view) || isGoogleLensChromeView(view)) {
+            if (hideGoogleShellView(view)) hidden++;
+        }
+        if (view instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) {
+                hidden += hideGoogleLensShellViews(group.getChildAt(i));
+            }
+        }
+        return hidden;
+    }
+
+    /**
+     * Capture the real Google menu window/view boundary instead of guessing by protobuf type.
+     * This is diagnostic-only: it never hides a view. A later version can suppress the exact
+     * class/resource once the device log identifies it.
+     */
+    private int hookGoogleWindowInspector() {
+        try {
+            Class<?> global = Class.forName("android.view.WindowManagerGlobal", false, classLoader);
+            int count = 0;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(global)) {
+                if (!(executable instanceof Method method)) continue;
+                if (!"addView".equals(method.getName())) continue;
+                Class<?>[] params = method.getParameterTypes();
+                int viewIndex = findParameter(params, View.class);
+                int lpIndex = findParameter(params, ViewGroup.LayoutParams.class);
+                if (viewIndex < 0) continue;
+                final int vIdx = viewIndex;
+                final int lIdx = lpIndex;
+
+                module.hook(method).intercept(chain -> {
+                    Object result = chain.proceed();
+                    if (!active() || !bridgeSelectionSeen) return result;
+
+                    Object rawView = chain.getArg(vIdx);
+                    Object rawLp = lIdx >= 0 ? chain.getArg(lIdx) : null;
+                    if (rawView instanceof View view) {
+                        report("GOOGLE_WINDOW_ADD",
+                                describeView(view, true)
+                                        + " lp=" + describeWindowLayoutParams(rawLp));
+                    }
+                    return result;
+                });
+                count++;
+            }
+            module.log(Log.INFO, TAG, "Google window inspector hooks=" + count);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "Google window inspector unavailable", t);
+            return 0;
+        }
+    }
+
+    private void inspectGoogleSelectionViewsSoon() {
+        if (!provider.diagnosticsEnabled()) return;
+        Activity activity = markedActivity.get();
+        if (activity == null) return;
+        final long[] delays = {0L, 80L, 220L, 500L};
+        for (long delay : delays) {
+            Runnable scan = () -> {
+                if (!active() || !bridgeSelectionSeen) return;
+                try {
+                    View root = activity.getWindow() == null
+                            ? null : activity.getWindow().getDecorView();
+                    if (root == null) return;
+                    StringBuilder out = new StringBuilder();
+                    int[] count = {0};
+                    collectInterestingViews(root, 0, out, count);
+                    report("GOOGLE_VIEW_SNAPSHOT",
+                            "delayMs=" + delay
+                                    + " activity=" + activity.getClass().getName()
+                                    + " selectedBounds=" + String.valueOf(bridgeSelectionBounds)
+                                    + " nodes=" + count[0]
+                                    + "\n" + trimViewDump(out.toString(), 6500));
+                } catch (Throwable t) {
+                    module.log(Log.WARN, TAG, "Google view snapshot failed", t);
+                }
+            };
+            if (delay == 0L) activity.runOnUiThread(scan);
+            else mainHandler.postDelayed(() -> activity.runOnUiThread(scan), delay);
+        }
+    }
+
+    private void collectInterestingViews(View view, int depth,
+                                         StringBuilder out, int[] count) {
+        if (view == null || count[0] >= 56 || out.length() >= 6200) return;
+        if ((view.getVisibility() == View.VISIBLE
+                || isGoogleLensShellView(view)
+                || isGoogleLensChromeView(view))
+                && interestingView(view)) {
+            out.append("\n").append(depth).append(":").append(describeView(view, false));
+            count[0]++;
+        }
+        if (view instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) {
+                collectInterestingViews(group.getChildAt(i), depth + 1, out, count);
+                if (count[0] >= 56 || out.length() >= 6200) break;
+            }
+        }
+    }
+
+    private boolean isGoogleLensShellView(View view) {
+        if (view == null) return false;
+        String cls = view.getClass().getName();
+        return GoogleLens1758Profile.INFO_PANEL_VIEW.equals(cls)
+                || GoogleLens1758Profile.ACTION_MENU_VIEW.equals(cls);
+    }
+
+    private boolean isGoogleLensChromeView(View view) {
+        if (view == null) return false;
+        if (GoogleLens1758Profile.OMNIBOX_VIEW.equals(view.getClass().getName())) return true;
+        String id = resourceEntryName(view);
+        return id.endsWith(":id/lens_overlay_back_button")
+                || id.endsWith(":id/lens_overflow_menu_button")
+                || id.endsWith(":id/lens_overlay_history_button")
+                || id.endsWith(":id/lens_product_lockup_view");
+    }
+
+    private String googleLensChromeLabel(View view) {
+        if (view == null) return "null";
+        if (GoogleLens1758Profile.OMNIBOX_VIEW.equals(view.getClass().getName())) {
+            return "OmniBoxView";
+        }
+        return resourceEntryName(view);
+    }
+
+    private boolean interestingView(View view) {
+        if (view != null
+                && GoogleLens1758Profile.FROZEN_IMAGE_VIEW
+                        .equals(view.getClass().getName())) {
+            return true;
+        }
+        CharSequence text = view instanceof TextView tv ? tv.getText() : null;
+        CharSequence desc = view.getContentDescription();
+        String cls = view.getClass().getName().toLowerCase(Locale.ROOT);
+        return (text != null && !text.toString().isBlank())
+                || (desc != null && !desc.toString().isBlank())
+                || view.isClickable()
+                || cls.contains("menu")
+                || cls.contains("toolbar")
+                || cls.contains("popup")
+                || cls.contains("chip")
+                || cls.contains("button")
+                || cls.contains("compose");
+    }
+
+    private String describeView(View view, boolean includeChildren) {
+        if (view == null) return "view=null";
+        int[] loc = new int[2];
+        try { view.getLocationOnScreen(loc); } catch (Throwable ignored) {}
+        String id = resourceEntryName(view);
+        String text = "";
+        if (view instanceof TextView tv && tv.getText() != null) {
+            text = trimViewDump(tv.getText().toString(), 180);
+        }
+        String desc = view.getContentDescription() == null
+                ? "" : trimViewDump(view.getContentDescription().toString(), 180);
+        ViewParent parent = view.getParent();
+        return "class=" + view.getClass().getName()
+                + " id=" + id
+                + " visibility=" + visibilityName(view.getVisibility())
+                + " shown=" + view.isShown()
+                + " text=" + quote(text, 180)
+                + " desc=" + quote(desc, 180)
+                + " xy=" + loc[0] + "," + loc[1]
+                + " wh=" + view.getWidth() + "x" + view.getHeight()
+                + " alpha=" + view.getAlpha()
+                + " scale=" + view.getScaleX() + "," + view.getScaleY()
+                + " translation=" + view.getTranslationX() + "," + view.getTranslationY()
+                + " clickable=" + view.isClickable()
+                + " enabled=" + view.isEnabled()
+                + " parent=" + (parent == null ? "null" : parent.getClass().getName())
+                + (includeChildren && view instanceof ViewGroup g
+                ? " children=" + g.getChildCount() : "");
+    }
+
+    private String describeWindowLayoutParams(Object raw) {
+        if (!(raw instanceof WindowManager.LayoutParams lp)) {
+            return raw == null ? "null" : raw.getClass().getName();
+        }
+        CharSequence title = lp.getTitle();
+        return "type=" + lp.type
+                + " title=" + quote(title == null ? "" : title.toString(), 180)
+                + " flags=0x" + Integer.toHexString(lp.flags)
+                + " gravity=" + lp.gravity
+                + " xy=" + lp.x + "," + lp.y
+                + " wh=" + lp.width + "x" + lp.height;
+    }
+
+    private String visibilityName(int visibility) {
+        return visibility == View.VISIBLE ? "VISIBLE"
+                : visibility == View.INVISIBLE ? "INVISIBLE"
+                : visibility == View.GONE ? "GONE"
+                : String.valueOf(visibility);
+    }
+
+    private String resourceEntryName(View view) {
+        int id = view == null ? View.NO_ID : view.getId();
+        if (id == View.NO_ID || id == 0) return "none";
+        try {
+            return view.getResources().getResourceName(id);
+        } catch (Throwable ignored) {
+            return "0x" + Integer.toHexString(id);
+        }
+    }
+
+    private String trimViewDump(String value, int max) {
+        if (value == null) return "";
+        String out = value.replace("\n", " ").replace("\r", " ").replace("\u0000", "?");
+        return out.length() <= max ? out : out.substring(0, max) + "…";
+    }
+
+    /**
+     * Google 17.58 classes8.dex: dsfk.Q() builds a TEXT AreaOfInterest and calls duec.r(dudp)
+     * before the user-selection callback reaches dscu.y(). Therefore the first focus animation
+     * must be rejected from dudp's own source enum rather than waiting for bridgeSelectionSeen.
+     * APK mapping: dudp.c=RectF region, dudp.e=int source, source 1=TEXT.
+     *
+     * duec.n(dsyc) is a second path into duec.ai(). v176 only traces it so we can distinguish
+     * independent viewport changes without suppressing unrelated initialization/region behavior.
+     */
+    private int hookGoogleFrozenImageAutoFocus() {
+        try {
+            Class<?> controller = Class.forName(
+                    GoogleLens1758Profile.VIEWPORT_CONTROLLER, false, classLoader);
+            Class<?> requestClass = Class.forName(
+                    GoogleLens1758Profile.VIEWPORT_REQUEST, false, classLoader);
+            Class<?> stateClass = Class.forName(
+                    GoogleLens1758Profile.VIEWPORT_STATE, false, classLoader);
+            int count = 0;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
+                if (!(executable instanceof Method method)) continue;
+                Class<?>[] params = method.getParameterTypes();
+
+                if ("r".equals(method.getName())
+                        && params.length == 1
+                        && params[0] == requestClass
+                        && method.getReturnType() == void.class) {
+                    module.hook(method).intercept(chain -> {
+                        Object request = chain.getArg(0);
+                        Object rawBounds = fieldByName(request, "c");
+                        RectF focusBounds = rawBounds instanceof RectF rect
+                                ? new RectF(rect) : null;
+                        boolean hasBounds = focusBounds != null
+                                && focusBounds.width() > 0f
+                                && focusBounds.height() > 0f;
+                        Object rawSource = fieldByName(request, "e");
+                        int source = rawSource instanceof Integer value ? value : -1;
+
+                        if (!active()
+                                || !GoogleLens1758Profile.shouldSuppressTextViewportFocus(
+                                        request == null ? "" : request.getClass().getName(),
+                                        source,
+                                        hasBounds)) {
+                            return chain.proceed();
+                        }
+
+                        report("GOOGLE_FROZEN_IMAGE_TEXT_FOCUS_SUPPRESSED_EARLY",
+                                "controller=duec.r source=" + source
+                                        + " selectionSeen=" + bridgeSelectionSeen
+                                        + " bounds=" + focusBounds
+                                        + " request=" + compactObject(request, 360));
+                        reportFrozenImageTransform("beforeEarlyTextFocus");
+                        mainHandler.postDelayed(
+                                () -> reportFrozenImageTransform("after120ms"), 120L);
+                        mainHandler.postDelayed(
+                                () -> reportFrozenImageTransform("after300ms"), 300L);
+                        return null;
+                    });
+                    count++;
+                    continue;
+                }
+
+                if ("n".equals(method.getName())
+                        && params.length == 1
+                        && params[0] == stateClass
+                        && method.getReturnType() == void.class) {
+                    module.hook(method).intercept(chain -> {
+                        if (!active()) return chain.proceed();
+
+                        Object state = chain.getArg(0);
+                        report("GOOGLE_FROZEN_IMAGE_VIEWPORT_STATE_PATH",
+                                "controller=duec.n selectionSeen=" + bridgeSelectionSeen
+                                        + " state=" + compactObject(state, 420));
+                        reportFrozenImageTransform("beforeDuecN");
+                        Object result = chain.proceed();
+                        mainHandler.postDelayed(
+                                () -> reportFrozenImageTransform("afterDuecN120ms"), 120L);
                         return result;
                     });
                     count++;
                 }
             }
             module.log(Log.INFO, TAG,
-                    "Google " + GoogleLens1758Profile.NAME
-                            + " Lens selection hooks=" + count);
+                    "Google FrozenImage viewport hooks=" + count);
             return count;
         } catch (Throwable t) {
             module.log(Log.WARN, TAG,
-                    "Google " + GoogleLens1758Profile.NAME
-                            + " Lens selection boundary unavailable", t);
+                    "Google FrozenImage viewport boundary unavailable", t);
             return 0;
         }
     }
 
-    /**
-     * Some 17.58 result streams expose one or more non-complete LensQueryResult snapshots before
-     * settling. Deliver the last snapshot after a short quiet period if no explicit complete result
-     * arrives, rather than ending the FloatLens session on the first update.
-     */
-    private void scheduleBridgeResultSettle(int generation, String text, String detail) {
-        mainHandler.postDelayed(() -> {
-            if (!active() || bridgeCommitted
-                    || generation != bridgeResultGeneration.get()) return;
-            report("LENS_QUERY_SETTLED",
-                    "no newer result for " + RESULT_SETTLE_MS
-                            + "ms; using latest non-null result");
-            commitBridgeResult(text, detail, "bridge_query_result_settled");
-        }, RESULT_SETTLE_MS);
+    private void reportFrozenImageTransform(String phase) {
+        if (!active()) return;
+        Activity activity = markedActivity.get();
+        if (activity == null) return;
+        activity.runOnUiThread(() -> {
+            if (!active()) return;
+            try {
+                View root = activity.getWindow() == null
+                        ? null : activity.getWindow().getDecorView();
+                View image = findViewByClassName(root, GoogleLens1758Profile.FROZEN_IMAGE_VIEW);
+                if (image == null) {
+                    report("GOOGLE_FROZEN_IMAGE_TRANSFORM",
+                            "phase=" + phase + " view=missing");
+                    return;
+                }
+                int[] loc = new int[2];
+                try { image.getLocationOnScreen(loc); } catch (Throwable ignored) {}
+                report("GOOGLE_FROZEN_IMAGE_TRANSFORM",
+                        "phase=" + phase
+                                + " scaleX=" + image.getScaleX()
+                                + " scaleY=" + image.getScaleY()
+                                + " translationX=" + image.getTranslationX()
+                                + " translationY=" + image.getTranslationY()
+                                + " xy=" + loc[0] + "," + loc[1]
+                                + " wh=" + image.getWidth() + "x" + image.getHeight());
+            } catch (Throwable t) {
+                module.log(Log.WARN, TAG,
+                        "Failed to inspect FrozenImage transform", t);
+            }
+        });
     }
 
-    private synchronized void commitBridgeResult(String text, String detail, String reason) {
-        if (!active() || bridgeCommitted) return;
+    private View findViewByClassName(View view, String className) {
+        if (view == null || className == null) return null;
+        if (className.equals(view.getClass().getName())) return view;
+        if (view instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = findViewByClassName(group.getChildAt(i), className);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    /** Google 17.58.16.ve core selection boundary from classes8.dex. */
+    private int hookGoogle1758LensSelectionBoundary() {
+        try {
+            String profileError = GoogleLens1758Profile.selectionValidationError(classLoader);
+            if (!profileError.isBlank()) {
+                module.log(Log.WARN, TAG,
+                        "Google " + GoogleLens1758Profile.NAME
+                                + " selection profile rejected: " + profileError
+                                + "; trying dynamic structural selection resolver");
+                return hookDynamicLensSelectionBoundary(profileError);
+            }
+
+            Class<?> controller = Class.forName(
+                    GoogleLens1758Profile.CONTROLLER, false, classLoader);
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
+                if (!(executable instanceof Method method)
+                        || !GoogleLens1758Profile.isSelectionMethod(method)) {
+                    continue;
+                }
+
+                module.hook(method).intercept(chain -> {
+                    GoogleLens1758Profile.SelectionSnapshot selection = null;
+                    Rect selectionBounds = null;
+                    if (active()) {
+                        selection = GoogleLens1758Profile.selection(chain.getArg(0));
+                        selectionBounds = selectionBoundsForDisplay(selection);
+                        bridgeSelectionSeen = true;
+                        bridgeSelectionText = selection.text();
+                        if (selectionBounds != null && !selectionBounds.isEmpty()) {
+                            bridgeSelectionBounds = selectionBounds;
+                        }
+                        Rect effectiveBounds = bridgeSelectionBounds == null
+                                ? null : new Rect(bridgeSelectionBounds);
+                        report("USER_SELECTION",
+                                selection.detail()
+                                        + " pixelBounds=" + String.valueOf(selectionBounds)
+                                        + " effectiveBounds=" + String.valueOf(effectiveBounds)
+                                        + " primary=" + chain.getArg(1));
+                        sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
+                                selection.text(), selection.detail(), effectiveBounds);
+                    }
+
+                    boolean directRegionCommit = active()
+                            && selection != null
+                            && selection.isDirectRegionSelection()
+                            && selectionBounds != null
+                            && !selectionBounds.isEmpty();
+
+                    Object result = chain.proceed();
+
+                    if (active() && bridgeSelectionSeen) {
+                        uiSanitizer.sanitizeNow();
+                    }
+
+                    if (directRegionCommit && active() && !bridgeCommitted) {
+                        report("LENS_REGION_SELECTION_COMMIT",
+                                "class=" + selection.userSelectionClass()
+                                        + " bounds=" + String.valueOf(bridgeSelectionBounds)
+                                        + " source=selection_boundary");
+                        commitBridgeResult("", selection.detail(), "lens_region_selection");
+                    }
+
+                    if (active() && bridgeSelectionSeen
+                            && bridgeSelectionText != null
+                            && !bridgeSelectionText.isBlank()) {
+                        uiSanitizer.sanitizeNow();
+                        inspectGoogleSelectionViewsSoon();
+                    }
+                    return result;
+                });
+
+                module.log(Log.INFO, TAG,
+                        "Google " + GoogleLens1758Profile.NAME
+                                + " core selection hook=1 method=" + method.getName());
+                return 1;
+            }
+
+            module.log(Log.WARN, TAG,
+                    "Google " + GoogleLens1758Profile.NAME
+                            + " core selection method not found after validation");
+            return 0;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google " + GoogleLens1758Profile.NAME
+                            + " core selection boundary unavailable", t);
+            return 0;
+        }
+    }
+
+    private int hookDynamicLensSelectionBoundary(String profileError) {
+        GoogleLensDynamicResolver.SelectionBinding binding =
+                GoogleLensDynamicResolver.discoverSelection(classLoader);
+        if (!binding.available()) {
+            module.log(Log.WARN, TAG,
+                    "Dynamic Google Lens selection resolver unavailable: "
+                            + binding.detail() + " profileError=" + profileError);
+            return 0;
+        }
+
+        module.log(Log.INFO, TAG,
+                "Dynamic Google Lens selection hook accepted confidence="
+                        + binding.confidence() + " " + binding.detail());
+        try {
+            module.hook(binding.method()).intercept(chain -> {
+                GoogleLensDynamicResolver.DynamicSelectionSnapshot selection = null;
+                Rect selectionBounds = null;
+                if (active()) {
+                    selection = binding.snapshot(chain.getArg(0));
+                    selectionBounds = dynamicSelectionBoundsForDisplay(selection.rawBounds());
+                    bridgeSelectionSeen = true;
+                    bridgeSelectionText = selection.text();
+                    if (selectionBounds != null && !selectionBounds.isEmpty()) {
+                        bridgeSelectionBounds = selectionBounds;
+                    }
+                    Rect effectiveBounds = bridgeSelectionBounds == null
+                            ? null : new Rect(bridgeSelectionBounds);
+                    String detail = selection.detail()
+                            + " resolver=" + binding.detail()
+                            + " pixelBounds=" + String.valueOf(selectionBounds)
+                            + " effectiveBounds=" + String.valueOf(effectiveBounds)
+                            + " primary=" + chain.getArg(1);
+                    report("USER_SELECTION_DYNAMIC", detail);
+                    sendBridgeEvent(GoogleCtsContract.EVENT_SELECTION,
+                            selection.text(), detail, effectiveBounds);
+                }
+
+                // Dynamic discovery is allowed to drive text selection immediately, but it
+                // does not auto-commit non-text/region selections yet. Empty-text selections are
+                // too ambiguous until a runtime validator has observed the new Google version.
+                Object result = chain.proceed();
+
+                if (active() && bridgeSelectionSeen) {
+                    uiSanitizer.sanitizeNow();
+                }
+
+                if (active() && bridgeSelectionSeen
+                        && bridgeSelectionText != null
+                        && !bridgeSelectionText.isBlank()) {
+                    uiSanitizer.sanitizeNow();
+                    inspectGoogleSelectionViewsSoon();
+                }
+                return result;
+            });
+            return 1;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Dynamic Google Lens selection hook install failed", t);
+            return 0;
+        }
+    }
+
+    private synchronized boolean suppressBridgeTextPresentation(String detail) {
+        if (!active() || !bridgeSelectionSeen
+                || bridgeSelectionText == null || bridgeSelectionText.isBlank()) {
+            return false;
+        }
+        report("LENS_TEXT_PRESENTATION_SUPPRESSED",
+                "keepSelectionAlive=true textLen=" + bridgeSelectionText.length()
+                        + " bounds=" + String.valueOf(bridgeSelectionBounds)
+                        + " detail=" + safe(detail));
+        return true;
+    }
+
+    private synchronized boolean commitBridgeResult(String text, String detail, String reason) {
+        if (!active() || bridgeCommitted
+                || (!bridgeSelectionSeen && !bridgePendingSeen && !bridgeFrameQueued)) {
+            return false;
+        }
+
+        // Never close Google's marked Lens UI unless FloatLens actually has something it can
+        // display. v155 showed non-null dtqi placeholders with frame/text/LensResult all null;
+        // treating those as a settled result closed the UI and delivered nothing.
+        String finalText = bridgeSelectionText == null || bridgeSelectionText.isBlank()
+                ? text : bridgeSelectionText;
+        if ((finalText == null || finalText.isBlank()) && !bridgeFrameQueued) {
+            report("LENS_QUERY_NO_PAYLOAD",
+                    "keep Google UI open reason=" + reason
+                            + " detail=" + safe(detail));
+            return false;
+        }
+
         bridgeCommitted = true;
-        sendBridgeEvent(GoogleCtsContract.EVENT_QUERY_RESULT, text, detail, null);
-        finishMarkedGoogleActivity(reason);
-        clear(reason);
+
+        // Make the final event self-contained. Explicit broadcasts are asynchronous; carrying the
+        // latest selection again prevents a query-result delivery from racing ahead of the earlier
+        // selection event in the FloatLens process.
+        Rect finalBounds = bridgeSelectionBounds == null
+                ? null : new Rect(bridgeSelectionBounds);
+        String committedToken = sessionToken;
+        sendBridgeEvent(GoogleCtsContract.EVENT_QUERY_RESULT,
+                finalText, detail, finalBounds);
+        // Do not finish LensientActivity here. ResultActivity is translucent and its DialogFragment
+        // needs ~50-120ms before its first visible frame. Finishing Google immediately exposes the
+        // underlying app/launcher for one frame, which looks like a flash. Keep Google's frozen
+        // image alive until the FloatLens app clears the remote token from its first-frame callback.
+        awaitFloatLensResultHandoff(committedToken, reason,
+                SystemClock.elapsedRealtime());
+        return true;
+    }
+
+    private void awaitFloatLensResultHandoff(
+            String token, String reason, long startedAtElapsed) {
+        if (token == null || token.isBlank()) return;
+        mainHandler.post(new Runnable() {
+            @Override public void run() {
+                if (!token.equals(sessionToken) || !bridgeCommitted) return;
+
+                long elapsed = Math.max(0L,
+                        SystemClock.elapsedRealtime() - startedAtElapsed);
+                boolean stillOwned = provider.ownsGoogleCtsSession(token);
+                if (stillOwned && elapsed < RESULT_HANDOFF_TIMEOUT_MS) {
+                    // Google remains the stable frozen-image backdrop while FloatLens' translucent
+                    // result host is being created. Keep its own chrome suppressed during the gap.
+                    if (active()) uiSanitizer.sanitizeNow();
+                    mainHandler.postDelayed(this, RESULT_HANDOFF_POLL_MS);
+                    return;
+                }
+
+                String stage = stillOwned ? "timeout" : "result_first_frame";
+                Activity activity = markedActivity.get();
+                String activityName = activity == null ? "none"
+                        : activity.getClass().getName();
+                String line = "GOOGLE_UI_FINISH_AFTER_HANDOFF session="
+                        + shortToken(token)
+                        + " activity=" + activityName
+                        + " stage=" + stage
+                        + " elapsedMs=" + elapsed
+                        + " reason=" + reason;
+                sendTrace(line);
+                module.log(Log.INFO, TAG, line);
+
+                if (stillOwned) {
+                    // The app-side first-frame callback failed or never arrived. Tell FloatLens to
+                    // tear down its remote lease before closing Google so a native CTS session is
+                    // never left contaminated by this failed marked session.
+                    sendBridgeEvent(GoogleCtsContract.EVENT_END, "",
+                            "result_handoff_timeout", null);
+                }
+                if (activity != null) finishActivity(activity,
+                        reason + "_" + stage);
+                clear(reason + "_" + stage);
+            }
+        });
+    }
+
+    private Rect selectionBoundsForDisplay(
+            GoogleLens1758Profile.SelectionSnapshot selection) {
+        if (selection == null) return null;
+        Rect direct = selection.bounds();
+        if (direct != null) return direct;
+        try {
+            Context context = currentApplicationContext();
+            if (context == null) return null;
+            android.util.DisplayMetrics metrics =
+                    context.getResources().getDisplayMetrics();
+            return selection.boundsForFrame(metrics.widthPixels, metrics.heightPixels);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private Rect dynamicSelectionBoundsForDisplay(RectF rawBounds) {
+        if (rawBounds == null || rawBounds.width() <= 0f || rawBounds.height() <= 0f) return null;
+        RectF working = new RectF(rawBounds);
+        boolean normalized = working.left >= -0.05f && working.top >= -0.05f
+                && working.right <= 1.05f && working.bottom <= 1.05f;
+        if (normalized) {
+            try {
+                Context context = currentApplicationContext();
+                if (context == null) return null;
+                android.util.DisplayMetrics metrics = context.getResources().getDisplayMetrics();
+                working.set(
+                        working.left * metrics.widthPixels,
+                        working.top * metrics.heightPixels,
+                        working.right * metrics.widthPixels,
+                        working.bottom * metrics.heightPixels);
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+        Rect out = new Rect();
+        working.roundOut(out);
+        return out.isEmpty() ? null : out;
     }
 
     private void rememberMarkedActivity(Object value) {
@@ -293,18 +1284,16 @@ final class GoogleCtsRuntimeInspector {
         Activity current = markedActivity.get();
         if (name.endsWith(".LensientActivity") || current == null || current.isFinishing()) {
             markedActivity = new WeakReference<>(activity);
-            report("GOOGLE_UI_OWNER", "activity=" + name);
+            uiSanitizer.attach(activity);
+            report("GOOGLE_UI_OWNER", "activity=" + name + " sanitizer=attached");
         }
     }
 
-    private void finishMarkedGoogleActivity(String reason) {
-        Activity activity = markedActivity.get();
-        if (activity == null) {
-            report("GOOGLE_UI_FINISH", "activity=none reason=" + reason);
-            return;
-        }
+    private void finishActivity(Activity activity, String reason) {
+        if (activity == null) return;
         String name = activity.getClass().getName();
-        report("GOOGLE_UI_FINISH", "activity=" + name + " reason=" + reason);
+        module.log(Log.INFO, TAG,
+                "finish activity=" + name + " reason=" + reason);
         activity.runOnUiThread(() -> {
             try {
                 if (!activity.isFinishing() && !activity.isDestroyed()) {
@@ -312,7 +1301,8 @@ final class GoogleCtsRuntimeInspector {
                     activity.overridePendingTransition(0, 0);
                 }
             } catch (Throwable t) {
-                module.log(Log.WARN, TAG, "Failed to finish marked Google Lens activity", t);
+                module.log(Log.WARN, TAG,
+                        "Failed to finish Google contextual search activity", t);
             }
         });
     }
@@ -325,7 +1315,7 @@ final class GoogleCtsRuntimeInspector {
             return;
         }
         if (active()) return;
-        String token = provider.googleCtsArmedToken();
+        String token = provider.googleCtsArmedToken(extras);
         if (!token.isBlank()) {
             activate(token, showSessionId, voiceSession, path + "_ARMED");
             report("BOUNDARY_CORRELATION",
@@ -334,27 +1324,47 @@ final class GoogleCtsRuntimeInspector {
         }
     }
 
-    private Object fieldByTypeName(Object target, String typeName) {
-        if (target == null) return null;
-        for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
-            if (!typeName.equals(field.getType().getName())) continue;
+    private Object fieldByName(Object target, String fieldName) {
+        if (target == null || fieldName == null) return null;
+        for (Class<?> current = target.getClass();
+             current != null; current = current.getSuperclass()) {
             try {
+                Field field = current.getDeclaredField(fieldName);
                 field.setAccessible(true);
                 return field.get(target);
-            } catch (Throwable ignored) {}
+            } catch (Throwable ignored) {
+            }
         }
         return null;
     }
 
-    private String firstStringField(Object target) {
-        if (target == null) return null;
-        for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
-            if (field.getType() != String.class) continue;
+    private Object fieldByTypeName(Object target, String typeName) {
+        if (target == null || typeName == null) return null;
+        for (Class<?> current = target.getClass();
+             current != null; current = current.getSuperclass()) {
             try {
-                field.setAccessible(true);
-                Object value = field.get(target);
-                if (value instanceof String s && !s.isBlank()) return s;
-            } catch (Throwable ignored) {}
+                for (Field field : current.getDeclaredFields()) {
+                    if (Modifier.isStatic(field.getModifiers())
+                            || !typeName.equals(field.getType().getName())) continue;
+                    try {
+                        field.setAccessible(true);
+                        return field.get(target);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            for (Field field : HiddenApiBypass.getInstanceFields(target.getClass())) {
+                if (!typeName.equals(field.getType().getName())) continue;
+                try {
+                    field.setAccessible(true);
+                    return field.get(target);
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable ignored) {
         }
         return null;
     }
@@ -403,7 +1413,7 @@ final class GoogleCtsRuntimeInspector {
                                 + " keys=" + safeKeys(args));
                         dumpClassStructure(chain.getThisObject().getClass(), "voiceSession");
                     } else if (provider.isActive() && !active()) {
-                        String armedToken = provider.googleCtsArmedToken();
+                        String armedToken = provider.googleCtsArmedToken(args);
                         if (!armedToken.isBlank()) {
                             activate(armedToken, id, chain.getThisObject(), "VIS_ARMED_FALLBACK");
                             report("SESSION_SHOW", "path=VIS_ARMED_FALLBACK marker=false sessionClass="
@@ -487,7 +1497,7 @@ final class GoogleCtsRuntimeInspector {
                                 + " intent=" + describeIntent(intent));
                         if (activity != null) dumpClassStructure(activity.getClass(), "activity");
                     } else if (provider.isActive() && !active() && intent != null) {
-                        String armedToken = provider.googleCtsArmedToken();
+                        String armedToken = provider.googleCtsArmedToken(extras);
                         if (!armedToken.isBlank()) {
                             activate(armedToken, -1, null, "CONTEXTUAL_ACTIVITY_ARMED_FALLBACK");
                             report("SESSION_SHOW", "path=ContextualActivityArmedFallback marker=false activity="
@@ -496,10 +1506,87 @@ final class GoogleCtsRuntimeInspector {
                             if (activity != null) dumpClassStructure(activity.getClass(), "activityFallback");
                         }
                     } else if (active() && intent != null) {
-                        report("ACTIVITY_LIFECYCLE", name + " " + describeIntent(intent));
+                        report("ACTIVITY_LIFECYCLE", name
+                                + " activityClass="
+                                + (activity == null ? "null" : activity.getClass().getName())
+                                + " " + describeIntent(intent));
                     }
-                    if (active()) rememberMarkedActivity(activity);
-                    return chain.proceed();
+
+                    boolean contextualBoundary = active() && intent != null
+                            && GoogleCtsContract.isContextualSearchAction(intent.getAction());
+                    boolean contextualFrame = false;
+                    boolean contextualPayload = false;
+                    String contextualDetail = "";
+                    if (contextualBoundary) {
+                        contextualFrame = captureContextualSearchFrame(intent);
+                        boolean hasText = bridgeSelectionText != null
+                                && !bridgeSelectionText.isBlank();
+                        contextualPayload = hasText || bridgeFrameQueued;
+                        contextualDetail = "source=activity_lifecycle"
+                                + " activityClass="
+                                + (activity == null ? "null" : activity.getClass().getName())
+                                + " selectionSeen=" + bridgeSelectionSeen
+                                + " textLen="
+                                + (bridgeSelectionText == null ? 0 : bridgeSelectionText.length())
+                                + " bounds=" + String.valueOf(bridgeSelectionBounds)
+                                + " frameQueued=" + contextualFrame
+                                + " extras=" + safeKeys(extras);
+                        report("CONTEXTUAL_SEARCH_BOUNDARY", contextualDetail);
+                    }
+
+                    boolean contextualText = contextualBoundary
+                            && bridgeSelectionText != null
+                            && !bridgeSelectionText.isBlank();
+
+                    // If Google reuses the original LensientActivity via onNewIntent, do not
+                    // deliver the contextual-search intent at all. Finishing that Activity would
+                    // destroy the live selection handles that FloatLens intentionally preserves.
+                    if (contextualText && "callActivityOnNewIntent".equals(name)) {
+                        report("CONTEXTUAL_TEXT_SEARCH_SUPPRESSED",
+                                "path=activity_new_intent keepSelectionAlive=true textLen="
+                                        + bridgeSelectionText.length());
+                        module.log(Log.INFO, TAG,
+                                "Contextual text-search newIntent suppressed; selection kept alive");
+                        return null;
+                    }
+
+                    // Never replace the remembered selection Activity with a later Contextual
+                    // Search Activity. The original LensientActivity owns Google's highlight and
+                    // resize handles and must remain alive for FloatLens text-menu sessions.
+                    if (active() && !contextualBoundary) rememberMarkedActivity(activity);
+                    Object result = chain.proceed();
+
+                    // Some Android builds launch Contextual Search through the framework service,
+                    // bypassing this process' execStartActivity(). Text selections already have a
+                    // live FloatLens menu, so close only this search Activity: do not commit the
+                    // bridge, do not clear the marked session, and do not finish the underlying
+                    // selection Activity. Region/image flows keep the previous result fallback.
+                    if (contextualBoundary && contextualPayload && active()) {
+                        boolean hasText = bridgeSelectionText != null
+                                && !bridgeSelectionText.isBlank();
+                        if (hasText && activity instanceof Activity contextualActivity) {
+                            report("CONTEXTUAL_TEXT_SEARCH_SUPPRESSED",
+                                    "path=activity_lifecycle keepSelectionAlive=true textLen="
+                                            + bridgeSelectionText.length());
+                            finishActivity(contextualActivity,
+                                    "contextual_text_search_suppressed");
+                            module.log(Log.INFO, TAG,
+                                    "Contextual text search activity suppressed; selection kept alive");
+                        } else {
+                            boolean consumed = commitBridgeResult("", contextualDetail,
+                                    "contextual_search_activity_intercept");
+                            if (consumed && activity instanceof Activity contextualActivity) {
+                                finishActivity(contextualActivity,
+                                        "contextual_search_activity_intercept");
+                                module.log(Log.INFO, TAG,
+                                        "Contextual search activity consumed by FloatLens");
+                            }
+                        }
+                    } else if (contextualBoundary && !contextualPayload && active()) {
+                        report("CONTEXTUAL_SEARCH_PASSTHROUGH",
+                                "activity lifecycle has no FloatLens payload");
+                    }
+                    return result;
                 });
                 count++;
             }
@@ -507,6 +1594,36 @@ final class GoogleCtsRuntimeInspector {
             module.log(Log.WARN, TAG, "Activity lifecycle hook unavailable", t);
         }
         return count;
+    }
+
+    private boolean captureContextualSearchFrame(Intent intent) {
+        if (!active() || intent == null
+                || !GoogleCtsContract.isContextualSearchAction(intent.getAction())) {
+            return false;
+        }
+        Bundle extras = intent.getExtras();
+        if (extras == null || !extras.containsKey(GoogleCtsContract.CONTEXTUAL_SCREENSHOT)) {
+            report("CONTEXTUAL_SCREENSHOT", "missing");
+            return false;
+        }
+        Object value;
+        try {
+            value = extras.get(GoogleCtsContract.CONTEXTUAL_SCREENSHOT);
+        } catch (Throwable t) {
+            report("CONTEXTUAL_SCREENSHOT",
+                    "read failed=" + t.getClass().getSimpleName());
+            return false;
+        }
+        if (value instanceof Bitmap bitmap && !bitmap.isRecycled()) {
+            report("CONTEXTUAL_SCREENSHOT",
+                    "bitmap=" + bitmapSummary(bitmap));
+            sendBridgeFrame(bitmap);
+            return bridgeFrameQueued;
+        }
+        report("CONTEXTUAL_SCREENSHOT",
+                "valueClass=" + (value == null ? "null" : value.getClass().getName())
+                        + " value=" + describeValue(value));
+        return false;
     }
 
     private int hookActivityDispatch() {
@@ -519,92 +1636,78 @@ final class GoogleCtsRuntimeInspector {
                 if (intentIndex < 0) continue;
                 final int idx = intentIndex;
                 module.hook(method).intercept(chain -> {
-                    if (active()) {
-                        Intent intent = (Intent) chain.getArg(idx);
+                    if (!active()) return chain.proceed();
+
+                    Intent intent = (Intent) chain.getArg(idx);
+                    if (provider.diagnosticsEnabled()) {
                         report("START_ACTIVITY", describeIntent(intent)
                                 + " caller=" + googleCaller());
                     }
-                    return chain.proceed();
+
+                    if (intent == null
+                            || !GoogleCtsContract.isContextualSearchAction(
+                                    intent.getAction())) {
+                        return chain.proceed();
+                    }
+
+                    boolean frameQueued = captureContextualSearchFrame(intent);
+                    boolean hasText = bridgeSelectionText != null
+                            && !bridgeSelectionText.isBlank();
+                    boolean hasRenderablePayload = hasText || bridgeFrameQueued;
+
+                    String detail = "action=" + intent.getAction()
+                            + " selectionSeen=" + bridgeSelectionSeen
+                            + " textLen="
+                            + (bridgeSelectionText == null ? 0 : bridgeSelectionText.length())
+                            + " bounds=" + String.valueOf(bridgeSelectionBounds)
+                            + " frameQueued=" + frameQueued
+                            + " extras=" + safeKeys(intent.getExtras());
+
+                    report("CONTEXTUAL_SEARCH_BOUNDARY", detail);
+
+                    // Suppress only when FloatLens can actually render something. This keeps the
+                    // Google flow untouched if a future Google build changes the screenshot or
+                    // selection payload shape.
+                    if (!hasRenderablePayload) {
+                        report("CONTEXTUAL_SEARCH_PASSTHROUGH",
+                                "no renderable FloatLens payload; Google search allowed");
+                        return chain.proceed();
+                    }
+
+                    if (hasText) {
+                        report("CONTEXTUAL_TEXT_SEARCH_SUPPRESSED",
+                                "path=execStartActivity keepSelectionAlive=true textLen="
+                                        + bridgeSelectionText.length());
+                        module.log(Log.INFO, TAG,
+                                "Contextual text search launch suppressed; selection kept alive");
+                        // Do not commit/clear a live text-menu session. Returning null prevents
+                        // the search Activity from launching while Google's original selection UI
+                        // and resize handles stay active underneath FloatLens.
+                        return null;
+                    }
+
+                    report("CONTEXTUAL_SEARCH_TAKEOVER",
+                            "renderable payload ready; suppressing marked Google search");
+                    boolean consumed = commitBridgeResult(
+                            "", detail, "contextual_search_intercept");
+                    if (!consumed) {
+                        report("CONTEXTUAL_SEARCH_PASSTHROUGH",
+                                "bridge commit rejected; Google search allowed");
+                        return chain.proceed();
+                    }
+
+                    module.log(Log.INFO, TAG,
+                            "Contextual search launch suppressed for FloatLens session");
+                    // Instrumentation.execStartActivity normally returns null for a successful
+                    // external launch, so null is also the safest synthetic result when we consume
+                    // this marked launch.
+                    return null;
                 });
                 count++;
             }
             return count;
         } catch (Throwable t) {
             module.log(Log.INFO, TAG, "Activity dispatch hook unavailable", t);
-            return 0;
-        }
-    }
-
-    private int hookIntentWrites() {
-        int count = 0;
-        for (Method method : Intent.class.getDeclaredMethods()) {
-            if (!"putExtra".equals(method.getName())) continue;
-            Class<?>[] p = method.getParameterTypes();
-            if (p.length != 2 || p[0] != String.class) continue;
-            module.hook(method).intercept(chain -> {
-                if (active() && !isTraceDispatching()) {
-                    String key = (String) chain.getArg(0);
-                    if (!internalTraceKey(key) && relevantKey(key)) {
-                        report("INTENT_EXTRA", "key=" + key
-                                + " value=" + describeValue(chain.getArg(1))
-                                + " caller=" + googleCaller());
-                    }
-                }
-                return chain.proceed();
-            });
-            count++;
-        }
-        return count;
-    }
-
-    private int hookBundleWrites() {
-        int count = 0;
-        for (Method method : Bundle.class.getDeclaredMethods()) {
-            if (!method.getName().startsWith("put")) continue;
-            Class<?>[] p = method.getParameterTypes();
-            if (p.length < 2 || p[0] != String.class) continue;
-            module.hook(method).intercept(chain -> {
-                if (active() && !isTraceDispatching()) {
-                    String key = (String) chain.getArg(0);
-                    if (!internalTraceKey(key) && relevantKey(key)) {
-                        report("BUNDLE_WRITE", "method=" + method.getName()
-                                + " key=" + key
-                                + " value=" + describeValue(chain.getArg(1))
-                                + " caller=" + googleCaller());
-                    }
-                }
-                return chain.proceed();
-            });
-            count++;
-        }
-        return count;
-    }
-
-    private int hookRelevantClassLoads() {
-        try {
-            Class<?> cls = BaseDexClassLoader.class;
-            int count = 0;
-            for (Executable executable : HiddenApiBypass.getDeclaredMethods(cls)) {
-                if (!(executable instanceof Method method)) continue;
-                if (!"findClass".equals(method.getName())) continue;
-                Class<?>[] p = method.getParameterTypes();
-                if (p.length < 1 || p[0] != String.class) continue;
-                module.hook(method).intercept(chain -> {
-                    Object result = chain.proceed();
-                    if (active() && result instanceof Class<?> loaded) {
-                        String name = loaded.getName();
-                        if (relevantClass(name) && markClass(name)) {
-                            report("CLASS_LOAD", name);
-                            if (name.contains(".omnient.")) dumpClassStructure(loaded, "omnient");
-                        }
-                    }
-                    return result;
-                });
-                count++;
-            }
-            return count;
-        } catch (Throwable t) {
-            module.log(Log.INFO, TAG, "Dex class-load trace unavailable", t);
             return 0;
         }
     }
@@ -616,17 +1719,19 @@ final class GoogleCtsRuntimeInspector {
         activeUntil = SystemClock.elapsedRealtime() + SESSION_TTL_MS;
         sessionToken = nextToken;
         if (newBridgeSession) {
+            uiSanitizer.detach();
             bridgeFrameQueued = false;
             bridgeCommitted = false;
             bridgeSelectionSeen = false;
             bridgePendingSeen = false;
-            bridgeResultGeneration.incrementAndGet();
+            bridgeSelectionText = "";
+            bridgeSelectionBounds = null;
+            presentationAlreadyAbsentReported = false;
             markedActivity = new WeakReference<>(null);
         }
         if (id >= 0) showSessionId = id;
         if (session != null) voiceSession = session;
         eventCount.set(0);
-        seenClasses.clear();
         String header = "=== Google CTS marked session ===\n"
                 + "ACTIVE path=" + path
                 + " session=" + shortToken(sessionToken)
@@ -656,19 +1761,22 @@ final class GoogleCtsRuntimeInspector {
         bridgeCommitted = false;
         bridgeSelectionSeen = false;
         bridgePendingSeen = false;
-        bridgeResultGeneration.incrementAndGet();
+        bridgeSelectionText = "";
+        bridgeSelectionBounds = null;
+        presentationAlreadyAbsentReported = false;
+        uiSanitizer.detach();
         markedActivity = new WeakReference<>(null);
-        seenClasses.clear();
     }
 
     private boolean active() {
         return provider.isActive()
                 && !sessionToken.isBlank()
+                && provider.ownsGoogleCtsSession(sessionToken)
                 && SystemClock.elapsedRealtime() < activeUntil;
     }
 
     private void report(String event, String message) {
-        if (!active()) return;
+        if (!provider.diagnosticsEnabled() || !active()) return;
         int n = reserveEventNumber();
         if (n < 0) return;
         String line = "#" + n + " " + event + " session="
@@ -686,7 +1794,8 @@ final class GoogleCtsRuntimeInspector {
     }
 
     private void sendTrace(String line) {
-        if (line == null || line.isBlank() || sessionToken.isBlank()) return;
+        if (!provider.diagnosticsEnabled()
+                || line == null || line.isBlank() || sessionToken.isBlank()) return;
         if (isTraceDispatching()) return;
         traceDispatching.set(Boolean.TRUE);
         try {
@@ -812,16 +1921,6 @@ final class GoogleCtsRuntimeInspector {
         return Boolean.TRUE.equals(traceDispatching.get());
     }
 
-    private boolean internalTraceKey(String key) {
-        if (key == null) return false;
-        return GoogleCtsContract.EXTRA_TRACE_SESSION.equals(key)
-                || GoogleCtsContract.EXTRA_TRACE_LINE.equals(key)
-                || GoogleCtsContract.EXTRA_BRIDGE_SESSION.equals(key)
-                || GoogleCtsContract.EXTRA_BRIDGE_EVENT.equals(key)
-                || GoogleCtsContract.EXTRA_BRIDGE_TEXT.equals(key)
-                || GoogleCtsContract.EXTRA_BRIDGE_DETAIL.equals(key);
-    }
-
     private Context currentApplicationContext() {
         try {
             Class<?> activityThread = Class.forName("android.app.ActivityThread");
@@ -833,7 +1932,7 @@ final class GoogleCtsRuntimeInspector {
     }
 
     private void dumpClassStructure(Class<?> cls, String reason) {
-        if (!active() || cls == null) return;
+        if (!provider.diagnosticsEnabled() || !active() || cls == null) return;
         StringBuilder out = new StringBuilder();
         out.append("reason=").append(reason).append(" class=").append(cls.getName());
         Class<?> parent = cls.getSuperclass();
@@ -877,28 +1976,6 @@ final class GoogleCtsRuntimeInspector {
     private int findParameter(Class<?>[] params, Class<?> type) {
         for (int i = 0; i < params.length; i++) if (type.isAssignableFrom(params[i])) return i;
         return -1;
-    }
-
-    private boolean relevantKey(String key) {
-        if (key == null) return false;
-        String k = key.toLowerCase(Locale.ROOT);
-        return k.contains("omni") || k.contains("query") || k.contains("text")
-                || k.contains("select") || k.contains("image") || k.contains("bitmap")
-                || k.contains("screen") || k.contains("crop") || k.contains("region")
-                || k.contains("rect") || k.contains("polygon") || k.contains("lens")
-                || k.contains("visual") || k.contains("object") || k.contains("translate");
-    }
-
-    private boolean relevantClass(String name) {
-        if (name == null) return false;
-        String n = name.toLowerCase(Locale.ROOT);
-        return n.contains(".omnient.") || n.contains(".lens.")
-                || n.contains("contextualsearch") || n.contains("contextual_search");
-    }
-
-    private synchronized boolean markClass(String name) {
-        if (seenClasses.size() >= 160) return false;
-        return seenClasses.add(name);
     }
 
     private String googleCaller() {

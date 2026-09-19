@@ -10,6 +10,10 @@ public final class GoogleCtsContract {
     public static final String K_SESSION_TOKEN = "floatlens_session_token";
     public static final String K_INVOCATION_TIME = "invocation_time_ms";
     public static final String K_OMNI_ENTRY_POINT = "omni.entry_point";
+    public static final String CONTEXTUAL_SEARCH_ACTION =
+            "android.app.contextualsearch.action.LAUNCH_CONTEXTUAL_SEARCH";
+    public static final String CONTEXTUAL_SCREENSHOT =
+            "android.app.contextualsearch.extra.SCREENSHOT";
     public static final String ACTION_TRACE = "com.yagay.floatlens.action.GOOGLE_CTS_TRACE";
     public static final String TRACE_RECEIVER_CLASS = "com.yagay.floatlens.GoogleCtsTraceReceiver";
     public static final String EXTRA_TRACE_SESSION = "com.yagay.floatlens.extra.CTS_TRACE_SESSION";
@@ -34,12 +38,18 @@ public final class GoogleCtsContract {
     public static final String EVENT_SELECTION = "selection";
     public static final String EVENT_COMMIT = "commit";
     public static final String EVENT_QUERY_RESULT = "query_result";
+    /** Finalize a text selection whose FloatLens action menu was already shown at selection time. */
+    public static final String EVENT_TEXT_MENU_COMMIT = "text_menu_commit";
     public static final String EVENT_END = "end";
     public static final String Q_WIDTH = "w";
     public static final String Q_HEIGHT = "h";
     public static final String Q_BYTES = "bytes";
 
     public static final long TRACE_SESSION_TTL_MS = 120_000L;
+
+    public static boolean isContextualSearchAction(String action) {
+        return CONTEXTUAL_SEARCH_ACTION.equals(action);
+    }
 
     public static boolean isFloatLensSession(Bundle args) {
         return args != null && isFloatLensSession(

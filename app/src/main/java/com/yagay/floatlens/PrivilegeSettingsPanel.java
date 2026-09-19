@@ -22,6 +22,7 @@ public final class PrivilegeSettingsPanel {
 
         TextView modeStatus = AppUi.caption(activity, "", 13);
         TextView rootStatus = AppUi.caption(activity, "", 13);
+        TextView googleAppStatus = AppUi.caption(activity, "", 13);
 
         AppUi.Section master = AppUi.section(activity, "增强模式总开关",
                 "关闭后保留子开关选择，运行时只使用普通 Android / 无障碍实现。" );
@@ -29,7 +30,10 @@ public final class PrivilegeSettingsPanel {
                 "启用增强模式",
                 "开启后才允许已经接入且单独启用的增强 Provider 参与后端选择。",
                 FloatSettings.K_ENHANCED_MODE, fs.enhancedMode(),
-                () -> refresh(activity, fs, modeStatus, rootStatus));
+                () -> {
+                    refresh(activity, fs, modeStatus, rootStatus);
+                    refreshGoogleApp(activity, fs, googleAppStatus);
+                });
         AppUi.addRow(master.body, AppUi.switchContainer(enhanced));
         AppUi.addRow(master.body, statusBlock(activity, "当前生效模式", modeStatus));
         AppUi.addSection(root, master);
@@ -40,7 +44,10 @@ public final class PrivilegeSettingsPanel {
                 "使用 Root 功能",
                 "允许已接入的 Root 增强功能参与后端选择。",
                 FloatSettings.K_ROOT_ENABLED, fs.rootEnabled(),
-                () -> refresh(activity, fs, modeStatus, rootStatus));
+                () -> {
+                    refresh(activity, fs, modeStatus, rootStatus);
+                    refreshGoogleApp(activity, fs, googleAppStatus);
+                });
         AppUi.addRow(rootSection.body, AppUi.switchContainer(rootSwitch));
 
         SwitchMaterial rootScreenshotSwitch = preferenceSwitch(activity, fs,
@@ -72,6 +79,98 @@ public final class PrivilegeSettingsPanel {
                 12);
         AppUi.addRow(rootSection.body, simpleBlock(activity, rootNote));
         AppUi.addSection(root, rootSection);
+
+        AppUi.Section googleAppSection = AppUi.section(activity, "Google App 管理",
+                "Root 一键停止 Google App 及其 search / interactor / googleapp 等同包进程。普通停止不会禁用应用；冻结会禁用 Google App，直到手动恢复。");
+
+        AppUi.addRow(googleAppSection.body,
+                statusBlock(activity, "Google App 状态", googleAppStatus));
+
+        LinearLayout googleStopRow = AppUi.buttonRow(activity);
+        MaterialButton stopGoogle = AppUi.primaryButton(activity, "停止 Google");
+        stopGoogle.setOnClickListener(v -> {
+            if (!fs.canUseRoot()) {
+                Toast.makeText(activity,
+                        "请先开启“增强模式”和“使用 Root 功能”",
+                        Toast.LENGTH_LONG).show();
+                refreshGoogleApp(activity, fs, googleAppStatus);
+                return;
+            }
+            stopGoogle.setEnabled(false);
+            googleAppStatus.setText("正在 Root 停止 Google App 及其残留进程…");
+            GoogleAppController.stopAsync(activity, result -> {
+                stopGoogle.setEnabled(true);
+                applyGoogleResult(activity, googleAppStatus, result);
+                Toast.makeText(activity,
+                        result.success ? "Google 已停止" : "停止 Google 失败",
+                        Toast.LENGTH_SHORT).show();
+                LsposedStatusManager.refreshAsync();
+            });
+        });
+        googleStopRow.addView(stopGoogle, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        MaterialButton refreshGoogle = AppUi.secondaryButton(activity, "刷新状态");
+        refreshGoogle.setOnClickListener(v -> refreshGoogleApp(activity, fs, googleAppStatus));
+        googleStopRow.addView(refreshGoogle, new LinearLayout.LayoutParams(0, -2, 1f));
+        AppUi.addRow(googleAppSection.body, googleStopRow);
+
+        LinearLayout googleAdvancedRow = AppUi.buttonRow(activity);
+        MaterialButton freezeGoogle = AppUi.secondaryButton(activity, "冻结 Google");
+        freezeGoogle.setOnClickListener(v -> {
+            if (!fs.canUseRoot()) {
+                Toast.makeText(activity,
+                        "请先开启“增强模式”和“使用 Root 功能”",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            new androidx.appcompat.app.AlertDialog.Builder(activity)
+                    .setTitle("冻结 Google App？")
+                    .setMessage("冻结后 Google 搜索、Assistant 和 Google 圈画都会不可用，直到在这里点击“恢复并启动”。")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("冻结", (dialog, which) -> {
+                        freezeGoogle.setEnabled(false);
+                        googleAppStatus.setText("正在冻结 Google App…");
+                        GoogleAppController.freezeAsync(activity, result -> {
+                            freezeGoogle.setEnabled(true);
+                            applyGoogleResult(activity, googleAppStatus, result);
+                            Toast.makeText(activity,
+                                    result.success ? "Google 已冻结" : "冻结 Google 失败",
+                                    Toast.LENGTH_SHORT).show();
+                            LsposedStatusManager.refreshAsync();
+                        });
+                    })
+                    .show();
+        });
+        googleAdvancedRow.addView(freezeGoogle, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        MaterialButton restoreGoogle = AppUi.secondaryButton(activity, "恢复并启动");
+        restoreGoogle.setOnClickListener(v -> {
+            if (!fs.canUseRoot()) {
+                Toast.makeText(activity,
+                        "请先开启“增强模式”和“使用 Root 功能”",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            restoreGoogle.setEnabled(false);
+            googleAppStatus.setText("正在恢复并启动 Google App…");
+            GoogleAppController.restoreAsync(activity, result -> {
+                restoreGoogle.setEnabled(true);
+                applyGoogleResult(activity, googleAppStatus, result);
+                Toast.makeText(activity,
+                        result.success ? "Google 已恢复" : "恢复 Google 失败",
+                        Toast.LENGTH_SHORT).show();
+                LsposedStatusManager.refreshAsync();
+            });
+        });
+        googleAdvancedRow.addView(restoreGoogle, new LinearLayout.LayoutParams(0, -2, 1f));
+        AppUi.addRow(googleAppSection.body, googleAdvancedRow);
+
+        TextView googleNote = AppUi.caption(activity,
+                "“停止 Google”会执行 Root force-stop、清理 com.google.android.googlequicksearchbox:* 残留进程，再次 force-stop；不会禁用应用。"
+                        + " 如果需要长期禁止系统重新拉起 Google，请使用“冻结 Google”。恢复按钮会重新启用并显式启动 Google 一次，以清除 force-stop 的 stopped 状态。",
+                12);
+        AppUi.addRow(googleAppSection.body, simpleBlock(activity, googleNote));
+        AppUi.addSection(root, googleAppSection);
 
         TextView lsposedStatus = AppUi.caption(activity, "", 13);
         AppUi.Section lsposedSection = AppUi.section(activity, "LSPosed",
@@ -159,6 +258,7 @@ public final class PrivilegeSettingsPanel {
         AppUi.addSection(root, fallback);
 
         refresh(activity, fs, modeStatus, rootStatus);
+        refreshGoogleApp(activity, fs, googleAppStatus);
         refreshLsposed(activity, lsposedStatus);
         return root;
     }
@@ -186,6 +286,39 @@ public final class PrivilegeSettingsPanel {
         LinearLayout block = AppUi.settingBlock(activity);
         block.addView(text, new LinearLayout.LayoutParams(-1, -2));
         return block;
+    }
+
+    private static void refreshGoogleApp(AppCompatActivity activity, FloatSettings fs,
+                                         TextView status) {
+        if (status == null) return;
+        if (!fs.canUseRoot()) {
+            status.setText("Root 管理未启用。请先开启“增强模式”和“使用 Root 功能”。");
+            status.setTextColor(AppUi.textPrimary(activity));
+            return;
+        }
+        status.setText("正在读取 Google App 状态…");
+        status.setTextColor(AppUi.textPrimary(activity));
+        GoogleAppController.queryAsync(activity,
+                result -> applyGoogleResult(activity, status, result));
+    }
+
+    private static void applyGoogleResult(AppCompatActivity activity, TextView status,
+                                          GoogleAppController.Result result) {
+        if (status == null || result == null) return;
+        String label = GoogleAppController.stateLabel(result.state);
+        String note = switch (result.state) {
+            case RUNNING -> "Google App 及至少一个同包进程正在运行";
+            case STOPPED -> "Google App 已停止 / 当前没有同包进程";
+            case FROZEN -> "Google App 已被 disable-user 冻结";
+            case UNKNOWN -> "无法确定 Google App 状态";
+        };
+        status.setText(label + "\n" + note
+                + (result.success ? "" : "\n" + result.detail));
+        boolean positive = result.state == GoogleAppController.State.STOPPED
+                || result.state == GoogleAppController.State.FROZEN;
+        status.setTextColor(positive ? AppUi.success(activity)
+                : result.state == GoogleAppController.State.UNKNOWN
+                ? AppUi.warning(activity) : AppUi.textPrimary(activity));
     }
 
     private static void refresh(AppCompatActivity activity, FloatSettings fs,

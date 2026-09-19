@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 final class GoogleCtsBridgeController {
     private static final long FRAME_WAIT_MS = 900L;
+    private static final long MENU_UPDATE_DELAY_MS = 90L;
     private static final long STATE_TTL_MS = 150_000L;
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final Map<String, State> STATES = new ConcurrentHashMap<>();
@@ -30,6 +31,8 @@ final class GoogleCtsBridgeController {
         String detail = "";
         boolean committed;
         boolean delivered;
+        boolean textMenuShown;
+        int selectionRevision;
     }
 
     static void onFrame(Context context, String token, Bitmap frame) {
@@ -55,18 +58,60 @@ final class GoogleCtsBridgeController {
 
     static void onSelection(Context context, String token, String text, Rect bounds, String detail) {
         if (context == null || token == null || token.isBlank()) return;
+        Context app = context.getApplicationContext();
         State state = state(token);
+        final int revision;
+        final String selectedText;
+        final Rect selectedBounds;
         synchronized (state) {
             if (state.delivered) return;
             state.text = text == null ? "" : text.trim();
-            state.bounds = bounds == null ? null : new Rect(bounds);
+            if (bounds != null && !bounds.isEmpty()) {
+                state.bounds = new Rect(bounds);
+            }
             state.detail = detail == null ? "" : detail;
+            revision = ++state.selectionRevision;
+            selectedText = state.text;
+            selectedBounds = state.bounds == null ? null : new Rect(state.bounds);
         }
-        DiagnosticLog.i(context, "GOOGLE_BRIDGE",
+        DiagnosticLog.i(app, "GOOGLE_BRIDGE",
                 "selection session=" + shortToken(token)
-                        + " textLen=" + (text == null ? 0 : text.length())
-                        + " bounds=" + String.valueOf(bounds));
-        scheduleCleanup(context.getApplicationContext(), token, state);
+                        + " textLen=" + selectedText.length()
+                        + " bounds=" + String.valueOf(selectedBounds));
+        // v177 deliberately does not renew any system_server component-block lease.
+        // Google UI suppression is scoped inside the marked Google App process so native CTS
+        // remains independently usable immediately after a FloatLens session.
+        scheduleCleanup(app, token, state);
+
+        // Google Circle has already done OCR/selection geometry at this point. Reuse the same
+        // FloatLens text menu used by result-dialog selections instead of waiting for Google's
+        // Lens Result Panel. While the user drags Google's native selection handles, y(dscl)
+        // can fire rapidly; debounce menu reconstruction so the gesture remains smooth.
+        if (!selectedText.isBlank()) {
+            MAIN.postDelayed(() -> {
+                synchronized (state) {
+                    if (state.delivered || state.selectionRevision != revision) return;
+                    state.textMenuShown = true;
+                }
+                FloatActionMenu.showTextAt(app, selectedText, null, selectedBounds);
+                DiagnosticLog.i(app, "GOOGLE_TEXT_MENU",
+                        "show session=" + shortToken(token)
+                                + " revision=" + revision
+                                + " textLen=" + selectedText.length()
+                                + " bounds=" + String.valueOf(selectedBounds)
+                                + " debouncedMs=" + MENU_UPDATE_DELAY_MS);
+            }, MENU_UPDATE_DELAY_MS);
+        } else {
+            MAIN.post(() -> {
+                synchronized (state) {
+                    if (state.delivered || state.selectionRevision != revision) return;
+                    state.textMenuShown = false;
+                }
+                FloatActionMenu.dismiss();
+                DiagnosticLog.i(app, "GOOGLE_TEXT_MENU",
+                        "dismiss empty selection session=" + shortToken(token));
+            });
+        }
     }
 
     static void onCommit(Context context, String token, String detail) {
@@ -85,13 +130,67 @@ final class GoogleCtsBridgeController {
         MAIN.postDelayed(() -> tryDeliver(app, token, state, true), FRAME_WAIT_MS);
     }
 
-    static void onQueryResult(Context context, String token, String text, String detail) {
+    static void onTextMenuCommit(Context context, String token, String text,
+                                 Rect bounds, String detail) {
+        if (context == null || token == null || token.isBlank()) return;
+        Context app = context.getApplicationContext();
+        State state = state(token);
+        Bitmap frame = null;
+        String finalText;
+        Rect finalBounds;
+        boolean showMenuNow;
+        synchronized (state) {
+            if (state.delivered) return;
+            if (text != null && !text.isBlank()) state.text = text.trim();
+            if (bounds != null && !bounds.isEmpty()) state.bounds = new Rect(bounds);
+            if (detail != null && !detail.isBlank()) state.detail = detail;
+            finalText = state.text == null ? "" : state.text.trim();
+            finalBounds = state.bounds == null ? null : new Rect(state.bounds);
+            showMenuNow = !state.textMenuShown && !finalText.isBlank();
+            state.committed = true;
+            state.delivered = true;
+            state.textMenuShown = state.textMenuShown || showMenuNow;
+            frame = state.frame;
+            state.frame = null;
+        }
+        STATES.remove(token, state);
+        recycle(frame);
+        if (showMenuNow) {
+            FloatActionMenu.showTextAt(app, finalText, null, finalBounds);
+            DiagnosticLog.i(app, "GOOGLE_TEXT_MENU",
+                    "late show session=" + shortToken(token)
+                            + " textLen=" + finalText.length()
+                            + " bounds=" + String.valueOf(finalBounds));
+        }
+        clearSessionState(app, token, "text_menu_commit");
+        FloatService service = FloatService.get();
+        if (service != null) service.onCircleFinished("google_text_menu_committed");
+        DiagnosticLog.i(app, "GOOGLE_TEXT_MENU",
+                "committed session=" + shortToken(token)
+                        + " textLen=" + (text == null ? 0 : text.length())
+                        + " bounds=" + String.valueOf(bounds)
+                        + " resultDialog=false");
+    }
+
+    private static void clearSessionState(Context app, String token, String reason) {
+        if (app == null) return;
+        new FloatSettings(app).clearGoogleCtsSession();
+        LsposedStatusManager.clearGoogleCtsSessionRemote(token);
+        DiagnosticLog.i(app, "GOOGLE_CTS_LEASE",
+                "cleared session=" + shortToken(token) + " reason=" + reason);
+    }
+
+    static void onQueryResult(Context context, String token, String text,
+                              Rect bounds, String detail) {
         if (context == null || token == null || token.isBlank()) return;
         State state = state(token);
         synchronized (state) {
             if (state.delivered) return;
             if ((state.text == null || state.text.isBlank()) && text != null && !text.isBlank()) {
                 state.text = text.trim();
+            }
+            if (state.bounds == null && bounds != null && !bounds.isEmpty()) {
+                state.bounds = new Rect(bounds);
             }
             if (detail != null && !detail.isBlank()) state.detail = detail;
             state.committed = true;
@@ -105,15 +204,18 @@ final class GoogleCtsBridgeController {
         if (context == null || token == null || token.isBlank()) return;
         Context app = context.getApplicationContext();
         State state = STATES.remove(token);
+        boolean dismissTextMenu = false;
         if (state != null) {
             synchronized (state) {
                 if (detail != null && !detail.isBlank()) state.detail = detail;
                 recycle(state.frame);
                 state.frame = null;
+                dismissTextMenu = state.textMenuShown && !state.committed;
                 state.delivered = true;
             }
         }
-        new FloatSettings(app).clearGoogleCtsSession();
+        if (dismissTextMenu) FloatActionMenu.dismiss();
+        clearSessionState(app, token, "bridge_end");
         FloatService service = FloatService.get();
         if (service != null) service.onCircleFinished("google_bridge_end");
         DiagnosticLog.i(app, "GOOGLE_BRIDGE",
@@ -164,20 +266,30 @@ final class GoogleCtsBridgeController {
             DiagnosticLog.i(app, "GOOGLE_BRIDGE",
                     "nothing to show session=" + shortToken(token)
                             + " detail=" + trim(detail, 600));
-            new FloatSettings(app).clearGoogleCtsSession();
+            clearSessionState(app, token, "nothing_to_show");
             return;
         }
 
-        boolean shown = ResultController.show(app, session);
+        Runnable firstFrameHandoff = () -> {
+            FloatService service = FloatService.get();
+            if (service != null) service.onCircleFinished("google_bridge_result_visible");
+            clearSessionState(app, token, "result_first_frame");
+            DiagnosticLog.i(app, "GOOGLE_BRIDGE",
+                    "result visible session=" + shortToken(token)
+                            + " release=after_first_frame");
+        };
+
+        boolean shown = ResultController.showAfterFirstFrame(app, session, firstFrameHandoff);
         if (!shown) {
             try { session.close(); } catch (Throwable ignored) {}
+            FloatService service = FloatService.get();
+            if (service != null) service.onCircleFinished("google_bridge_delivery_failed");
+            clearSessionState(app, token, "result_start_failed");
         }
-        FloatService service = FloatService.get();
-        if (service != null) service.onCircleFinished("google_bridge_delivered");
-        new FloatSettings(app).clearGoogleCtsSession();
         DiagnosticLog.i(app, "GOOGLE_BRIDGE",
                 "delivered session=" + shortToken(token)
                         + " shown=" + shown
+                        + " release=" + (shown ? "deferred_first_frame" : "immediate_failed")
                         + " textLen=" + text.length()
                         + " bounds=" + String.valueOf(normalized));
     }
@@ -189,13 +301,18 @@ final class GoogleCtsBridgeController {
     private static void scheduleCleanup(Context app, String token, State state) {
         MAIN.postDelayed(() -> {
             if (!STATES.remove(token, state)) return;
+            boolean dismissTextMenu;
             synchronized (state) {
                 recycle(state.frame);
                 state.frame = null;
+                dismissTextMenu = state.textMenuShown && !state.committed;
                 state.delivered = true;
             }
+            if (dismissTextMenu) FloatActionMenu.dismiss();
+            clearSessionState(app, token, "state_expired");
             DiagnosticLog.i(app, "GOOGLE_BRIDGE",
-                    "state expired session=" + shortToken(token));
+                    "state expired session=" + shortToken(token)
+                            + " menuDismissed=" + dismissTextMenu);
         }, STATE_TTL_MS);
     }
 
