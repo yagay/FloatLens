@@ -5,6 +5,8 @@ import android.util.Log;
 import android.view.MotionEvent;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 
@@ -21,6 +23,44 @@ final class GoogleRegionGestureHook {
 
     private static final long MOVE_HEARTBEAT_MS = 120L;
 
+    static final class Binding {
+        final Class<?> viewClass;
+        final Method[] touchMethods;
+        final int confidence;
+        final String source;
+        final String detail;
+
+        Binding(Class<?> viewClass, Method[] touchMethods,
+                int confidence, String source, String detail) {
+            this.viewClass = viewClass;
+            this.touchMethods = touchMethods == null ? new Method[0] : touchMethods;
+            this.confidence = confidence;
+            this.source = source == null ? "none" : source;
+            this.detail = detail == null ? "" : detail;
+        }
+
+        boolean available() { return viewClass != null && touchMethods.length > 0; }
+    }
+
+    static Binding resolve(ClassLoader loader) {
+        if (loader == null) return new Binding(null, null, 0, "none", "classLoader=null");
+        try {
+            Class<?> cls = Class.forName(
+                    GoogleLens1758Profile.FROZEN_IMAGE_VIEW, false, loader);
+            List<Method> methods = new ArrayList<>();
+            for (Method method : GoogleReflection.declaredMethods(cls)) {
+                if (motionEventIndex(method.getParameterTypes()) >= 0) methods.add(method);
+            }
+            int confidence = methods.isEmpty() ? 0 : 95;
+            return new Binding(cls, methods.toArray(new Method[0]), confidence,
+                    "frozen-image-view",
+                    "class=" + cls.getName() + " touchMethods=" + methods.size());
+        } catch (Throwable t) {
+            return new Binding(null, null, 0, "none",
+                    "resolve=" + t.getClass().getSimpleName());
+        }
+    }
+
     private boolean gestureActive;
     private long lastHeartbeatElapsed;
 
@@ -35,11 +75,15 @@ final class GoogleRegionGestureHook {
     }
 
     int install() {
+        Binding binding = resolve(classLoader);
+        if (!binding.available()) {
+            module.log(Log.WARN, TAG,
+                    "Google region gesture capability unavailable: " + binding.detail);
+            return 0;
+        }
         try {
-            Class<?> cls = Class.forName(
-                    GoogleLens1758Profile.FROZEN_IMAGE_VIEW, false, classLoader);
             int count = 0;
-            for (Method method : GoogleReflection.declaredMethods(cls)) {
+            for (Method method : binding.touchMethods) {
                 int motionIndex = motionEventIndex(method.getParameterTypes());
                 if (motionIndex < 0) continue;
                 final int index = motionIndex;
@@ -53,7 +97,10 @@ final class GoogleRegionGestureHook {
                 });
                 count++;
             }
-            module.log(Log.INFO, TAG, "Google region gesture hooks=" + count);
+            module.log(Log.INFO, TAG,
+                    "Google region gesture capability source=" + binding.source
+                            + " confidence=" + binding.confidence
+                            + " hooks=" + count + " detail=" + binding.detail);
             return count;
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "Google FrozenImage gesture hooks unavailable", t);
