@@ -60,17 +60,8 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     private final AtomicInteger eventCount = new AtomicInteger();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    private volatile long activeUntil;
-    private volatile String sessionToken = "";
-    private volatile int showSessionId = -1;
+    private final GoogleCtsSessionState sessionState = new GoogleCtsSessionState();
     private volatile Object voiceSession;
-    private volatile boolean bridgeCommitted;
-    private volatile boolean bridgeSelectionSeen;
-    private volatile boolean bridgeRegionSelectionActive;
-    private volatile boolean bridgePendingSeen;
-    private volatile String bridgeSelectionText = "";
-    private volatile Rect bridgeSelectionBounds;
-    private volatile boolean presentationAlreadyAbsentReported;
     private volatile WeakReference<Activity> markedActivity = new WeakReference<>(null);
     private final GoogleLensUiSanitizer uiSanitizer;
     private final GoogleBridgeSender bridgeSender;
@@ -80,7 +71,6 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     private final GoogleCtsLifecycleHooks lifecycleHooks;
     private final GoogleLensFrameCapture frameCapture;
     private final GoogleRegionGestureHook regionGestureHook;
-    private Runnable regionConfirmPollTask;
     private String regionConfirmDetail = "";
 
     GoogleCtsRuntimeInspector(XposedModule module,
@@ -90,19 +80,19 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         this.provider = provider;
         this.classLoader = classLoader;
         this.uiSanitizer = new GoogleLensUiSanitizer(
-                () -> active() && bridgeSelectionSeen,
+                () -> active() && sessionState.selectionSeen(),
                 this::report);
         this.bridgeSender = new GoogleBridgeSender(
-                module, this::currentApplicationContext, () -> sessionToken,
+                module, this::currentApplicationContext, sessionState::token,
                 this::active, provider::diagnosticsEnabled);
         this.diagnosticsHooks = new GoogleLensDiagnosticsHooks(
                 module, classLoader, provider::diagnosticsEnabled, this::active,
-                () -> bridgeSelectionSeen, () -> markedActivity.get(),
-                () -> bridgeSelectionBounds == null ? null : new Rect(bridgeSelectionBounds),
+                sessionState::selectionSeen, () -> markedActivity.get(),
+                this::currentSelectionBounds,
                 this::report);
         this.viewportHook = new GoogleLensViewportHook(
-                module, classLoader, this::active, () -> bridgeSelectionSeen,
-                () -> bridgeRegionSelectionActive,
+                module, classLoader, this::active, sessionState::selectionSeen,
+                sessionState::regionSelectionActive,
                 () -> markedActivity.get(), this::report);
         this.canonicalFrameLayer = new GoogleCanonicalFrameLayer(
                 this::active, () -> markedActivity.get(), this::report);
@@ -112,14 +102,17 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         this.regionGestureHook = new GoogleRegionGestureHook(
                 module, classLoader, this::active,
                 (adjusting, detail) -> {
+                    sessionState.onRegionGesture(adjusting);
                     report(adjusting ? "GOOGLE_REGION_GESTURE_START"
                                     : "GOOGLE_REGION_GESTURE_END",
                             detail);
                     sendBridgeEvent(adjusting
                                     ? GoogleCtsContract.EVENT_REGION_GESTURE_START
                                     : GoogleCtsContract.EVENT_REGION_GESTURE_END,
-                            "", detail, bridgeSelectionBounds);
+                            "", detail, currentSelectionBounds());
                 });
+        provider.setObserver((token, confirmedAtElapsed) ->
+                mainHandler.post(() -> onGoogleRegionConfirm(token, confirmedAtElapsed)));
     }
 
     void install() {
@@ -242,38 +235,32 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                 if (active()) {
                     selection = binding.snapshot(chain.getArg(0), currentApplicationContext());
                     selectionBounds = selection.bounds();
-                    bridgeSelectionSeen = true;
-                    bridgeSelectionText = selection.text();
-                    if (selectionBounds != null && !selectionBounds.isEmpty()) {
-                        bridgeSelectionBounds = selectionBounds;
-                    }
-                    Rect effectiveBounds = bridgeSelectionBounds == null
-                            ? null : new Rect(bridgeSelectionBounds);
+                    boolean regionSelection = selection.directRegionCommit()
+                            && selectionBounds != null && !selectionBounds.isEmpty();
+                    sessionState.onSelection(
+                            selection.text(), toSessionBounds(selectionBounds), regionSelection);
+                    Rect effectiveBounds = currentSelectionBounds();
                     String detail = selection.detail()
                             + " source=" + binding.source()
                             + " pixelBounds=" + String.valueOf(selectionBounds)
                             + " effectiveBounds=" + String.valueOf(effectiveBounds)
+                            + " phase=" + sessionState.phase()
+                            + " generation=" + sessionState.generation()
                             + " primary=" + chain.getArg(1);
-                    boolean regionSelection = selection.directRegionCommit()
-                            && selectionBounds != null && !selectionBounds.isEmpty();
-                    bridgeRegionSelectionActive = regionSelection;
+                    if (regionSelection) regionConfirmDetail = selection.detail();
                     report("USER_SELECTION_" + binding.source().toUpperCase(Locale.ROOT), detail);
                     sendBridgeEvent(regionSelection
                                     ? GoogleCtsContract.EVENT_REGION_SELECTION
                                     : GoogleCtsContract.EVENT_SELECTION,
                             selection.text(), detail, effectiveBounds);
-                    if (regionSelection) {
-                        armRegionConfirmWait(selection.detail());
-                    }
                 }
 
                 Object result = chain.proceed();
 
-                if (active() && bridgeSelectionSeen) uiSanitizer.sanitizeNow();
+                if (active() && sessionState.selectionSeen()) uiSanitizer.sanitizeNow();
 
-                if (active() && bridgeSelectionSeen
-                        && bridgeSelectionText != null
-                        && !bridgeSelectionText.isBlank()) {
+                if (active() && sessionState.selectionSeen()
+                        && !sessionState.selectionText().isBlank()) {
                     uiSanitizer.sanitizeNow();
                     diagnosticsHooks.inspectSelectionViewsSoon();
                 }
@@ -288,57 +275,23 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
 
 
 
-    private synchronized void armRegionConfirmWait(String detail) {
-        if (!active() || bridgeCommitted || sessionToken.isBlank()) return;
-        regionConfirmDetail = detail == null ? "" : detail;
-        if (regionConfirmPollTask != null) return;
-
-        String token = sessionToken;
-        Runnable[] holder = new Runnable[1];
-        holder[0] = new Runnable() {
-            @Override public void run() {
-                synchronized (GoogleCtsRuntimeInspector.this) {
-                    if (regionConfirmPollTask != this
-                            || !token.equals(sessionToken)
-                            || bridgeCommitted) {
-                        if (regionConfirmPollTask == this) regionConfirmPollTask = null;
-                        return;
-                    }
-                }
-                if (!active()) {
-                    synchronized (GoogleCtsRuntimeInspector.this) {
-                        if (regionConfirmPollTask == this) regionConfirmPollTask = null;
-                    }
-                    return;
-                }
-                if (provider.googleRegionConfirmRequested(token)) {
-                    String confirmedDetail;
-                    synchronized (GoogleCtsRuntimeInspector.this) {
-                        if (regionConfirmPollTask == this) regionConfirmPollTask = null;
-                        confirmedDetail = regionConfirmDetail;
-                    }
-                    report("LENS_REGION_SELECTION_CONFIRMED",
-                            "bounds=" + String.valueOf(bridgeSelectionBounds));
-                    commitBridgeResult("", confirmedDetail, "lens_region_confirmed");
-                    return;
-                }
-                mainHandler.postDelayed(this, 24L);
-            }
-        };
-        regionConfirmPollTask = holder[0];
-        mainHandler.post(holder[0]);
-    }
-
-    private synchronized void stopRegionConfirmWait() {
-        Runnable pending = regionConfirmPollTask;
-        regionConfirmPollTask = null;
-        regionConfirmDetail = "";
-        if (pending != null) mainHandler.removeCallbacks(pending);
+    private void onGoogleRegionConfirm(String token, long confirmedAtElapsed) {
+        if (token == null || token.isBlank() || !active() || !sessionState.canConfirm(token)) {
+            return;
+        }
+        report("LENS_REGION_SELECTION_CONFIRMED",
+                "bounds=" + String.valueOf(currentSelectionBounds())
+                        + " confirmedAtElapsed=" + confirmedAtElapsed
+                        + " transport=remote_preferences_event");
+        commitBridgeResult("", regionConfirmDetail, "lens_region_confirmed");
     }
 
     @Override public synchronized boolean commitBridgeResult(String text, String detail, String reason) {
-        if (!active() || bridgeCommitted
-                || (!bridgeSelectionSeen && !bridgePendingSeen && !bridgeSender.frameQueued())) {
+        String currentToken = sessionState.token();
+        if (!active()
+                || sessionState.phase() == GoogleCtsSessionState.Phase.COMMITTED
+                || (!sessionState.selectionSeen() && !sessionState.frameQueued()
+                && !bridgeSender.frameQueued())) {
             return false;
         }
 
@@ -347,16 +300,15 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         // process owns the final region selection. For an explicitly confirmed region, the current
         // Google process only needs to deliver the final Rect; app-side state joins it with the
         // previously received frozen frame.
-        Rect finalBounds = bridgeSelectionBounds == null
-                ? null : new Rect(bridgeSelectionBounds);
-        boolean regionMetadataCommit = bridgeRegionSelectionActive
+        Rect finalBounds = currentSelectionBounds();
+        boolean regionMetadataCommit = sessionState.regionSelectionActive()
                 && finalBounds != null && !finalBounds.isEmpty()
                 && "lens_region_confirmed".equals(reason);
 
         // Keep the old no-payload safety rule for text/general query results. Only the explicit
         // region-confirm path may commit metadata without a frame in this process.
-        String finalText = bridgeSelectionText == null || bridgeSelectionText.isBlank()
-                ? text : bridgeSelectionText;
+        String selectedText = sessionState.selectionText();
+        String finalText = selectedText.isBlank() ? text : selectedText;
         if ((finalText == null || finalText.isBlank())
                 && !bridgeSender.frameQueued()
                 && !regionMetadataCommit) {
@@ -371,29 +323,31 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                             + " reason=" + reason);
         }
 
-        bridgeCommitted = true;
+        if (!sessionState.markCommitted(currentToken)) return false;
 
         // Make the final event self-contained. Explicit broadcasts are asynchronous; carrying the
         // latest selection again prevents a query-result delivery from racing ahead of the earlier
         // selection event in the FloatLens process.
-        String committedToken = sessionToken;
+        String committedToken = currentToken;
+        long committedGeneration = sessionState.generation();
         sendBridgeEvent(GoogleCtsContract.EVENT_QUERY_RESULT,
                 finalText, detail, finalBounds);
         // Do not finish LensientActivity here. ResultActivity is translucent and its DialogFragment
         // needs ~50-120ms before its first visible frame. Finishing Google immediately exposes the
         // underlying app/launcher for one frame, which looks like a flash. Keep Google's frozen
         // image alive until the FloatLens app clears the remote token from its first-frame callback.
-        awaitFloatLensResultHandoff(committedToken, reason,
+        awaitFloatLensResultHandoff(committedToken, committedGeneration, reason,
                 SystemClock.elapsedRealtime());
         return true;
     }
 
     private void awaitFloatLensResultHandoff(
-            String token, String reason, long startedAtElapsed) {
+            String token, long generation, String reason, long startedAtElapsed) {
         if (token == null || token.isBlank()) return;
         mainHandler.post(new Runnable() {
             @Override public void run() {
-                if (!token.equals(sessionToken) || !bridgeCommitted) return;
+                if (!sessionState.matches(generation, token)
+                        || sessionState.phase() != GoogleCtsSessionState.Phase.COMMITTED) return;
 
                 long elapsed = Math.max(0L,
                         SystemClock.elapsedRealtime() - startedAtElapsed);
@@ -468,13 +422,13 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         if (!provider.isActive()) return;
         if (GoogleCtsContract.isFloatLensSession(extras)) {
             activate(extras.getString(GoogleCtsContract.K_SESSION_TOKEN, ""),
-                    showSessionId, voiceSession, path + "_MARKER");
+                    sessionState.showSessionId(), voiceSession, path + "_MARKER");
             return;
         }
         if (active()) return;
         String token = provider.googleCtsArmedToken(extras);
         if (!token.isBlank()) {
-            activate(token, showSessionId, voiceSession, path + "_ARMED");
+            activate(token, sessionState.showSessionId(), voiceSession, path + "_ARMED");
             report("BOUNDARY_CORRELATION",
                     "marker=false extras=" + GoogleHookFormatting.safeKeys(extras)
                             + " intent=" + GoogleHookFormatting.describeIntent(intent));
@@ -522,84 +476,79 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
 
     @Override public synchronized void activate(String token, int id, Object session, String path) {
         String nextToken = token == null ? "" : token;
-        boolean newBridgeSession = !nextToken.equals(sessionToken)
-                || SystemClock.elapsedRealtime() >= activeUntil;
-        activeUntil = SystemClock.elapsedRealtime() + SESSION_TTL_MS;
-        sessionToken = nextToken;
+        long now = SystemClock.elapsedRealtime();
+        String currentToken = sessionState.token();
+        boolean newBridgeSession = !nextToken.equals(currentToken) || !sessionState.active(now);
+
         if (newBridgeSession) {
-            stopRegionConfirmWait();
             uiSanitizer.detach();
             bridgeSender.reset();
             regionGestureHook.reset();
             viewportHook.reset();
             canonicalFrameLayer.reset();
-            bridgeCommitted = false;
-            bridgeSelectionSeen = false;
-            bridgeRegionSelectionActive = false;
-            bridgePendingSeen = false;
-            bridgeSelectionText = "";
-            bridgeSelectionBounds = null;
-            presentationAlreadyAbsentReported = false;
             markedActivity = new WeakReference<>(null);
+            regionConfirmDetail = "";
+            sessionState.begin(nextToken, id, now + SESSION_TTL_MS);
+            eventCount.set(0);
+        } else {
+            sessionState.extend(now + SESSION_TTL_MS);
+            sessionState.setShowSessionId(id);
         }
-        if (id >= 0) showSessionId = id;
         if (session != null) voiceSession = session;
-        eventCount.set(0);
+
+        String activeToken = sessionState.token();
         String header = "=== Google CTS marked session ===\n"
                 + "ACTIVE path=" + path
-                + " session=" + GoogleHookFormatting.shortToken(sessionToken)
-                + " showId=" + showSessionId
-                + " atElapsed=" + SystemClock.elapsedRealtime();
+                + " session=" + GoogleHookFormatting.shortToken(activeToken)
+                + " generation=" + sessionState.generation()
+                + " phase=" + sessionState.phase()
+                + " showId=" + sessionState.showSessionId()
+                + " atElapsed=" + now;
         sendTrace("=== Google CTS marked session ===");
         sendTrace("ACTIVE path=" + path
-                + " session=" + GoogleHookFormatting.shortToken(sessionToken)
-                + " showId=" + showSessionId
-                + " atElapsed=" + SystemClock.elapsedRealtime());
+                + " session=" + GoogleHookFormatting.shortToken(activeToken)
+                + " generation=" + sessionState.generation()
+                + " phase=" + sessionState.phase()
+                + " showId=" + sessionState.showSessionId()
+                + " atElapsed=" + now);
         module.log(Log.INFO, TAG, header.replace("\n", " | "));
     }
 
     @Override public synchronized void clear(String reason) {
-        String end = "END session=" + GoogleHookFormatting.shortToken(sessionToken)
+        String token = sessionState.token();
+        boolean committed = sessionState.phase() == GoogleCtsSessionState.Phase.COMMITTED;
+        String end = "END session=" + GoogleHookFormatting.shortToken(token)
+                + " generation=" + sessionState.generation()
+                + " phase=" + sessionState.phase()
                 + " reason=" + reason + " events=" + eventCount.get();
-        if (!bridgeCommitted && !sessionToken.isBlank()) {
+        if (!committed && !token.isBlank()) {
             sendBridgeEvent(GoogleCtsContract.EVENT_END, "", reason, null);
         }
         sendTrace(end);
         module.log(Log.INFO, TAG, end);
-        activeUntil = 0L;
-        sessionToken = "";
-        showSessionId = -1;
+        sessionState.finish();
         voiceSession = null;
         bridgeSender.reset();
         regionGestureHook.reset();
         viewportHook.reset();
         canonicalFrameLayer.reset();
-        bridgeCommitted = false;
-        bridgeSelectionSeen = false;
-        bridgeRegionSelectionActive = false;
-        bridgePendingSeen = false;
-        bridgeSelectionText = "";
-        bridgeSelectionBounds = null;
-        presentationAlreadyAbsentReported = false;
-        stopRegionConfirmWait();
+        regionConfirmDetail = "";
         uiSanitizer.detach();
         markedActivity = new WeakReference<>(null);
     }
 
-    @Override public int showSessionId() { return showSessionId; }
+    @Override public int showSessionId() { return sessionState.showSessionId(); }
     @Override public Object voiceSession() { return voiceSession; }
-    @Override public boolean selectionSeen() { return bridgeSelectionSeen; }
-    @Override public String selectionText() { return bridgeSelectionText; }
-    @Override public Rect selectionBounds() {
-        return bridgeSelectionBounds == null ? null : new Rect(bridgeSelectionBounds);
-    }
+    @Override public boolean selectionSeen() { return sessionState.selectionSeen(); }
+    @Override public String selectionText() { return sessionState.selectionText(); }
+    @Override public Rect selectionBounds() { return currentSelectionBounds(); }
     @Override public boolean frameQueued() { return bridgeSender.frameQueued(); }
 
     @Override public boolean active() {
+        String token = sessionState.token();
         return provider.isActive()
-                && !sessionToken.isBlank()
-                && provider.ownsGoogleCtsSession(sessionToken)
-                && SystemClock.elapsedRealtime() < activeUntil;
+                && sessionState.active(SystemClock.elapsedRealtime())
+                && provider.ownsGoogleCtsSession(token);
     }
 
     @Override public void report(String event, String message) {
@@ -607,7 +556,10 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         int n = reserveEventNumber();
         if (n < 0) return;
         String line = "#" + n + " " + event + " session="
-                + GoogleHookFormatting.shortToken(sessionToken) + " " + GoogleHookFormatting.safe(message);
+                + GoogleHookFormatting.shortToken(sessionState.token())
+                + " generation=" + sessionState.generation()
+                + " phase=" + sessionState.phase()
+                + " " + GoogleHookFormatting.safe(message);
         sendTrace(line);
         module.log(Log.INFO, TAG, line);
     }
@@ -633,11 +585,24 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         // any cross-process transport. Google may later mutate FrozenImageView's internal viewport,
         // but the pixels presented by FloatLens remain tied to this canonical frame.
         canonicalFrameLayer.offer(bitmap);
+        sessionState.onFrameQueued();
         bridgeSender.sendFrame(bitmap);
     }
 
     @Override public void captureFrameFromIntent(Intent intent) {
         frameCapture.captureFromIntent(intent);
+    }
+
+    private Rect currentSelectionBounds() {
+        GoogleCtsSessionState.Bounds bounds = sessionState.selectionBounds();
+        if (bounds == null || !bounds.valid()) return null;
+        return new Rect(bounds.left, bounds.top, bounds.right, bounds.bottom);
+    }
+
+    private static GoogleCtsSessionState.Bounds toSessionBounds(Rect bounds) {
+        if (bounds == null || bounds.isEmpty()) return null;
+        return new GoogleCtsSessionState.Bounds(
+                bounds.left, bounds.top, bounds.right, bounds.bottom);
     }
 
     private Context currentApplicationContext() {
