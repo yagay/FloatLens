@@ -10,8 +10,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
@@ -134,9 +136,11 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
 
     private static final LsposedStatusManager INSTANCE = new LsposedStatusManager();
     private static final AtomicBoolean INITIALIZED = new AtomicBoolean(false);
+    private static volatile Thread ioThread;
     private static final ExecutorService IO = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "FloatLens-lsposed-status");
         t.setDaemon(true);
+        ioThread = t;
         return t;
     });
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
@@ -263,25 +267,11 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         long updatedAt = System.currentTimeMillis();
         IO.execute(() -> {
             try {
-                SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
+                SharedPreferences remote = LsposedRuntimeStore.syncPersistent(
+                        current, enhanced, lsposed, secureScreenshot, diagnostic, updatedAt);
                 if (remote == null) {
                     publishSnapshot(current, false, false, false, false, 0L, 0L,
-                            "框架没有提供可写 Remote Preferences");
-                    return;
-                }
-                boolean committed = remote.edit()
-                        .putInt(LsposedRuntimeConfig.K_SCHEMA_VERSION, LsposedRuntimeConfig.SCHEMA_VERSION)
-                        .putBoolean(LsposedRuntimeConfig.K_ENHANCED_MODE, enhanced)
-                        .putBoolean(LsposedRuntimeConfig.K_LSPOSED_ENABLED, lsposed)
-                        .putBoolean(LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED, secureScreenshot)
-                        .putBoolean(LsposedRuntimeConfig.K_DIAGNOSTIC_ENABLED, diagnostic)
-                        // Persistent config sync must never mutate short-lived capture/Google leases.
-                        // Those keys have their own explicit arm/disarm lifecycle.
-                        .putLong(LsposedRuntimeConfig.K_UPDATED_AT, updatedAt)
-                        .commit();
-                if (!committed) {
-                    publishSnapshot(current, false, false, false, false, 0L, 0L,
-                            "Remote Preferences 写入失败");
+                            "Remote Preferences 写入失败或不可用");
                     return;
                 }
                 publishFromRemote(current, remote, "");
@@ -300,43 +290,23 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         SharedPreferences local = localPreferences;
         if (current == null || local == null || token == null || token.isBlank()) return false;
         if (!snapshot.remoteProviderEnabled() || !snapshot.googleScopeEnabled()) return false;
-        try {
-            SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
-            if (remote == null) return false;
-            return remote.edit()
-                    .putString(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, token)
-                    .putLong(LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED, triggerElapsed)
-                    .putLong(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL, armedUntilElapsed)
-                    .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL)
-                    .commit();
-        } catch (Throwable t) {
-            return false;
-        }
+        return callIoBoolean(() -> LsposedRuntimeStore.armGoogle(
+                current, token, triggerElapsed, armedUntilElapsed));
     }
 
     private void clearGoogleCtsSession(String token) {
-        if (service == null) return;
-        IO.execute(() -> clearGoogleCtsSessionNow(token));
+        XposedService current = service;
+        if (current == null) return;
+        IO.execute(() -> {
+            try { LsposedRuntimeStore.clearGoogle(current, token); }
+            catch (Throwable ignored) { }
+        });
     }
 
     private boolean clearGoogleCtsSessionNow(String token) {
         XposedService current = service;
         if (current == null) return false;
-        try {
-            SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
-            if (remote == null) return false;
-            String currentToken = remote.getString(
-                    LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN, "");
-            if (token != null && !token.isBlank() && !token.equals(currentToken)) return false;
-            return remote.edit()
-                    .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_TOKEN)
-                    .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_TRIGGER_ELAPSED)
-                    .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_SESSION_UNTIL)
-                    .remove(LsposedRuntimeConfig.K_GOOGLE_CTS_COMPONENT_BLOCK_UNTIL)
-                    .commit();
-        } catch (Throwable ignored) {
-            return false;
-        }
+        return callIoBoolean(() -> LsposedRuntimeStore.clearGoogle(current, token));
     }
 
     private void armSecureCapture(Consumer<Boolean> callback) {
@@ -360,18 +330,12 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         IO.execute(() -> {
             boolean success = false;
             try {
-                SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
-                if (remote != null) {
-                    success = remote.edit()
-                            .putInt(LsposedRuntimeConfig.K_SCHEMA_VERSION, LsposedRuntimeConfig.SCHEMA_VERSION)
-                            .putBoolean(LsposedRuntimeConfig.K_ENHANCED_MODE, enhanced)
-                            .putBoolean(LsposedRuntimeConfig.K_LSPOSED_ENABLED, lsposed)
-                            .putBoolean(LsposedRuntimeConfig.K_SECURE_SCREENSHOT_ENABLED, secureScreenshot)
-                            .putLong(LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL, armedUntil)
-                            .putLong(LsposedRuntimeConfig.K_UPDATED_AT, updatedAt)
-                            .commit();
-                    publishFromRemote(current, remote, success ? "" : "安全截图短时授权写入失败");
-                }
+                SharedPreferences remote = LsposedRuntimeStore.armSecure(
+                        current, enhanced, lsposed, secureScreenshot, armedUntil, updatedAt);
+                success = remote != null;
+                if (remote != null) publishFromRemote(current, remote, "");
+                else publishSnapshot(current, false, false, false, false, 0L, 0L,
+                        "安全截图短时授权写入失败");
             } catch (Throwable t) {
                 publishSnapshot(current, false, false, false, false, 0L, 0L,
                         "安全截图短时授权失败：" + messageOf(t));
@@ -385,13 +349,9 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         if (current == null) return;
         IO.execute(() -> {
             try {
-                SharedPreferences remote = current.getRemotePreferences(LsposedRuntimeConfig.GROUP);
-                if (remote == null) return;
-                remote.edit()
-                        .putLong(LsposedRuntimeConfig.K_SECURE_CAPTURE_ARMED_UNTIL, 0L)
-                        .putLong(LsposedRuntimeConfig.K_UPDATED_AT, System.currentTimeMillis())
-                        .commit();
-                publishFromRemote(current, remote, "");
+                SharedPreferences remote = LsposedRuntimeStore.disarmSecure(
+                        current, System.currentTimeMillis());
+                if (remote != null) publishFromRemote(current, remote, "");
             } catch (Throwable ignored) {
                 // Lease expiry guarantees the bypass cannot remain armed indefinitely.
             }
@@ -510,6 +470,19 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
     static boolean isSystemUiProcess(String processName) {
         return "com.android.systemui".equals(processName)
                 || processName.startsWith("com.android.systemui:");
+    }
+
+    private boolean callIoBoolean(Callable<Boolean> operation) {
+        if (operation == null) return false;
+        if (Thread.currentThread() == ioThread) {
+            try { return Boolean.TRUE.equals(operation.call()); }
+            catch (Throwable ignored) { return false; }
+        }
+        try {
+            return Boolean.TRUE.equals(IO.submit(operation).get(2, TimeUnit.SECONDS));
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private static String messageOf(Throwable t) {
