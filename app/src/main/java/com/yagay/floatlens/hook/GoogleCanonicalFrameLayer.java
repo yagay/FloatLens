@@ -336,7 +336,7 @@ final class GoogleCanonicalFrameLayer {
         private final Paint trail = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint scrim = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint auroraGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint auroraCore = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint auroraHalo = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint handle = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF localTextRect = new RectF();
         private final int[] auroraColors;
@@ -403,18 +403,24 @@ final class GoogleCanonicalFrameLayer {
             scrim.setStyle(Paint.Style.FILL);
             scrim.setColor(maskColor);
 
+            // Aurora is not a colored border. It is a soft edge glow emitted from the outside
+            // of the selection boundary. Both layers stay blurred; there is deliberately no
+            // hard/solid colored stroke.
+            auroraHalo.setStyle(Paint.Style.STROKE);
+            auroraHalo.setStrokeCap(Paint.Cap.ROUND);
+            auroraHalo.setStrokeJoin(Paint.Join.ROUND);
+            auroraHalo.setStrokeWidth(Math.max(6f * density, handleStroke * 1.6f));
+            auroraHalo.setAlpha(82);
+            auroraHalo.setMaskFilter(
+                    new BlurMaskFilter(13f * density, BlurMaskFilter.Blur.NORMAL));
+
             auroraGlow.setStyle(Paint.Style.STROKE);
             auroraGlow.setStrokeCap(Paint.Cap.ROUND);
             auroraGlow.setStrokeJoin(Paint.Join.ROUND);
-            auroraGlow.setStrokeWidth(Math.max(handleStroke, 2f * density));
-            auroraGlow.setAlpha(145);
-            auroraGlow.setMaskFilter(new BlurMaskFilter(8f * density, BlurMaskFilter.Blur.NORMAL));
-
-            auroraCore.setStyle(Paint.Style.STROKE);
-            auroraCore.setStrokeCap(Paint.Cap.ROUND);
-            auroraCore.setStrokeJoin(Paint.Join.ROUND);
-            auroraCore.setStrokeWidth(Math.max(1.25f * density, handleStroke * 0.45f));
-            auroraCore.setAlpha(215);
+            auroraGlow.setStrokeWidth(Math.max(2.5f * density, handleStroke * 0.7f));
+            auroraGlow.setAlpha(155);
+            auroraGlow.setMaskFilter(
+                    new BlurMaskFilter(6f * density, BlurMaskFilter.Blur.NORMAL));
 
             handle.setStyle(Paint.Style.STROKE);
             handle.setStrokeCap(Paint.Cap.ROUND);
@@ -492,17 +498,24 @@ final class GoogleCanonicalFrameLayer {
             float cx = localTextRect.centerX();
             float cy = localTextRect.centerY();
             Shader shader = new SweepGradient(cx, cy, auroraColors, auroraStops);
+            auroraHalo.setShader(shader);
             auroraGlow.setShader(shader);
-            auroraCore.setShader(shader);
 
-            // EffectsV2View supplies this aurora around RegionView in Google 17.58. Keep it thin:
-            // the wide visual softness comes from blur, not from a thick solid stroke.
+            // Google 17.58 presents Aurora as color living on the OUTSIDE edge, not as a
+            // rainbow outline. Clip away the selection interior before drawing the blurred
+            // emission so no colored line is painted across the clear window itself.
+            int glowSave = canvas.save();
+            Path glowHole = new Path();
+            glowHole.addRoundRect(localTextRect, radius, radius, Path.Direction.CW);
+            canvas.clipOutPath(glowHole);
+            canvas.drawRoundRect(localTextRect, radius, radius, auroraHalo);
             canvas.drawRoundRect(localTextRect, radius, radius, auroraGlow);
-            canvas.drawRoundRect(localTextRect, radius, radius, auroraCore);
+            canvas.restoreToCount(glowSave);
 
+            auroraHalo.setShader(null);
             auroraGlow.setShader(null);
-            auroraCore.setShader(null);
 
+            // RegionView's actual neutral handles remain separate from EffectsV2/Aurora.
             drawNativeCornerHandles(canvas, localTextRect, radius);
         }
 
