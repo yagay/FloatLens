@@ -13,10 +13,11 @@ import io.github.libxposed.api.XposedModule;
 /**
  * Reads Google's in-progress text selection geometry without changing Google's selection model.
  *
- * <p>Google 17.58 posts dtvm tasks while text handles move. Each task owns the current dnqv range
- * and dtvr controller. After Google's task runs, dnrs.c contains the current selected word items;
- * every dnrd word carries its live Rect. Unioning those rectangles gives the visual bounds for the
- * passive FloatLens frame on every drag update instead of only after the final USER_SELECTION.</p>
+ * <p>There are two paths in 17.58:
+ * 1) dnrs.g(ImmutableList, boolean, int) receives the current selected-word list during handle
+ *    dragging. dnrt.onScroll -> dnrs.a(...) -> dnrs.g(...) runs repeatedly while the handle moves.
+ * 2) dtvm.run() publishes the later/final range update. We keep it only as a final correction.
+ * This avoids waiting until USER_SELECTION commits before moving FloatLens' passive frame.</p>
  */
 final class GoogleTextSelectionLiveHook {
     private static final String TAG = "FloatLens-GoogleCTS";
@@ -24,8 +25,6 @@ final class GoogleTextSelectionLiveHook {
     private static final String CONTROLLER = "dtvr";
     private static final String STATE = "dnrs";
     private static final String WORD = "dnrd";
-    private static final String HIGHLIGHT = "dnrf";
-    private static final String HIGHLIGHT_GEOMETRY = "dnsa";
     private static final String TEXT_SELECTION_VIEW =
             "com.google.android.libraries.lens.common.text.selection.ui.TextSelectionView";
 
@@ -46,6 +45,64 @@ final class GoogleTextSelectionLiveHook {
     }
 
     int install() {
+        int count = 0;
+        count += installStateListHook();
+        count += installFinalTaskHook();
+        module.log(Log.INFO, TAG,
+                "Google live text selection hooks=" + count
+                        + " sources=dnrs.g,dtvm.run");
+        return count;
+    }
+
+    private int installStateListHook() {
+        try {
+            Class<?> stateClass = Class.forName(STATE, false, classLoader);
+            Method target = null;
+            for (Method method : GoogleReflection.declaredMethods(stateClass)) {
+                if (!"g".equals(method.getName())
+                        || method.getParameterCount() != 3
+                        || method.getReturnType() != void.class) {
+                    continue;
+                }
+                Class<?>[] p = method.getParameterTypes();
+                if (GoogleLens1758Profile.IMMUTABLE_LIST.equals(p[0].getName())
+                        && p[1] == boolean.class
+                        && p[2] == int.class) {
+                    target = method;
+                    break;
+                }
+            }
+            if (target == null) {
+                module.log(Log.WARN, TAG,
+                        "Google live word-list hook unavailable: dnrs.g missing");
+                return 0;
+            }
+
+            module.hook(target).intercept(chain -> {
+                Object state = chain.getThisObject();
+                Object selected = chain.getArg(0);
+                Object result = chain.proceed();
+                if (!active.getAsBoolean() || state == null) return result;
+
+                try {
+                    LiveBounds live = readStateBounds(
+                            state, selected, "dnrs.g");
+                    publish(live);
+                } catch (Throwable t) {
+                    module.log(Log.WARN, TAG,
+                            "Google live dnrs.g bounds read failed", t);
+                }
+                return result;
+            });
+            return 1;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG,
+                    "Google live word-list hook unavailable", t);
+            return 0;
+        }
+    }
+
+    private int installFinalTaskHook() {
         try {
             Class<?> taskClass = Class.forName(UPDATE_TASK, false, classLoader);
             Method run = null;
@@ -59,90 +116,49 @@ final class GoogleTextSelectionLiveHook {
             }
             if (run == null) {
                 module.log(Log.WARN, TAG,
-                        "Google live text selection hook unavailable: dtvm.run missing");
+                        "Google final text selection hook unavailable: dtvm.run missing");
                 return 0;
             }
 
-            int hooks = 0;
             module.hook(run).intercept(chain -> {
                 Object task = chain.getThisObject();
                 Object result = chain.proceed();
                 if (!active.getAsBoolean() || task == null) return result;
 
                 try {
-                    LiveBounds live = readLiveBounds(task);
-                    emit(live);
+                    LiveBounds live = readTaskBounds(task);
+                    publish(live);
                 } catch (Throwable t) {
                     module.log(Log.WARN, TAG,
-                            "Google live text selection bounds read failed", t);
+                            "Google final text selection bounds read failed", t);
                 }
                 return result;
             });
-            hooks++;
-
-            // dnrs.g(ImmutableList, boolean, int) is the actual live selected-highlight update.
-            // Its first argument contains dnrf items whose dnsa.a Rect changes while handles move.
-            Class<?> stateClass = Class.forName(STATE, false, classLoader);
-            for (Method method : GoogleReflection.declaredMethods(stateClass)) {
-                if (!"g".equals(method.getName())
-                        || method.getParameterCount() != 3
-                        || method.getReturnType() != void.class) {
-                    continue;
-                }
-                Class<?>[] p = method.getParameterTypes();
-                if (!GoogleLens1758Profile.IMMUTABLE_LIST.equals(p[0].getName())
-                        || p[1] != boolean.class
-                        || p[2] != int.class) {
-                    continue;
-                }
-                module.hook(method).intercept(chain -> {
-                    Object state = chain.getThisObject();
-                    Object selected = chain.getArg(0);
-                    Object result = chain.proceed();
-                    if (!active.getAsBoolean() || state == null) return result;
-                    try {
-                        emit(readStateBounds(state, selected, "dnrs.g"));
-                    } catch (Throwable t) {
-                        module.log(Log.WARN, TAG,
-                                "Google live highlight bounds read failed", t);
-                    }
-                    return result;
-                });
-                hooks++;
-                break;
-            }
-
-            module.log(Log.INFO, TAG,
-                    "Google live text selection hooks=" + hooks
-                            + " sources=dnrs.g,dtvm.run");
-            return hooks;
+            return 1;
         } catch (Throwable t) {
             module.log(Log.WARN, TAG,
-                    "Google live text selection hook unavailable", t);
+                    "Google final text selection hook unavailable", t);
             return 0;
         }
     }
 
-    private LiveBounds readLiveBounds(Object task) {
+    private void publish(LiveBounds live) {
+        if (live != null && live.bounds != null && !live.bounds.isEmpty()) {
+            sink.accept(live.bounds, live.detail);
+        }
+    }
+
+    private LiveBounds readTaskBounds(Object task) {
         Object controller = GoogleReflection.readField(task, "a", CONTROLLER);
         Object range = GoogleReflection.readField(task, "b", "dnqv");
         if (controller == null) return LiveBounds.empty("controller_missing");
 
         Object state = GoogleReflection.invokeNoArg(controller, "c");
-        Object rawView = GoogleReflection.invokeNoArg(controller, "d");
         if (state == null || !STATE.equals(state.getClass().getName())) {
             return LiveBounds.empty("state_missing");
         }
-        if (!(rawView instanceof View textView)
-                || !TEXT_SELECTION_VIEW.equals(rawView.getClass().getName())
-                || textView.getWidth() <= 0
-                || textView.getHeight() <= 0) {
-            return LiveBounds.empty("text_view_missing");
-        }
 
-        Object selected = GoogleReflection.readField(
-                state, "c", GoogleLens1758Profile.IMMUTABLE_LIST);
-        LiveBounds live = readStateBounds(state, selected, "dtvm");
+        LiveBounds live = readStateBounds(state, null, "dtvm");
         if (live.bounds == null) return live;
 
         String rangeText = range == null ? "null" : safe(String.valueOf(range));
@@ -151,33 +167,37 @@ final class GoogleTextSelectionLiveHook {
                 live.detail + " range=" + trim(rangeText, 260));
     }
 
-    private void emit(LiveBounds live) {
-        if (live != null && live.bounds != null && !live.bounds.isEmpty()) {
-            sink.accept(live.bounds, live.detail);
+    private LiveBounds readStateBounds(
+            Object state, Object selectedOverride, String source) {
+        if (state == null || !STATE.equals(state.getClass().getName())) {
+            return LiveBounds.empty(source + " state_missing");
         }
-    }
 
-    private LiveBounds readStateBounds(Object state, Object selected, String source) {
-        if (state == null) return LiveBounds.empty(source + " state_missing");
-
-        Object rawView = GoogleReflection.readField(state, "g", TEXT_SELECTION_VIEW);
+        Object rawView = GoogleReflection.readField(
+                state, "g", TEXT_SELECTION_VIEW);
         if (!(rawView instanceof View textView)
                 || textView.getWidth() <= 0
                 || textView.getHeight() <= 0) {
             return LiveBounds.empty(source + " text_view_missing");
         }
 
-        Rect union = new Rect();
-        int highlights = addSelectionItems(union, selected);
-
-        // During a handoff between highlight lists, keep the moving endpoint geometry as a
-        // one-frame fallback. Normally dnrf -> dnsa.a is the authoritative live path.
-        if (highlights == 0) {
-            highlights += addSelectionItem(union, GoogleReflection.readField(state, "a", WORD));
-            highlights += addSelectionItem(union, GoogleReflection.readField(state, "b", WORD));
+        Object selected = selectedOverride;
+        if (!(selected instanceof Iterable<?>)) {
+            selected = GoogleReflection.readField(
+                    state, "c", GoogleLens1758Profile.IMMUTABLE_LIST);
         }
-        if (highlights == 0 || union.isEmpty()) {
-            return LiveBounds.empty(source + " selected_items_empty");
+
+        Rect union = new Rect();
+        int words = addWords(union, selected);
+
+        // Endpoints are updated during handle motion even for the brief instant where the list is
+        // being replaced, so use them as a one-frame fail-soft fallback.
+        if (words == 0) {
+            words += addWord(union, GoogleReflection.readField(state, "a", WORD));
+            words += addWord(union, GoogleReflection.readField(state, "b", WORD));
+        }
+        if (words == 0 || union.isEmpty()) {
+            return LiveBounds.empty(source + " selected_words_empty");
         }
 
         int[] origin = new int[2];
@@ -197,34 +217,22 @@ final class GoogleTextSelectionLiveHook {
         return new LiveBounds(
                 screen,
                 "source=" + source
-                        + " selectedItems=" + highlights
+                        + " selectedWords=" + words
                         + " local=" + union
                         + " screen=" + screen);
     }
 
-    private static int addSelectionItems(Rect union, Object value) {
+    private static int addWords(Rect union, Object value) {
         if (!(value instanceof Iterable<?> items)) return 0;
         int count = 0;
-        for (Object item : items) count += addSelectionItem(union, item);
+        for (Object item : items) count += addWord(union, item);
         return count;
     }
 
-    private static int addSelectionItem(Rect union, Object item) {
-        if (item == null) return 0;
-        Rect rect = null;
-        String type = item.getClass().getName();
-
-        if (WORD.equals(type)) {
-            Object value = GoogleReflection.readField(item, "d", Rect.class.getName());
-            if (value instanceof Rect r) rect = r;
-        } else if (HIGHLIGHT.equals(type)) {
-            Object geometry = GoogleReflection.readField(item, "a", HIGHLIGHT_GEOMETRY);
-            Object value = GoogleReflection.readField(
-                    geometry, "a", Rect.class.getName());
-            if (value instanceof Rect r) rect = r;
-        }
-
-        if (rect == null || rect.isEmpty()) return 0;
+    private static int addWord(Rect union, Object word) {
+        if (word == null || !WORD.equals(word.getClass().getName())) return 0;
+        Object value = GoogleReflection.readField(word, "d", Rect.class.getName());
+        if (!(value instanceof Rect rect) || rect.isEmpty()) return 0;
         if (union.isEmpty()) union.set(rect);
         else union.union(rect);
         return 1;
