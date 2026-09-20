@@ -9,8 +9,6 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.Rect;
-import android.graphics.RectF;
-import android.graphics.SweepGradient;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.MotionEvent;
@@ -49,11 +47,6 @@ final class GoogleCanonicalFrameLayer {
     private WeakReference<ImageView> layerRef = new WeakReference<>(null);
     private WeakReference<SelectionView> selectionRef = new WeakReference<>(null);
     private WeakReference<ViewGroup> parentRef = new WeakReference<>(null);
-    private Rect selectionBounds;
-    /** True only for Google's direct region/screenshot selection. */
-    private boolean regionSelection;
-    /** Text selections reuse the visual language of the Google-style screenshot frame. */
-    private boolean textSelectionFrame;
     private final List<PointF> gesturePoints = new ArrayList<>();
 
     GoogleCanonicalFrameLayer(BooleanSupplier active,
@@ -100,14 +93,7 @@ final class GoogleCanonicalFrameLayer {
 
     void updateSelection(Rect screenBounds, boolean regionSelection, String text) {
         synchronized (this) {
-            selectionBounds = screenBounds == null || screenBounds.isEmpty()
-                    ? null : new Rect(screenBounds);
-            this.regionSelection = selectionBounds != null && regionSelection;
-            textSelectionFrame = selectionBounds != null
-                    && !regionSelection
-                    && text != null
-                    && !text.isBlank();
-            if (selectionBounds != null) gesturePoints.clear();
+            if (screenBounds != null && !screenBounds.isEmpty()) gesturePoints.clear();
         }
         main.post(() -> {
             SelectionView view = selectionRef.get();
@@ -116,7 +102,8 @@ final class GoogleCanonicalFrameLayer {
         reporter.accept("GOOGLE_CANONICAL_SELECTION",
                 "screenBounds=" + String.valueOf(screenBounds)
                         + " region=" + regionSelection
-                        + " textLen=" + (text == null ? 0 : text.length()));
+                        + " textLen=" + (text == null ? 0 : text.length())
+                        + " frameRenderer=native_google");
     }
 
     void onGesturePoint(int action, float x, float y) {
@@ -124,9 +111,6 @@ final class GoogleCanonicalFrameLayer {
             if (action == MotionEvent.ACTION_DOWN
                     || action == MotionEvent.ACTION_POINTER_DOWN) {
                 gesturePoints.clear();
-                selectionBounds = null;
-                regionSelection = false;
-                textSelectionFrame = false;
             }
             if (action == MotionEvent.ACTION_DOWN
                     || action == MotionEvent.ACTION_POINTER_DOWN
@@ -163,9 +147,6 @@ final class GoogleCanonicalFrameLayer {
             canonicalFrame = null;
             retired = new ArrayList<>(retiredFrames);
             retiredFrames.clear();
-            selectionBounds = null;
-            regionSelection = false;
-            textSelectionFrame = false;
             gesturePoints.clear();
         }
         main.post(() -> {
@@ -321,62 +302,11 @@ final class GoogleCanonicalFrameLayer {
     }
 
     private final class SelectionView extends View {
-        private static final int GOOGLE_BLUE = 0xFF4285F4;
-        private static final int GOOGLE_RED = 0xFFEA4335;
-        private static final int GOOGLE_YELLOW = 0xFFFBBC05;
-        private static final int GOOGLE_GREEN = 0xFF34A853;
-
-        private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint textMask = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint textGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint textCore = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint textInnerHighlight = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint trail = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF textFrameRect = new RectF();
-        private final float textFrameRadius;
-        private final float textFramePadding;
-        private final float textGlowWidth;
-        private final float textCoreWidth;
 
         SelectionView(Activity context) {
             super(context);
             float density = Math.max(1f, getResources().getDisplayMetrics().density);
-
-            // Keep direct region selection exactly as it was. Google still owns its region logic.
-            border.setStyle(Paint.Style.STROKE);
-            border.setStrokeWidth(2f * density);
-            border.setColor(Color.WHITE);
-            border.setShadowLayer(1.5f * density, 0f, 0f, 0xAA000000);
-
-            // Google-style text shell. This layer is visual only: Google's text selection,
-            // native handles and live selection bounds stay authoritative.
-            textMask.setStyle(Paint.Style.FILL);
-            textMask.setColor(0x70000000);
-
-            textGlowWidth = 9f * density;
-            textCoreWidth = 3.5f * density;
-            textFrameRadius = 14f * density;
-            textFramePadding = 4f * density;
-
-            textGlow.setStyle(Paint.Style.STROKE);
-            textGlow.setStrokeWidth(textGlowWidth);
-            textGlow.setStrokeCap(Paint.Cap.ROUND);
-            textGlow.setStrokeJoin(Paint.Join.ROUND);
-            textGlow.setAlpha(145);
-
-            textCore.setStyle(Paint.Style.STROKE);
-            textCore.setStrokeWidth(textCoreWidth);
-            textCore.setStrokeCap(Paint.Cap.ROUND);
-            textCore.setStrokeJoin(Paint.Join.ROUND);
-
-            // A very thin bright inner edge keeps the selected content crisp against the glow,
-            // matching the "clear window inside a dimmed screen" appearance.
-            textInnerHighlight.setStyle(Paint.Style.STROKE);
-            textInnerHighlight.setStrokeWidth(1f * density);
-            textInnerHighlight.setColor(0xBFFFFFFF);
-            textInnerHighlight.setStrokeCap(Paint.Cap.ROUND);
-            textInnerHighlight.setStrokeJoin(Paint.Join.ROUND);
-
             trail.setStyle(Paint.Style.STROKE);
             trail.setStrokeCap(Paint.Cap.ROUND);
             trail.setStrokeJoin(Paint.Join.ROUND);
@@ -389,99 +319,20 @@ final class GoogleCanonicalFrameLayer {
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            Bitmap frame;
-            Rect bounds;
-            boolean useTextGoogleFrame;
             List<PointF> points;
             synchronized (GoogleCanonicalFrameLayer.this) {
-                frame = canonicalFrame;
-                bounds = selectionBounds == null ? null : new Rect(selectionBounds);
-                useTextGoogleFrame = textSelectionFrame && !regionSelection;
                 points = new ArrayList<>(gesturePoints);
             }
+            if (points.size() < 2) return;
 
-            if (frame != null && !frame.isRecycled() && bounds != null && !bounds.isEmpty()) {
-                int[] origin = new int[2];
-                try { getLocationOnScreen(origin); } catch (Throwable ignored) { }
-
-                float left = bounds.left - origin[0];
-                float top = bounds.top - origin[1];
-                float right = bounds.right - origin[0];
-                float bottom = bounds.bottom - origin[1];
-
-                if (useTextGoogleFrame) {
-                    drawGoogleGlowSelection(canvas, left, top, right, bottom);
-                } else {
-                    canvas.drawRect(left, top, right, bottom, border);
-                }
+            Path path = new Path();
+            PointF first = points.get(0);
+            path.moveTo(first.x, first.y);
+            for (int i = 1; i < points.size(); i++) {
+                PointF point = points.get(i);
+                path.lineTo(point.x, point.y);
             }
-
-            if (points.size() >= 2) {
-                Path path = new Path();
-                PointF first = points.get(0);
-                path.moveTo(first.x, first.y);
-                for (int i = 1; i < points.size(); i++) {
-                    PointF point = points.get(i);
-                    path.lineTo(point.x, point.y);
-                }
-                canvas.drawPath(path, trail);
-            }
-        }
-
-        private void drawGoogleGlowSelection(
-                Canvas canvas, float left, float top, float right, float bottom) {
-            if (right <= left || bottom <= top) return;
-
-            textFrameRect.set(
-                    Math.max(0f, left - textFramePadding),
-                    Math.max(0f, top - textFramePadding),
-                    Math.min(getWidth(), right + textFramePadding),
-                    Math.min(getHeight(), bottom + textFramePadding));
-            if (textFrameRect.isEmpty()) return;
-
-            float radius = Math.min(
-                    textFrameRadius,
-                    Math.max(1f, Math.min(textFrameRect.width(), textFrameRect.height()) / 2f));
-
-            // Dim everything except the live rounded selection. Because this overlay sits above
-            // FloatLens' canonical screenshot but below Google's native text controls, native
-            // selection/handles remain usable and visually unchanged.
-            int maskSave = canvas.save();
-            Path maskHole = new Path();
-            maskHole.addRoundRect(textFrameRect, radius, radius, Path.Direction.CW);
-            canvas.clipOutPath(maskHole);
-            canvas.drawRect(0f, 0f, getWidth(), getHeight(), textMask);
-            canvas.restoreToCount(maskSave);
-
-            // Four-color Google glow around the rounded selection.
-            float cx = textFrameRect.centerX();
-            float cy = textFrameRect.centerY();
-            SweepGradient gradient = new SweepGradient(
-                    cx, cy,
-                    new int[] {
-                            GOOGLE_BLUE,
-                            GOOGLE_RED,
-                            GOOGLE_YELLOW,
-                            GOOGLE_GREEN,
-                            GOOGLE_BLUE
-                    },
-                    new float[] {0f, 0.25f, 0.5f, 0.75f, 1f});
-
-            textGlow.setShader(gradient);
-            textCore.setShader(gradient);
-            canvas.drawRoundRect(textFrameRect, radius, radius, textGlow);
-            canvas.drawRoundRect(textFrameRect, radius, radius, textCore);
-            textGlow.setShader(null);
-            textCore.setShader(null);
-
-            // Thin inner highlight, inset so it does not eat into Google's selected text.
-            float inset = textCoreWidth / 2f;
-            RectF inner = new RectF(textFrameRect);
-            inner.inset(inset, inset);
-            if (!inner.isEmpty()) {
-                float innerRadius = Math.max(1f, radius - inset);
-                canvas.drawRoundRect(inner, innerRadius, innerRadius, textInnerHighlight);
-            }
+            canvas.drawPath(path, trail);
         }
     }
 
