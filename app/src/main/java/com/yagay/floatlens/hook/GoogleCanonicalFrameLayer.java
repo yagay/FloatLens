@@ -101,6 +101,14 @@ final class GoogleCanonicalFrameLayer {
         schedulePresent();
     }
 
+    void captureNativeEffectsShader(Object shader) {
+        nativeStyle.captureRuntimeShader(shader);
+        main.post(() -> {
+            SelectionView view = selectionRef.get();
+            if (view != null) view.invalidate();
+        });
+    }
+
     void updateSelection(Rect screenBounds, boolean regionSelection, String text) {
         synchronized (this) {
             if (screenBounds != null && !screenBounds.isEmpty()) gesturePoints.clear();
@@ -116,7 +124,6 @@ final class GoogleCanonicalFrameLayer {
                 textSelectionBounds = new Rect(screenBounds);
             } else {
                 textSelectionBounds = null;
-            nativeStyle.reset();
             }
         }
         main.post(() -> {
@@ -184,6 +191,7 @@ final class GoogleCanonicalFrameLayer {
             retiredFrames.clear();
             gesturePoints.clear();
             textSelectionBounds = null;
+            nativeStyle.reset();
         }
         main.post(() -> {
             // Detach the ImageView before recycling any bitmap it may still reference.
@@ -450,8 +458,10 @@ final class GoogleCanonicalFrameLayer {
             trail.setColor(Color.WHITE);
             trail.setShadowLayer(1.5f * density, 0f, 0f, 0xAA000000);
 
-            // BlurMaskFilter is software-rendered consistently on all supported Android versions.
-            setLayerType(LAYER_TYPE_SOFTWARE, null);
+            // Keep the View on the window's hardware pipeline. Google's final Aurora path uses
+            // RenderNode + RenderEffect(RuntimeShader); forcing LAYER_TYPE_SOFTWARE exposes the
+            // raw dpoc RGB mask instead of the shader-composited output.
+            setLayerType(LAYER_TYPE_NONE, null);
             setBackgroundColor(Color.TRANSPARENT);
         }
 
