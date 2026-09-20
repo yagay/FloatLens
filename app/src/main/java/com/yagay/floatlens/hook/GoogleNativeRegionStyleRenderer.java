@@ -191,7 +191,15 @@ final class GoogleNativeRegionStyleRenderer {
         }
         if (constructor == null) return false;
         constructor.setAccessible(true);
-        Object clone = constructor.newInstance(contextWrapper, variant, modeN, modeO);
+        Object clone;
+        try {
+            clone = constructor.newInstance(contextWrapper, variant, modeN, modeO);
+        } catch (Throwable error) {
+            reporter.accept("GOOGLE_NATIVE_STYLE",
+                    "aurora_clone_failed=" + error.getClass().getSimpleName()
+                            + ":" + safe(error.getMessage()));
+            return false;
+        }
 
         Method geometry = null;
         Method draw = null;
