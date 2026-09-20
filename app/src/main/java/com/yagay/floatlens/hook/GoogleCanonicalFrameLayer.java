@@ -10,9 +10,6 @@ import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.Rect;
 import android.graphics.RectF;
-import android.graphics.Shader;
-import android.graphics.SweepGradient;
-import android.graphics.BlurMaskFilter;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.MotionEvent;
@@ -28,8 +25,6 @@ import java.util.List;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
-import android.content.res.Resources;
-import android.content.res.TypedArray;
 
 /**
  * Session-scoped immutable visual source for FloatLens-owned Google CTS sessions.
@@ -337,15 +332,16 @@ final class GoogleCanonicalFrameLayer {
         private final Paint scrim = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint trail = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF localSelection = new RectF();
+        private final float cornerRadius;
 
         SelectionView(Activity context) {
             super(context);
             float density = Math.max(1f, getResources().getDisplayMetrics().density);
 
-            // Restore FloatLens' original selection frame: a clean white 2dp outline with
-            // a small dark shadow so it stays visible on both light and dark content.
+            // FloatLens selection frame: a light 1dp rounded outline with a subtle shadow.
+            cornerRadius = 8f * density;
             border.setStyle(Paint.Style.STROKE);
-            border.setStrokeWidth(2f * density);
+            border.setStrokeWidth(1f * density);
             border.setColor(Color.WHITE);
             border.setShadowLayer(1.5f * density, 0f, 0f, 0xAA000000);
 
@@ -393,12 +389,20 @@ final class GoogleCanonicalFrameLayer {
                 if (!localSelection.isEmpty()) {
                     int save = canvas.save();
                     Path hole = new Path();
-                    hole.addRect(localSelection, Path.Direction.CW);
+                    hole.addRoundRect(
+                            localSelection,
+                            cornerRadius,
+                            cornerRadius,
+                            Path.Direction.CW);
                     canvas.clipOutPath(hole);
                     canvas.drawRect(0f, 0f, getWidth(), getHeight(), scrim);
                     canvas.restoreToCount(save);
 
-                    canvas.drawRect(localSelection, border);
+                    canvas.drawRoundRect(
+                            localSelection,
+                            cornerRadius,
+                            cornerRadius,
+                            border);
                 }
             }
 
