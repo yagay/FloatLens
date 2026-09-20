@@ -156,11 +156,11 @@ final class GoogleNativeRegionStyleRenderer {
     }
 
     synchronized void reset() {
+        // Session reset must not discard Google's already-initialized dpoz. EffectsV2View may keep
+        // the same shader instance across FloatLens sessions and therefore may not call dpls.d()
+        // again immediately. Keep the read-only shader/effect cache and only rebuild our private
+        // dpoc geometry/RenderNode; a later dpls.d() capture will replace the cache automatically.
         invalidateAuroraVisualOnly();
-        runtimeShader = null;
-        runtimeEffect = null;
-        runtimeEffectShaderIdentity = null;
-        renderNodeSetEffect = null;
         auroraNode = null;
     }
 
