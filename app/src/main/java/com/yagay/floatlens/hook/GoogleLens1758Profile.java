@@ -50,6 +50,15 @@ final class GoogleLens1758Profile {
             "com.google.android.libraries.lens.view.omnibox.OmniBoxView";
     static final String FROZEN_IMAGE_VIEW =
             "com.google.android.libraries.lens.view.frozenimage.FrozenImageView";
+    static final String REGION_VIEW =
+            "com.google.android.libraries.lens.view.region.RegionView";
+    static final String REGION_MODEL =
+            "com.google.android.libraries.lens.view.region.Region";
+    static final String REGION_VIEW_PEER = "dtch";
+    static final String EFFECTS_V2_VIEW =
+            "com.google.android.libraries.lens.view.effects.EffectsV2View";
+    static final String NON_SHADER_EFFECTS_VIEW =
+            "com.google.android.libraries.lens.view.effects.NonShaderEffectsView";
     static final String VIEWPORT_CONTROLLER = "duec";
     static final String VIEWPORT_REQUEST = "dudp";
     static final String VIEWPORT_STATE = "dsyc";
