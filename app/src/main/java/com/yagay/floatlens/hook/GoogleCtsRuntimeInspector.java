@@ -74,7 +74,6 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     private final GoogleLensFrameCapture frameCapture;
     private final GoogleRegionGestureHook regionGestureHook;
     private final GoogleTextSelectionLiveHook textSelectionLiveHook;
-    private final GoogleEffectsRuntimeShaderHook effectsRuntimeShaderHook;
     private String regionConfirmDetail = "";
 
     GoogleCtsRuntimeInspector(XposedModule module,
@@ -101,8 +100,6 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                 () -> markedActivity.get(), this::report);
         this.canonicalFrameLayer = new GoogleCanonicalFrameLayer(
                 this::active, () -> markedActivity.get(), this::report);
-        this.effectsRuntimeShaderHook = new GoogleEffectsRuntimeShaderHook(
-                module, classLoader, canonicalFrameLayer::captureNativeEffectsShader);
         this.lifecycleHooks = new GoogleCtsLifecycleHooks(module, provider, this);
         this.frameCapture = new GoogleLensFrameCapture(
                 module, classLoader, this::active, this::sendBridgeFrame, this::report);
@@ -154,7 +151,6 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         hooks += viewportHook.install(capabilities.viewport);
         hooks += frameCapture.install(capabilities.frame);
         hooks += regionGestureHook.install(capabilities.regionGesture);
-        hooks += effectsRuntimeShaderHook.install();
         hooks += textSelectionLiveHook.install();
         hooks += hookGoogleLensSelectionBoundary();
         // v169 device/APK analysis proved the visible menu is Lens' own ActionMenuView,
