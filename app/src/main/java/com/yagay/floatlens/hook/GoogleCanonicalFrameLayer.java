@@ -511,18 +511,15 @@ final class GoogleCanonicalFrameLayer {
             float radius = Math.min(maxCornerRadius,
                     Math.max(1f, Math.min(localTextRect.width(), localTextRect.height()) / 3f));
 
-            // Prefer Google's own low-level renderers. These operate on our Canvas/RectF only;
-            // they do not create a Region and do not touch Google's selection/gesture state.
-            boolean nativeScrim = nativeStyle.drawScrim(
-                    canvas, this, localTextRect, radius);
-            if (!nativeScrim) {
-                int save = canvas.save();
-                Path hole = new Path();
-                hole.addRoundRect(localTextRect, radius, radius, Path.Direction.CW);
-                canvas.clipOutPath(hole);
-                canvas.drawRect(0f, 0f, getWidth(), getHeight(), scrim);
-                canvas.restoreToCount(save);
-            }
+            // Keep the scrim independent from RegionView's animated Paint. Google 17.58's
+            // region_mask_color is #66000000; using that fixed resource avoids an opaque-black
+            // outside area when the native RegionView paint is detached from its own state.
+            int save = canvas.save();
+            Path hole = new Path();
+            hole.addRoundRect(localTextRect, radius, radius, Path.Direction.CW);
+            canvas.clipOutPath(hole);
+            canvas.drawRect(0f, 0f, getWidth(), getHeight(), scrim);
+            canvas.restoreToCount(save);
 
             boolean nativeAurora = nativeStyle.drawAurora(
                     canvas, this, localTextRect, radius);
