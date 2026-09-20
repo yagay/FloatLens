@@ -33,6 +33,7 @@ final class GoogleNativeRegionVisualAdapter {
 
     private long revision;
     private boolean syntheticTextRegion;
+    private Rect lastTextScreenBounds;
 
     GoogleNativeRegionVisualAdapter(
             ClassLoader classLoader,
@@ -43,9 +44,10 @@ final class GoogleNativeRegionVisualAdapter {
         this.reporter = reporter;
     }
 
-    void showTextSelection(Rect screenBounds) {
+    synchronized void showTextSelection(Rect screenBounds) {
         if (screenBounds == null || screenBounds.isEmpty()) return;
         final Rect requested = new Rect(screenBounds);
+        lastTextScreenBounds = new Rect(requested);
         final long requestRevision = ++revision;
         syntheticTextRegion = true;
         for (int i = 0; i < RETRY_MS.length; i++) {
@@ -63,24 +65,68 @@ final class GoogleNativeRegionVisualAdapter {
         }
     }
 
-    void onNativeRegionSelection() {
+    synchronized boolean isTextVisualActive() {
+        return syntheticTextRegion && lastTextScreenBounds != null
+                && !lastTextScreenBounds.isEmpty();
+    }
+
+    /**
+     * Keep the native RegionView purely visual while text is selected.
+     *
+     * Google still receives the touch and updates its text-selection model. After that touch is
+     * processed we re-apply the last text bounds to RegionView, preventing its region editor from
+     * drifting/resizing independently of the selected words.
+     */
+    void reassertTextSelectionSoon(String reason) {
+        final Rect locked;
+        synchronized (this) {
+            if (!isTextVisualActive()) return;
+            locked = new Rect(lastTextScreenBounds);
+        }
+        main.post(() -> reassertOnMain(locked, reason, 0));
+        main.postDelayed(() -> reassertOnMain(locked, reason, 1), 16L);
+        main.postDelayed(() -> reassertOnMain(locked, reason, 2), 48L);
+    }
+
+    private void reassertOnMain(Rect locked, String reason, int attempt) {
+        synchronized (this) {
+            if (!isTextVisualActive()
+                    || lastTextScreenBounds == null
+                    || !lastTextScreenBounds.equals(locked)) {
+                return;
+            }
+        }
+        boolean applied = applyOnMain(locked, -1);
+        if (attempt == 2 || applied) {
+            reporter.accept("GOOGLE_NATIVE_REGION_VISUAL",
+                    "mode=text_locked reason=" + safe(reason)
+                            + " bounds=" + locked
+                            + " attempt=" + attempt
+                            + " applied=" + applied);
+        }
+    }
+
+    synchronized void onNativeRegionSelection() {
         revision++;
         syntheticTextRegion = false;
+        lastTextScreenBounds = null;
         reporter.accept("GOOGLE_NATIVE_REGION_VISUAL",
                 "mode=native_region owner=google");
     }
 
-    void cancelTextVisual(String reason) {
+    synchronized void cancelTextVisual(String reason) {
         if (!syntheticTextRegion) return;
         revision++;
         syntheticTextRegion = false;
+        lastTextScreenBounds = null;
         reporter.accept("GOOGLE_NATIVE_REGION_VISUAL",
                 "mode=text_cancel reason=" + safe(reason));
     }
 
-    void reset() {
+    synchronized void reset() {
         revision++;
         syntheticTextRegion = false;
+        lastTextScreenBounds = null;
     }
 
     private boolean applyOnMain(Rect screenBounds, int attempt) {
