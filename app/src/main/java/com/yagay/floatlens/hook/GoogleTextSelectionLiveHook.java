@@ -24,6 +24,8 @@ final class GoogleTextSelectionLiveHook {
     private static final String CONTROLLER = "dtvr";
     private static final String STATE = "dnrs";
     private static final String WORD = "dnrd";
+    private static final String HIGHLIGHT = "dnrf";
+    private static final String HIGHLIGHT_GEOMETRY = "dnsa";
     private static final String TEXT_SELECTION_VIEW =
             "com.google.android.libraries.lens.common.text.selection.ui.TextSelectionView";
 
@@ -61,6 +63,7 @@ final class GoogleTextSelectionLiveHook {
                 return 0;
             }
 
+            int hooks = 0;
             module.hook(run).intercept(chain -> {
                 Object task = chain.getThisObject();
                 Object result = chain.proceed();
@@ -68,19 +71,51 @@ final class GoogleTextSelectionLiveHook {
 
                 try {
                     LiveBounds live = readLiveBounds(task);
-                    if (live.bounds != null && !live.bounds.isEmpty()) {
-                        sink.accept(live.bounds, live.detail);
-                    }
+                    emit(live);
                 } catch (Throwable t) {
                     module.log(Log.WARN, TAG,
                             "Google live text selection bounds read failed", t);
                 }
                 return result;
             });
+            hooks++;
+
+            // dnrs.g(ImmutableList, boolean, int) is the actual live selected-highlight update.
+            // Its first argument contains dnrf items whose dnsa.a Rect changes while handles move.
+            Class<?> stateClass = Class.forName(STATE, false, classLoader);
+            for (Method method : GoogleReflection.declaredMethods(stateClass)) {
+                if (!"g".equals(method.getName())
+                        || method.getParameterCount() != 3
+                        || method.getReturnType() != void.class) {
+                    continue;
+                }
+                Class<?>[] p = method.getParameterTypes();
+                if (!GoogleLens1758Profile.IMMUTABLE_LIST.equals(p[0].getName())
+                        || p[1] != boolean.class
+                        || p[2] != int.class) {
+                    continue;
+                }
+                module.hook(method).intercept(chain -> {
+                    Object state = chain.getThisObject();
+                    Object selected = chain.getArg(0);
+                    Object result = chain.proceed();
+                    if (!active.getAsBoolean() || state == null) return result;
+                    try {
+                        emit(readStateBounds(state, selected, "dnrs.g"));
+                    } catch (Throwable t) {
+                        module.log(Log.WARN, TAG,
+                                "Google live highlight bounds read failed", t);
+                    }
+                    return result;
+                });
+                hooks++;
+                break;
+            }
 
             module.log(Log.INFO, TAG,
-                    "Google live text selection hook installed source=dtvm.run");
-            return 1;
+                    "Google live text selection hooks=" + hooks
+                            + " sources=dnrs.g,dtvm.run");
+            return hooks;
         } catch (Throwable t) {
             module.log(Log.WARN, TAG,
                     "Google live text selection hook unavailable", t);
@@ -107,56 +142,89 @@ final class GoogleTextSelectionLiveHook {
 
         Object selected = GoogleReflection.readField(
                 state, "c", GoogleLens1758Profile.IMMUTABLE_LIST);
+        LiveBounds live = readStateBounds(state, selected, "dtvm");
+        if (live.bounds == null) return live;
+
+        String rangeText = range == null ? "null" : safe(String.valueOf(range));
+        return new LiveBounds(
+                live.bounds,
+                live.detail + " range=" + trim(rangeText, 260));
+    }
+
+    private void emit(LiveBounds live) {
+        if (live != null && live.bounds != null && !live.bounds.isEmpty()) {
+            sink.accept(live.bounds, live.detail);
+        }
+    }
+
+    private LiveBounds readStateBounds(Object state, Object selected, String source) {
+        if (state == null) return LiveBounds.empty(source + " state_missing");
+
+        Object rawView = GoogleReflection.readField(state, "g", TEXT_SELECTION_VIEW);
+        if (!(rawView instanceof View textView)
+                || textView.getWidth() <= 0
+                || textView.getHeight() <= 0) {
+            return LiveBounds.empty(source + " text_view_missing");
+        }
+
         Rect union = new Rect();
-        int words = addWords(union, selected);
+        int highlights = addSelectionItems(union, selected);
 
-        // Fail-soft fallback for the instant where Google's selected-word list is being swapped:
-        // endpoints still carry word rectangles and prevent a one-frame jump/disappearance.
-        if (words == 0) {
-            words += addWord(union, GoogleReflection.readField(state, "a", WORD));
-            words += addWord(union, GoogleReflection.readField(state, "b", WORD));
+        // During a handoff between highlight lists, keep the moving endpoint geometry as a
+        // one-frame fallback. Normally dnrf -> dnsa.a is the authoritative live path.
+        if (highlights == 0) {
+            highlights += addSelectionItem(union, GoogleReflection.readField(state, "a", WORD));
+            highlights += addSelectionItem(union, GoogleReflection.readField(state, "b", WORD));
         }
-        if (words == 0 || union.isEmpty()) {
-            return LiveBounds.empty("selected_words_empty");
+        if (highlights == 0 || union.isEmpty()) {
+            return LiveBounds.empty(source + " selected_items_empty");
         }
 
-        // dnrd rectangles are TextSelectionView-local in 17.58. Convert them to screen space.
         int[] origin = new int[2];
         textView.getLocationOnScreen(origin);
         Rect screen = new Rect(union);
         screen.offset(origin[0], origin[1]);
 
-        // Reject clearly stale/full-document geometry. A text selection may span most of a screen,
-        // but a union larger than the live TextSelectionView itself is not a valid local selection.
         Rect viewScreen = new Rect(
                 origin[0],
                 origin[1],
                 origin[0] + textView.getWidth(),
                 origin[1] + textView.getHeight());
         if (!screen.intersect(viewScreen) || screen.isEmpty()) {
-            return LiveBounds.empty("outside_text_view");
+            return LiveBounds.empty(source + " outside_text_view");
         }
 
-        String rangeText = range == null ? "null" : safe(String.valueOf(range));
         return new LiveBounds(
                 screen,
-                "source=dtvm selectedWords=" + words
-                        + " range=" + trim(rangeText, 260)
+                "source=" + source
+                        + " selectedItems=" + highlights
                         + " local=" + union
                         + " screen=" + screen);
     }
 
-    private static int addWords(Rect union, Object value) {
+    private static int addSelectionItems(Rect union, Object value) {
         if (!(value instanceof Iterable<?> items)) return 0;
         int count = 0;
-        for (Object item : items) count += addWord(union, item);
+        for (Object item : items) count += addSelectionItem(union, item);
         return count;
     }
 
-    private static int addWord(Rect union, Object word) {
-        if (word == null || !WORD.equals(word.getClass().getName())) return 0;
-        Object value = GoogleReflection.readField(word, "d", Rect.class.getName());
-        if (!(value instanceof Rect rect) || rect.isEmpty()) return 0;
+    private static int addSelectionItem(Rect union, Object item) {
+        if (item == null) return 0;
+        Rect rect = null;
+        String type = item.getClass().getName();
+
+        if (WORD.equals(type)) {
+            Object value = GoogleReflection.readField(item, "d", Rect.class.getName());
+            if (value instanceof Rect r) rect = r;
+        } else if (HIGHLIGHT.equals(type)) {
+            Object geometry = GoogleReflection.readField(item, "a", HIGHLIGHT_GEOMETRY);
+            Object value = GoogleReflection.readField(
+                    geometry, "a", Rect.class.getName());
+            if (value instanceof Rect r) rect = r;
+        }
+
+        if (rect == null || rect.isEmpty()) return 0;
         if (union.isEmpty()) union.set(rect);
         else union.union(rect);
         return 1;
