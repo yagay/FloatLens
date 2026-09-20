@@ -108,8 +108,18 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         this.regionGestureHook = new GoogleRegionGestureHook(
                 module, classLoader, this::active,
                 (adjusting, detail) -> {
+                    // While RegionView is only mirroring a text selection, never promote a touch
+                    // into Google's editable region-selection state. Text selection itself still
+                    // receives the gesture; after Google processes it we pin RegionView back to
+                    // the latest selected-word bounds.
+                    if (nativeRegionVisual.isTextVisualActive()) {
+                        nativeRegionVisual.reassertTextSelectionSoon(
+                                adjusting ? "text_touch_start" : "text_touch_end");
+                        report("GOOGLE_TEXT_FRAME_GESTURE_LOCKED", detail);
+                        return;
+                    }
+
                     sessionState.onRegionGesture(adjusting);
-                    if (adjusting) nativeRegionVisual.cancelTextVisual("region_gesture_start");
                     report(adjusting ? "GOOGLE_REGION_GESTURE_START"
                                     : "GOOGLE_REGION_GESTURE_END",
                             detail);
@@ -118,8 +128,12 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                                     : GoogleCtsContract.EVENT_REGION_GESTURE_END,
                             "", detail, currentSelectionBounds());
                 },
-                (action, x, y, detail) ->
-                        canonicalFrameLayer.onGesturePoint(action, x, y));
+                (action, x, y, detail) -> {
+                    canonicalFrameLayer.onGesturePoint(action, x, y);
+                    if (nativeRegionVisual.isTextVisualActive()) {
+                        nativeRegionVisual.reassertTextSelectionSoon("text_touch_point_" + action);
+                    }
+                });
         provider.setObserver((token, confirmedAtElapsed) ->
                 mainHandler.post(() -> onGoogleRegionConfirm(token, confirmedAtElapsed)));
     }
