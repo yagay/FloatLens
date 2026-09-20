@@ -73,6 +73,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     private final GoogleCtsLifecycleHooks lifecycleHooks;
     private final GoogleLensFrameCapture frameCapture;
     private final GoogleRegionGestureHook regionGestureHook;
+    private final GoogleTextSelectionLiveHook textSelectionLiveHook;
     private String regionConfirmDetail = "";
 
     GoogleCtsRuntimeInspector(XposedModule module,
@@ -102,6 +103,14 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         this.lifecycleHooks = new GoogleCtsLifecycleHooks(module, provider, this);
         this.frameCapture = new GoogleLensFrameCapture(
                 module, classLoader, this::active, this::sendBridgeFrame, this::report);
+        this.textSelectionLiveHook = new GoogleTextSelectionLiveHook(
+                module, classLoader, this::active,
+                (bounds, detail) -> {
+                    if (bounds == null || bounds.isEmpty()
+                            || sessionState.regionSelectionActive()) return;
+                    canonicalFrameLayer.updateLiveTextSelection(bounds);
+                    report("GOOGLE_TEXT_SELECTION_LIVE", detail);
+                });
         this.regionGestureHook = new GoogleRegionGestureHook(
                 module, classLoader, this::active,
                 (adjusting, detail) -> {
@@ -140,6 +149,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         hooks += viewportHook.install(capabilities.viewport);
         hooks += frameCapture.install(capabilities.frame);
         hooks += regionGestureHook.install(capabilities.regionGesture);
+        hooks += textSelectionLiveHook.install();
         hooks += hookGoogleLensSelectionBoundary();
         // v169 device/APK analysis proved the visible menu is Lens' own ActionMenuView,
         // not framework/Material FloatingToolbar. WindowManager inspection is diagnostic-only.
