@@ -447,7 +447,9 @@ final class GoogleCanonicalFrameLayer {
             // FloatLens' canonical screenshot but below Google's native text controls, native
             // selection/handles remain usable and visually unchanged.
             int maskSave = canvas.save();
-            canvas.clipOutRoundRect(textFrameRect, radius, radius);
+            Path maskHole = new Path();
+            maskHole.addRoundRect(textFrameRect, radius, radius, Path.Direction.CW);
+            canvas.clipOutPath(maskHole);
             canvas.drawRect(0f, 0f, getWidth(), getHeight(), textMask);
             canvas.restoreToCount(maskSave);
 
