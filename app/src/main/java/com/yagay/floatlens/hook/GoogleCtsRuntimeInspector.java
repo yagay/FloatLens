@@ -70,7 +70,6 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     private final GoogleLensDiagnosticsHooks diagnosticsHooks;
     private final GoogleLensViewportHook viewportHook;
     private final GoogleCanonicalFrameLayer canonicalFrameLayer;
-    private final GoogleNativeRegionVisualAdapter nativeRegionVisual;
     private final GoogleCtsLifecycleHooks lifecycleHooks;
     private final GoogleLensFrameCapture frameCapture;
     private final GoogleRegionGestureHook regionGestureHook;
@@ -100,22 +99,19 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                 () -> markedActivity.get(), this::report);
         this.canonicalFrameLayer = new GoogleCanonicalFrameLayer(
                 this::active, () -> markedActivity.get(), this::report);
-        this.nativeRegionVisual = new GoogleNativeRegionVisualAdapter(
-                classLoader, () -> markedActivity.get(), this::report);
         this.lifecycleHooks = new GoogleCtsLifecycleHooks(module, provider, this);
         this.frameCapture = new GoogleLensFrameCapture(
                 module, classLoader, this::active, this::sendBridgeFrame, this::report);
         this.regionGestureHook = new GoogleRegionGestureHook(
                 module, classLoader, this::active,
                 (adjusting, detail) -> {
-                    // While RegionView is only mirroring a text selection, never promote a touch
-                    // into Google's editable region-selection state. Text selection itself still
-                    // receives the gesture; after Google processes it we pin RegionView back to
-                    // the latest selected-word bounds.
-                    if (nativeRegionVisual.isTextVisualActive()) {
-                        nativeRegionVisual.reassertTextSelectionSoon(
-                                adjusting ? "text_touch_start" : "text_touch_end");
-                        report("GOOGLE_TEXT_FRAME_GESTURE_LOCKED", detail);
+                    // FrozenImageView also receives text-selection gestures. Once we are in a
+                    // text-selection state, never promote those touches into region-adjustment
+                    // state; that would make text interaction look like screenshot-region editing.
+                    if (sessionState.selectionSeen() && !sessionState.regionSelectionActive()
+                            && !sessionState.selectionText().isBlank()) {
+                        report("GOOGLE_TEXT_SELECTION_GESTURE",
+                                "adjusting=" + adjusting + " " + detail);
                         return;
                     }
 
@@ -128,12 +124,8 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                                     : GoogleCtsContract.EVENT_REGION_GESTURE_END,
                             "", detail, currentSelectionBounds());
                 },
-                (action, x, y, detail) -> {
-                    canonicalFrameLayer.onGesturePoint(action, x, y);
-                    if (nativeRegionVisual.isTextVisualActive()) {
-                        nativeRegionVisual.reassertTextSelectionSoon("text_touch_point_" + action);
-                    }
-                });
+                (action, x, y, detail) ->
+                        canonicalFrameLayer.onGesturePoint(action, x, y));
         provider.setObserver((token, confirmedAtElapsed) ->
                 mainHandler.post(() -> onGoogleRegionConfirm(token, confirmedAtElapsed)));
     }
@@ -257,16 +249,11 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                 GoogleSelectionAdapter.Snapshot selection = null;
                 Rect selectionBounds = null;
                 boolean regionSelection = false;
-                boolean textSelectionVisual = false;
                 if (active()) {
                     selection = binding.snapshot(chain.getArg(0), currentApplicationContext());
                     selectionBounds = selection.bounds();
                     regionSelection = selection.directRegionCommit()
                             && selectionBounds != null && !selectionBounds.isEmpty();
-                    textSelectionVisual = !regionSelection
-                            && selectionBounds != null
-                            && !selectionBounds.isEmpty()
-                            && !selection.text().isBlank();
                     sessionState.onSelection(
                             selection.text(), toSessionBounds(selectionBounds), regionSelection);
                     canonicalFrameLayer.updateSelection(
@@ -287,20 +274,9 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                             selection.text(), detail, effectiveBounds);
                 }
 
-                // Let Google finish its own text/region state transition first. Only after that do
-                // we mirror text bounds into RegionView's visual peer, so the shell is painted by
-                // the same RegionView + EffectsV2 pipeline as native image/region selection.
+                // Let Google update only its own text/region model. Text visuals are rendered
+                // passively by GoogleCanonicalFrameLayer and never written back into RegionView.
                 Object result = chain.proceed();
-
-                if (active()) {
-                    if (regionSelection) {
-                        nativeRegionVisual.onNativeRegionSelection();
-                    } else if (textSelectionVisual && selectionBounds != null) {
-                        nativeRegionVisual.showTextSelection(selectionBounds);
-                    } else {
-                        nativeRegionVisual.cancelTextVisual("selection_without_visual_bounds");
-                    }
-                }
 
                 if (active() && sessionState.selectionSeen()) uiSanitizer.sanitizeNow();
 
@@ -531,7 +507,6 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
             regionGestureHook.reset();
             viewportHook.reset();
             canonicalFrameLayer.reset();
-            nativeRegionVisual.reset();
             markedActivity = new WeakReference<>(null);
             regionConfirmDetail = "";
             sessionState.begin(nextToken, id, now + SESSION_TTL_MS);
@@ -582,7 +557,6 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         regionGestureHook.reset();
         viewportHook.reset();
         canonicalFrameLayer.reset();
-        nativeRegionVisual.reset();
         regionConfirmDetail = "";
         uiSanitizer.detach();
         markedActivity = new WeakReference<>(null);
