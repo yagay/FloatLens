@@ -1,6 +1,7 @@
 package com.yagay.floatlens.hook;
 
 import android.app.Activity;
+import android.graphics.BlendMode;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RecordingCanvas;
@@ -112,8 +113,23 @@ final class GoogleNativeRegionStyleRenderer {
             setter.invoke(auroraNode, effect);
 
             // The node now follows the same dpoc -> RuntimeShader(in_src) composition used by
-            // EffectsV2View. Only the final shader output reaches FloatLens' visible Canvas.
+            // EffectsV2View. Google's shader can emit opaque black outside the actual Aurora when
+            // detached from its original View composition. Restrict it to a local halo and use
+            // SCREEN compositing so black becomes neutral while the colored edge remains visible.
+            float density = Math.max(1f, host.getResources().getDisplayMetrics().density);
+            float halo = Math.max(32f * density, radius * 3f);
+            RectF haloBounds = new RectF(
+                    Math.max(0f, localRect.left - halo),
+                    Math.max(0f, localRect.top - halo),
+                    Math.min(host.getWidth(), localRect.right + halo),
+                    Math.min(host.getHeight(), localRect.bottom + halo));
+
+            Paint composite = new Paint(Paint.ANTI_ALIAS_FLAG);
+            composite.setBlendMode(BlendMode.SCREEN);
+            int save = canvas.saveLayer(haloBounds, composite);
+            canvas.clipRect(haloBounds);
             canvas.drawRenderNode(auroraNode);
+            canvas.restoreToCount(save);
             return true;
         } catch (Throwable t) {
             reporter.accept("GOOGLE_NATIVE_STYLE",
