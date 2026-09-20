@@ -110,12 +110,22 @@ final class GoogleNativeRegionStyleRenderer {
             // a thin partially-animated rim.
             settlePrivateAuroraStyle();
 
+            int hostHeight = Math.max(1, host.getHeight());
+            // dpoc.d() uses its third float to derive the internal gradient stop:
+            //     stop ~= (visualScalePx / viewHeight) * rendererFactor
+            // Passing 1px collapses Google's color field into a narrow rim. Feed it a real visual
+            // scale based on the screen/selection size so the native Aurora spreads broadly around
+            // the text box like Lens region selection, without enlarging the actual selection box.
+            float visualScalePx = Math.max(
+                    hostHeight * 0.12f,
+                    Math.min(hostHeight * 0.22f, localRect.height() * 2.4f));
+
             auroraGeometry.invoke(
                     privateAurora,
                     new RectF(localRect),
                     radius,
-                    1.0f,
-                    Math.max(1, host.getHeight()));
+                    visualScalePx,
+                    hostHeight);
 
             configurePrivateShader(host, localRect);
 
