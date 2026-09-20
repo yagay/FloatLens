@@ -319,13 +319,11 @@ final class GoogleCanonicalFrameLayer {
     }
 
     private final class SelectionView extends View {
-        private static final int GOOGLE_BLUE = 0xFF4285F4;
-
         private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint textFrame = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint textFrameHandle = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint textCornerFrame = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint trail = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final float textFrameHandleRadius;
+        private final float textCornerRadius;
+        private final float textCornerArm;
 
         SelectionView(Activity context) {
             super(context);
@@ -337,17 +335,17 @@ final class GoogleCanonicalFrameLayer {
             border.setColor(Color.WHITE);
             border.setShadowLayer(1.5f * density, 0f, 0f, 0xAA000000);
 
-            // Text selection only changes its shell: mirror the existing circle-screenshot frame
-            // (white 2dp frame + Google-blue midpoint handles). Bounds still come directly from
-            // Google's live text selection and therefore keep resizing with the selected text.
-            textFrame.setStyle(Paint.Style.STROKE);
-            textFrame.setStrokeWidth(2f * density);
-            textFrame.setColor(Color.WHITE);
-            textFrame.setStrokeJoin(Paint.Join.MITER);
-
-            textFrameHandle.setStyle(Paint.Style.FILL);
-            textFrameHandle.setColor(GOOGLE_BLUE);
-            textFrameHandleRadius = 6f * density;
+            // Text selection changes visuals only. Match Circle to Search's image-selection shell:
+            // four white rounded corner brackets, with no full rectangular border and no blue
+            // midpoint handles. Geometry still comes straight from Google's live text bounds.
+            textCornerFrame.setStyle(Paint.Style.STROKE);
+            textCornerFrame.setStrokeWidth(3f * density);
+            textCornerFrame.setColor(Color.WHITE);
+            textCornerFrame.setStrokeCap(Paint.Cap.ROUND);
+            textCornerFrame.setStrokeJoin(Paint.Join.ROUND);
+            textCornerFrame.setShadowLayer(1.5f * density, 0f, 0f, 0xAA000000);
+            textCornerRadius = 8f * density;
+            textCornerArm = 20f * density;
 
             trail.setStyle(Paint.Style.STROKE);
             trail.setStrokeCap(Paint.Cap.ROUND);
@@ -363,12 +361,12 @@ final class GoogleCanonicalFrameLayer {
             super.onDraw(canvas);
             Bitmap frame;
             Rect bounds;
-            boolean useTextScreenshotFrame;
+            boolean useTextGoogleFrame;
             List<PointF> points;
             synchronized (GoogleCanonicalFrameLayer.this) {
                 frame = canonicalFrame;
                 bounds = selectionBounds == null ? null : new Rect(selectionBounds);
-                useTextScreenshotFrame = textSelectionFrame && !regionSelection;
+                useTextGoogleFrame = textSelectionFrame && !regionSelection;
                 points = new ArrayList<>(gesturePoints);
             }
 
@@ -381,8 +379,8 @@ final class GoogleCanonicalFrameLayer {
                 float right = bounds.right - origin[0];
                 float bottom = bounds.bottom - origin[1];
 
-                if (useTextScreenshotFrame) {
-                    drawTextScreenshotFrame(canvas, left, top, right, bottom);
+                if (useTextGoogleFrame) {
+                    drawGoogleRoundedCornerFrame(canvas, left, top, right, bottom);
                 } else {
                     canvas.drawRect(left, top, right, bottom, border);
                 }
@@ -400,16 +398,44 @@ final class GoogleCanonicalFrameLayer {
             }
         }
 
-        private void drawTextScreenshotFrame(
+        private void drawGoogleRoundedCornerFrame(
                 Canvas canvas, float left, float top, float right, float bottom) {
-            canvas.drawRect(left, top, right, bottom, textFrame);
+            float width = Math.max(0f, right - left);
+            float height = Math.max(0f, bottom - top);
+            if (width <= 0f || height <= 0f) return;
 
-            float centerX = (left + right) / 2f;
-            float centerY = (top + bottom) / 2f;
-            canvas.drawCircle(left, centerY, textFrameHandleRadius, textFrameHandle);
-            canvas.drawCircle(right, centerY, textFrameHandleRadius, textFrameHandle);
-            canvas.drawCircle(centerX, top, textFrameHandleRadius, textFrameHandle);
-            canvas.drawCircle(centerX, bottom, textFrameHandleRadius, textFrameHandle);
+            // Keep the characteristic Google corner proportions even for short text selections.
+            float radius = Math.min(textCornerRadius, Math.min(width, height) / 4f);
+            float armX = Math.min(textCornerArm, Math.max(radius, width / 2f));
+            float armY = Math.min(textCornerArm, Math.max(radius, height / 2f));
+
+            Path path = new Path();
+
+            // Top-left.
+            path.moveTo(left, top + armY);
+            path.lineTo(left, top + radius);
+            path.quadTo(left, top, left + radius, top);
+            path.lineTo(left + armX, top);
+
+            // Top-right.
+            path.moveTo(right - armX, top);
+            path.lineTo(right - radius, top);
+            path.quadTo(right, top, right, top + radius);
+            path.lineTo(right, top + armY);
+
+            // Bottom-right.
+            path.moveTo(right, bottom - armY);
+            path.lineTo(right, bottom - radius);
+            path.quadTo(right, bottom, right - radius, bottom);
+            path.lineTo(right - armX, bottom);
+
+            // Bottom-left.
+            path.moveTo(left + armX, bottom);
+            path.lineTo(left + radius, bottom);
+            path.quadTo(left, bottom, left, bottom - radius);
+            path.lineTo(left, bottom - armY);
+
+            canvas.drawPath(path, textCornerFrame);
         }
     }
 
