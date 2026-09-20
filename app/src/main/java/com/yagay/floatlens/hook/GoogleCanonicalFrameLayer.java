@@ -9,6 +9,8 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.Rect;
+import android.graphics.RectF;
+import android.graphics.SweepGradient;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.MotionEvent;
@@ -319,11 +321,22 @@ final class GoogleCanonicalFrameLayer {
     }
 
     private final class SelectionView extends View {
+        private static final int GOOGLE_BLUE = 0xFF4285F4;
+        private static final int GOOGLE_RED = 0xFFEA4335;
+        private static final int GOOGLE_YELLOW = 0xFFFBBC05;
+        private static final int GOOGLE_GREEN = 0xFF34A853;
+
         private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint textCornerFrame = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint textMask = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint textGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint textCore = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint textInnerHighlight = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint trail = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final float textCornerRadius;
-        private final float textCornerArm;
+        private final RectF textFrameRect = new RectF();
+        private final float textFrameRadius;
+        private final float textFramePadding;
+        private final float textGlowWidth;
+        private final float textCoreWidth;
 
         SelectionView(Activity context) {
             super(context);
@@ -335,17 +348,34 @@ final class GoogleCanonicalFrameLayer {
             border.setColor(Color.WHITE);
             border.setShadowLayer(1.5f * density, 0f, 0f, 0xAA000000);
 
-            // Text selection changes visuals only. Match Circle to Search's image-selection shell:
-            // four white rounded corner brackets, with no full rectangular border and no blue
-            // midpoint handles. Geometry still comes straight from Google's live text bounds.
-            textCornerFrame.setStyle(Paint.Style.STROKE);
-            textCornerFrame.setStrokeWidth(3f * density);
-            textCornerFrame.setColor(Color.WHITE);
-            textCornerFrame.setStrokeCap(Paint.Cap.ROUND);
-            textCornerFrame.setStrokeJoin(Paint.Join.ROUND);
-            textCornerFrame.setShadowLayer(1.5f * density, 0f, 0f, 0xAA000000);
-            textCornerRadius = 8f * density;
-            textCornerArm = 20f * density;
+            // Google-style text shell. This layer is visual only: Google's text selection,
+            // native handles and live selection bounds stay authoritative.
+            textMask.setStyle(Paint.Style.FILL);
+            textMask.setColor(0x70000000);
+
+            textGlowWidth = 9f * density;
+            textCoreWidth = 3.5f * density;
+            textFrameRadius = 14f * density;
+            textFramePadding = 4f * density;
+
+            textGlow.setStyle(Paint.Style.STROKE);
+            textGlow.setStrokeWidth(textGlowWidth);
+            textGlow.setStrokeCap(Paint.Cap.ROUND);
+            textGlow.setStrokeJoin(Paint.Join.ROUND);
+            textGlow.setAlpha(145);
+
+            textCore.setStyle(Paint.Style.STROKE);
+            textCore.setStrokeWidth(textCoreWidth);
+            textCore.setStrokeCap(Paint.Cap.ROUND);
+            textCore.setStrokeJoin(Paint.Join.ROUND);
+
+            // A very thin bright inner edge keeps the selected content crisp against the glow,
+            // matching the "clear window inside a dimmed screen" appearance.
+            textInnerHighlight.setStyle(Paint.Style.STROKE);
+            textInnerHighlight.setStrokeWidth(1f * density);
+            textInnerHighlight.setColor(0xBFFFFFFF);
+            textInnerHighlight.setStrokeCap(Paint.Cap.ROUND);
+            textInnerHighlight.setStrokeJoin(Paint.Join.ROUND);
 
             trail.setStyle(Paint.Style.STROKE);
             trail.setStrokeCap(Paint.Cap.ROUND);
@@ -380,7 +410,7 @@ final class GoogleCanonicalFrameLayer {
                 float bottom = bounds.bottom - origin[1];
 
                 if (useTextGoogleFrame) {
-                    drawGoogleRoundedCornerFrame(canvas, left, top, right, bottom);
+                    drawGoogleGlowSelection(canvas, left, top, right, bottom);
                 } else {
                     canvas.drawRect(left, top, right, bottom, border);
                 }
@@ -398,44 +428,58 @@ final class GoogleCanonicalFrameLayer {
             }
         }
 
-        private void drawGoogleRoundedCornerFrame(
+        private void drawGoogleGlowSelection(
                 Canvas canvas, float left, float top, float right, float bottom) {
-            float width = Math.max(0f, right - left);
-            float height = Math.max(0f, bottom - top);
-            if (width <= 0f || height <= 0f) return;
+            if (right <= left || bottom <= top) return;
 
-            // Keep the characteristic Google corner proportions even for short text selections.
-            float radius = Math.min(textCornerRadius, Math.min(width, height) / 4f);
-            float armX = Math.min(textCornerArm, Math.max(radius, width / 2f));
-            float armY = Math.min(textCornerArm, Math.max(radius, height / 2f));
+            textFrameRect.set(
+                    Math.max(0f, left - textFramePadding),
+                    Math.max(0f, top - textFramePadding),
+                    Math.min(getWidth(), right + textFramePadding),
+                    Math.min(getHeight(), bottom + textFramePadding));
+            if (textFrameRect.isEmpty()) return;
 
-            Path path = new Path();
+            float radius = Math.min(
+                    textFrameRadius,
+                    Math.max(1f, Math.min(textFrameRect.width(), textFrameRect.height()) / 2f));
 
-            // Top-left.
-            path.moveTo(left, top + armY);
-            path.lineTo(left, top + radius);
-            path.quadTo(left, top, left + radius, top);
-            path.lineTo(left + armX, top);
+            // Dim everything except the live rounded selection. Because this overlay sits above
+            // FloatLens' canonical screenshot but below Google's native text controls, native
+            // selection/handles remain usable and visually unchanged.
+            int maskSave = canvas.save();
+            canvas.clipOutRoundRect(textFrameRect, radius, radius);
+            canvas.drawRect(0f, 0f, getWidth(), getHeight(), textMask);
+            canvas.restoreToCount(maskSave);
 
-            // Top-right.
-            path.moveTo(right - armX, top);
-            path.lineTo(right - radius, top);
-            path.quadTo(right, top, right, top + radius);
-            path.lineTo(right, top + armY);
+            // Four-color Google glow around the rounded selection.
+            float cx = textFrameRect.centerX();
+            float cy = textFrameRect.centerY();
+            SweepGradient gradient = new SweepGradient(
+                    cx, cy,
+                    new int[] {
+                            GOOGLE_BLUE,
+                            GOOGLE_RED,
+                            GOOGLE_YELLOW,
+                            GOOGLE_GREEN,
+                            GOOGLE_BLUE
+                    },
+                    new float[] {0f, 0.25f, 0.5f, 0.75f, 1f});
 
-            // Bottom-right.
-            path.moveTo(right, bottom - armY);
-            path.lineTo(right, bottom - radius);
-            path.quadTo(right, bottom, right - radius, bottom);
-            path.lineTo(right - armX, bottom);
+            textGlow.setShader(gradient);
+            textCore.setShader(gradient);
+            canvas.drawRoundRect(textFrameRect, radius, radius, textGlow);
+            canvas.drawRoundRect(textFrameRect, radius, radius, textCore);
+            textGlow.setShader(null);
+            textCore.setShader(null);
 
-            // Bottom-left.
-            path.moveTo(left + armX, bottom);
-            path.lineTo(left + radius, bottom);
-            path.quadTo(left, bottom, left, bottom - radius);
-            path.lineTo(left, bottom - armY);
-
-            canvas.drawPath(path, textCornerFrame);
+            // Thin inner highlight, inset so it does not eat into Google's selected text.
+            float inset = textCoreWidth / 2f;
+            RectF inner = new RectF(textFrameRect);
+            inner.inset(inset, inset);
+            if (!inner.isEmpty()) {
+                float innerRadius = Math.max(1f, radius - inset);
+                canvas.drawRoundRect(inner, innerRadius, innerRadius, textInnerHighlight);
+            }
         }
     }
 
