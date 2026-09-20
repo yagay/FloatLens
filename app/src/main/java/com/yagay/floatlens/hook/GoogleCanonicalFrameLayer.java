@@ -524,21 +524,11 @@ final class GoogleCanonicalFrameLayer {
             boolean nativeAurora = nativeStyle.drawAurora(
                     canvas, this, localTextRect, radius);
             if (!nativeAurora) {
-                // Fail-soft fallback for Google builds where EffectsV2View/dpoc moved.
-                float cx = localTextRect.centerX();
-                float cy = localTextRect.centerY();
-                Shader shader = new SweepGradient(cx, cy, auroraColors, auroraStops);
-                auroraHalo.setShader(shader);
-                auroraGlow.setShader(shader);
-                int glowSave = canvas.save();
-                Path glowHole = new Path();
-                glowHole.addRoundRect(localTextRect, radius, radius, Path.Direction.CW);
-                canvas.clipOutPath(glowHole);
-                canvas.drawRoundRect(localTextRect, radius, radius, auroraHalo);
-                canvas.drawRoundRect(localTextRect, radius, radius, auroraGlow);
-                canvas.restoreToCount(glowSave);
-                auroraHalo.setShader(null);
-                auroraGlow.setShader(null);
+                // Do not fall back to a colored STROKE. That approximation is exactly what makes
+                // the effect look like four thin rainbow lines. If Google's private renderer is
+                // unavailable, keep the neutral frame/scrim only and report the missing Aurora.
+                reporter.accept("GOOGLE_NATIVE_STYLE",
+                        "aurora_unavailable fallback=neutral_frame_only");
             }
 
             Paint nativeHandle = nativeStyle.copyNativeHandlePaint();
