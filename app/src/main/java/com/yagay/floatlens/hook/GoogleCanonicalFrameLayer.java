@@ -48,6 +48,10 @@ final class GoogleCanonicalFrameLayer {
     private WeakReference<SelectionView> selectionRef = new WeakReference<>(null);
     private WeakReference<ViewGroup> parentRef = new WeakReference<>(null);
     private Rect selectionBounds;
+    /** True only for Google's direct region/screenshot selection. */
+    private boolean regionSelection;
+    /** Text selections reuse the visual language of the Google-style screenshot frame. */
+    private boolean textSelectionFrame;
     private final List<PointF> gesturePoints = new ArrayList<>();
 
     GoogleCanonicalFrameLayer(BooleanSupplier active,
@@ -96,6 +100,11 @@ final class GoogleCanonicalFrameLayer {
         synchronized (this) {
             selectionBounds = screenBounds == null || screenBounds.isEmpty()
                     ? null : new Rect(screenBounds);
+            this.regionSelection = selectionBounds != null && regionSelection;
+            textSelectionFrame = selectionBounds != null
+                    && !regionSelection
+                    && text != null
+                    && !text.isBlank();
             if (selectionBounds != null) gesturePoints.clear();
         }
         main.post(() -> {
@@ -114,6 +123,8 @@ final class GoogleCanonicalFrameLayer {
                     || action == MotionEvent.ACTION_POINTER_DOWN) {
                 gesturePoints.clear();
                 selectionBounds = null;
+                regionSelection = false;
+                textSelectionFrame = false;
             }
             if (action == MotionEvent.ACTION_DOWN
                     || action == MotionEvent.ACTION_POINTER_DOWN
@@ -151,6 +162,8 @@ final class GoogleCanonicalFrameLayer {
             retired = new ArrayList<>(retiredFrames);
             retiredFrames.clear();
             selectionBounds = null;
+            regionSelection = false;
+            textSelectionFrame = false;
             gesturePoints.clear();
         }
         main.post(() -> {
@@ -306,16 +319,36 @@ final class GoogleCanonicalFrameLayer {
     }
 
     private final class SelectionView extends View {
+        private static final int GOOGLE_BLUE = 0xFF4285F4;
+
         private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint textFrame = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint textFrameHandle = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint trail = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final float textFrameHandleRadius;
 
         SelectionView(Activity context) {
             super(context);
             float density = Math.max(1f, getResources().getDisplayMetrics().density);
+
+            // Keep direct region selection exactly as it was. Google still owns its region logic.
             border.setStyle(Paint.Style.STROKE);
             border.setStrokeWidth(2f * density);
             border.setColor(Color.WHITE);
             border.setShadowLayer(1.5f * density, 0f, 0f, 0xAA000000);
+
+            // Text selection only changes its shell: mirror the existing circle-screenshot frame
+            // (white 2dp frame + Google-blue midpoint handles). Bounds still come directly from
+            // Google's live text selection and therefore keep resizing with the selected text.
+            textFrame.setStyle(Paint.Style.STROKE);
+            textFrame.setStrokeWidth(2f * density);
+            textFrame.setColor(Color.WHITE);
+            textFrame.setStrokeJoin(Paint.Join.MITER);
+
+            textFrameHandle.setStyle(Paint.Style.FILL);
+            textFrameHandle.setColor(GOOGLE_BLUE);
+            textFrameHandleRadius = 6f * density;
+
             trail.setStyle(Paint.Style.STROKE);
             trail.setStrokeCap(Paint.Cap.ROUND);
             trail.setStrokeJoin(Paint.Join.ROUND);
@@ -330,22 +363,29 @@ final class GoogleCanonicalFrameLayer {
             super.onDraw(canvas);
             Bitmap frame;
             Rect bounds;
+            boolean useTextScreenshotFrame;
             List<PointF> points;
             synchronized (GoogleCanonicalFrameLayer.this) {
                 frame = canonicalFrame;
                 bounds = selectionBounds == null ? null : new Rect(selectionBounds);
+                useTextScreenshotFrame = textSelectionFrame && !regionSelection;
                 points = new ArrayList<>(gesturePoints);
             }
 
             if (frame != null && !frame.isRecycled() && bounds != null && !bounds.isEmpty()) {
                 int[] origin = new int[2];
                 try { getLocationOnScreen(origin); } catch (Throwable ignored) { }
-                canvas.drawRect(
-                        bounds.left - origin[0],
-                        bounds.top - origin[1],
-                        bounds.right - origin[0],
-                        bounds.bottom - origin[1],
-                        border);
+
+                float left = bounds.left - origin[0];
+                float top = bounds.top - origin[1];
+                float right = bounds.right - origin[0];
+                float bottom = bounds.bottom - origin[1];
+
+                if (useTextScreenshotFrame) {
+                    drawTextScreenshotFrame(canvas, left, top, right, bottom);
+                } else {
+                    canvas.drawRect(left, top, right, bottom, border);
+                }
             }
 
             if (points.size() >= 2) {
@@ -358,6 +398,18 @@ final class GoogleCanonicalFrameLayer {
                 }
                 canvas.drawPath(path, trail);
             }
+        }
+
+        private void drawTextScreenshotFrame(
+                Canvas canvas, float left, float top, float right, float bottom) {
+            canvas.drawRect(left, top, right, bottom, textFrame);
+
+            float centerX = (left + right) / 2f;
+            float centerY = (top + bottom) / 2f;
+            canvas.drawCircle(left, centerY, textFrameHandleRadius, textFrameHandle);
+            canvas.drawCircle(right, centerY, textFrameHandleRadius, textFrameHandle);
+            canvas.drawCircle(centerX, top, textFrameHandleRadius, textFrameHandle);
+            canvas.drawCircle(centerX, bottom, textFrameHandleRadius, textFrameHandle);
         }
     }
 
