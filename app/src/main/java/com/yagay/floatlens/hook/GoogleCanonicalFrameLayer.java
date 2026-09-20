@@ -9,6 +9,10 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.Rect;
+import android.graphics.RectF;
+import android.graphics.Shader;
+import android.graphics.SweepGradient;
+import android.graphics.BlurMaskFilter;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.MotionEvent;
@@ -24,6 +28,8 @@ import java.util.List;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import android.content.res.Resources;
+import android.content.res.TypedArray;
 
 /**
  * Session-scoped immutable visual source for FloatLens-owned Google CTS sessions.
@@ -48,6 +54,7 @@ final class GoogleCanonicalFrameLayer {
     private WeakReference<SelectionView> selectionRef = new WeakReference<>(null);
     private WeakReference<ViewGroup> parentRef = new WeakReference<>(null);
     private final List<PointF> gesturePoints = new ArrayList<>();
+    private Rect textSelectionBounds;
 
     GoogleCanonicalFrameLayer(BooleanSupplier active,
                               Supplier<Activity> activity,
@@ -94,6 +101,19 @@ final class GoogleCanonicalFrameLayer {
     void updateSelection(Rect screenBounds, boolean regionSelection, String text) {
         synchronized (this) {
             if (screenBounds != null && !screenBounds.isEmpty()) gesturePoints.clear();
+
+            // Never mirror a text selection into Google's RegionView state. RegionView is a real
+            // screenshot-region editor; driving it makes the text box draggable and can steal text
+            // gestures. Keep the text shell purely visual in our non-interactive SelectionView.
+            if (!regionSelection
+                    && screenBounds != null
+                    && !screenBounds.isEmpty()
+                    && text != null
+                    && !text.isBlank()) {
+                textSelectionBounds = new Rect(screenBounds);
+            } else {
+                textSelectionBounds = null;
+            }
         }
         main.post(() -> {
             SelectionView view = selectionRef.get();
@@ -103,7 +123,7 @@ final class GoogleCanonicalFrameLayer {
                 "screenBounds=" + String.valueOf(screenBounds)
                         + " region=" + regionSelection
                         + " textLen=" + (text == null ? 0 : text.length())
-                        + " frameRenderer=native_google");
+                        + " frameRenderer=passive_google_mirror");
     }
 
     void onGesturePoint(int action, float x, float y) {
@@ -148,6 +168,7 @@ final class GoogleCanonicalFrameLayer {
             retired = new ArrayList<>(retiredFrames);
             retiredFrames.clear();
             gesturePoints.clear();
+            textSelectionBounds = null;
         }
         main.post(() -> {
             // Detach the ImageView before recycling any bitmap it may still reference.
@@ -302,37 +323,217 @@ final class GoogleCanonicalFrameLayer {
     }
 
     private final class SelectionView extends View {
+        // Resource IDs verified against Google App 17.58.16.ve.
+        private static final int RES_REGION_MASK_COLOR = 0x7f061c89;
+        private static final int RES_REGION_BOUNDING_PADDING = 0x7f0719e9;
+        private static final int RES_REGION_HANDLE_MAX_SIZE = 0x7f0719ee;
+        private static final int RES_REGION_HANDLE_STROKE = 0x7f0719ef;
+        private static final int RES_REGION_HANDLE_STROKE_UPDATED = 0x7f07125b;
+        private static final int RES_REGION_MAX_CORNER_RADIUS = 0x7f0719f0;
+        private static final int RES_AURORA_COLORS = 0x7f030012;
+        private static final int RES_AURORA_STOPS = 0x7f030013;
+
         private final Paint trail = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint scrim = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint auroraGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint auroraCore = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint handle = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF localTextRect = new RectF();
+        private final int[] auroraColors;
+        private final float[] auroraStops;
+        private final float boxPadding;
+        private final float maxHandleSize;
+        private final float handleStroke;
+        private final float maxCornerRadius;
 
         SelectionView(Activity context) {
             super(context);
-            float density = Math.max(1f, getResources().getDisplayMetrics().density);
+            Resources resources = getResources();
+            float density = Math.max(1f, resources.getDisplayMetrics().density);
+
+            int maskColor = 0x66000000;
+            float padding = 4f * density;
+            float handleMax = 22f * density;
+            float stroke = 4f * density;
+            float radius = 14f * density;
+            int[] colors = {
+                    0xFF3186FF, 0xFF3186FF, 0xFFFF4641, 0xFFFFD314,
+                    0xFF34A853, 0xFF3186FF, 0xFF3186FF
+            };
+            float[] stops = {0f, 0.46f, 0.58f, 0.71f, 0.82f, 0.92f, 1f};
+
+            // Read Google's own runtime resources where possible. The fallbacks above are the exact
+            // values extracted from 17.58.16.ve, so a missing themed resource does not break UI.
+            try { maskColor = resources.getColor(RES_REGION_MASK_COLOR, context.getTheme()); }
+            catch (Throwable ignored) { }
+            try { padding = resources.getDimension(RES_REGION_BOUNDING_PADDING); }
+            catch (Throwable ignored) { }
+            try { handleMax = resources.getDimension(RES_REGION_HANDLE_MAX_SIZE); }
+            catch (Throwable ignored) { }
+            try {
+                float updated = resources.getDimension(RES_REGION_HANDLE_STROKE_UPDATED);
+                float classic = resources.getDimension(RES_REGION_HANDLE_STROKE);
+                // RegionView 17.58 can use either path depending on its experiment flag. The
+                // thinner classic width matches the visible handle itself; aurora is separate.
+                stroke = Math.min(updated, classic);
+            } catch (Throwable ignored) { }
+            try { radius = resources.getDimension(RES_REGION_MAX_CORNER_RADIUS); }
+            catch (Throwable ignored) { }
+            try {
+                int[] runtimeColors = resources.getIntArray(RES_AURORA_COLORS);
+                if (runtimeColors != null && runtimeColors.length >= 2) colors = runtimeColors;
+            } catch (Throwable ignored) { }
+            try {
+                TypedArray ta = resources.obtainTypedArray(RES_AURORA_STOPS);
+                if (ta.length() >= 2) {
+                    float[] runtimeStops = new float[ta.length()];
+                    for (int i = 0; i < ta.length(); i++) runtimeStops[i] = ta.getFloat(i, 0f);
+                    stops = runtimeStops;
+                }
+                ta.recycle();
+            } catch (Throwable ignored) { }
+
+            boxPadding = padding;
+            maxHandleSize = handleMax;
+            handleStroke = stroke;
+            maxCornerRadius = radius;
+            auroraColors = colors;
+            auroraStops = stops.length == colors.length ? stops : null;
+
+            scrim.setStyle(Paint.Style.FILL);
+            scrim.setColor(maskColor);
+
+            auroraGlow.setStyle(Paint.Style.STROKE);
+            auroraGlow.setStrokeCap(Paint.Cap.ROUND);
+            auroraGlow.setStrokeJoin(Paint.Join.ROUND);
+            auroraGlow.setStrokeWidth(Math.max(handleStroke, 2f * density));
+            auroraGlow.setAlpha(145);
+            auroraGlow.setMaskFilter(new BlurMaskFilter(8f * density, BlurMaskFilter.Blur.NORMAL));
+
+            auroraCore.setStyle(Paint.Style.STROKE);
+            auroraCore.setStrokeCap(Paint.Cap.ROUND);
+            auroraCore.setStrokeJoin(Paint.Join.ROUND);
+            auroraCore.setStrokeWidth(Math.max(1.25f * density, handleStroke * 0.45f));
+            auroraCore.setAlpha(215);
+
+            handle.setStyle(Paint.Style.STROKE);
+            handle.setStrokeCap(Paint.Cap.ROUND);
+            handle.setStrokeJoin(Paint.Join.ROUND);
+            handle.setStrokeWidth(handleStroke);
+            handle.setColor(Color.WHITE);
+
             trail.setStyle(Paint.Style.STROKE);
             trail.setStrokeCap(Paint.Cap.ROUND);
             trail.setStrokeJoin(Paint.Join.ROUND);
             trail.setStrokeWidth(3f * density);
             trail.setColor(Color.WHITE);
             trail.setShadowLayer(1.5f * density, 0f, 0f, 0xAA000000);
+
+            // BlurMaskFilter is software-rendered consistently on all supported Android versions.
             setLayerType(LAYER_TYPE_SOFTWARE, null);
             setBackgroundColor(Color.TRANSPARENT);
         }
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
+
+            Rect textBounds;
             List<PointF> points;
             synchronized (GoogleCanonicalFrameLayer.this) {
+                textBounds = textSelectionBounds == null
+                        ? null : new Rect(textSelectionBounds);
                 points = new ArrayList<>(gesturePoints);
             }
-            if (points.size() < 2) return;
 
-            Path path = new Path();
-            PointF first = points.get(0);
-            path.moveTo(first.x, first.y);
-            for (int i = 1; i < points.size(); i++) {
-                PointF point = points.get(i);
-                path.lineTo(point.x, point.y);
+            if (textBounds != null && !textBounds.isEmpty()) {
+                drawPassiveGoogleTextShell(canvas, textBounds);
             }
-            canvas.drawPath(path, trail);
+
+            if (points.size() >= 2) {
+                Path path = new Path();
+                PointF first = points.get(0);
+                path.moveTo(first.x, first.y);
+                for (int i = 1; i < points.size(); i++) {
+                    PointF point = points.get(i);
+                    path.lineTo(point.x, point.y);
+                }
+                canvas.drawPath(path, trail);
+            }
+        }
+
+        private void drawPassiveGoogleTextShell(Canvas canvas, Rect screenBounds) {
+            int[] origin = new int[2];
+            try { getLocationOnScreen(origin); } catch (Throwable ignored) { }
+
+            localTextRect.set(
+                    screenBounds.left - origin[0] - boxPadding,
+                    screenBounds.top - origin[1] - boxPadding,
+                    screenBounds.right - origin[0] + boxPadding,
+                    screenBounds.bottom - origin[1] + boxPadding);
+
+            localTextRect.left = Math.max(0f, localTextRect.left);
+            localTextRect.top = Math.max(0f, localTextRect.top);
+            localTextRect.right = Math.min(getWidth(), localTextRect.right);
+            localTextRect.bottom = Math.min(getHeight(), localTextRect.bottom);
+            if (localTextRect.isEmpty()) return;
+
+            float radius = Math.min(maxCornerRadius,
+                    Math.max(1f, Math.min(localTextRect.width(), localTextRect.height()) / 3f));
+
+            // Google RegionView's dudd.c() draws the same #66000000 outside scrim around a rounded
+            // clear opening. clipOutPath reproduces that presentation without mutating RegionView.
+            int save = canvas.save();
+            Path hole = new Path();
+            hole.addRoundRect(localTextRect, radius, radius, Path.Direction.CW);
+            canvas.clipOutPath(hole);
+            canvas.drawRect(0f, 0f, getWidth(), getHeight(), scrim);
+            canvas.restoreToCount(save);
+
+            float cx = localTextRect.centerX();
+            float cy = localTextRect.centerY();
+            Shader shader = new SweepGradient(cx, cy, auroraColors, auroraStops);
+            auroraGlow.setShader(shader);
+            auroraCore.setShader(shader);
+
+            // EffectsV2View supplies this aurora around RegionView in Google 17.58. Keep it thin:
+            // the wide visual softness comes from blur, not from a thick solid stroke.
+            canvas.drawRoundRect(localTextRect, radius, radius, auroraGlow);
+            canvas.drawRoundRect(localTextRect, radius, radius, auroraCore);
+
+            auroraGlow.setShader(null);
+            auroraCore.setShader(null);
+
+            drawNativeCornerHandles(canvas, localTextRect, radius);
+        }
+
+        private void drawNativeCornerHandles(Canvas canvas, RectF rect, float radius) {
+            float armX = Math.min(maxHandleSize, Math.max(radius, rect.width() / 2f));
+            float armY = Math.min(maxHandleSize, Math.max(radius, rect.height() / 2f));
+            float r = Math.min(radius, Math.min(armX, armY));
+
+            Path p = new Path();
+
+            p.moveTo(rect.left, rect.top + armY);
+            p.lineTo(rect.left, rect.top + r);
+            p.quadTo(rect.left, rect.top, rect.left + r, rect.top);
+            p.lineTo(rect.left + armX, rect.top);
+
+            p.moveTo(rect.right - armX, rect.top);
+            p.lineTo(rect.right - r, rect.top);
+            p.quadTo(rect.right, rect.top, rect.right, rect.top + r);
+            p.lineTo(rect.right, rect.top + armY);
+
+            p.moveTo(rect.right, rect.bottom - armY);
+            p.lineTo(rect.right, rect.bottom - r);
+            p.quadTo(rect.right, rect.bottom, rect.right - r, rect.bottom);
+            p.lineTo(rect.right - armX, rect.bottom);
+
+            p.moveTo(rect.left + armX, rect.bottom);
+            p.lineTo(rect.left + r, rect.bottom);
+            p.quadTo(rect.left, rect.bottom, rect.left, rect.bottom - r);
+            p.lineTo(rect.left, rect.bottom - armY);
+
+            canvas.drawPath(p, handle);
         }
     }
 
