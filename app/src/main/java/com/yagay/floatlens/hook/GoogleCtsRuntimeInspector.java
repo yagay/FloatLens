@@ -70,6 +70,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
     private final GoogleLensDiagnosticsHooks diagnosticsHooks;
     private final GoogleLensViewportHook viewportHook;
     private final GoogleCanonicalFrameLayer canonicalFrameLayer;
+    private final GoogleNativeRegionVisualAdapter nativeRegionVisual;
     private final GoogleCtsLifecycleHooks lifecycleHooks;
     private final GoogleLensFrameCapture frameCapture;
     private final GoogleRegionGestureHook regionGestureHook;
@@ -99,6 +100,8 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                 () -> markedActivity.get(), this::report);
         this.canonicalFrameLayer = new GoogleCanonicalFrameLayer(
                 this::active, () -> markedActivity.get(), this::report);
+        this.nativeRegionVisual = new GoogleNativeRegionVisualAdapter(
+                classLoader, () -> markedActivity.get(), this::report);
         this.lifecycleHooks = new GoogleCtsLifecycleHooks(module, provider, this);
         this.frameCapture = new GoogleLensFrameCapture(
                 module, classLoader, this::active, this::sendBridgeFrame, this::report);
@@ -106,6 +109,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                 module, classLoader, this::active,
                 (adjusting, detail) -> {
                     sessionState.onRegionGesture(adjusting);
+                    if (adjusting) nativeRegionVisual.cancelTextVisual("region_gesture_start");
                     report(adjusting ? "GOOGLE_REGION_GESTURE_START"
                                     : "GOOGLE_REGION_GESTURE_END",
                             detail);
@@ -238,11 +242,17 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
             module.hook(binding.method()).intercept(chain -> {
                 GoogleSelectionAdapter.Snapshot selection = null;
                 Rect selectionBounds = null;
+                boolean regionSelection = false;
+                boolean textSelectionVisual = false;
                 if (active()) {
                     selection = binding.snapshot(chain.getArg(0), currentApplicationContext());
                     selectionBounds = selection.bounds();
-                    boolean regionSelection = selection.directRegionCommit()
+                    regionSelection = selection.directRegionCommit()
                             && selectionBounds != null && !selectionBounds.isEmpty();
+                    textSelectionVisual = !regionSelection
+                            && selectionBounds != null
+                            && !selectionBounds.isEmpty()
+                            && !selection.text().isBlank();
                     sessionState.onSelection(
                             selection.text(), toSessionBounds(selectionBounds), regionSelection);
                     canonicalFrameLayer.updateSelection(
@@ -263,7 +273,20 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
                             selection.text(), detail, effectiveBounds);
                 }
 
+                // Let Google finish its own text/region state transition first. Only after that do
+                // we mirror text bounds into RegionView's visual peer, so the shell is painted by
+                // the same RegionView + EffectsV2 pipeline as native image/region selection.
                 Object result = chain.proceed();
+
+                if (active()) {
+                    if (regionSelection) {
+                        nativeRegionVisual.onNativeRegionSelection();
+                    } else if (textSelectionVisual && selectionBounds != null) {
+                        nativeRegionVisual.showTextSelection(selectionBounds);
+                    } else {
+                        nativeRegionVisual.cancelTextVisual("selection_without_visual_bounds");
+                    }
+                }
 
                 if (active() && sessionState.selectionSeen()) uiSanitizer.sanitizeNow();
 
@@ -494,6 +517,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
             regionGestureHook.reset();
             viewportHook.reset();
             canonicalFrameLayer.reset();
+            nativeRegionVisual.reset();
             markedActivity = new WeakReference<>(null);
             regionConfirmDetail = "";
             sessionState.begin(nextToken, id, now + SESSION_TTL_MS);
@@ -544,6 +568,7 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         regionGestureHook.reset();
         viewportHook.reset();
         canonicalFrameLayer.reset();
+        nativeRegionVisual.reset();
         regionConfirmDetail = "";
         uiSanitizer.detach();
         markedActivity = new WeakReference<>(null);
