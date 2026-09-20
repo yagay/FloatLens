@@ -3,7 +3,9 @@ package com.yagay.floatlens.hook;
 import android.app.Activity;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.graphics.RecordingCanvas;
 import android.graphics.RectF;
+import android.graphics.RenderNode;
 import android.view.View;
 
 import java.lang.reflect.Constructor;
@@ -13,17 +15,21 @@ import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 
 /**
- * Uses Google Lens 17.58's own visual renderers without touching RegionView's selection state.
+ * Reuses Google Lens 17.58's visual pipeline without touching RegionView selection state.
  *
- * <p>dpoc is the native Aurora/effects painter used by EffectsV2View. We clone its renderer
- * configuration from Google's live EffectsV2View, then give the clone only FloatLens' RectF and
- * Canvas. No Region object is created and no Google gesture/selection state is changed.</p>
+ * <p>Important: dpoc.c(Canvas) is NOT the final Aurora. APK analysis shows that it deliberately
+ * starts by drawing 0xFFFF0000 and then encodes the effect into RGB mask layers. EffectsV2View
+ * applies a RuntimeShader RenderEffect ("in_src") to that mask. Calling dpoc.c directly therefore
+ * produces a red screen. FloatLens records the private dpoc clone into an offscreen RenderNode,
+ * applies Google's live RuntimeShader to that node, and only then composites it to our Canvas.</p>
  */
 final class GoogleNativeRegionStyleRenderer {
     private static final String EFFECTS_PEER = "dpls";
     private static final String AURORA_RENDERER = "dpoc";
     private static final String REGION_PEER = "dtch";
     private static final String SCRIM_RENDERER = "dudd";
+    private static final String RUNTIME_SHADER = "android.graphics.RuntimeShader";
+    private static final String RENDER_EFFECT = "android.graphics.RenderEffect";
 
     private final ClassLoader classLoader;
     private final Supplier<Activity> activity;
@@ -34,6 +40,12 @@ final class GoogleNativeRegionStyleRenderer {
     private Method auroraGeometry;
     private Method auroraDraw;
 
+    private Object runtimeShader;
+    private Object runtimeEffect;
+    private Object runtimeEffectShaderIdentity;
+    private Method renderNodeSetEffect;
+    private RenderNode auroraNode;
+
     GoogleNativeRegionStyleRenderer(
             ClassLoader classLoader,
             Supplier<Activity> activity,
@@ -43,28 +55,71 @@ final class GoogleNativeRegionStyleRenderer {
         this.reporter = reporter;
     }
 
+    synchronized void captureRuntimeShader(Object shader) {
+        if (shader == null || !RUNTIME_SHADER.equals(shader.getClass().getName())) return;
+        if (runtimeShader == shader) return;
+        runtimeShader = shader;
+        runtimeEffect = null;
+        runtimeEffectShaderIdentity = null;
+        reporter.accept("GOOGLE_NATIVE_STYLE",
+                "runtime_shader=captured source=EffectsV2View state_write=false");
+    }
+
     boolean drawAurora(Canvas canvas, View host, RectF localRect, float radius) {
-        if (canvas == null || host == null || localRect == null || localRect.isEmpty()) {
+        if (canvas == null || host == null || localRect == null || localRect.isEmpty()
+                || host.getWidth() <= 0 || host.getHeight() <= 0
+                || !canvas.isHardwareAccelerated()) {
             return false;
         }
         try {
-            if (!ensureAurora()) return false;
+            if (!ensureAurora() || !ensureRuntimeEffect()) return false;
 
-            // dpoc.d(RectF, radius, scale, viewHeight) only prepares visual geometry.
-            // It does not create/update a Lens Region selection.
+            // dpoc.d only updates this private renderer's visual geometry. It does not create a
+            // Lens Region and it never writes to the real EffectsV2View/RegionView state.
             auroraGeometry.invoke(
                     privateAurora,
                     new RectF(localRect),
                     radius,
                     1.0f,
                     Math.max(1, host.getHeight()));
-            auroraDraw.invoke(privateAurora, canvas);
+
+            int width = Math.max(1, host.getWidth());
+            int height = Math.max(1, host.getHeight());
+            if (auroraNode == null) {
+                auroraNode = new RenderNode("floatlens_google_native_aurora");
+            }
+            auroraNode.setPosition(0, 0, width, height);
+
+            RecordingCanvas recording = auroraNode.beginRecording(width, height);
+            boolean recorded = false;
+            try {
+                // This raw recording is intentionally red/RGB-mask based. It is never drawn to the
+                // screen without Google's RuntimeShader below.
+                auroraDraw.invoke(privateAurora, recording);
+                recorded = true;
+            } finally {
+                auroraNode.endRecording();
+            }
+            if (!recorded) return false;
+
+            Object effect;
+            Method setter;
+            synchronized (this) {
+                effect = runtimeEffect;
+                setter = renderNodeSetEffect;
+            }
+            if (effect == null || setter == null) return false;
+            setter.invoke(auroraNode, effect);
+
+            // The node now follows the same dpoc -> RuntimeShader(in_src) composition used by
+            // EffectsV2View. Only the final shader output reaches FloatLens' visible Canvas.
+            canvas.drawRenderNode(auroraNode);
             return true;
         } catch (Throwable t) {
             reporter.accept("GOOGLE_NATIVE_STYLE",
-                    "aurora_draw_failed=" + t.getClass().getSimpleName()
+                    "aurora_pipeline_failed=" + t.getClass().getSimpleName()
                             + ":" + safe(t.getMessage()));
-            invalidateAurora();
+            invalidateAuroraVisualOnly();
             return false;
         }
     }
@@ -98,7 +153,10 @@ final class GoogleNativeRegionStyleRenderer {
                 Class<?>[] p = method.getParameterTypes();
                 if (p[0] == Canvas.class
                         && p[1] == Paint.class
-                        && p[4] == RectF.class) {
+                        && p[2] == float.class
+                        && p[3] == float.class
+                        && p[4] == RectF.class
+                        && p[5] == float.class) {
                     draw = method;
                     break;
                 }
@@ -138,8 +196,47 @@ final class GoogleNativeRegionStyleRenderer {
         }
     }
 
-    void reset() {
-        invalidateAurora();
+    synchronized void reset() {
+        invalidateAuroraVisualOnly();
+        runtimeShader = null;
+        runtimeEffect = null;
+        runtimeEffectShaderIdentity = null;
+        renderNodeSetEffect = null;
+        auroraNode = null;
+    }
+
+    private synchronized boolean ensureRuntimeEffect() {
+        if (runtimeShader == null) return false;
+        if (runtimeEffect != null
+                && runtimeEffectShaderIdentity == runtimeShader
+                && renderNodeSetEffect != null) {
+            return true;
+        }
+        try {
+            Class<?> shaderClass = Class.forName(RUNTIME_SHADER, false, classLoader);
+            Class<?> effectClass = Class.forName(RENDER_EFFECT, false, classLoader);
+            if (!shaderClass.isInstance(runtimeShader)) return false;
+
+            Method create = effectClass.getMethod(
+                    "createRuntimeShaderEffect", shaderClass, String.class);
+            Object effect = create.invoke(null, runtimeShader, "in_src");
+            Method setter = RenderNode.class.getMethod("setRenderEffect", effectClass);
+
+            runtimeEffect = effect;
+            runtimeEffectShaderIdentity = runtimeShader;
+            renderNodeSetEffect = setter;
+            reporter.accept("GOOGLE_NATIVE_STYLE",
+                    "runtime_effect=ready pipeline=dpoc+RuntimeShader(in_src)");
+            return true;
+        } catch (Throwable t) {
+            reporter.accept("GOOGLE_NATIVE_STYLE",
+                    "runtime_effect_unavailable=" + t.getClass().getSimpleName()
+                            + ":" + safe(t.getMessage()));
+            runtimeEffect = null;
+            runtimeEffectShaderIdentity = null;
+            renderNodeSetEffect = null;
+            return false;
+        }
     }
 
     private boolean ensureAurora() {
@@ -191,6 +288,7 @@ final class GoogleNativeRegionStyleRenderer {
         }
         if (constructor == null) return false;
         constructor.setAccessible(true);
+
         Object clone;
         try {
             clone = constructor.newInstance(contextWrapper, variant, modeN, modeO);
@@ -232,13 +330,13 @@ final class GoogleNativeRegionStyleRenderer {
         copyDynamicVisualState(donor, clone);
 
         reporter.accept("GOOGLE_NATIVE_STYLE",
-                "aurora_renderer=dpoc_clone source=EffectsV2View state_write=false");
+                "aurora_mask=dpoc_clone final_output=RuntimeShader state_write=false");
         return true;
     }
 
     private static void copyDynamicVisualState(Object from, Object to) {
         if (from == null || to == null) return;
-        // These are renderer-only animation/style fields, not selection model fields.
+        // Renderer-only animation/style fields. No Region/user-selection model is copied.
         copyField(from, to, "i");
         copyField(from, to, "j");
         copyField(from, to, "A");
@@ -255,11 +353,12 @@ final class GoogleNativeRegionStyleRenderer {
         }
     }
 
-    private void invalidateAurora() {
+    private synchronized void invalidateAuroraVisualOnly() {
         donorAurora = null;
         privateAurora = null;
         auroraGeometry = null;
         auroraDraw = null;
+        auroraNode = null;
     }
 
     private static String safe(String value) {
