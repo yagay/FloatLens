@@ -47,8 +47,6 @@ final class GoogleCanonicalFrameLayer {
     private final Supplier<Activity> activity;
     private final BiConsumer<String, String> reporter;
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final GoogleNativeRegionStyleRenderer nativeStyle;
-
     private Bitmap canonicalFrame;
     private final List<Bitmap> retiredFrames = new ArrayList<>();
     private WeakReference<ImageView> layerRef = new WeakReference<>(null);
@@ -63,8 +61,6 @@ final class GoogleCanonicalFrameLayer {
         this.active = active;
         this.activity = activity;
         this.reporter = reporter;
-        this.nativeStyle = new GoogleNativeRegionStyleRenderer(
-                getClass().getClassLoader(), activity, reporter);
     }
 
     void offer(Bitmap candidate) {
@@ -101,14 +97,6 @@ final class GoogleCanonicalFrameLayer {
         schedulePresent();
     }
 
-    void captureNativeEffectsShader(Object shader) {
-        nativeStyle.captureRuntimeShader(shader);
-        main.post(() -> {
-            SelectionView view = selectionRef.get();
-            if (view != null) view.invalidate();
-        });
-    }
-
     void updateSelection(Rect screenBounds, boolean regionSelection, String text) {
         synchronized (this) {
             if (screenBounds != null && !screenBounds.isEmpty()) gesturePoints.clear();
@@ -134,7 +122,7 @@ final class GoogleCanonicalFrameLayer {
                 "screenBounds=" + String.valueOf(screenBounds)
                         + " region=" + regionSelection
                         + " textLen=" + (text == null ? 0 : text.length())
-                        + " frameRenderer=passive_google_mirror");
+                        + " frameRenderer=floatlens_frame_mask");
     }
 
     void updateLiveTextSelection(Rect screenBounds) {
@@ -191,7 +179,6 @@ final class GoogleCanonicalFrameLayer {
             retiredFrames.clear();
             gesturePoints.clear();
             textSelectionBounds = null;
-            nativeStyle.reset();
         }
         main.post(() -> {
             // Detach the ImageView before recycling any bitmap it may still reference.
@@ -346,110 +333,25 @@ final class GoogleCanonicalFrameLayer {
     }
 
     private final class SelectionView extends View {
-        // Resource IDs verified against Google App 17.58.16.ve.
-        private static final int RES_REGION_MASK_COLOR = 0x7f061c89;
-        private static final int RES_REGION_BOUNDING_PADDING = 0x7f0719e9;
-        private static final int RES_REGION_HANDLE_MAX_SIZE = 0x7f0719ee;
-        private static final int RES_REGION_HANDLE_STROKE = 0x7f0719ef;
-        private static final int RES_REGION_HANDLE_STROKE_UPDATED = 0x7f07125b;
-        private static final int RES_REGION_MAX_CORNER_RADIUS = 0x7f0719f0;
-        private static final int RES_AURORA_COLORS = 0x7f030012;
-        private static final int RES_AURORA_STOPS = 0x7f030013;
-
-        private final Paint trail = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint scrim = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint auroraGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint auroraHalo = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint handle = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF localTextRect = new RectF();
-        private final int[] auroraColors;
-        private final float[] auroraStops;
-        private final float boxPadding;
-        private final float maxHandleSize;
-        private final float handleStroke;
-        private final float maxCornerRadius;
+        private final Paint trail = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF localSelection = new RectF();
 
         SelectionView(Activity context) {
             super(context);
-            Resources resources = getResources();
-            float density = Math.max(1f, resources.getDisplayMetrics().density);
+            float density = Math.max(1f, getResources().getDisplayMetrics().density);
 
-            int maskColor = 0x66000000;
-            float padding = 4f * density;
-            float handleMax = 22f * density;
-            float stroke = 4f * density;
-            float radius = 14f * density;
-            int[] colors = {
-                    0xFF3186FF, 0xFF3186FF, 0xFFFF4641, 0xFFFFD314,
-                    0xFF34A853, 0xFF3186FF, 0xFF3186FF
-            };
-            float[] stops = {0f, 0.46f, 0.58f, 0.71f, 0.82f, 0.92f, 1f};
+            // Restore FloatLens' original selection frame: a clean white 2dp outline with
+            // a small dark shadow so it stays visible on both light and dark content.
+            border.setStyle(Paint.Style.STROKE);
+            border.setStrokeWidth(2f * density);
+            border.setColor(Color.WHITE);
+            border.setShadowLayer(1.5f * density, 0f, 0f, 0xAA000000);
 
-            // Read Google's own runtime resources where possible. The fallbacks above are the exact
-            // values extracted from 17.58.16.ve, so a missing themed resource does not break UI.
-            try { maskColor = resources.getColor(RES_REGION_MASK_COLOR, context.getTheme()); }
-            catch (Throwable ignored) { }
-            try { padding = resources.getDimension(RES_REGION_BOUNDING_PADDING); }
-            catch (Throwable ignored) { }
-            try { handleMax = resources.getDimension(RES_REGION_HANDLE_MAX_SIZE); }
-            catch (Throwable ignored) { }
-            try {
-                float updated = resources.getDimension(RES_REGION_HANDLE_STROKE_UPDATED);
-                float classic = resources.getDimension(RES_REGION_HANDLE_STROKE);
-                // RegionView 17.58 can use either path depending on its experiment flag. The
-                // thinner classic width matches the visible handle itself; aurora is separate.
-                stroke = Math.min(updated, classic);
-            } catch (Throwable ignored) { }
-            try { radius = resources.getDimension(RES_REGION_MAX_CORNER_RADIUS); }
-            catch (Throwable ignored) { }
-            try {
-                int[] runtimeColors = resources.getIntArray(RES_AURORA_COLORS);
-                if (runtimeColors != null && runtimeColors.length >= 2) colors = runtimeColors;
-            } catch (Throwable ignored) { }
-            try {
-                TypedArray ta = resources.obtainTypedArray(RES_AURORA_STOPS);
-                if (ta.length() >= 2) {
-                    float[] runtimeStops = new float[ta.length()];
-                    for (int i = 0; i < ta.length(); i++) runtimeStops[i] = ta.getFloat(i, 0f);
-                    stops = runtimeStops;
-                }
-                ta.recycle();
-            } catch (Throwable ignored) { }
-
-            boxPadding = padding;
-            maxHandleSize = handleMax;
-            handleStroke = stroke;
-            maxCornerRadius = radius;
-            auroraColors = colors;
-            auroraStops = stops.length == colors.length ? stops : null;
-
+            // Dim only outside the FloatLens frame. The selected text area stays untouched.
             scrim.setStyle(Paint.Style.FILL);
-            scrim.setColor(maskColor);
-
-            // Aurora is not a colored border. It is a soft edge glow emitted from the outside
-            // of the selection boundary. Both layers stay blurred; there is deliberately no
-            // hard/solid colored stroke.
-            auroraHalo.setStyle(Paint.Style.STROKE);
-            auroraHalo.setStrokeCap(Paint.Cap.ROUND);
-            auroraHalo.setStrokeJoin(Paint.Join.ROUND);
-            auroraHalo.setStrokeWidth(Math.max(8f * density, handleStroke * 1.9f));
-            auroraHalo.setAlpha(150);
-            auroraHalo.setMaskFilter(
-                    new BlurMaskFilter(10f * density, BlurMaskFilter.Blur.OUTER));
-
-            auroraGlow.setStyle(Paint.Style.STROKE);
-            auroraGlow.setStrokeCap(Paint.Cap.ROUND);
-            auroraGlow.setStrokeJoin(Paint.Join.ROUND);
-            auroraGlow.setStrokeWidth(Math.max(3.2f * density, handleStroke * 0.85f));
-            auroraGlow.setAlpha(235);
-            auroraGlow.setMaskFilter(
-                    new BlurMaskFilter(4.5f * density, BlurMaskFilter.Blur.OUTER));
-
-            handle.setStyle(Paint.Style.STROKE);
-            handle.setStrokeCap(Paint.Cap.ROUND);
-            handle.setStrokeJoin(Paint.Join.ROUND);
-            handle.setStrokeWidth(handleStroke);
-            handle.setColor(Color.WHITE);
+            scrim.setColor(0x66000000);
 
             trail.setStyle(Paint.Style.STROKE);
             trail.setStrokeCap(Paint.Cap.ROUND);
@@ -458,26 +360,46 @@ final class GoogleCanonicalFrameLayer {
             trail.setColor(Color.WHITE);
             trail.setShadowLayer(1.5f * density, 0f, 0f, 0xAA000000);
 
-            // Keep the View on the window's hardware pipeline. Google's final Aurora path uses
-            // RenderNode + RenderEffect(RuntimeShader); forcing LAYER_TYPE_SOFTWARE exposes the
-            // raw dpoc RGB mask instead of the shader-composited output.
-            setLayerType(LAYER_TYPE_NONE, null);
+            setLayerType(LAYER_TYPE_SOFTWARE, null);
             setBackgroundColor(Color.TRANSPARENT);
         }
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
 
-            Rect textBounds;
+            Rect bounds;
             List<PointF> points;
             synchronized (GoogleCanonicalFrameLayer.this) {
-                textBounds = textSelectionBounds == null
+                bounds = textSelectionBounds == null
                         ? null : new Rect(textSelectionBounds);
                 points = new ArrayList<>(gesturePoints);
             }
 
-            if (textBounds != null && !textBounds.isEmpty()) {
-                drawPassiveGoogleTextShell(canvas, textBounds);
+            if (bounds != null && !bounds.isEmpty()) {
+                int[] origin = new int[2];
+                try { getLocationOnScreen(origin); } catch (Throwable ignored) { }
+
+                localSelection.set(
+                        bounds.left - origin[0],
+                        bounds.top - origin[1],
+                        bounds.right - origin[0],
+                        bounds.bottom - origin[1]);
+
+                localSelection.left = Math.max(0f, localSelection.left);
+                localSelection.top = Math.max(0f, localSelection.top);
+                localSelection.right = Math.min(getWidth(), localSelection.right);
+                localSelection.bottom = Math.min(getHeight(), localSelection.bottom);
+
+                if (!localSelection.isEmpty()) {
+                    int save = canvas.save();
+                    Path hole = new Path();
+                    hole.addRect(localSelection, Path.Direction.CW);
+                    canvas.clipOutPath(hole);
+                    canvas.drawRect(0f, 0f, getWidth(), getHeight(), scrim);
+                    canvas.restoreToCount(save);
+
+                    canvas.drawRect(localSelection, border);
+                }
             }
 
             if (points.size() >= 2) {
@@ -490,81 +412,6 @@ final class GoogleCanonicalFrameLayer {
                 }
                 canvas.drawPath(path, trail);
             }
-        }
-
-        private void drawPassiveGoogleTextShell(Canvas canvas, Rect screenBounds) {
-            int[] origin = new int[2];
-            try { getLocationOnScreen(origin); } catch (Throwable ignored) { }
-
-            localTextRect.set(
-                    screenBounds.left - origin[0] - boxPadding,
-                    screenBounds.top - origin[1] - boxPadding,
-                    screenBounds.right - origin[0] + boxPadding,
-                    screenBounds.bottom - origin[1] + boxPadding);
-
-            localTextRect.left = Math.max(0f, localTextRect.left);
-            localTextRect.top = Math.max(0f, localTextRect.top);
-            localTextRect.right = Math.min(getWidth(), localTextRect.right);
-            localTextRect.bottom = Math.min(getHeight(), localTextRect.bottom);
-            if (localTextRect.isEmpty()) return;
-
-            float radius = Math.min(maxCornerRadius,
-                    Math.max(1f, Math.min(localTextRect.width(), localTextRect.height()) / 3f));
-
-            // Google's live dpoz shader already contains the real selection scrim/header
-            // composition plus Aurora. When it is available, let that full native composite own
-            // the pixels so FloatLens does not double-darken the outside area. Only draw our fixed
-            // #66000000 fallback scrim when the Google native effect is unavailable.
-            boolean nativeAurora = nativeStyle.drawAurora(
-                    canvas, this, localTextRect, radius);
-            if (!nativeAurora) {
-                int save = canvas.save();
-                Path hole = new Path();
-                hole.addRoundRect(localTextRect, radius, radius, Path.Direction.CW);
-                canvas.clipOutPath(hole);
-                canvas.drawRect(0f, 0f, getWidth(), getHeight(), scrim);
-                canvas.restoreToCount(save);
-                reporter.accept("GOOGLE_NATIVE_STYLE",
-                        "aurora_unavailable fallback=neutral_frame_only");
-            }
-
-            Paint nativeHandle = nativeStyle.copyNativeHandlePaint();
-            drawNativeCornerHandles(
-                    canvas,
-                    localTextRect,
-                    radius,
-                    nativeHandle != null ? nativeHandle : handle);
-        }
-
-        private void drawNativeCornerHandles(
-                Canvas canvas, RectF rect, float radius, Paint handlePaint) {
-            float armX = Math.min(maxHandleSize, Math.max(radius, rect.width() / 2f));
-            float armY = Math.min(maxHandleSize, Math.max(radius, rect.height() / 2f));
-            float r = Math.min(radius, Math.min(armX, armY));
-
-            Path p = new Path();
-
-            p.moveTo(rect.left, rect.top + armY);
-            p.lineTo(rect.left, rect.top + r);
-            p.quadTo(rect.left, rect.top, rect.left + r, rect.top);
-            p.lineTo(rect.left + armX, rect.top);
-
-            p.moveTo(rect.right - armX, rect.top);
-            p.lineTo(rect.right - r, rect.top);
-            p.quadTo(rect.right, rect.top, rect.right, rect.top + r);
-            p.lineTo(rect.right, rect.top + armY);
-
-            p.moveTo(rect.right, rect.bottom - armY);
-            p.lineTo(rect.right, rect.bottom - r);
-            p.quadTo(rect.right, rect.bottom, rect.right - r, rect.bottom);
-            p.lineTo(rect.right - armX, rect.bottom);
-
-            p.moveTo(rect.left + armX, rect.bottom);
-            p.lineTo(rect.left + r, rect.bottom);
-            p.quadTo(rect.left, rect.bottom, rect.left, rect.bottom - r);
-            p.lineTo(rect.left, rect.bottom - armY);
-
-            canvas.drawPath(p, handlePaint);
         }
     }
 
