@@ -511,22 +511,19 @@ final class GoogleCanonicalFrameLayer {
             float radius = Math.min(maxCornerRadius,
                     Math.max(1f, Math.min(localTextRect.width(), localTextRect.height()) / 3f));
 
-            // Keep the scrim independent from RegionView's animated Paint. Google 17.58's
-            // region_mask_color is #66000000; using that fixed resource avoids an opaque-black
-            // outside area when the native RegionView paint is detached from its own state.
-            int save = canvas.save();
-            Path hole = new Path();
-            hole.addRoundRect(localTextRect, radius, radius, Path.Direction.CW);
-            canvas.clipOutPath(hole);
-            canvas.drawRect(0f, 0f, getWidth(), getHeight(), scrim);
-            canvas.restoreToCount(save);
-
+            // Google's live dpoz shader already contains the real selection scrim/header
+            // composition plus Aurora. When it is available, let that full native composite own
+            // the pixels so FloatLens does not double-darken the outside area. Only draw our fixed
+            // #66000000 fallback scrim when the Google native effect is unavailable.
             boolean nativeAurora = nativeStyle.drawAurora(
                     canvas, this, localTextRect, radius);
             if (!nativeAurora) {
-                // Do not fall back to a colored STROKE. That approximation is exactly what makes
-                // the effect look like four thin rainbow lines. If Google's private renderer is
-                // unavailable, keep the neutral frame/scrim only and report the missing Aurora.
+                int save = canvas.save();
+                Path hole = new Path();
+                hole.addRoundRect(localTextRect, radius, radius, Path.Direction.CW);
+                canvas.clipOutPath(hole);
+                canvas.drawRect(0f, 0f, getWidth(), getHeight(), scrim);
+                canvas.restoreToCount(save);
                 reporter.accept("GOOGLE_NATIVE_STYLE",
                         "aurora_unavailable fallback=neutral_frame_only");
             }
