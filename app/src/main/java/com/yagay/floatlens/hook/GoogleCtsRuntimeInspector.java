@@ -109,8 +109,10 @@ final class GoogleCtsRuntimeInspector implements GoogleCtsLifecycleHooks.Host {
         this.textSelectionLiveHook = new GoogleTextSelectionLiveHook(
                 module, classLoader, this::active,
                 (bounds, detail) -> {
-                    if (bounds == null || bounds.isEmpty()
-                            || sessionState.regionSelectionActive()) return;
+                    if (bounds == null || bounds.isEmpty()) return;
+                    // dnrs.g/dtvm are text-selection-only sources. Do not suppress their live
+                    // geometry just because FrozenImageView briefly marked a region gesture before
+                    // the final text selection event arrived.
                     canonicalFrameLayer.updateLiveTextSelection(bounds);
                     report("GOOGLE_TEXT_SELECTION_LIVE", detail);
                 });
