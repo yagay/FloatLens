@@ -47,6 +47,7 @@ final class GoogleCanonicalFrameLayer {
     private final Supplier<Activity> activity;
     private final BiConsumer<String, String> reporter;
     private final Handler main = new Handler(Looper.getMainLooper());
+    private final GoogleNativeRegionStyleRenderer nativeStyle;
 
     private Bitmap canonicalFrame;
     private final List<Bitmap> retiredFrames = new ArrayList<>();
@@ -62,6 +63,8 @@ final class GoogleCanonicalFrameLayer {
         this.active = active;
         this.activity = activity;
         this.reporter = reporter;
+        this.nativeStyle = new GoogleNativeRegionStyleRenderer(
+                getClass().getClassLoader(), activity, reporter);
     }
 
     void offer(Bitmap candidate) {
@@ -113,6 +116,7 @@ final class GoogleCanonicalFrameLayer {
                 textSelectionBounds = new Rect(screenBounds);
             } else {
                 textSelectionBounds = null;
+            nativeStyle.reset();
             }
         }
         main.post(() -> {
@@ -497,40 +501,49 @@ final class GoogleCanonicalFrameLayer {
             float radius = Math.min(maxCornerRadius,
                     Math.max(1f, Math.min(localTextRect.width(), localTextRect.height()) / 3f));
 
-            // Google RegionView's dudd.c() draws the same #66000000 outside scrim around a rounded
-            // clear opening. clipOutPath reproduces that presentation without mutating RegionView.
-            int save = canvas.save();
-            Path hole = new Path();
-            hole.addRoundRect(localTextRect, radius, radius, Path.Direction.CW);
-            canvas.clipOutPath(hole);
-            canvas.drawRect(0f, 0f, getWidth(), getHeight(), scrim);
-            canvas.restoreToCount(save);
+            // Prefer Google's own low-level renderers. These operate on our Canvas/RectF only;
+            // they do not create a Region and do not touch Google's selection/gesture state.
+            boolean nativeScrim = nativeStyle.drawScrim(
+                    canvas, this, localTextRect, radius);
+            if (!nativeScrim) {
+                int save = canvas.save();
+                Path hole = new Path();
+                hole.addRoundRect(localTextRect, radius, radius, Path.Direction.CW);
+                canvas.clipOutPath(hole);
+                canvas.drawRect(0f, 0f, getWidth(), getHeight(), scrim);
+                canvas.restoreToCount(save);
+            }
 
-            float cx = localTextRect.centerX();
-            float cy = localTextRect.centerY();
-            Shader shader = new SweepGradient(cx, cy, auroraColors, auroraStops);
-            auroraHalo.setShader(shader);
-            auroraGlow.setShader(shader);
+            boolean nativeAurora = nativeStyle.drawAurora(
+                    canvas, this, localTextRect, radius);
+            if (!nativeAurora) {
+                // Fail-soft fallback for Google builds where EffectsV2View/dpoc moved.
+                float cx = localTextRect.centerX();
+                float cy = localTextRect.centerY();
+                Shader shader = new SweepGradient(cx, cy, auroraColors, auroraStops);
+                auroraHalo.setShader(shader);
+                auroraGlow.setShader(shader);
+                int glowSave = canvas.save();
+                Path glowHole = new Path();
+                glowHole.addRoundRect(localTextRect, radius, radius, Path.Direction.CW);
+                canvas.clipOutPath(glowHole);
+                canvas.drawRoundRect(localTextRect, radius, radius, auroraHalo);
+                canvas.drawRoundRect(localTextRect, radius, radius, auroraGlow);
+                canvas.restoreToCount(glowSave);
+                auroraHalo.setShader(null);
+                auroraGlow.setShader(null);
+            }
 
-            // Google 17.58 presents Aurora as color living on the OUTSIDE edge, not as a
-            // rainbow outline. Clip away the selection interior before drawing the blurred
-            // emission so no colored line is painted across the clear window itself.
-            int glowSave = canvas.save();
-            Path glowHole = new Path();
-            glowHole.addRoundRect(localTextRect, radius, radius, Path.Direction.CW);
-            canvas.clipOutPath(glowHole);
-            canvas.drawRoundRect(localTextRect, radius, radius, auroraHalo);
-            canvas.drawRoundRect(localTextRect, radius, radius, auroraGlow);
-            canvas.restoreToCount(glowSave);
-
-            auroraHalo.setShader(null);
-            auroraGlow.setShader(null);
-
-            // RegionView's actual neutral handles remain separate from EffectsV2/Aurora.
-            drawNativeCornerHandles(canvas, localTextRect, radius);
+            Paint nativeHandle = nativeStyle.copyNativeHandlePaint();
+            drawNativeCornerHandles(
+                    canvas,
+                    localTextRect,
+                    radius,
+                    nativeHandle != null ? nativeHandle : handle);
         }
 
-        private void drawNativeCornerHandles(Canvas canvas, RectF rect, float radius) {
+        private void drawNativeCornerHandles(
+                Canvas canvas, RectF rect, float radius, Paint handlePaint) {
             float armX = Math.min(maxHandleSize, Math.max(radius, rect.width() / 2f));
             float armY = Math.min(maxHandleSize, Math.max(radius, rect.height() / 2f));
             float r = Math.min(radius, Math.min(armX, armY));
@@ -557,7 +570,7 @@ final class GoogleCanonicalFrameLayer {
             p.quadTo(rect.left, rect.bottom, rect.left, rect.bottom - r);
             p.lineTo(rect.left, rect.bottom - armY);
 
-            canvas.drawPath(p, handle);
+            canvas.drawPath(p, handlePaint);
         }
     }
 
