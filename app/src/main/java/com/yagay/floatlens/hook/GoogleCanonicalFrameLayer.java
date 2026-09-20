@@ -126,6 +126,17 @@ final class GoogleCanonicalFrameLayer {
                         + " frameRenderer=passive_google_mirror");
     }
 
+    void updateLiveTextSelection(Rect screenBounds) {
+        if (screenBounds == null || screenBounds.isEmpty()) return;
+        synchronized (this) {
+            textSelectionBounds = new Rect(screenBounds);
+        }
+        main.post(() -> {
+            SelectionView view = selectionRef.get();
+            if (view != null) view.invalidate();
+        });
+    }
+
     void onGesturePoint(int action, float x, float y) {
         synchronized (this) {
             if (action == MotionEvent.ACTION_DOWN
@@ -409,18 +420,18 @@ final class GoogleCanonicalFrameLayer {
             auroraHalo.setStyle(Paint.Style.STROKE);
             auroraHalo.setStrokeCap(Paint.Cap.ROUND);
             auroraHalo.setStrokeJoin(Paint.Join.ROUND);
-            auroraHalo.setStrokeWidth(Math.max(6f * density, handleStroke * 1.6f));
-            auroraHalo.setAlpha(82);
+            auroraHalo.setStrokeWidth(Math.max(8f * density, handleStroke * 1.9f));
+            auroraHalo.setAlpha(150);
             auroraHalo.setMaskFilter(
-                    new BlurMaskFilter(13f * density, BlurMaskFilter.Blur.NORMAL));
+                    new BlurMaskFilter(10f * density, BlurMaskFilter.Blur.OUTER));
 
             auroraGlow.setStyle(Paint.Style.STROKE);
             auroraGlow.setStrokeCap(Paint.Cap.ROUND);
             auroraGlow.setStrokeJoin(Paint.Join.ROUND);
-            auroraGlow.setStrokeWidth(Math.max(2.5f * density, handleStroke * 0.7f));
-            auroraGlow.setAlpha(155);
+            auroraGlow.setStrokeWidth(Math.max(3.2f * density, handleStroke * 0.85f));
+            auroraGlow.setAlpha(235);
             auroraGlow.setMaskFilter(
-                    new BlurMaskFilter(6f * density, BlurMaskFilter.Blur.NORMAL));
+                    new BlurMaskFilter(4.5f * density, BlurMaskFilter.Blur.OUTER));
 
             handle.setStyle(Paint.Style.STROKE);
             handle.setStrokeCap(Paint.Cap.ROUND);
