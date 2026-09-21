@@ -355,9 +355,9 @@ final class GoogleCanonicalFrameLayer {
             colorGlow.setStrokeWidth(1f * density);
             colorGlow.setStrokeCap(Paint.Cap.ROUND);
             colorGlow.setStrokeJoin(Paint.Join.ROUND);
-            colorGlow.setAlpha(185);
+            colorGlow.setAlpha(235);
             colorGlow.setMaskFilter(
-                    new BlurMaskFilter(4f * density, BlurMaskFilter.Blur.OUTER));
+                    new BlurMaskFilter(20f * density, BlurMaskFilter.Blur.OUTER));
 
             // Dim only outside the FloatLens frame. The selected text area stays untouched.
             scrim.setStyle(Paint.Style.FILL);
