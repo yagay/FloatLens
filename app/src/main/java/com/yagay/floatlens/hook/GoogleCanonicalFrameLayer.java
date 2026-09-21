@@ -3,6 +3,7 @@ package com.yagay.floatlens.hook;
 import com.yagay.floatlens.CanonicalFramePolicy;
 import android.app.Activity;
 import android.graphics.Bitmap;
+import android.graphics.BlurMaskFilter;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -10,6 +11,8 @@ import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.Shader;
+import android.graphics.SweepGradient;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.MotionEvent;
@@ -329,6 +332,7 @@ final class GoogleCanonicalFrameLayer {
 
     private final class SelectionView extends View {
         private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint colorGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint scrim = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint trail = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF localSelection = new RectF();
@@ -338,12 +342,22 @@ final class GoogleCanonicalFrameLayer {
             super(context);
             float density = Math.max(1f, getResources().getDisplayMetrics().density);
 
-            // FloatLens selection frame: a light 1dp rounded outline with a subtle shadow.
+            // FloatLens selection frame: 1dp white rounded outline with a soft colored outer glow.
             cornerRadius = 8f * density;
             border.setStyle(Paint.Style.STROKE);
             border.setStrokeWidth(1f * density);
             border.setColor(Color.WHITE);
-            border.setShadowLayer(1.5f * density, 0f, 0f, 0xAA000000);
+            border.clearShadowLayer();
+
+            // Colored shadow only. Blur.OUTER suppresses the source stroke itself so this paint
+            // behaves like a halo rather than becoming a second colored border.
+            colorGlow.setStyle(Paint.Style.STROKE);
+            colorGlow.setStrokeWidth(1f * density);
+            colorGlow.setStrokeCap(Paint.Cap.ROUND);
+            colorGlow.setStrokeJoin(Paint.Join.ROUND);
+            colorGlow.setAlpha(185);
+            colorGlow.setMaskFilter(
+                    new BlurMaskFilter(4f * density, BlurMaskFilter.Blur.OUTER));
 
             // Dim only outside the FloatLens frame. The selected text area stays untouched.
             scrim.setStyle(Paint.Style.FILL);
@@ -397,6 +411,27 @@ final class GoogleCanonicalFrameLayer {
                     canvas.clipOutPath(hole);
                     canvas.drawRect(0f, 0f, getWidth(), getHeight(), scrim);
                     canvas.restoreToCount(save);
+
+                    int[] glowColors = {
+                            0xFF4285F4,
+                            0xFFEA4335,
+                            0xFFFBBC04,
+                            0xFF34A853,
+                            0xFF4285F4
+                    };
+                    float[] glowStops = {0f, 0.28f, 0.52f, 0.76f, 1f};
+                    Shader glowShader = new SweepGradient(
+                            localSelection.centerX(),
+                            localSelection.centerY(),
+                            glowColors,
+                            glowStops);
+                    colorGlow.setShader(glowShader);
+                    canvas.drawRoundRect(
+                            localSelection,
+                            cornerRadius,
+                            cornerRadius,
+                            colorGlow);
+                    colorGlow.setShader(null);
 
                     canvas.drawRoundRect(
                             localSelection,
