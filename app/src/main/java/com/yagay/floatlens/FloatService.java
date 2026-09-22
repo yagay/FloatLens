@@ -448,7 +448,8 @@ public class FloatService extends Service implements android.content.SharedPrefe
             // migrate them into AccessibilityService merely because that service connected:
             // its coordinate space can briefly lag behind display rotation on some ROMs.
             if (Settings.canDrawOverlays(this)) {
-                rehostIconWindows(false);
+                if (primary == null) show();
+                else rehostIconWindows(false);
                 verifyCurrentIconPlacements("accessibility_host_change");
             } else if (available) {
                 if (primary == null) show();
