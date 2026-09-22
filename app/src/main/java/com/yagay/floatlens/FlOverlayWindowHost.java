@@ -1,6 +1,7 @@
 package com.yagay.floatlens;
 
 import android.content.Context;
+import android.provider.Settings;
 import android.view.View;
 import android.view.WindowManager;
 
@@ -29,6 +30,29 @@ final class FlOverlayWindowHost {
             return true;
         }
         return addApplication(view, lp, tag);
+    }
+
+    /**
+     * Persistent controls prefer TYPE_APPLICATION_OVERLAY when permission is available.
+     * Accessibility overlays are retained as a fallback only. This avoids coordinate-space drift
+     * observed when AccessibilityService window metrics lag behind rapid display rotations.
+     */
+    boolean addStable(View view, WindowManager.LayoutParams lp, String tag) {
+        if (view == null || lp == null) return false;
+        if (Settings.canDrawOverlays(context)) {
+            if (addApplication(view, lp, tag)) return true;
+            DiagnosticLog.i(context, "FL_WINDOW",
+                    tag + " stable application host failed; trying accessibility fallback");
+        }
+        LensAccessibilityService a = LensAccessibilityService.get();
+        if (a != null && a.addAccessibilityOverlay(view, lp)) {
+            remember(view, true);
+            bindToWorkflowScene(view, tag);
+            DiagnosticLog.i(context, "FL_WINDOW",
+                    tag + " stable fallback host=accessibility type=" + lp.type);
+            return true;
+        }
+        return false;
     }
 
     boolean addApplication(View view, WindowManager.LayoutParams lp, String tag) {
@@ -126,18 +150,31 @@ final class FlOverlayWindowHost {
                 ? isAccessibilityHosted(view)
                 : lp != null && lp.type == WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
         try {
+            boolean removed;
             if (onAccessibility) {
                 LensAccessibilityService a = LensAccessibilityService.get();
-                if (a != null) a.removeAccessibilityOverlay(view);
-                else appWindowManager.removeView(view);
+                if (a != null) {
+                    removed = a.removeAccessibilityOverlay(view);
+                } else {
+                    appWindowManager.removeViewImmediate(view);
+                    removed = !view.isAttachedToWindow();
+                }
             } else {
-                appWindowManager.removeView(view);
+                appWindowManager.removeViewImmediate(view);
+                removed = !view.isAttachedToWindow();
+            }
+            if (!removed) {
+                DiagnosticLog.i(context, "FL_WINDOW",
+                        tag + " remove did not detach view; host="
+                                + (onAccessibility ? "accessibility" : "application"));
+                return false;
             }
             accessibilityHosted.remove(view);
             return true;
         } catch (Throwable t) {
-            DiagnosticLog.i(context, "FL_WINDOW", tag + " remove failed=" + t);
-            accessibilityHosted.remove(view);
+            DiagnosticLog.i(context, "FL_WINDOW", tag + " remove failed=" + t
+                    + " host=" + (onAccessibility ? "accessibility" : "application")
+                    + " attached=" + view.isAttachedToWindow());
             return false;
         }
     }
