@@ -102,10 +102,20 @@ public class LensAccessibilityService extends AccessibilityService {
         }
     }
 
-    public void removeAccessibilityOverlay(View view) {
-        if (view == null) return;
-        try { ((WindowManager) getSystemService(WINDOW_SERVICE)).removeView(view); }
-        catch (Throwable ignored) {}
+    public boolean removeAccessibilityOverlay(View view) {
+        if (view == null) return true;
+        try {
+            ((WindowManager) getSystemService(WINDOW_SERVICE)).removeViewImmediate(view);
+            boolean detached = !view.isAttachedToWindow();
+            DiagnosticLog.i(this, "FL_WINDOW",
+                    "remove accessibility overlay detached=" + detached);
+            return detached;
+        } catch (Throwable t) {
+            DiagnosticLog.i(this, "FL_WINDOW",
+                    "remove accessibility overlay failed=" + t
+                            + " attached=" + view.isAttachedToWindow());
+            return false;
+        }
     }
 
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
