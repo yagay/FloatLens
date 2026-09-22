@@ -2,6 +2,8 @@ package com.yagay.floatlens;
 
 import android.content.Context;
 import android.provider.Settings;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.View;
 import android.view.WindowManager;
 
@@ -13,6 +15,7 @@ final class FlOverlayWindowHost {
     private final Context context;
     private final WindowManager appWindowManager;
     private final Map<View, Boolean> accessibilityHosted = new IdentityHashMap<>();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private View lastView;
 
     FlOverlayWindowHost(Context c) {
@@ -136,10 +139,38 @@ final class FlOverlayWindowHost {
         return added;
     }
 
-    void remove(View view, String tag) {
-        if (view == null) return;
+    boolean remove(View view, String tag) {
+        if (view == null) return true;
         OverlaySceneManager.unbind(view);
-        removeFromCurrentHost(view, null, tag);
+
+        // A window that cannot be detached must never remain interactive as an orphan.
+        try { view.setVisibility(View.INVISIBLE); } catch (Throwable ignored) { }
+
+        boolean removed = removeFromCurrentHost(view, null, tag);
+        if (removed) {
+            forget(view);
+            return true;
+        }
+
+        DiagnosticLog.i(context, "FL_WINDOW",
+                tag + " remove deferred; orphan kept invisible for retry");
+        mainHandler.postDelayed(() -> {
+            if (!accessibilityHosted.containsKey(view) && !view.isAttachedToWindow()) {
+                forget(view);
+                return;
+            }
+            boolean retryRemoved = removeFromCurrentHost(view, null, tag + "_retry");
+            if (retryRemoved || !view.isAttachedToWindow()) {
+                forget(view);
+            } else {
+                DiagnosticLog.i(context, "FL_WINDOW",
+                        tag + " retry remove still attached; keeping orphan invisible");
+            }
+        }, 160L);
+        return false;
+    }
+
+    private void forget(View view) {
         accessibilityHosted.remove(view);
         if (lastView == view) lastView = null;
     }
