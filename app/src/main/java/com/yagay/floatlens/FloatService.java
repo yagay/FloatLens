@@ -6,7 +6,9 @@ import android.content.pm.ServiceInfo;
 import android.content.res.Configuration;
 import android.graphics.PixelFormat;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.provider.Settings;
 import android.view.*;
 
@@ -38,6 +40,13 @@ public class FloatService extends Service implements android.content.SharedPrefe
     private boolean positionMoveArmed;
     private Integer imeRestoreY;
     private float lastActionX, lastActionY;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable rebuildIconsRunnable = () -> {
+        if (primary == null) show();
+    };
+    private int iconGeneration;
+    private boolean geometryRecoveryScheduled;
+    private long lastGeometryRecoveryAt;
 
     public static FloatService get() { return instance; }
 
@@ -86,8 +95,9 @@ public class FloatService extends Service implements android.content.SharedPrefe
     }
 
     private void addPrimary() {
+        final int generation = ++iconGeneration;
         primaryLp = layout.createPrimary();
-        primary = newIcon(primaryLp, false);
+        primary = newIcon(primaryLp, false, generation);
         primary.setAlpha(fs.alpha());
         if (!addIconWindow(primary, primaryLp)) {
             DiagnosticLog.i(this, "FL_WINDOW", "primary add failed; keep service retryable");
@@ -98,13 +108,14 @@ public class FloatService extends Service implements android.content.SharedPrefe
         layout.edgeHide(primaryLp);
         safeUpdate(primary, primaryLp);
         addTouchHandle(primary, primaryLp, false);
+        verifyIconPlacement(primary, primaryLp, false, generation, "primary_add");
     }
 
     private void syncSecondary() {
         if (fs.bothSide()) {
             if (secondary == null && primaryLp != null) {
                 secondaryLp = layout.createMirror(primaryLp);
-                secondary = newIcon(secondaryLp, true);
+                secondary = newIcon(secondaryLp, true, iconGeneration);
                 secondary.setAlpha(fs.alpha());
                 if (!addIconWindow(secondary, secondaryLp)) {
                     DiagnosticLog.i(this, "FL_WINDOW", "secondary add failed; leave mirror retryable");
@@ -115,6 +126,8 @@ public class FloatService extends Service implements android.content.SharedPrefe
                 layout.edgeHide(secondaryLp);
                 safeUpdate(secondary, secondaryLp);
                 addTouchHandle(secondary, secondaryLp, true);
+                verifyIconPlacement(
+                        secondary, secondaryLp, true, iconGeneration, "secondary_add");
             }
         } else if (secondary != null) {
             removeTouchHandle(true);
@@ -124,7 +137,10 @@ public class FloatService extends Service implements android.content.SharedPrefe
         }
     }
 
-    private FloatIconView newIcon(WindowManager.LayoutParams lp, boolean mirrored) {
+    private FloatIconView newIcon(
+            WindowManager.LayoutParams lp,
+            boolean mirrored,
+            int generation) {
         final int[] origin = new int[2];
         final int[] mirrorOrigin = new int[2];
         final boolean[] originReady = {false};
@@ -134,6 +150,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
 
         return new FloatIconView(this, new FloatIconView.Callback() {
             @Override public void onDragStart() {
+                if (!isCurrentIconCallback(generation, mirrored, lp)) return;
                 origin[0] = lp.x;
                 origin[1] = lp.y;
                 originReady[0] = true;
@@ -147,6 +164,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
             }
 
             @Override public void onMove(int dxFromDown, int dyFromDown) {
+                if (!isCurrentIconCallback(generation, mirrored, lp)) return;
                 if (!originReady[0]) {
                     origin[0] = lp.x;
                     origin[1] = lp.y;
@@ -162,6 +180,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
             }
 
             @Override public void onRelease(boolean moved) {
+                if (!isCurrentIconCallback(generation, mirrored, lp)) return;
                 View icon = mirrored ? secondary : primary;
                 if (positionMoveArmed && moved) {
                     if (fs.snap()) snap(lp, icon);
@@ -216,12 +235,14 @@ public class FloatService extends Service implements android.content.SharedPrefe
             }
 
             @Override public void onGestureDecision(GestureDecision decision) {
+                if (!isCurrentIconCallback(generation, mirrored, lp)) return;
                 lastActionX = lp.x + lp.width / 2f;
                 lastActionY = lp.y + lp.height / 2f;
                 dispatchGesture(decision);
             }
 
             @Override public void onAction(String action) {
+                if (!isCurrentIconCallback(generation, mirrored, lp)) return;
                 lastActionX = lp.x + lp.width / 2f;
                 lastActionY = lp.y + lp.height / 2f;
                 DiagnosticLog.i(FloatService.this, "ACTION_LAYER", "direct action=" + action);
@@ -229,18 +250,22 @@ public class FloatService extends Service implements android.content.SharedPrefe
             }
 
             @Override public void onGestureStart(float x, float y) {
+                if (!isCurrentIconCallback(generation, mirrored, lp)) return;
                 if (fs.track()) trail.begin(x, y);
             }
 
             @Override public void onGestureMove(float x, float y) {
+                if (!isCurrentIconCallback(generation, mirrored, lp)) return;
                 if (fs.track()) trail.add(x, y);
             }
 
             @Override public void onGestureEnd(List<GesturePointSample> points) {
+                if (!isCurrentIconCallback(generation, mirrored, lp)) return;
                 trail.end();
             }
 
             @Override public void onDirectSelectionStart() {
+                if (!isCurrentIconCallback(generation, mirrored, lp)) return;
                 if (directExpanded[0]) return;
                 View icon = mirrored ? secondary : primary;
                 if (icon == null) return;
@@ -257,6 +282,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
             }
 
             @Override public void onDirectSelectionEnd() {
+                if (!isCurrentIconCallback(generation, mirrored, lp)) return;
                 if (!directExpanded[0]) return;
                 View other = mirrored ? primary : secondary;
                 View otherHandle = mirrored ? primaryHandle : secondaryHandle;
@@ -330,7 +356,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
     }
 
     private boolean addIconWindow(View view, WindowManager.LayoutParams lp) {
-        return iconHost != null && iconHost.add(view, lp, "float_icon");
+        return iconHost != null && iconHost.addStable(view, lp, "float_icon");
     }
 
     private void removeIconWindow(View view) {
@@ -342,7 +368,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
         removeTouchHandle(mirrored);
         FloatIconTouchHandle handle = new FloatIconTouchHandle(this, icon);
         WindowManager.LayoutParams handleLp = createTouchHandleLayout(iconLp);
-        if (!iconHost.add(handle, handleLp, "float_icon_handle")) {
+        if (!iconHost.addStable(handle, handleLp, "float_icon_handle")) {
             DiagnosticLog.i(this, "FL_WINDOW", "touch handle add failed side="
                     + (layout.isLeft(iconLp) ? "L" : "R"));
             return;
@@ -417,7 +443,22 @@ public class FloatService extends Service implements android.content.SharedPrefe
     }
 
     public void onAccessibilityOverlayHostChanged(boolean available) {
-        getMainExecutor().execute(() -> rehostIconWindows(available));
+        getMainExecutor().execute(() -> {
+            // Persistent controls stay on the application overlay whenever possible. Do not
+            // migrate them into AccessibilityService merely because that service connected:
+            // its coordinate space can briefly lag behind display rotation on some ROMs.
+            if (Settings.canDrawOverlays(this)) {
+                rehostIconWindows(false);
+                verifyCurrentIconPlacements("accessibility_host_change");
+            } else if (available) {
+                if (primary == null) show();
+                else rehostIconWindows(true);
+                verifyCurrentIconPlacements("accessibility_only_host");
+            } else {
+                // Without either host there is no safe place for a persistent control.
+                removeIcons();
+            }
+        });
     }
 
     private void rehostIconWindows(boolean useAccessibility) {
@@ -546,8 +587,8 @@ public class FloatService extends Service implements android.content.SharedPrefe
         WindowManager.LayoutParams leftLp = wakeLp(width, Gravity.LEFT);
         WindowManager.LayoutParams rightLp = wakeLp(width, Gravity.RIGHT);
 
-        if (!iconHost.add(left, leftLp, "edge_wake_left")) return;
-        if (!iconHost.add(right, rightLp, "edge_wake_right")) {
+        if (!iconHost.addStable(left, leftLp, "edge_wake_left")) return;
+        if (!iconHost.addStable(right, rightLp, "edge_wake_right")) {
             iconHost.remove(left, "edge_wake_left_rollback");
             return;
         }
@@ -678,11 +719,15 @@ public class FloatService extends Service implements android.content.SharedPrefe
         super.onConfigurationChanged(configuration);
         OverlayRegistry.onDisplayGeometryChanged();
         imeRestoreY = null;
+        mainHandler.removeCallbacks(rebuildIconsRunnable);
         removeIcons();
         fs = new FloatSettings(this);
         layout.updateSettings(fs);
         visibility.applySettings(fs);
-        show();
+        // Let WindowManager/AccessibilityService publish the new display geometry before the
+        // persistent icon is attached again. Rapid portrait-landscape-portrait transitions can
+        // otherwise attach a window using the previous coordinate space.
+        mainHandler.postDelayed(rebuildIconsRunnable, 140L);
     }
 
     private void registerScreenReceiver() {
@@ -701,6 +746,7 @@ public class FloatService extends Service implements android.content.SharedPrefe
     }
 
     private void removeIcons() {
+        iconGeneration++;
         trail.end();
         removeWakeViews();
         removeTouchHandle(false);
@@ -717,7 +763,82 @@ public class FloatService extends Service implements android.content.SharedPrefe
         }
     }
 
+    private boolean isCurrentIconCallback(
+            int generation,
+            boolean mirrored,
+            WindowManager.LayoutParams lp) {
+        boolean current = generation == iconGeneration
+                && (mirrored ? secondaryLp == lp && secondary != null
+                : primaryLp == lp && primary != null);
+        if (!current) {
+            DiagnosticLog.i(this, "FL_WINDOW",
+                    "drop stale icon callback generation=" + generation
+                            + " current=" + iconGeneration
+                            + " side=" + (mirrored ? "secondary" : "primary"));
+        }
+        return current;
+    }
+
+    private void verifyCurrentIconPlacements(String reason) {
+        if (primary != null && primaryLp != null) {
+            verifyIconPlacement(primary, primaryLp, false, iconGeneration, reason);
+        }
+        if (secondary != null && secondaryLp != null) {
+            verifyIconPlacement(secondary, secondaryLp, true, iconGeneration, reason);
+        }
+    }
+
+    private void verifyIconPlacement(
+            FloatIconView icon,
+            WindowManager.LayoutParams lp,
+            boolean mirrored,
+            int generation,
+            String reason) {
+        if (icon == null || lp == null) return;
+        icon.postDelayed(() -> {
+            if (!isCurrentIconCallback(generation, mirrored, lp)
+                    || !icon.isAttachedToWindow()) return;
+
+            int[] actual = new int[2];
+            icon.getLocationOnScreen(actual);
+            int tolerance = Math.max(dp(16), Math.max(lp.width, lp.height) / 4);
+            int dx = Math.abs(actual[0] - lp.x);
+            int dy = Math.abs(actual[1] - lp.y);
+            if (dx <= tolerance && dy <= tolerance) return;
+
+            DiagnosticLog.i(this, "FL_GEOMETRY",
+                    "drift reason=" + reason
+                            + " expected=" + lp.x + "," + lp.y
+                            + " actual=" + actual[0] + "," + actual[1]
+                            + " delta=" + dx + "," + dy
+                            + " host=" + (iconHost != null && iconHost.isAccessibilityHosted(icon)
+                            ? "accessibility" : "application")
+                            + " generation=" + generation);
+            recoverIconGeometry("placement_drift:" + reason);
+        }, 180L);
+    }
+
+    private void recoverIconGeometry(String reason) {
+        long now = android.os.SystemClock.uptimeMillis();
+        if (geometryRecoveryScheduled || now - lastGeometryRecoveryAt < 800L) return;
+        geometryRecoveryScheduled = true;
+        lastGeometryRecoveryAt = now;
+        mainHandler.post(() -> {
+            geometryRecoveryScheduled = false;
+            DiagnosticLog.i(this, "FL_GEOMETRY", "recover reason=" + reason);
+            mainHandler.removeCallbacks(rebuildIconsRunnable);
+            imeRestoreY = null;
+            removeIcons();
+            fs = new FloatSettings(this);
+            layout.updateSettings(fs);
+            visibility.applySettings(fs);
+            mainHandler.postDelayed(rebuildIconsRunnable, 120L);
+        });
+    }
+
     @Override public void onDestroy() {
+        mainHandler.removeCallbacks(rebuildIconsRunnable);
+        geometryRecoveryScheduled = false;
         // Only an explicit user drag may persist the canonical floating position. Service teardown
         // can happen while IME avoidance or another temporary layout projection is active.
         removeIcons();
