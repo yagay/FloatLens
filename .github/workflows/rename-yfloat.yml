@@ -61,7 +61,7 @@ jobs:
 
           changed = 0
           for name in files:
-              if not name:
+              if not name or name.startswith('.github/workflows/'):
                   continue
               path = Path(name)
               try:
@@ -76,12 +76,8 @@ jobs:
               if updated != text:
                   path.write_text(updated, encoding='utf-8')
                   changed += 1
-          print(f'Updated {changed} UTF-8 files')
+          print(f'Updated {changed} UTF-8 files outside workflows')
           PY
-
-          # This file is itself rewritten by the brand pass above, so force-remove it from the
-          # one-shot migration commit instead of leaving a modified temporary workflow behind.
-          git rm -f .github/workflows/rename-yfloat.yml
 
           echo '===== Remaining legacy package / brand identifiers ====='
           python3 - <<'PY'
@@ -90,7 +86,7 @@ jobs:
 
           bad = []
           for name in subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0'):
-              if not name:
+              if not name or name.startswith('.github/workflows/'):
                   continue
               p = Path(name)
               try:
@@ -108,7 +104,7 @@ jobs:
           if bad:
               print('\n'.join(bad[:200]))
               raise SystemExit(f'Legacy YFloat migration identifiers remain: {len(bad)}')
-          print('No stale app/package/brand identifiers found.')
+          print('No stale app/package/brand identifiers found outside workflow files.')
           PY
 
           test -f app/src/main/java/com/yagay/YFloat/YFloatApp.java
@@ -134,7 +130,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
+          git add -A ':!.github/workflows'
           git status --short
           git commit -m 'Rename FloatLens app and package to YFloat'
           git push origin HEAD:main
