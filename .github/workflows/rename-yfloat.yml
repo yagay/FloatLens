@@ -1,0 +1,143 @@
+name: Rename to YFloat
+
+on:
+  push:
+    branches: [ main ]
+    paths: [ '.github/workflows/rename-yfloat.yml' ]
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 9.4.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.4.1'
+
+      - name: Rename source packages and brand
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git mv app/src/main/java/com/yagay/floatlens app/src/main/java/com/yagay/YFloat
+          git mv app/src/test/java/com/yagay/floatlens app/src/test/java/com/yagay/YFloat
+          git mv app/src/main/java/com/yagay/YFloat/FloatLensApp.java app/src/main/java/com/yagay/YFloat/YFloatApp.java
+          git mv app/src/main/java/com/yagay/YFloat/hook/FloatLensModule.java app/src/main/java/com/yagay/YFloat/hook/YFloatModule.java
+
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+
+          files = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
+          replacements = [
+              ('com.yagay.floatlens', 'com.yagay.YFloat'),
+              ('FloatLensApp', 'YFloatApp'),
+              ('FloatLensModule', 'YFloatModule'),
+              ('FloatLens', 'YFloat'),
+              ('floatLens', 'yFloat'),
+              ('FLOATLENS', 'YFLOAT'),
+              ('floatlens', 'yfloat'),
+          ]
+
+          # The GitHub repository itself is still named FloatLens. Keep repository URLs valid while
+          # renaming the Android project/app/module/source identifiers to YFloat.
+          url_restores = [
+              ('github.com/yagay/YFloat', 'github.com/yagay/FloatLens'),
+              ('raw.githubusercontent.com/yagay/YFloat', 'raw.githubusercontent.com/yagay/FloatLens'),
+              ('api.github.com/repos/yagay/YFloat', 'api.github.com/repos/yagay/FloatLens'),
+          ]
+
+          changed = 0
+          for name in files:
+              if not name:
+                  continue
+              path = Path(name)
+              try:
+                  raw = path.read_bytes()
+                  text = raw.decode('utf-8')
+              except (UnicodeDecodeError, OSError):
+                  continue
+              updated = text
+              for old, new in replacements:
+                  updated = updated.replace(old, new)
+              for old, new in url_restores:
+                  updated = updated.replace(old, new)
+              if updated != text:
+                  path.write_text(updated, encoding='utf-8')
+                  changed += 1
+          print(f'Updated {changed} UTF-8 files')
+          PY
+
+          # The migration workflow is one-shot and must not remain in the project afterward.
+          git rm .github/workflows/rename-yfloat.yml
+
+          echo '===== Remaining legacy package / brand identifiers ====='
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+
+          bad = []
+          for name in subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0'):
+              if not name:
+                  continue
+              p = Path(name)
+              try:
+                  text = p.read_text(encoding='utf-8')
+              except (UnicodeDecodeError, OSError):
+                  continue
+              for lineno, line in enumerate(text.splitlines(), 1):
+                  cleaned = (line
+                      .replace('github.com/yagay/FloatLens', '')
+                      .replace('raw.githubusercontent.com/yagay/FloatLens', '')
+                      .replace('api.github.com/repos/yagay/FloatLens', ''))
+                  if ('com.yagay.floatlens' in cleaned or 'FloatLensApp' in cleaned
+                          or 'FloatLensModule' in cleaned or 'FloatLens' in cleaned):
+                      bad.append(f'{name}:{lineno}:{line.strip()}')
+          if bad:
+              print('\n'.join(bad[:200]))
+              raise SystemExit(f'Legacy YFloat migration identifiers remain: {len(bad)}')
+          print('No stale app/package/brand identifiers found.')
+          PY
+
+          test -f app/src/main/java/com/yagay/YFloat/YFloatApp.java
+          test -f app/src/main/java/com/yagay/YFloat/hook/YFloatModule.java
+          grep -q "namespace 'com.yagay.YFloat'" app/build.gradle
+          grep -q "applicationId 'com.yagay.YFloat'" app/build.gradle
+          grep -q 'android:name=".YFloatApp"' app/src/main/AndroidManifest.xml
+          grep -q 'android:label="YFloat"' app/src/main/AndroidManifest.xml
+          grep -q 'com.yagay.YFloat.hook.YFloatModule' app/src/main/resources/META-INF/xposed/java_init.list
+
+      - name: Run unit tests
+        run: gradle --stacktrace testDebugUnitTest
+
+      - name: Run Android lint
+        run: gradle --stacktrace lintDebug
+
+      - name: Build debug APK
+        run: gradle --stacktrace assembleDebug
+
+      - name: Commit YFloat migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git status --short
+          git commit -m 'Rename FloatLens app and package to YFloat'
+          git push origin HEAD:main
