@@ -6,6 +6,8 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.widget.LinearLayout;
@@ -26,6 +28,13 @@ public class MainActivity extends AppCompatActivity {
     private PermissionRow overlayPermission;
     private PermissionRow accessibilityPermission;
     private PermissionRow notificationPermission;
+
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable delayedAccessibilityRefresh = () -> {
+        if (isFinishing() || isDestroyed()) return;
+        maybeStartEnabledFloatService();
+        refreshStatus();
+    };
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -123,17 +132,37 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         boolean enabled = FloatServiceState.isEnabled(this);
         syncOverlaySwitch(enabled);
-        if (enabled && FloatService.get() == null
-                && (Settings.canDrawOverlays(this) || LensAccessibilityService.ready())) {
+        maybeStartEnabledFloatService();
+        refreshStatus();
+
+        // AccessibilityManager can report the grant before system_server finishes binding the
+        // service. Refresh a few times so returning from Settings converges without another user
+        // action, especially when YFloat is hosted inside YSuite.
+        mainHandler.removeCallbacks(delayedAccessibilityRefresh);
+        mainHandler.postDelayed(delayedAccessibilityRefresh, 400L);
+        mainHandler.postDelayed(delayedAccessibilityRefresh, 1400L);
+        mainHandler.postDelayed(delayedAccessibilityRefresh, 3000L);
+    }
+
+    @Override protected void onPause() {
+        mainHandler.removeCallbacks(delayedAccessibilityRefresh);
+        super.onPause();
+    }
+
+    private void maybeStartEnabledFloatService() {
+        if (!FloatServiceState.isEnabled(this) || FloatService.get() != null) return;
+        if (Settings.canDrawOverlays(this) || AccessibilityState.connected()) {
             FloatServiceState.start(this);
         }
-        refreshStatus();
     }
 
     private void onOverlayToggle(boolean checked) {
         if (syncingOverlaySwitch) return;
         if (checked) {
-            if (!Settings.canDrawOverlays(this) && !LensAccessibilityService.ready()) {
+            boolean overlayGranted = Settings.canDrawOverlays(this);
+            boolean accessibilityEnabled = AccessibilityState.enabled(this);
+            boolean accessibilityConnected = AccessibilityState.connected();
+            if (!overlayGranted && !accessibilityEnabled) {
                 Toast.makeText(this,
                         "请先授予悬浮窗权限或开启 YFloat 无障碍服务",
                         Toast.LENGTH_LONG).show();
@@ -142,6 +171,19 @@ public class MainActivity extends AppCompatActivity {
                 refreshStatus();
                 return;
             }
+
+            if (!overlayGranted && accessibilityEnabled && !accessibilityConnected) {
+                FloatServiceState.setEnabled(this, true);
+                syncOverlaySwitch(true);
+                Toast.makeText(this,
+                        "无障碍已授权，正在等待系统连接服务",
+                        Toast.LENGTH_SHORT).show();
+                mainHandler.postDelayed(delayedAccessibilityRefresh, 500L);
+                mainHandler.postDelayed(delayedAccessibilityRefresh, 1500L);
+                refreshStatus();
+                return;
+            }
+
             if (FloatServiceState.start(this)) {
                 Toast.makeText(this, "悬浮图标已开启", Toast.LENGTH_SHORT).show();
             } else {
@@ -156,13 +198,15 @@ public class MainActivity extends AppCompatActivity {
 
     private void refreshStatus() {
         boolean overlayGranted = Settings.canDrawOverlays(this);
-        boolean accessibilityGranted = LensAccessibilityService.ready();
+        boolean accessibilityEnabled = AccessibilityState.enabled(this);
+        boolean accessibilityConnected = AccessibilityState.connected();
         boolean notificationsGranted = Build.VERSION.SDK_INT < 33
                 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 == PackageManager.PERMISSION_GRANTED;
 
         updatePermission(overlayPermission, overlayGranted);
-        updatePermission(accessibilityPermission, accessibilityGranted);
+        updateAccessibilityPermission(accessibilityPermission,
+                accessibilityEnabled, accessibilityConnected);
         if (notificationPermission != null) updatePermission(notificationPermission, notificationsGranted);
 
         boolean enabled = FloatServiceState.isEnabled(this);
@@ -171,6 +215,8 @@ public class MainActivity extends AppCompatActivity {
             setServiceStatus("已停止", false);
         } else if (running) {
             setServiceStatus("正在运行", true);
+        } else if (accessibilityEnabled && !accessibilityConnected && !overlayGranted) {
+            setServiceStatus("等待无障碍连接", false);
         } else {
             setServiceStatus("等待恢复", false);
         }
@@ -209,6 +255,19 @@ public class MainActivity extends AppCompatActivity {
         row.status.setText(granted ? "已授权" : "未授权");
         row.status.setTextColor(granted ? AppUi.success(this) : AppUi.warning(this));
         row.button.setText(granted ? "设置" : "授权");
+    }
+
+    private void updateAccessibilityPermission(
+            PermissionRow row,
+            boolean enabled,
+            boolean connected
+    ) {
+        if (row == null) return;
+        row.status.setText(connected
+                ? "已授权 · 已连接"
+                : enabled ? "已授权 · 等待连接" : "未授权");
+        row.status.setTextColor(enabled ? AppUi.success(this) : AppUi.warning(this));
+        row.button.setText(enabled ? "设置" : "授权");
     }
 
     private void handleNotificationPermission() {
