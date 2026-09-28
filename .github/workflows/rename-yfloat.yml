@@ -53,9 +53,6 @@ jobs:
               ('FLOATLENS', 'YFLOAT'),
               ('floatlens', 'yfloat'),
           ]
-
-          # The GitHub repository itself is still named FloatLens. Keep repository URLs valid while
-          # renaming the Android project/app/module/source identifiers to YFloat.
           url_restores = [
               ('github.com/yagay/YFloat', 'github.com/yagay/FloatLens'),
               ('raw.githubusercontent.com/yagay/YFloat', 'raw.githubusercontent.com/yagay/FloatLens'),
@@ -68,8 +65,7 @@ jobs:
                   continue
               path = Path(name)
               try:
-                  raw = path.read_bytes()
-                  text = raw.decode('utf-8')
+                  text = path.read_bytes().decode('utf-8')
               except (UnicodeDecodeError, OSError):
                   continue
               updated = text
@@ -83,8 +79,9 @@ jobs:
           print(f'Updated {changed} UTF-8 files')
           PY
 
-          # The migration workflow is one-shot and must not remain in the project afterward.
-          git rm .github/workflows/rename-yfloat.yml
+          # This file is itself rewritten by the brand pass above, so force-remove it from the
+          # one-shot migration commit instead of leaving a modified temporary workflow behind.
+          git rm -f .github/workflows/rename-yfloat.yml
 
           echo '===== Remaining legacy package / brand identifiers ====='
           python3 - <<'PY'
