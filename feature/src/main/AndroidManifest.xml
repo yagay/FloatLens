@@ -1,0 +1,47 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <queries>
+        <intent><action android:name="android.intent.action.PROCESS_TEXT" /><data android:mimeType="text/plain" /></intent>
+        <intent><action android:name="android.intent.action.SEND" /><data android:mimeType="text/plain" /></intent>
+        <intent><action android:name="android.intent.action.SEND" /><data android:mimeType="image/*" /></intent>
+        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="https" /></intent>
+    </queries>
+    <application>
+        <provider android:name="com.yagay.YFloat.YFloatSuiteFileProvider" android:authorities="${applicationId}.fileprovider" android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/share_paths" />
+        </provider>
+        <activity android:name="com.yagay.YFloat.ResultActivity" android:theme="@style/Theme.YFloat.ResultText" android:exported="false" android:excludeFromRecents="true" android:launchMode="singleTop" android:taskAffinity="" />
+        <activity android:name="com.yagay.YFloat.ShadeDismissActivity" android:theme="@style/Theme.YFloat.ShadeDismiss" android:exported="false" android:excludeFromRecents="true" android:noHistory="true" android:taskAffinity="" />
+        <activity android:name="com.yagay.YFloat.SecureCaptureProbeActivity" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" />
+        <activity android:name="com.yagay.YFloat.MenuPickerActivity" android:exported="false" />
+        <activity android:name="com.yagay.YFloat.MenuLabelEditorActivity" android:exported="false" />
+        <activity android:name="com.yagay.YFloat.GestureHubActivity" android:exported="false" />
+        <activity android:name="com.yagay.YFloat.DiagnosticsActivity" android:exported="false" />
+        <activity android:name="com.yagay.YFloat.AppearanceSettingsActivity" android:exported="false" />
+        <activity android:name="com.yagay.YFloat.SettingsActivity" android:exported="false" />
+        <activity android:name="com.yagay.YFloat.MainActivity" />
+        <service android:name="com.yagay.YFloat.FloatService" android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Persistent user-controlled floating gesture button" />
+        </service>
+        <provider android:name="com.yagay.YFloat.GoogleCtsBridgeProvider" android:authorities="${applicationId}.googlebridge" android:exported="true" android:grantUriPermissions="false" />
+        <receiver android:name="com.yagay.YFloat.GoogleCtsBridgeReceiver" android:exported="true" />
+        <receiver android:name="com.yagay.YFloat.GoogleCtsTraceReceiver" android:exported="true" />
+        <receiver android:name="com.yagay.YFloat.FloatServiceBootReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+        <service android:name="com.yagay.YFloat.LensAccessibilityService" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="false">
+            <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_service_config" />
+        </service>
+    </application>
+</manifest>

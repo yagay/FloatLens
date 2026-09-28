@@ -1,0 +1,71 @@
+import java.security.MessageDigest
+
+plugins {
+    id 'com.android.library'
+}
+
+def yFloatHashFiles = { Collection<File> sourceFiles ->
+    MessageDigest digest = MessageDigest.getInstance('SHA-256')
+    sourceFiles.findAll { it != null && it.exists() }
+            .sort { a, b -> a.path <=> b.path }
+            .each { File source ->
+                digest.update(project.relativePath(source).replace('\\', '/').getBytes('UTF-8'))
+                digest.update((byte) 0)
+                digest.update(source.bytes)
+                digest.update((byte) 0)
+            }
+    return digest.digest().encodeHex().toString()
+}
+
+def hookRoot = file('src/main/java/com/yagay/YFloat/hook')
+def xposedRoot = file('../app/src/main/resources/META-INF/xposed')
+def hookCommonFiles = [
+        file('src/main/java/com/yagay/YFloat/hook/YFloatModule.java'),
+        file('src/main/java/com/yagay/YFloat/hook/LsposedRuntimeProvider.java'),
+        file('src/main/java/com/yagay/YFloat/LsposedRuntimeConfig.java'),
+        new File(xposedRoot, 'java_init.list'),
+        new File(xposedRoot, 'module.prop'),
+        new File(xposedRoot, 'scope.list')
+]
+def googleHookFiles = new ArrayList<File>(hookCommonFiles)
+googleHookFiles.addAll(fileTree(hookRoot) { include 'Google*.java' }.files)
+googleHookFiles.add(file('src/main/java/com/yagay/YFloat/GoogleCtsContract.java'))
+googleHookFiles.add(file('src/main/java/com/yagay/YFloat/CanonicalFramePolicy.java'))
+def systemUiHookFiles = new ArrayList<File>(hookCommonFiles)
+def systemServerHookFiles = new ArrayList<File>(hookCommonFiles)
+systemServerHookFiles.add(file('src/main/java/com/yagay/YFloat/hook/SecureScreenshotHook.java'))
+
+android {
+    namespace 'com.yagay.YFloat'
+    compileSdk 37
+
+    defaultConfig {
+        minSdk 31
+        buildConfigField 'int', 'VERSION_CODE', '189'
+        buildConfigField 'String', 'VERSION_NAME', '"3.1.37"'
+        buildConfigField 'String', 'GOOGLE_HOOK_FINGERPRINT', '"' + yFloatHashFiles(googleHookFiles) + '"'
+        buildConfigField 'String', 'SYSTEMUI_HOOK_FINGERPRINT', '"' + yFloatHashFiles(systemUiHookFiles) + '"'
+        buildConfigField 'String', 'SYSTEM_SERVER_HOOK_FINGERPRINT', '"' + yFloatHashFiles(systemServerHookFiles) + '"'
+        ndk { abiFilters 'arm64-v8a' }
+    }
+
+    buildFeatures { buildConfig true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    compileOnly 'io.github.libxposed:api:102.0.0'
+    implementation 'io.github.libxposed:service:102.0.0'
+    implementation 'org.lsposed.hiddenapibypass:hiddenapibypass:6.1'
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'androidx.core:core:1.17.0'
+    implementation 'com.google.android.material:material:1.13.0'
+    implementation 'com.google.mlkit:text-recognition:16.0.1'
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+    implementation project(':ppocr-sdk')
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+    testImplementation 'junit:junit:4.13.2'
+}

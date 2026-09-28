@@ -9,27 +9,9 @@ import android.widget.TextView;
 
 /** Installs YFloat' app-wide text menu. Result popup geometry belongs only to the dialog host. */
 public final class YFloatApp extends Application implements Application.ActivityLifecycleCallbacks {
-    private final LsposedStatusManager.Listener hookReloadListener =
-            snapshot -> HookReloadManager.autoReloadChangedTargets(this, snapshot);
-
     @Override public void onCreate() {
         super.onCreate();
-        try {
-            SettingsMigrator.run(this);
-        } catch (Throwable t) {
-            DiagnosticLog.i(this, "APP_MIGRATION", "settings migration failed=" + t);
-        }
-        ThemeSettings.applySavedMode(this);
-        HookReloadManager.initialize(this);
-        try {
-            RemovedFeatureMigration.run(this);
-        } catch (Throwable t) {
-            DiagnosticLog.i(this, "APP_MIGRATION", "AI/dictionary cleanup failed=" + t);
-        }
-        // App-side framework/status/config bridge only; this does not install Xposed hooks.
-        LsposedStatusManager.initialize(this);
-        LsposedStatusManager.addListener(hookReloadListener, true);
-        registerActivityLifecycleCallbacks(this);
+        YFloatSuiteRuntime.get(this);
     }
 
     @Override public void onActivityResumed(Activity activity) {

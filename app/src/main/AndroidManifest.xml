@@ -1,101 +1,17 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- YFloat has an explicit "pick by app" manager which enumerates installed apps, then lets
-         the user inspect/exported standard Intent entry points. Narrow <queries> alone cannot back
-         that user-facing all-app picker, so this permission is intentional. -->
-    <uses-permission
-        android:name="android.permission.QUERY_ALL_PACKAGES"
-        tools:ignore="QueryAllPackagesPermission" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-
-    <queries>
-        <intent>
-            <action android:name="android.intent.action.PROCESS_TEXT" />
-            <data android:mimeType="text/plain" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.SEND" />
-            <data android:mimeType="text/plain" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.SEND" />
-            <data android:mimeType="image/*" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="https" />
-        </intent>
-    </queries>
-
-    <application android:name=".YFloatApp" android:theme="@style/Theme.YFloat" android:label="YFloat" android:description="@string/app_description" android:allowBackup="false" android:supportsRtl="true" android:usesCleartextTraffic="false">
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/share_paths" />
-        </provider>
-        <activity
-            android:name=".ResultActivity"
-            android:theme="@style/Theme.YFloat.ResultText"
-            android:exported="false"
-            android:excludeFromRecents="true"
-            android:launchMode="singleTop"
-            android:taskAffinity="" />
-        <activity
-            android:name=".ShadeDismissActivity"
-            android:theme="@style/Theme.YFloat.ShadeDismiss"
-            android:exported="false"
-            android:excludeFromRecents="true"
-            android:noHistory="true"
-            android:taskAffinity="" />
-        <activity
-            android:name=".SecureCaptureProbeActivity"
-            android:exported="false"
-            android:excludeFromRecents="true"
-            android:taskAffinity="" />
-        <activity android:name=".MenuPickerActivity" android:exported="false" />
-        <activity android:name=".MenuLabelEditorActivity" android:exported="false" />
-        <activity android:name=".GestureHubActivity" android:exported="false" />
-        <activity android:name=".DiagnosticsActivity" android:exported="false" />
-        <activity android:name=".AppearanceSettingsActivity" android:exported="false" />
-        <activity android:name=".SettingsActivity" android:exported="false" />
-        <activity android:name=".MainActivity" android:exported="true">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:name="com.yagay.YFloat.YFloatApp"
+        android:theme="@style/Theme.YFloat"
+        android:label="YFloat"
+        android:description="@string/app_description"
+        android:allowBackup="false"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="false">
+        <activity android:name="com.yagay.YFloat.MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <service android:name=".FloatService" android:exported="false" android:foregroundServiceType="specialUse">
-            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Persistent user-controlled floating gesture button" />
-        </service>
-        <provider
-            android:name=".GoogleCtsBridgeProvider"
-            android:authorities="${applicationId}.googlebridge"
-            android:exported="true"
-            android:grantUriPermissions="false" />
-        <receiver
-            android:name=".GoogleCtsBridgeReceiver"
-            android:exported="true" />
-        <receiver
-            android:name=".GoogleCtsTraceReceiver"
-            android:exported="true" />
-        <receiver android:name=".FloatServiceBootReceiver" android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-            </intent-filter>
-        </receiver>
-        <service android:name=".LensAccessibilityService" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="false">
-            <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
-            <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_service_config" />
-        </service>
     </application>
 </manifest>
