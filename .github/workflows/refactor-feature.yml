@@ -1,0 +1,280 @@
+name: Refactor YFloat Feature
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Split app and feature
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d feature ]; then
+            echo "feature already exists"
+            exit 0
+          fi
+
+          mkdir -p feature/src/main feature/src/test
+          git mv app/src/main/java feature/src/main/java
+          git mv app/src/main/res feature/src/main/res
+          if [ -d app/src/test ]; then git mv app/src/test feature/src/test; fi
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = 'YFloat'
+          include ':app', ':feature', ':ppocr-sdk'
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.yagay.YFloat.standalone'
+              compileSdk 37
+
+              defaultConfig {
+                  applicationId 'com.yagay.YFloat'
+                  minSdk 31
+                  targetSdk 37
+                  versionCode 189
+                  versionName '3.1.37'
+                  ndk { abiFilters 'arm64-v8a' }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+
+          dependencies {
+              implementation project(':feature')
+          }
+          EOF
+
+          cat > feature/build.gradle <<'EOF'
+          import java.security.MessageDigest
+
+          plugins {
+              id 'com.android.library'
+          }
+
+          def yFloatHashFiles = { Collection<File> sourceFiles ->
+              MessageDigest digest = MessageDigest.getInstance('SHA-256')
+              sourceFiles.findAll { it != null && it.exists() }
+                      .sort { a, b -> a.path <=> b.path }
+                      .each { File source ->
+                          digest.update(project.relativePath(source).replace('\\', '/').getBytes('UTF-8'))
+                          digest.update((byte) 0)
+                          digest.update(source.bytes)
+                          digest.update((byte) 0)
+                      }
+              return digest.digest().encodeHex().toString()
+          }
+
+          def hookRoot = file('src/main/java/com/yagay/YFloat/hook')
+          def xposedRoot = file('../app/src/main/resources/META-INF/xposed')
+          def hookCommonFiles = [
+                  file('src/main/java/com/yagay/YFloat/hook/YFloatModule.java'),
+                  file('src/main/java/com/yagay/YFloat/hook/LsposedRuntimeProvider.java'),
+                  file('src/main/java/com/yagay/YFloat/LsposedRuntimeConfig.java'),
+                  new File(xposedRoot, 'java_init.list'),
+                  new File(xposedRoot, 'module.prop'),
+                  new File(xposedRoot, 'scope.list')
+          ]
+          def googleHookFiles = new ArrayList<File>(hookCommonFiles)
+          googleHookFiles.addAll(fileTree(hookRoot) { include 'Google*.java' }.files)
+          googleHookFiles.add(file('src/main/java/com/yagay/YFloat/GoogleCtsContract.java'))
+          googleHookFiles.add(file('src/main/java/com/yagay/YFloat/CanonicalFramePolicy.java'))
+          def systemUiHookFiles = new ArrayList<File>(hookCommonFiles)
+          def systemServerHookFiles = new ArrayList<File>(hookCommonFiles)
+          systemServerHookFiles.add(file('src/main/java/com/yagay/YFloat/hook/SecureScreenshotHook.java'))
+
+          android {
+              namespace 'com.yagay.YFloat'
+              compileSdk 37
+
+              defaultConfig {
+                  minSdk 31
+                  buildConfigField 'int', 'VERSION_CODE', '189'
+                  buildConfigField 'String', 'VERSION_NAME', '"3.1.37"'
+                  buildConfigField 'String', 'GOOGLE_HOOK_FINGERPRINT', '"' + yFloatHashFiles(googleHookFiles) + '"'
+                  buildConfigField 'String', 'SYSTEMUI_HOOK_FINGERPRINT', '"' + yFloatHashFiles(systemUiHookFiles) + '"'
+                  buildConfigField 'String', 'SYSTEM_SERVER_HOOK_FINGERPRINT', '"' + yFloatHashFiles(systemServerHookFiles) + '"'
+                  ndk { abiFilters 'arm64-v8a' }
+              }
+
+              buildFeatures { buildConfig true }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+
+          dependencies {
+              compileOnly 'io.github.libxposed:api:102.0.0'
+              implementation 'io.github.libxposed:service:102.0.0'
+              implementation 'org.lsposed.hiddenapibypass:hiddenapibypass:6.1'
+              implementation 'androidx.appcompat:appcompat:1.7.1'
+              implementation 'androidx.core:core:1.17.0'
+              implementation 'com.google.android.material:material:1.13.0'
+              implementation 'com.google.mlkit:text-recognition:16.0.1'
+              implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+              implementation project(':ppocr-sdk')
+              implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+              testImplementation 'junit:junit:4.13.2'
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:name="com.yagay.YFloat.YFloatApp"
+                  android:theme="@style/Theme.YFloat"
+                  android:label="YFloat"
+                  android:description="@string/app_description"
+                  android:allowBackup="false"
+                  android:supportsRtl="true"
+                  android:usesCleartextTraffic="false">
+                  <activity android:name="com.yagay.YFloat.MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > feature/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:tools="http://schemas.android.com/tools">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+              <queries>
+                  <intent><action android:name="android.intent.action.PROCESS_TEXT" /><data android:mimeType="text/plain" /></intent>
+                  <intent><action android:name="android.intent.action.SEND" /><data android:mimeType="text/plain" /></intent>
+                  <intent><action android:name="android.intent.action.SEND" /><data android:mimeType="image/*" /></intent>
+                  <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="https" /></intent>
+              </queries>
+              <application>
+                  <provider android:name="com.yagay.YFloat.YFloatSuiteFileProvider" android:authorities="${applicationId}.fileprovider" android:exported="false" android:grantUriPermissions="true">
+                      <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/share_paths" />
+                  </provider>
+                  <activity android:name="com.yagay.YFloat.ResultActivity" android:theme="@style/Theme.YFloat.ResultText" android:exported="false" android:excludeFromRecents="true" android:launchMode="singleTop" android:taskAffinity="" />
+                  <activity android:name="com.yagay.YFloat.ShadeDismissActivity" android:theme="@style/Theme.YFloat.ShadeDismiss" android:exported="false" android:excludeFromRecents="true" android:noHistory="true" android:taskAffinity="" />
+                  <activity android:name="com.yagay.YFloat.SecureCaptureProbeActivity" android:exported="false" android:excludeFromRecents="true" android:taskAffinity="" />
+                  <activity android:name="com.yagay.YFloat.MenuPickerActivity" android:exported="false" />
+                  <activity android:name="com.yagay.YFloat.MenuLabelEditorActivity" android:exported="false" />
+                  <activity android:name="com.yagay.YFloat.GestureHubActivity" android:exported="false" />
+                  <activity android:name="com.yagay.YFloat.DiagnosticsActivity" android:exported="false" />
+                  <activity android:name="com.yagay.YFloat.AppearanceSettingsActivity" android:exported="false" />
+                  <activity android:name="com.yagay.YFloat.SettingsActivity" android:exported="false" />
+                  <activity android:name="com.yagay.YFloat.MainActivity" />
+                  <service android:name="com.yagay.YFloat.FloatService" android:exported="false" android:foregroundServiceType="specialUse">
+                      <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Persistent user-controlled floating gesture button" />
+                  </service>
+                  <provider android:name="com.yagay.YFloat.GoogleCtsBridgeProvider" android:authorities="${applicationId}.googlebridge" android:exported="true" android:grantUriPermissions="false" />
+                  <receiver android:name="com.yagay.YFloat.GoogleCtsBridgeReceiver" android:exported="true" />
+                  <receiver android:name="com.yagay.YFloat.GoogleCtsTraceReceiver" android:exported="true" />
+                  <receiver android:name="com.yagay.YFloat.FloatServiceBootReceiver" android:exported="false">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                          <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                      </intent-filter>
+                  </receiver>
+                  <service android:name="com.yagay.YFloat.LensAccessibilityService" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="false">
+                      <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
+                      <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_service_config" />
+                  </service>
+              </application>
+          </manifest>
+          EOF
+
+          cat > feature/src/main/java/com/yagay/YFloat/YFloatSuiteFileProvider.java <<'EOF'
+          package com.yagay.YFloat;
+
+          import androidx.core.content.FileProvider;
+
+          /** Stable component name shared by standalone YFloat and YSuite. */
+          public final class YFloatSuiteFileProvider extends FileProvider {
+          }
+          EOF
+
+          cat > feature/src/main/java/com/yagay/YFloat/YFloatSuiteRuntime.java <<'EOF'
+          package com.yagay.YFloat;
+
+          import android.app.Application;
+          import android.content.Context;
+
+          /** One app-side initializer shared by standalone YFloat and YSuite. */
+          public final class YFloatSuiteRuntime {
+              private static boolean initialized;
+              private static YFloatApp callbacks;
+              private static Context appContext;
+              private static final LsposedStatusManager.Listener HOOK_LISTENER =
+                      snapshot -> {
+                          Context app = appContext;
+                          if (app != null) HookReloadManager.autoReloadChangedTargets(app, snapshot);
+                      };
+
+              private YFloatSuiteRuntime() { }
+
+              public static synchronized Object get(Context context) {
+                  if (initialized) return appContext;
+                  Context app = context == null ? null : context.getApplicationContext();
+                  if (app == null) app = context;
+                  if (app == null) return null;
+                  appContext = app;
+
+                  try { SettingsMigrator.run(app); }
+                  catch (Throwable t) { DiagnosticLog.i(app, "APP_MIGRATION", "settings migration failed=" + t); }
+                  ThemeSettings.applySavedMode(app);
+                  HookReloadManager.initialize(app);
+                  try { RemovedFeatureMigration.run(app); }
+                  catch (Throwable t) { DiagnosticLog.i(app, "APP_MIGRATION", "AI/dictionary cleanup failed=" + t); }
+                  LsposedStatusManager.initialize(app);
+                  LsposedStatusManager.addListener(HOOK_LISTENER, true);
+
+                  if (app instanceof Application) {
+                      callbacks = app instanceof YFloatApp ? (YFloatApp) app : new YFloatApp();
+                      ((Application) app).registerActivityLifecycleCallbacks(callbacks);
+                  }
+                  initialized = true;
+                  return app;
+              }
+          }
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('feature/src/main/java/com/yagay/YFloat/YFloatApp.java')
+          s = p.read_text()
+          start = s.index('    private final LsposedStatusManager.Listener hookReloadListener =')
+          end = s.index('\n    @Override public void onActivityResumed', start)
+          replacement = '''    @Override public void onCreate() {\n        super.onCreate();\n        YFloatSuiteRuntime.get(this);\n    }\n'''
+          s = s[:start] + replacement + s[end:]
+          p.write_text(s)
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Split standalone app from reusable feature module"
+          git push
