@@ -63,7 +63,7 @@ class ORTSessionManager(
     }
 
     /**
-     * Detection-only runtime used by FloatLens' background TextMap builder.
+     * Detection-only runtime used by YFloat' background TextMap builder.
      * It intentionally never opens/maps the recognition model, so a layout scan cannot pay the
      * memory or cold-start cost of text decoding before the user actually selects a paragraph.
      */

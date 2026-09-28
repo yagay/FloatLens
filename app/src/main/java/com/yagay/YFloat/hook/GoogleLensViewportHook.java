@@ -1,0 +1,401 @@
+package com.yagay.YFloat.hook;
+
+import android.app.Activity;
+import android.graphics.RectF;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
+import android.view.View;
+import android.view.ViewTreeObserver;
+
+import org.lsposed.hiddenapibypass.HiddenApiBypass;
+
+import java.lang.reflect.Executable;
+import java.lang.reflect.Method;
+import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
+
+import io.github.libxposed.api.XposedModule;
+
+/** Owns Google Lens frozen-image viewport suppression and transform diagnostics. */
+final class GoogleLensViewportHook {
+    private static final String TAG = "YFloat-GoogleCTS";
+
+    private final XposedModule module;
+    private final ClassLoader classLoader;
+    private final BooleanSupplier active;
+    private final BooleanSupplier selectionSeen;
+    private final BooleanSupplier regionSelectionActive;
+    private final Supplier<Activity> activity;
+    private final BiConsumer<String, String> reporter;
+    private final Handler main = new Handler(Looper.getMainLooper());
+
+    private View guardedImage;
+    private ViewTreeObserver.OnPreDrawListener regionPreDrawGuard;
+
+    static final class Binding {
+        final Class<?> controller;
+        final Class<?> requestClass;
+        final Class<?> stateClass;
+        final int confidence;
+        final String source;
+        final String detail;
+
+        Binding(Class<?> controller, Class<?> requestClass, Class<?> stateClass,
+                int confidence, String source, String detail) {
+            this.controller = controller;
+            this.requestClass = requestClass;
+            this.stateClass = stateClass;
+            this.confidence = confidence;
+            this.source = source == null ? "none" : source;
+            this.detail = detail == null ? "" : detail;
+        }
+
+        boolean available() {
+            return controller != null && requestClass != null && stateClass != null;
+        }
+    }
+
+    static Binding resolve(ClassLoader loader) {
+        if (loader == null) return new Binding(null, null, null, 0, "none", "classLoader=null");
+        try {
+            Class<?> controller = Class.forName(
+                    GoogleLens1758Profile.VIEWPORT_CONTROLLER, false, loader);
+            Class<?> request = Class.forName(
+                    GoogleLens1758Profile.VIEWPORT_REQUEST, false, loader);
+            Class<?> state = Class.forName(
+                    GoogleLens1758Profile.VIEWPORT_STATE, false, loader);
+            boolean focus = false;
+            boolean viewport = false;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
+                if (!(executable instanceof Method method)) continue;
+                Class<?>[] params = method.getParameterTypes();
+                focus |= "r".equals(method.getName())
+                        && params.length == 1 && params[0] == request
+                        && method.getReturnType() == void.class;
+                viewport |= "n".equals(method.getName())
+                        && params.length == 1 && params[0] == state
+                        && method.getReturnType() == void.class;
+            }
+            int confidence = focus && viewport ? 100 : (focus || viewport ? 55 : 0);
+            return new Binding(controller, request, state, confidence,
+                    "profile-viewport",
+                    "focus=" + focus + " viewport=" + viewport
+                            + " controller=" + controller.getName());
+        } catch (Throwable t) {
+            return new Binding(null, null, null, 0, "none",
+                    "resolve=" + t.getClass().getSimpleName()
+                            + ":" + String.valueOf(t.getMessage()));
+        }
+    }
+
+    GoogleLensViewportHook(XposedModule module,
+                           ClassLoader classLoader,
+                           BooleanSupplier active,
+                           BooleanSupplier selectionSeen,
+                           BooleanSupplier regionSelectionActive,
+                           Supplier<Activity> activity,
+                           BiConsumer<String, String> reporter) {
+        this.module = module;
+        this.classLoader = classLoader;
+        this.active = active;
+        this.selectionSeen = selectionSeen;
+        this.regionSelectionActive = regionSelectionActive;
+        this.activity = activity;
+        this.reporter = reporter;
+    }
+
+    int install() {
+        return install(resolve(classLoader));
+    }
+
+    int install(Binding binding) {
+        if (binding == null) binding = resolve(classLoader);
+        if (!binding.available()) {
+            module.log(Log.WARN, TAG,
+                    "Google viewport capability unavailable: " + binding.detail);
+            return 0;
+        }
+        try {
+            Class<?> controller = binding.controller;
+            Class<?> requestClass = binding.requestClass;
+            Class<?> stateClass = binding.stateClass;
+            int count = 0;
+
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
+                if (!(executable instanceof Method method)) continue;
+                Class<?>[] params = method.getParameterTypes();
+
+                if ("r".equals(method.getName())
+                        && params.length == 1
+                        && params[0] == requestClass
+                        && method.getReturnType() == void.class) {
+                    module.hook(method).intercept(chain -> {
+                        Object request = chain.getArg(0);
+                        Object rawBounds = GoogleReflection.readNamedField(request, "c");
+                        RectF focusBounds = rawBounds instanceof RectF rect
+                                ? new RectF(rect) : null;
+                        boolean hasBounds = focusBounds != null
+                                && focusBounds.width() > 0f
+                                && focusBounds.height() > 0f;
+                        Object rawSource = GoogleReflection.readNamedField(request, "e");
+                        int source = rawSource instanceof Integer value ? value : -1;
+
+                        if (!active.getAsBoolean()
+                                || !GoogleLens1758Profile.shouldSuppressTextViewportFocus(
+                                        request == null ? "" : request.getClass().getName(),
+                                        source, hasBounds)) {
+                            return chain.proceed();
+                        }
+
+                        reporter.accept("GOOGLE_FROZEN_IMAGE_TEXT_FOCUS_SUPPRESSED_EARLY",
+                                "controller=duec.r source=" + source
+                                        + " selectionSeen=" + selectionSeen.getAsBoolean()
+                                        + " bounds=" + focusBounds
+                                        + " request=" + compact(request, 360));
+                        reportTransform("beforeEarlyTextFocus");
+                        main.postDelayed(() -> reportTransform("after120ms"), 120L);
+                        main.postDelayed(() -> reportTransform("after300ms"), 300L);
+                        return null;
+                    });
+                    count++;
+                    continue;
+                }
+
+                if ("n".equals(method.getName())
+                        && params.length == 1
+                        && params[0] == stateClass
+                        && method.getReturnType() == void.class) {
+                    module.hook(method).intercept(chain -> {
+                        if (!active.getAsBoolean()) return chain.proceed();
+                        Object state = chain.getArg(0);
+                        boolean regionActive = regionSelectionActive.getAsBoolean();
+                        boolean fullScreenReady = frozenImageReadyForViewportLock();
+                        reporter.accept("GOOGLE_FROZEN_IMAGE_VIEWPORT_STATE_PATH",
+                                "controller=duec.n selectionSeen=" + selectionSeen.getAsBoolean()
+                                        + " regionActive=" + regionActive
+                                        + " fullScreenReady=" + fullScreenReady
+                                        + " state=" + compact(state, 420));
+                        reportTransform("beforeDuecN");
+
+                        // v186 showed a race that the region-only guard cannot catch: duec.n can
+                        // update Lens' internal viewport after FrozenImageView is already full-screen
+                        // but before the first selection callback marks regionSelectionActive=true.
+                        // The outer View still reports scale=1/translation=0, so a pre-draw transform
+                        // guard alone cannot detect or undo that internal viewport shrink.
+                        //
+                        // Allow only the very early setup calls while FrozenImageView has no usable
+                        // full-screen geometry yet. Once the marked YFloat session owns a real
+                        // screen-sized frozen frame, lock duec.n for the remainder of the session.
+                        // This also covers later region/object calls without waiting for selection.
+                        if (shouldSuppressViewportState(true, regionActive, fullScreenReady)) {
+                            reporter.accept("GOOGLE_FROZEN_IMAGE_REGION_VIEWPORT_SUPPRESSED",
+                                    "controller=duec.n reason="
+                                            + (regionActive ? "region_selection" : "session_fullscreen_ready")
+                                            + " state=" + compact(state, 420));
+                            normalizeFrozenImageTransform(regionActive
+                                    ? "regionDuecNSuppressed" : "sessionDuecNSuppressed");
+                            ensureRegionTransformGuard();
+                            return null;
+                        }
+
+                        Object result = chain.proceed();
+                        main.postDelayed(() -> reportTransform("afterDuecN120ms"), 120L);
+                        return result;
+                    });
+                    count++;
+                }
+            }
+
+            module.log(Log.INFO, TAG,
+                    "Google viewport capability source=" + binding.source
+                            + " confidence=" + binding.confidence
+                            + " hooks=" + count + " detail=" + binding.detail);
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "Google FrozenImage viewport boundary unavailable", t);
+            return 0;
+        }
+    }
+
+    void reset() {
+        main.post(this::removeRegionTransformGuardOnMain);
+    }
+
+    private void ensureRegionTransformGuard() {
+        Activity owner = activity.get();
+        if (owner == null) return;
+        owner.runOnUiThread(() -> {
+            if (!active.getAsBoolean()) {
+                removeRegionTransformGuardOnMain();
+                return;
+            }
+            try {
+                View root = owner.getWindow() == null ? null : owner.getWindow().getDecorView();
+                View image = GoogleLensViewIntrospection.findByClassName(
+                        root, GoogleLens1758Profile.FROZEN_IMAGE_VIEW);
+                if (image == null) return;
+
+                if (guardedImage == image && regionPreDrawGuard != null) {
+                    normalizeViewTransform(image, "regionGuardAttachRefresh", false);
+                    return;
+                }
+
+                removeRegionTransformGuardOnMain();
+                guardedImage = image;
+                regionPreDrawGuard = () -> {
+                    if (!active.getAsBoolean()) {
+                        removeRegionTransformGuardOnMain();
+                        return true;
+                    }
+                    normalizeViewTransform(image, "regionPreDrawGuard", false);
+                    return true;
+                };
+                ViewTreeObserver observer = image.getViewTreeObserver();
+                if (observer.isAlive()) observer.addOnPreDrawListener(regionPreDrawGuard);
+                normalizeViewTransform(image, "regionGuardAttached", true);
+                reporter.accept("GOOGLE_FROZEN_IMAGE_REGION_GUARD",
+                        "state=attached view=" + image.getClass().getName()
+                                + " wh=" + image.getWidth() + "x" + image.getHeight());
+            } catch (Throwable t) {
+                module.log(Log.WARN, TAG, "Failed to attach FrozenImage region guard", t);
+            }
+        });
+    }
+
+    private void removeRegionTransformGuardOnMain() {
+        View image = guardedImage;
+        ViewTreeObserver.OnPreDrawListener listener = regionPreDrawGuard;
+        guardedImage = null;
+        regionPreDrawGuard = null;
+        if (image == null || listener == null) return;
+        try {
+            ViewTreeObserver observer = image.getViewTreeObserver();
+            if (observer.isAlive()) observer.removeOnPreDrawListener(listener);
+        } catch (Throwable ignored) { }
+    }
+
+    private void normalizeViewTransform(View image, String phase, boolean alwaysReport) {
+        if (image == null) return;
+        float oldScaleX = image.getScaleX();
+        float oldScaleY = image.getScaleY();
+        float oldTranslationX = image.getTranslationX();
+        float oldTranslationY = image.getTranslationY();
+
+        boolean changed = Math.abs(oldScaleX - 1f) > 0.0001f
+                || Math.abs(oldScaleY - 1f) > 0.0001f
+                || Math.abs(oldTranslationX) > 0.05f
+                || Math.abs(oldTranslationY) > 0.05f;
+
+        try { image.animate().cancel(); } catch (Throwable ignored) { }
+        try { image.clearAnimation(); } catch (Throwable ignored) { }
+        image.setScaleX(1f);
+        image.setScaleY(1f);
+        image.setTranslationX(0f);
+        image.setTranslationY(0f);
+
+        if (!alwaysReport && !changed) return;
+        int[] loc = new int[2];
+        try { image.getLocationOnScreen(loc); } catch (Throwable ignored) { }
+        reporter.accept("GOOGLE_FROZEN_IMAGE_REGION_NORMALIZE",
+                "phase=" + phase
+                        + " fromScale=" + oldScaleX + "," + oldScaleY
+                        + " fromTranslation=" + oldTranslationX + "," + oldTranslationY
+                        + " nowScale=" + image.getScaleX() + "," + image.getScaleY()
+                        + " nowTranslation=" + image.getTranslationX() + ","
+                        + image.getTranslationY()
+                        + " xy=" + loc[0] + "," + loc[1]);
+    }
+
+    private void normalizeFrozenImageTransform(String phase) {
+        if (!active.getAsBoolean()) return;
+        Activity owner = activity.get();
+        if (owner == null) return;
+        owner.runOnUiThread(() -> {
+            if (!active.getAsBoolean()) return;
+            try {
+                View root = owner.getWindow() == null ? null : owner.getWindow().getDecorView();
+                View image = GoogleLensViewIntrospection.findByClassName(
+                        root, GoogleLens1758Profile.FROZEN_IMAGE_VIEW);
+                if (image == null) {
+                    reporter.accept("GOOGLE_FROZEN_IMAGE_REGION_NORMALIZE",
+                            "phase=" + phase + " view=missing");
+                    return;
+                }
+
+                normalizeViewTransform(image, phase, true);
+            } catch (Throwable t) {
+                module.log(Log.WARN, TAG,
+                        "Failed to normalize FrozenImage region transform", t);
+            }
+        });
+    }
+
+    private boolean frozenImageReadyForViewportLock() {
+        Activity owner = activity.get();
+        if (owner == null || owner.getWindow() == null) return false;
+        try {
+            View root = owner.getWindow().getDecorView();
+            View image = GoogleLensViewIntrospection.findByClassName(
+                    root, GoogleLens1758Profile.FROZEN_IMAGE_VIEW);
+            if (root == null || image == null) return false;
+            int rootWidth = root.getWidth();
+            int rootHeight = root.getHeight();
+            int imageWidth = image.getWidth();
+            int imageHeight = image.getHeight();
+            return rootWidth > 0 && rootHeight > 0
+                    && imageWidth >= rootWidth
+                    && imageHeight >= rootHeight;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    static boolean shouldSuppressViewportState(
+            boolean active, boolean regionActive, boolean fullScreenReady) {
+        return active && (regionActive || fullScreenReady);
+    }
+
+    private void reportTransform(String phase) {
+        if (!active.getAsBoolean()) return;
+        Activity owner = activity.get();
+        if (owner == null) return;
+        owner.runOnUiThread(() -> {
+            if (!active.getAsBoolean()) return;
+            try {
+                View root = owner.getWindow() == null ? null : owner.getWindow().getDecorView();
+                View image = GoogleLensViewIntrospection.findByClassName(
+                        root, GoogleLens1758Profile.FROZEN_IMAGE_VIEW);
+                if (image == null) {
+                    reporter.accept("GOOGLE_FROZEN_IMAGE_TRANSFORM",
+                            "phase=" + phase + " view=missing");
+                    return;
+                }
+                int[] loc = new int[2];
+                try { image.getLocationOnScreen(loc); } catch (Throwable ignored) { }
+                reporter.accept("GOOGLE_FROZEN_IMAGE_TRANSFORM",
+                        "phase=" + phase
+                                + " scaleX=" + image.getScaleX()
+                                + " scaleY=" + image.getScaleY()
+                                + " translationX=" + image.getTranslationX()
+                                + " translationY=" + image.getTranslationY()
+                                + " xy=" + loc[0] + "," + loc[1]
+                                + " wh=" + image.getWidth() + "x" + image.getHeight());
+            } catch (Throwable t) {
+                module.log(Log.WARN, TAG, "Failed to inspect FrozenImage transform", t);
+            }
+        });
+    }
+
+    private static String compact(Object value, int max) {
+        if (value == null) return "null";
+        String text;
+        try {
+            text = value.getClass().getName() + "{" + String.valueOf(value) + "}";
+        } catch (Throwable t) {
+            text = value.getClass().getName();
+        }
+        return GoogleLensViewIntrospection.trim(text, max);
+    }
+}

@@ -1,0 +1,143 @@
+package com.yagay.YFloat;
+
+import android.content.ContentResolver;
+import android.content.ContentValues;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Environment;
+import android.provider.MediaStore;
+import android.view.ViewGroup;
+import android.widget.LinearLayout;
+import android.widget.Toast;
+
+import androidx.appcompat.app.AppCompatActivity;
+
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.switchmaterial.SwitchMaterial;
+
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+
+/** YFloat-only diagnostics. */
+public final class DiagnosticsActivity extends AppCompatActivity {
+    private FloatSettings fs;
+
+    @Override protected void onCreate(Bundle state) {
+        super.onCreate(state);
+        fs = new FloatSettings(this);
+
+        LinearLayout root = AppUi.pageRoot(this, "诊断与调试",
+                "记录 YFloat 自身运行状态，并可直接保存到 Download/YFloat。" );
+
+        AppUi.Section logging = AppUi.section(this, "YFloat 诊断日志",
+                "关闭时不会发送 Google 详细 Hook trace，也不会加载纯诊断 WindowManager Hook。"
+                        + " 开启后如需完整 Google Hook 诊断，请重启 Google App 或手机；"
+                        + " 导出通过 MediaStore 直接写入下载目录。" );
+        SwitchMaterial loggingSwitch = AppUi.switchRow(this,
+                "记录诊断日志",
+                "关闭时不会持续写入 YFloat 诊断日志",
+                fs.diagnosticLogging(),
+                (button, checked) -> fs.setBoolean(FloatSettings.K_DIAGNOSTIC, checked));
+        AppUi.addRow(logging.body, AppUi.switchContainer(loggingSwitch));
+        addButtonPair(logging.body,
+                button("保存诊断日志", this::exportDiagnostic),
+                button("清空", () -> {
+                    DiagnosticLog.clear(this);
+                    Toast.makeText(this, "诊断日志已清空", Toast.LENGTH_SHORT).show();
+                }));
+        AppUi.addSection(root, logging);
+
+        setContentView(AppUi.scrollPage(this, root));
+    }
+
+    private MaterialButton button(String label, Runnable action) {
+        MaterialButton button = AppUi.secondaryButton(this, label);
+        button.setOnClickListener(v -> { if (action != null) action.run(); });
+        return button;
+    }
+
+    private void addButtonPair(LinearLayout parent, MaterialButton left, MaterialButton right) {
+        LinearLayout row = AppUi.buttonRow(this);
+        LinearLayout.LayoutParams leftLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        leftLp.setMarginEnd(AppUi.dp(this, 6));
+        row.addView(left, leftLp);
+        LinearLayout.LayoutParams rightLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        rightLp.setMarginStart(AppUi.dp(this, 6));
+        row.addView(right, rightLp);
+        AppUi.addRow(parent, row);
+    }
+
+    private void exportDiagnostic() {
+        String appText = DiagnosticLog.read(this);
+        StringBuilder combined = new StringBuilder();
+        if (!appText.isBlank()) combined.append(appText.trim()).append("\n");
+
+        LsposedStatusManager.Snapshot s = LsposedStatusManager.snapshot();
+        combined.append("\n===== LSPosed status =====\n")
+                .append("serviceConnected=").append(s.serviceConnected)
+                .append(" framework=").append(s.frameworkName)
+                .append(" version=").append(s.frameworkVersion)
+                .append(" api=").append(s.apiVersion).append("\n")
+                .append("remoteConfigReady=").append(s.remoteConfigReady)
+                .append(" provider=").append(s.remoteProviderEnabled()).append("\n")
+                .append("googleScope=").append(s.googleScopeEnabled())
+                .append(" googleLoaded=").append(s.googleTargetLoaded())
+                .append(" googleStale=").append(s.googleTargetStale()).append("\n")
+                .append("scope=").append(s.scope).append("\n")
+                .append("runningProcesses=").append(s.runningProcesses).append("\n");
+        if (!s.detail.isBlank()) combined.append("detail=").append(s.detail).append("\n");
+
+        saveDiagnosticText(combined.toString());
+    }
+
+    private void saveDiagnosticText(String text) {
+        String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
+        String fileName = "YFloat-diagnostic-" + stamp + ".txt";
+        Uri uri = null;
+        try {
+            ContentResolver resolver = getContentResolver();
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+            values.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
+            values.put(MediaStore.MediaColumns.RELATIVE_PATH,
+                    Environment.DIRECTORY_DOWNLOADS + "/YFloat");
+            values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+
+            uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (uri == null) throw new java.io.IOException("MediaStore insert returned null");
+
+            try (OutputStream out = resolver.openOutputStream(uri, "w")) {
+                if (out == null) throw new java.io.IOException("MediaStore returned null output stream");
+                out.write(text.getBytes(StandardCharsets.UTF_8));
+                out.flush();
+            }
+
+            ContentValues ready = new ContentValues();
+            ready.put(MediaStore.MediaColumns.IS_PENDING, 0);
+            resolver.update(uri, ready, null, null);
+
+            DiagnosticLog.i(this, "DIAGNOSTIC_EXPORT",
+                    "saved uri=" + uri + " name=" + fileName + " bytes="
+                            + text.getBytes(StandardCharsets.UTF_8).length);
+            Toast.makeText(this,
+                    "已保存到 下载/YFloat/" + fileName,
+                    Toast.LENGTH_LONG).show();
+        } catch (Throwable t) {
+            if (uri != null) {
+                try { getContentResolver().delete(uri, null, null); } catch (Throwable ignored) {}
+            }
+            String message = t.getMessage();
+            if (message == null || message.isBlank()) message = t.getClass().getSimpleName();
+            Toast.makeText(this,
+                    "保存失败: " + t.getClass().getSimpleName() + " · " + message,
+                    Toast.LENGTH_LONG).show();
+            DiagnosticLog.i(this, "DIAGNOSTIC_EXPORT",
+                    "failed=" + t.getClass().getName() + ":" + message);
+        }
+    }
+}

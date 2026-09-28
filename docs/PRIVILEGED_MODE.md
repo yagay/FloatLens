@@ -1,12 +1,12 @@
-# FloatLens 高级权限模式
+# YFloat 高级权限模式
 
-FloatLens 的 Root / LSPosed 设计原则是：**增强能力是可选层，不是运行前提，而且应用内开关必须与真实运行行为一致。**
+YFloat 的 Root / LSPosed 设计原则是：**增强能力是可选层，不是运行前提，而且应用内开关必须与真实运行行为一致。**
 
-没有 Root、没有 LSPosed，或者用户主动关闭“增强模式”时，FloatLens 继续使用 Accessibility、Android 系统 API 和 OCR 等普通路径。
+没有 Root、没有 LSPosed，或者用户主动关闭“增强模式”时，YFloat 继续使用 Accessibility、Android 系统 API 和 OCR 等普通路径。
 
 ## 设置入口
 
-进入：`FloatLens → 高级 → 高级权限`
+进入：`YFloat → 高级 → 高级权限`
 
 ### 启用增强模式
 
@@ -43,7 +43,7 @@ com.android.systemui
 
 ### 受控 Provider 配置通道
 
-模块 App 通过 `io.github.libxposed:service:102.0.0` 把运行配置写入 LSPosed Remote Preferences 组 `floatlens_runtime`；system_server / SystemUI 中的 `LsposedRuntimeProvider` 只读并监听同一组配置，不读取应用普通 SharedPreferences，也不依赖 Root 文件。
+模块 App 通过 `io.github.libxposed:service:102.0.0` 把运行配置写入 LSPosed Remote Preferences 组 `yfloat_runtime`；system_server / SystemUI 中的 `LsposedRuntimeProvider` 只读并监听同一组配置，不读取应用普通 SharedPreferences，也不依赖 Root 文件。
 
 基础门控：
 
@@ -60,10 +60,10 @@ LSPosed Provider = ON
 
 ```text
 截图与 OCR → LSPosed 安全窗口截图增强 = ON
-system_server 已加载 FloatLens
+system_server 已加载 YFloat
 ```
 
-它不是永久 FLAG_SECURE 绕过。FloatLens 每次自己的 Accessibility 截图前：
+它不是永久 FLAG_SECURE 绕过。YFloat 每次自己的 Accessibility 截图前：
 
 1. App 在 Remote Preferences 写入约 3 秒的 `secure_capture_armed_until_elapsed` lease；
 2. system_server Hook 每次调用都用 `SystemClock.elapsedRealtime()` 实时确认 lease 仍有效；
@@ -102,7 +102,7 @@ system_server 的 Hook 做两件事：
 
 ### 为什么不恢复旧全局方案
 
-历史版本曾无条件 Hook `WindowState.isSecureLocked()` 并强制 `SurfaceControl.Builder.setSecure(false)`。该实现已删除，因为应用 SharedPreferences 无法可靠控制已经安装在 system_server 中的长期 Hook，而且会把安全属性本身永久改掉。现在的 Remote Preferences + 短时 lease 只在 FloatLens 自己的截图窗口内改变捕获决策。
+历史版本曾无条件 Hook `WindowState.isSecureLocked()` 并强制 `SurfaceControl.Builder.setSecure(false)`。该实现已删除，因为应用 SharedPreferences 无法可靠控制已经安装在 system_server 中的长期 Hook，而且会把安全属性本身永久改掉。现在的 Remote Preferences + 短时 lease 只在 YFloat 自己的截图窗口内改变捕获决策。
 
 ## 失败回退
 
@@ -116,7 +116,7 @@ system_server 的 Hook 做两件事：
 
 ## FV 运行时抓取
 
-项目不再把 FV/fooView Runtime Inspector 当作正式功能。FV 历史抓取只用于验证悬浮交互时序，不作为 FloatLens 运行时依赖。
+项目不再把 FV/fooView Runtime Inspector 当作正式功能。FV 历史抓取只用于验证悬浮交互时序，不作为 YFloat 运行时依赖。
 
 ## 开发约束
 

@@ -4,7 +4,7 @@ plugins {
     id 'com.android.application'
 }
 
-def floatLensHashFiles = { Collection<File> sourceFiles ->
+def yFloatHashFiles = { Collection<File> sourceFiles ->
     MessageDigest digest = MessageDigest.getInstance("SHA-256")
     sourceFiles.findAll { it != null && it.exists() }
             .sort { a, b -> a.path <=> b.path }
@@ -17,33 +17,33 @@ def floatLensHashFiles = { Collection<File> sourceFiles ->
     return digest.digest().encodeHex().toString()
 }
 
-def hookRoot = file('src/main/java/com/yagay/floatlens/hook')
+def hookRoot = file('src/main/java/com/yagay/yfloat/hook')
 def hookCommonFiles = [
-        file('src/main/java/com/yagay/floatlens/hook/FloatLensModule.java'),
-        file('src/main/java/com/yagay/floatlens/hook/LsposedRuntimeProvider.java'),
-        file('src/main/java/com/yagay/floatlens/LsposedRuntimeConfig.java'),
+        file('src/main/java/com/yagay/yfloat/hook/YFloatModule.java'),
+        file('src/main/java/com/yagay/yfloat/hook/LsposedRuntimeProvider.java'),
+        file('src/main/java/com/yagay/yfloat/LsposedRuntimeConfig.java'),
         file('src/main/resources/META-INF/xposed/java_init.list'),
         file('src/main/resources/META-INF/xposed/module.prop'),
         file('src/main/resources/META-INF/xposed/scope.list')
 ]
 def googleHookFiles = new ArrayList<File>(hookCommonFiles)
 googleHookFiles.addAll(fileTree(hookRoot) { include 'Google*.java' }.files)
-googleHookFiles.add(file('src/main/java/com/yagay/floatlens/GoogleCtsContract.java'))
-googleHookFiles.add(file('src/main/java/com/yagay/floatlens/CanonicalFramePolicy.java'))
+googleHookFiles.add(file('src/main/java/com/yagay/yfloat/GoogleCtsContract.java'))
+googleHookFiles.add(file('src/main/java/com/yagay/yfloat/CanonicalFramePolicy.java'))
 def systemUiHookFiles = new ArrayList<File>(hookCommonFiles)
 def systemServerHookFiles = new ArrayList<File>(hookCommonFiles)
-systemServerHookFiles.add(file('src/main/java/com/yagay/floatlens/hook/SecureScreenshotHook.java'))
+systemServerHookFiles.add(file('src/main/java/com/yagay/yfloat/hook/SecureScreenshotHook.java'))
 
-def googleHookFingerprint = floatLensHashFiles(googleHookFiles)
-def systemUiHookFingerprint = floatLensHashFiles(systemUiHookFiles)
-def systemServerHookFingerprint = floatLensHashFiles(systemServerHookFiles)
+def googleHookFingerprint = yFloatHashFiles(googleHookFiles)
+def systemUiHookFingerprint = yFloatHashFiles(systemUiHookFiles)
+def systemServerHookFingerprint = yFloatHashFiles(systemServerHookFiles)
 
 android {
-    namespace 'com.yagay.floatlens'
+    namespace 'com.yagay.YFloat'
     compileSdk 37
 
     defaultConfig {
-        applicationId 'com.yagay.floatlens'
+        applicationId 'com.yagay.YFloat'
         minSdk 31
         targetSdk 37
         versionCode 189
@@ -52,7 +52,7 @@ android {
         buildConfigField 'String', 'SYSTEMUI_HOOK_FINGERPRINT', '"'+systemUiHookFingerprint+'"'
         buildConfigField 'String', 'SYSTEM_SERVER_HOOK_FINGERPRINT', '"'+systemServerHookFingerprint+'"'
         ndk {
-            // FloatLens targets modern Android phones; keep only the ABI actually used on current devices.
+            // YFloat targets modern Android phones; keep only the ABI actually used on current devices.
             abiFilters 'arm64-v8a'
         }
     }

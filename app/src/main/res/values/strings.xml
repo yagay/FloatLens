@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">FloatLens</string>
-    <string name="accessibility_desc">FloatLens uses Accessibility only for system gestures and screen capture actions explicitly triggered by the user.</string>
-    <string name="app_description">FloatLens floating OCR, View selection and screenshot tool.</string>
+    <string name="app_name">YFloat</string>
+    <string name="accessibility_desc">YFloat uses Accessibility only for system gestures and screen capture actions explicitly triggered by the user.</string>
+    <string name="app_description">YFloat floating OCR, View selection and screenshot tool.</string>
 </resources>

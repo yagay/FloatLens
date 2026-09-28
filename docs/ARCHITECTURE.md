@@ -1,6 +1,6 @@
-# FloatLens Architecture
+# YFloat Architecture
 
-FloatLens follows a **single-owner rule**: different interaction surfaces may have different UI and lifetimes, but the same low-level behavior must have one implementation and one policy owner.
+YFloat follows a **single-owner rule**: different interaction surfaces may have different UI and lifetimes, but the same low-level behavior must have one implementation and one policy owner.
 
 The normal rule for future changes is simple:
 
@@ -196,7 +196,7 @@ acquire hide lease(s)
 ```
 
 ### `ScreenshotHideCoordinator`
-Reference-counted icon hiding. Never replace this with one boolean because overlapping capture flows must not reveal FloatLens early.
+Reference-counted icon hiding. Never replace this with one boolean because overlapping capture flows must not reveal YFloat early.
 
 ### `CaptureSystemBarsPolicy`
 Single status/navigation capture policy shared by screenshot and Circle.
@@ -248,7 +248,7 @@ Region UI must submit a bitmap to `OcrEngine`; it must not separately maintain O
 
 ## 9. Circle: one OCR-only pipeline
 
-Current Circle is the **FloatLens-native Circle implementation**. Its private source namespace is `FLCircle*`; it is not Google Circle to Search. A future Google CTS integration must live in a separate Google CTS namespace and must not reuse or overload the `FLCircle*` classes.
+Current Circle is the **YFloat-native Circle implementation**. Its private source namespace is `FLCircle*`; it is not Google Circle to Search. A future Google CTS integration must live in a separate Google CTS namespace and must not reuse or overload the `FLCircle*` classes.
 
 Normal Circle is deliberately **OCR-only**. It does not traverse Accessibility Views for text, merge View text into OCR, mask View bounds, or run a parallel TextMap detector pipeline.
 

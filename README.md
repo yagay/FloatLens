@@ -1,12 +1,12 @@
-# FloatLens
+# YFloat
 
-FloatLens 是一个 Android 悬浮取词、View 选择、截图和 OCR 工具。
+YFloat 是一个 Android 悬浮取词、View 选择、截图和 OCR 工具。
 
-项目以普通 Android / Accessibility 能力作为基础路径，并保留可选增强层。没有 Root、没有 LSPosed，或者用户关闭增强模式时，FloatLens 的普通悬浮、Direct View 选择、截图与 OCR 路径仍可工作。
+项目以普通 Android / Accessibility 能力作为基础路径，并保留可选增强层。没有 Root、没有 LSPosed，或者用户关闭增强模式时，YFloat 的普通悬浮、Direct View 选择、截图与 OCR 路径仍可工作。
 
 ## FV 对齐原则
 
-FloatLens 的悬浮图标拖选行为以已经验证的 fooView/FV 运行时行为为参考，而不是凭外观猜测：
+YFloat 的悬浮图标拖选行为以已经验证的 fooView/FV 运行时行为为参考，而不是凭外观猜测：
 
 - 拖动后悬浮图标立即临时跟手，普通松手恢复原位置；
 - 移动探针处于红色 TRACKING；
@@ -15,11 +15,11 @@ FloatLens 的悬浮图标拖选行为以已经验证的 fooView/FV 运行时行�
 - Direct 松手后保留约 5 ms 的执行延迟；
 - 辅助高亮/冻结/轨迹窗口在无障碍宿主可用时优先使用 Accessibility Overlay，同时保持悬浮图标拥有原 MotionEvent 流。
 
-FV 只决定已经实测确认的交互、时序和窗口行为。截图后端、OCR、结果生命周期、Root / LSPosed 权限边界等 FloatLens 自身架构按项目的单一 owner 规则实现。
+FV 只决定已经实测确认的交互、时序和窗口行为。截图后端、OCR、结果生命周期、Root / LSPosed 权限边界等 YFloat 自身架构按项目的单一 owner 规则实现。
 
 ## 圈画识别：单一 OCR-only 主链
 
-当前圈画是 **FloatLens 自研圈画**，内部统一使用 `FLCircle*` 命名；它与 Google Circle to Search 无关。以后如果加入 Google 圈画接管，会使用独立的 Google CTS 命名与调用链，不复用当前 `FLCircle*` 名称。
+当前圈画是 **YFloat 自研圈画**，内部统一使用 `FLCircle*` 命名；它与 Google Circle to Search 无关。以后如果加入 Google 圈画接管，会使用独立的 Google CTS 命名与调用链，不复用当前 `FLCircle*` 名称。
 
 圈画识别只有一条正式主链：
 
@@ -42,13 +42,13 @@ FLCircleController
 
 Direct 仍然可以使用 Accessibility 的真实 `node.getText()`；这是 Direct View 提取功能，与普通 OCR / Circle OCR 路径分开。普通“OCR/提取文字”动作统一进入截图 OCR 区域选择器，不再维护第二套全屏 View picker。显式“区域 View 文字”只存在于区域编辑器，并由 `RegionContentResolver` 负责。
 
-## Google Circle to Search：只 Hook FloatLens 发起的会话
+## Google Circle to Search：只 Hook YFloat 发起的会话
 
-Google CTS 与 `FLCircle*` 完全独立。MiCTS 只作为 **CTS 触发方式** 的参考：FloatLens 在 Google 模式下调用 VoiceInteractionManagerService，并额外写入 `floatlens_trigger=true` 与一次性 `floatlens_session_token`。
+Google CTS 与 `FLCircle*` 完全独立。MiCTS 只作为 **CTS 触发方式** 的参考：YFloat 在 Google 模式下调用 VoiceInteractionManagerService，并额外写入 `yfloat_trigger=true` 与一次性 `yfloat_session_token`。
 
-Google App 侧的 LSPosed Hook 不接管系统 Home / 小白条入口。它同时识别两种 Android CTS 入口：VIS 路径从 `VoiceInteractionSession` 的 show Bundle 读取 FloatLens 标记；CSHelper / Contextual Search 路径从 Google Omnient Activity 的启动 Intent 读取同一标记。只有带 FloatLens 标记的会话才进入 Google CTS 运行时 Inspector；没有标记的 Google 原生会话全部直接放行。
+Google App 侧的 LSPosed Hook 不接管系统 Home / 小白条入口。它同时识别两种 Android CTS 入口：VIS 路径从 `VoiceInteractionSession` 的 show Bundle 读取 YFloat 标记；CSHelper / Contextual Search 路径从 Google Omnient Activity 的启动 Intent 读取同一标记。只有带 YFloat 标记的会话才进入 Google CTS 运行时 Inspector；没有标记的 Google 原生会话全部直接放行。
 
-当前 Inspector 会在一次 FloatLens Google 圈画会话中记录：Google CTS Activity / VoiceInteractionSession 实现类、系统截图回调、Omnient/Lens/Contextual 相关动态类加载、与 selection/query/text/image/region/crop 等相关的 Bundle / Intent 写入，以及搜索 Activity dispatch。它不会在未确认真实 selection → search 边界前做全局拦截。
+当前 Inspector 会在一次 YFloat Google 圈画会话中记录：Google CTS Activity / VoiceInteractionSession 实现类、系统截图回调、Omnient/Lens/Contextual 相关动态类加载、与 selection/query/text/image/region/crop 等相关的 Bundle / Intent 写入，以及搜索 Activity dispatch。它不会在未确认真实 selection → search 边界前做全局拦截。
 
 ## 统一架构原则
 
@@ -74,7 +74,7 @@ Google App 侧的 LSPosed Hook 不接管系统 Home / 小白条入口。它同�
 
 ## Root / LSPosed 增强模式
 
-入口：`FloatLens → 高级 → 高级权限`
+入口：`YFloat → 高级 → 高级权限`
 
 ### Root
 
@@ -97,11 +97,11 @@ com.android.systemui
 
 `staticScope=false`，所以它们只是推荐项，不会锁死用户作用域。
 
-FloatLens 使用 `libxposed-service 102` + Remote Preferences 建立受控 Provider：应用侧写入增强模式、LSPosed Provider 和功能开关，system_server / SystemUI 中的模块运行时只读并监听同一配置。`PrivilegeManager.lsposedProviderAvailable()` 只有在框架服务、Remote Preferences 与实际加载目标都就绪时才返回可用。
+YFloat 使用 `libxposed-service 102` + Remote Preferences 建立受控 Provider：应用侧写入增强模式、LSPosed Provider 和功能开关，system_server / SystemUI 中的模块运行时只读并监听同一配置。`PrivilegeManager.lsposedProviderAvailable()` 只有在框架服务、Remote Preferences 与实际加载目标都就绪时才返回可用。
 
-第一个功能性 LSPosed Provider 是 **安全窗口截图增强**。它只作用于 FloatLens 自己发起的截图流程：截图前写入一个约 3 秒的短时 lease，system_server 截图 Hook 每次执行都实时验证该 lease；截图完成后立即 disarm，异常情况下 lease 也会自动过期。Hook 只调整系统截图捕获参数，并在截图策略检查阶段短时放行，不永久移除窗口的 `FLAG_SECURE` / secure Surface 标记，也不启用 DRM protected-content 捕获。
+第一个功能性 LSPosed Provider 是 **安全窗口截图增强**。它只作用于 YFloat 自己发起的截图流程：截图前写入一个约 3 秒的短时 lease，system_server 截图 Hook 每次执行都实时验证该 lease；截图完成后立即 disarm，异常情况下 lease 也会自动过期。Hook 只调整系统截图捕获参数，并在截图策略检查阶段短时放行，不永久移除窗口的 `FLAG_SECURE` / secure Surface 标记，也不启用 DRM protected-content 捕获。
 
-开启条件：`增强模式 + LSPosed Provider + 截图与 OCR → LSPosed 安全窗口截图增强`，并要求 system_server 已实际加载 FloatLens 模块。该功能优先走 Accessibility 截图路径；关闭任意门控后立即恢复普通行为。
+开启条件：`增强模式 + LSPosed Provider + 截图与 OCR → LSPosed 安全窗口截图增强`，并要求 system_server 已实际加载 YFloat 模块。该功能优先走 Accessibility 截图路径；关闭任意门控后立即恢复普通行为。
 
 之前曾加入的无条件全局 `FLAG_SECURE` / `SurfaceControl.Builder.setSecure(false)` 实现已经删除，不会恢复。原先用于抓取 FV/fooView 运行时行为的固定 FV 作用域、Method Probe、对象快照、Hook 日志回传和 Runtime Inspector ZIP 也不属于正式功能。
 
@@ -109,7 +109,7 @@ FloatLens 使用 `libxposed-service 102` + Remote Preferences 建立受控 Provi
 
 ## OCR 模型
 
-PP-OCRv6 Tiny / Small / Medium 模型与 APK 分离。成功下载后 FloatLens 会生成本地 SHA-256 完整性清单，并在冷加载模型前校验。
+PP-OCRv6 Tiny / Small / Medium 模型与 APK 分离。成功下载后 YFloat 会生成本地 SHA-256 完整性清单，并在冷加载模型前校验。
 
 普通 OCR 与 Circle 共用统一 `OcrDocument` 数据契约：
 

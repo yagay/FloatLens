@@ -5,7 +5,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- FloatLens has an explicit "pick by app" manager which enumerates installed apps, then lets
+    <!-- YFloat has an explicit "pick by app" manager which enumerates installed apps, then lets
          the user inspect/exported standard Intent entry points. Narrow <queries> alone cannot back
          that user-facing all-app picker, so this permission is intentional. -->
     <uses-permission
@@ -32,7 +32,7 @@
         </intent>
     </queries>
 
-    <application android:name=".FloatLensApp" android:theme="@style/Theme.FloatLens" android:label="FloatLens" android:description="@string/app_description" android:allowBackup="false" android:supportsRtl="true" android:usesCleartextTraffic="false">
+    <application android:name=".YFloatApp" android:theme="@style/Theme.YFloat" android:label="YFloat" android:description="@string/app_description" android:allowBackup="false" android:supportsRtl="true" android:usesCleartextTraffic="false">
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -44,14 +44,14 @@
         </provider>
         <activity
             android:name=".ResultActivity"
-            android:theme="@style/Theme.FloatLens.ResultText"
+            android:theme="@style/Theme.YFloat.ResultText"
             android:exported="false"
             android:excludeFromRecents="true"
             android:launchMode="singleTop"
             android:taskAffinity="" />
         <activity
             android:name=".ShadeDismissActivity"
-            android:theme="@style/Theme.FloatLens.ShadeDismiss"
+            android:theme="@style/Theme.YFloat.ShadeDismiss"
             android:exported="false"
             android:excludeFromRecents="true"
             android:noHistory="true"
