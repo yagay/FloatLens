@@ -174,6 +174,11 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
         }
     }
 
+    /** Host-neutral listener handle used by YSuite's process-wide service broker. */
+    static XposedServiceHelper.OnServiceListener hostListener() {
+        return INSTANCE;
+    }
+
     public static Snapshot snapshot() {
         return INSTANCE.snapshot;
     }
@@ -431,105 +436,73 @@ public final class LsposedStatusManager implements XposedServiceHelper.OnService
                                  String detail) {
         try {
             List<String> scope = copyStrings(current.getScope());
-            List<HookedTarget> targets = current.getRunningTargets();
             List<String> running = new ArrayList<>();
             boolean systemLoaded = false;
             boolean systemUiLoaded = false;
-            if (targets != null) {
-                for (HookedTarget target : targets) {
-                    if (target == null) continue;
-                    String process = target.getProcessName();
-                    if (process == null || process.isBlank()) continue;
-
-                    HookedTarget.State state = target.getState();
-                    long loadedVersion = target.getLoadedVersionCode();
-                    boolean hookLoaded = loadedVersion > 0L;
-
-                    running.add(process + "[" + state.name() + " v" + loadedVersion + "]");
-                    // APK version drift is informational only. HookReloadManager decides whether
-                    // the actually loaded hook code changed by comparing hook-only fingerprints.
-                    if (hookLoaded && isSystemProcess(process)) systemLoaded = true;
-                    if (hookLoaded && isSystemUiProcess(process)) systemUiLoaded = true;
+            if (current.getApiVersion() >= 102) {
+                List<HookedTarget> targets = current.getRunningTargets();
+                if (targets != null) {
+                    for (HookedTarget target : targets) {
+                        if (target == null) continue;
+                        String process = target.getProcessName();
+                        long loadedVersion = target.getLoadedVersionCode();
+                        String state = target.getState() == null ? "UNKNOWN" : target.getState().name();
+                        running.add(process + " [" + state + " v" + loadedVersion + "]");
+                        if (loadedVersion == BuildConfig.VERSION_CODE
+                                && "UP_TO_DATE".equals(state)) {
+                            if ("system".equals(process)) systemLoaded = true;
+                            else if ("com.android.systemui".equals(process)) systemUiLoaded = true;
+                        }
+                    }
                 }
             }
-            Collections.sort(running);
             publish(new Snapshot(true,
-                    current.getFrameworkName(),
-                    current.getFrameworkVersion(),
-                    current.getApiVersion(),
-                    scope,
-                    running,
-                    scope.contains("system"),
-                    scope.contains("com.android.systemui"),
-                    systemLoaded,
-                    systemUiLoaded,
-                    remoteConfigReady,
-                    remoteEnhancedMode,
-                    remoteLsposedEnabled,
-                    remoteSecureScreenshotEnabled,
-                    remoteSecureCaptureArmedUntil,
-                    remoteUpdatedAt,
-                    detail));
-        } catch (Throwable t) {
-            publish(new Snapshot(true, "", "", 0,
-                    Collections.emptyList(), Collections.emptyList(),
-                    false, false, false, false,
+                    current.getFrameworkName(), current.getFrameworkVersion(), current.getApiVersion(),
+                    scope, running,
+                    scope.contains("system"), scope.contains("com.android.systemui"),
+                    systemLoaded, systemUiLoaded,
                     remoteConfigReady, remoteEnhancedMode, remoteLsposedEnabled,
-                    remoteSecureScreenshotEnabled, remoteSecureCaptureArmedUntil, remoteUpdatedAt,
-                    detail.isBlank() ? "读取 LSPosed 目标状态失败：" + messageOf(t) : detail));
+                    remoteSecureScreenshotEnabled, remoteSecureCaptureArmedUntil,
+                    remoteUpdatedAt, detail));
+        } catch (Throwable t) {
+            publish(Snapshot.disconnected("读取 LSPosed 状态失败：" + messageOf(t)));
         }
-    }
-
-    private static List<String> copyStrings(List<String> values) {
-        if (values == null || values.isEmpty()) return Collections.emptyList();
-        ArrayList<String> out = new ArrayList<>(values.size());
-        for (String value : values) {
-            if (value != null && !value.isBlank()) out.add(value);
-        }
-        return out;
-    }
-
-    static boolean isSystemProcess(String processName) {
-        return "system_server".equals(processName) || "system".equals(processName);
-    }
-
-    static boolean isSystemUiProcess(String processName) {
-        return "com.android.systemui".equals(processName)
-                || processName.startsWith("com.android.systemui:");
-    }
-
-    private boolean callIoBoolean(Callable<Boolean> operation) {
-        if (operation == null) return false;
-        if (Thread.currentThread() == ioThread) {
-            try { return Boolean.TRUE.equals(operation.call()); }
-            catch (Throwable ignored) { return false; }
-        }
-        try {
-            return Boolean.TRUE.equals(IO.submit(operation).get(2, TimeUnit.SECONDS));
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
-    private static String messageOf(Throwable t) {
-        String message = t.getMessage();
-        return (message == null || message.isBlank()) ? t.getClass().getSimpleName() : message;
-    }
-
-    private static void complete(Consumer<Boolean> callback, boolean value) {
-        if (callback != null) MAIN.post(() -> callback.accept(value));
     }
 
     private void publish(Snapshot next) {
         snapshot = next;
         MAIN.post(() -> {
             for (Listener listener : listeners) {
-                try {
-                    listener.onStatusChanged(next);
-                } catch (Throwable ignored) {
-                    // A detached UI listener must never break the status bridge.
-                }
+                if (listener != null) listener.onStatusChanged(next);
             }
         });
+    }
+
+    private static List<String> copyStrings(List<String> values) {
+        return values == null ? Collections.emptyList() : new ArrayList<>(values);
+    }
+
+    private static boolean callIoBoolean(Callable<Boolean> task) {
+        if (task == null) return false;
+        if (Thread.currentThread() == ioThread) {
+            try { return Boolean.TRUE.equals(task.call()); }
+            catch (Throwable ignored) { return false; }
+        }
+        try {
+            return Boolean.TRUE.equals(IO.submit(task).get(1500, TimeUnit.MILLISECONDS));
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static void complete(Consumer<Boolean> callback, boolean value) {
+        if (callback == null) return;
+        MAIN.post(() -> callback.accept(value));
+    }
+
+    private static String messageOf(Throwable t) {
+        String message = t == null ? null : t.getMessage();
+        return message == null || message.isBlank()
+                ? (t == null ? "unknown" : t.getClass().getSimpleName()) : message;
     }
 }
