@@ -34,6 +34,7 @@ googleHookFiles.add(file('src/main/java/com/yagay/YFloat/CanonicalFramePolicy.ja
 def systemUiHookFiles = new ArrayList<File>(hookCommonFiles)
 def systemServerHookFiles = new ArrayList<File>(hookCommonFiles)
 systemServerHookFiles.add(file('src/main/java/com/yagay/YFloat/hook/SecureScreenshotHook.java'))
+def ppocrProjectPath = providers.gradleProperty('yfloatPpocrProjectPath').getOrElse(':ppocr-sdk')
 
 android {
     namespace 'com.yagay.YFloat'
@@ -65,7 +66,7 @@ dependencies {
     implementation 'com.google.android.material:material:1.13.0'
     implementation 'com.google.mlkit:text-recognition:16.0.1'
     implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
-    implementation project(':ppocr-sdk')
+    implementation project(ppocrProjectPath)
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
     testImplementation 'junit:junit:4.13.2'
 }
