@@ -31,7 +31,7 @@ jobs:
           legacy_d='google-''circle'
           pattern="${legacy_a}|${legacy_b}|${legacy_c}|${legacy_d}"
           if git grep -n -E "$pattern" -- .; then
-            echo "Legacy FloatLens circle namespace found. Use FLCircle / FL_CIRCLE / fl_circle naming."
+            echo "Legacy YFloat circle namespace found. Use FLCircle / FL_CIRCLE / fl_circle naming."
             exit 1
           fi
           echo "Legacy circle namespace scan passed."
@@ -73,6 +73,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: FloatLens-debug
+          name: YFloat-debug
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: ignore
