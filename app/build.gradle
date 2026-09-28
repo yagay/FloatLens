@@ -17,22 +17,22 @@ def yFloatHashFiles = { Collection<File> sourceFiles ->
     return digest.digest().encodeHex().toString()
 }
 
-def hookRoot = file('src/main/java/com/yagay/yfloat/hook')
+def hookRoot = file('src/main/java/com/yagay/YFloat/hook')
 def hookCommonFiles = [
-        file('src/main/java/com/yagay/yfloat/hook/YFloatModule.java'),
-        file('src/main/java/com/yagay/yfloat/hook/LsposedRuntimeProvider.java'),
-        file('src/main/java/com/yagay/yfloat/LsposedRuntimeConfig.java'),
+        file('src/main/java/com/yagay/YFloat/hook/YFloatModule.java'),
+        file('src/main/java/com/yagay/YFloat/hook/LsposedRuntimeProvider.java'),
+        file('src/main/java/com/yagay/YFloat/LsposedRuntimeConfig.java'),
         file('src/main/resources/META-INF/xposed/java_init.list'),
         file('src/main/resources/META-INF/xposed/module.prop'),
         file('src/main/resources/META-INF/xposed/scope.list')
 ]
 def googleHookFiles = new ArrayList<File>(hookCommonFiles)
 googleHookFiles.addAll(fileTree(hookRoot) { include 'Google*.java' }.files)
-googleHookFiles.add(file('src/main/java/com/yagay/yfloat/GoogleCtsContract.java'))
-googleHookFiles.add(file('src/main/java/com/yagay/yfloat/CanonicalFramePolicy.java'))
+googleHookFiles.add(file('src/main/java/com/yagay/YFloat/GoogleCtsContract.java'))
+googleHookFiles.add(file('src/main/java/com/yagay/YFloat/CanonicalFramePolicy.java'))
 def systemUiHookFiles = new ArrayList<File>(hookCommonFiles)
 def systemServerHookFiles = new ArrayList<File>(hookCommonFiles)
-systemServerHookFiles.add(file('src/main/java/com/yagay/yfloat/hook/SecureScreenshotHook.java'))
+systemServerHookFiles.add(file('src/main/java/com/yagay/YFloat/hook/SecureScreenshotHook.java'))
 
 def googleHookFingerprint = yFloatHashFiles(googleHookFiles)
 def systemUiHookFingerprint = yFloatHashFiles(systemUiHookFiles)
