@@ -17,7 +17,7 @@ public final class YFloatSuiteRuntime {
     private YFloatSuiteRuntime() { }
 
     public static synchronized Object get(Context context) {
-        if (initialized) return appContext;
+        if (initialized) return LsposedStatusManager.hostListener();
         Context app = context == null ? null : context.getApplicationContext();
         if (app == null) app = context;
         if (app == null) return null;
@@ -37,6 +37,6 @@ public final class YFloatSuiteRuntime {
             ((Application) app).registerActivityLifecycleCallbacks(callbacks);
         }
         initialized = true;
-        return app;
+        return LsposedStatusManager.hostListener();
     }
 }
