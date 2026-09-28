@@ -35,6 +35,11 @@ public class MainActivity extends AppCompatActivity {
         maybeStartEnabledFloatService();
         refreshStatus();
     };
+    private final Runnable accessibilityStateListener = () -> {
+        if (isFinishing() || isDestroyed()) return;
+        maybeStartEnabledFloatService();
+        refreshStatus();
+    };
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -130,14 +135,15 @@ public class MainActivity extends AppCompatActivity {
 
     @Override protected void onResume() {
         super.onResume();
+        AccessibilityState.addListener(accessibilityStateListener);
         boolean enabled = FloatServiceState.isEnabled(this);
         syncOverlaySwitch(enabled);
         maybeStartEnabledFloatService();
         refreshStatus();
 
-        // AccessibilityManager can report the grant before system_server finishes binding the
-        // service. Refresh a few times so returning from Settings converges without another user
-        // action, especially when YFloat is hosted inside YSuite.
+        // Keep short fallback polling for OEMs whose enabled-service list lags behind Settings,
+        // but the live service callback is now authoritative and refreshes immediately even when
+        // Android binds the service after this window.
         mainHandler.removeCallbacks(delayedAccessibilityRefresh);
         mainHandler.postDelayed(delayedAccessibilityRefresh, 400L);
         mainHandler.postDelayed(delayedAccessibilityRefresh, 1400L);
@@ -145,6 +151,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override protected void onPause() {
+        AccessibilityState.removeListener(accessibilityStateListener);
         mainHandler.removeCallbacks(delayedAccessibilityRefresh);
         super.onPause();
     }
