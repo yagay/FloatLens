@@ -15,7 +15,7 @@
     </queries>
     <application>
         <provider android:name="com.yagay.YFloat.YFloatSuiteFileProvider" android:authorities="${applicationId}.fileprovider" android:exported="false" android:grantUriPermissions="true">
-            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/share_paths" />
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/yfloat_share_paths" />
         </provider>
         <activity android:name="com.yagay.YFloat.ResultActivity" android:theme="@style/Theme.YFloat.ResultText" android:exported="false" android:excludeFromRecents="true" android:launchMode="singleTop" android:taskAffinity="" />
         <activity android:name="com.yagay.YFloat.ShadeDismissActivity" android:theme="@style/Theme.YFloat.ShadeDismiss" android:exported="false" android:excludeFromRecents="true" android:noHistory="true" android:taskAffinity="" />
