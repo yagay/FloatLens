@@ -1,5 +1,3 @@
 <resources>
-    <string name="app_name">YFloat</string>
-    <string name="accessibility_desc">YFloat uses Accessibility only for system gestures and screen capture actions explicitly triggered by the user.</string>
-    <string name="app_description">YFloat floating OCR, View selection and screenshot tool.</string>
+    <string name="yfloat_accessibility_desc">YFloat uses Accessibility only for system gestures and screen capture actions explicitly triggered by the user.</string>
 </resources>
