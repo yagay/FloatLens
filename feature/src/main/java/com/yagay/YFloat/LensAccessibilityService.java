@@ -43,6 +43,7 @@ public class LensAccessibilityService extends AccessibilityService {
     @Override protected void onServiceConnected() {
         super.onServiceConnected();
         s = this;
+        AccessibilityState.notifyServiceStateChanged();
         try {
             AccessibilityServiceInfo info = getServiceInfo();
             if (info != null) {
@@ -67,12 +68,23 @@ public class LensAccessibilityService extends AccessibilityService {
         OverlayRegistry.onAccessibilityHostChanged(true);
     }
 
+    @Override public boolean onUnbind(Intent intent) {
+        FloatService service = FloatService.get();
+        if (service != null) service.onAccessibilityOverlayHostChanged(false);
+        OverlayRegistry.onAccessibilityHostChanged(false);
+        FlSystemPanelController.onAccessibilityDisconnected(this);
+        if (s == this) s = null;
+        AccessibilityState.notifyServiceStateChanged();
+        return super.onUnbind(intent);
+    }
+
     @Override public void onDestroy() {
         FloatService service = FloatService.get();
         if (service != null) service.onAccessibilityOverlayHostChanged(false);
         OverlayRegistry.onAccessibilityHostChanged(false);
         FlSystemPanelController.onAccessibilityDisconnected(this);
         if (s == this) s = null;
+        AccessibilityState.notifyServiceStateChanged();
         super.onDestroy();
     }
 
@@ -120,7 +132,6 @@ public class LensAccessibilityService extends AccessibilityService {
 
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
         try {
-            // Navigation detection is deliberately evaluated before the environment throttle.
             if (isSystemNavigationEvent(event)) {
                 String pkg = eventPackage(event);
                 String cls = eventClass(event);
@@ -130,8 +141,6 @@ public class LensAccessibilityService extends AccessibilityService {
                 } else {
                     DiagnosticLog.i(this, "CIRCLE_SELECT",
                             "system navigation event pkg=" + pkg + " cls=" + cls);
-                    // Native Home/gesture navigation always wins ownership. Drop any stale
-                    // YFloat-marked Google session synchronously before ContextualSearch starts.
                     new FloatSettings(this).clearGoogleCtsSession();
                     boolean remoteCleared = LsposedStatusManager.clearGoogleCtsSessionRemoteNow();
                     DiagnosticLog.i(this, "GOOGLE_CTS_NATIVE_RELEASE",
@@ -150,10 +159,6 @@ public class LensAccessibilityService extends AccessibilityService {
             }
             boolean topChanged = !top.equals(oldTop);
 
-            // A pending YFloat confirm is an app-owned accessibility overlay. If the user
-            // leaves Google Lens for any other app without pressing 完成, the Google process may
-            // never emit our bridge END event. Tear down the app-side session on the package
-            // transition instead of letting the button survive on the next screen.
             if (topChanged
                     && WorkflowSessionManager.googleCtsInFlight()
                     && GoogleCtsContract.GOOGLE_PACKAGE.equals(oldTop)
@@ -211,10 +216,6 @@ public class LensAccessibilityService extends AccessibilityService {
         int type = event.getEventType();
         if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
                 && type != AccessibilityEvent.TYPE_WINDOWS_CHANGED) return false;
-
-        // Only trust the event's own identity. TYPE_WINDOWS_CHANGED frequently arrives with no
-        // package/class while Google CTS is opening; inferring from getWindows() at that instant can
-        // still see Launcher as active and wrongly revoke a freshly armed YFloat session.
         String pkg = eventPackage(event);
         if (pkg == null || pkg.isBlank() || getPackageName().equals(pkg)) return false;
         String cls = eventClass(event);
