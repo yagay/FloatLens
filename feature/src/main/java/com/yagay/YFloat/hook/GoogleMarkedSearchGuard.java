@@ -26,6 +26,8 @@ import io.github.libxposed.api.XposedModule;
 final class GoogleMarkedSearchGuard {
     private static final String TAG = "YFloat-GoogleCTS";
     private static final String SHOW_SESSION_ID = "android.service.voice.SHOW_SESSION_ID";
+    private static final String OMNIENT_HANDLER =
+            "com.google.android.apps.search.omnient.host.invocation.OmnientInvocationHandler";
     private static final String LENS_CONTROLLER = GoogleLens1758Profile.CONTROLLER;
     private static final String PENDING_QUERY = GoogleLens1758Profile.PENDING_QUERY;
     private static final String QUERY_RESULT = GoogleLens1758Profile.QUERY_RESULT;
@@ -47,6 +49,7 @@ final class GoogleMarkedSearchGuard {
     int install() {
         int hooks = 0;
         hooks += hookVoiceSessionOwnership();
+        hooks += hookOmnientOwnership();
         hooks += hookLensQueryPipeline();
         hooks += hookSearchIntentFallback();
         module.log(Log.INFO, TAG, "Google marked search guard hooks=" + hooks);
@@ -65,11 +68,8 @@ final class GoogleMarkedSearchGuard {
                     module.hook(method).intercept(chain -> {
                         Bundle args = (Bundle) chain.getArg(0);
                         if (provider.isActive() && GoogleCtsContract.isYFloatSession(args)) {
-                            markedToken = args.getString(GoogleCtsContract.K_SESSION_TOKEN, "");
-                            showSessionId = args.getInt(SHOW_SESSION_ID, -1);
-                            module.log(Log.INFO, TAG,
-                                    "GOOGLE_SEARCH_GUARD_ARM session=" + shortToken(markedToken)
-                                            + " showId=" + showSessionId);
+                            arm(args.getString(GoogleCtsContract.K_SESSION_TOKEN, ""),
+                                    args.getInt(SHOW_SESSION_ID, -1), "VIS_MARKER");
                         } else if (!markedToken.isBlank()) {
                             int nextId = args == null ? -1 : args.getInt(SHOW_SESSION_ID, -1);
                             if (nextId >= 0 && showSessionId >= 0 && nextId != showSessionId) {
@@ -94,6 +94,56 @@ final class GoogleMarkedSearchGuard {
             module.log(Log.WARN, TAG, "Google search guard VIS hook unavailable", t);
             return 0;
         }
+    }
+
+    /**
+     * The Google :googleapp process receives the same YFloat session through Omnient rather than
+     * VoiceInteractionSession.doShow. Query/result handling lives in this process, so the guard
+     * must correlate the marker here as well.
+     */
+    private int hookOmnientOwnership() {
+        try {
+            Class<?> cls = Class.forName(OMNIENT_HANDLER, false, classLoader);
+            int count = 0;
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(cls)) {
+                if (!(executable instanceof Method method)) continue;
+                Class<?>[] p = method.getParameterTypes();
+                if (p.length != 3) continue;
+
+                if (p[1] == Bundle.class) {
+                    module.hook(method).intercept(chain -> {
+                        Bundle args = (Bundle) chain.getArg(1);
+                        correlate(args, "OMNIENT_VIS");
+                        return chain.proceed();
+                    });
+                    count++;
+                } else if (p[1] == Intent.class) {
+                    module.hook(method).intercept(chain -> {
+                        Intent intent = (Intent) chain.getArg(1);
+                        correlate(intent == null ? null : intent.getExtras(),
+                                "OMNIENT_CONTEXTUAL");
+                        return chain.proceed();
+                    });
+                    count++;
+                }
+            }
+            return count;
+        } catch (Throwable t) {
+            module.log(Log.WARN, TAG, "Google search guard Omnient hook unavailable", t);
+            return 0;
+        }
+    }
+
+    private void correlate(Bundle extras, String path) {
+        if (!provider.isActive()) return;
+        if (GoogleCtsContract.isYFloatSession(extras)) {
+            arm(extras.getString(GoogleCtsContract.K_SESSION_TOKEN, ""), showSessionId,
+                    path + "_MARKER");
+            return;
+        }
+        if (active()) return;
+        String token = provider.googleCtsArmedToken(extras);
+        if (!token.isBlank()) arm(token, showSessionId, path + "_ARMED_FALLBACK");
     }
 
     private int hookLensQueryPipeline() {
@@ -204,6 +254,16 @@ final class GoogleMarkedSearchGuard {
             module.log(Log.WARN, TAG, "Google search intent fallback unavailable", t);
             return 0;
         }
+    }
+
+    private void arm(String token, int id, String path) {
+        if (token == null || token.isBlank()) return;
+        markedToken = token;
+        if (id >= 0) showSessionId = id;
+        module.log(Log.INFO, TAG,
+                "GOOGLE_SEARCH_GUARD_ARM session=" + shortToken(token)
+                        + " showId=" + showSessionId
+                        + " path=" + path);
     }
 
     private boolean active() {
