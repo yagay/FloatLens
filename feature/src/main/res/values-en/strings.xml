@@ -1,0 +1,4 @@
+<resources>
+    <string name="yfloat_accessibility_service_label">YFloat text recognition &amp; system actions</string>
+    <string name="yfloat_accessibility_desc">Used for YFloat view recognition, system gestures, and user-triggered accessibility screenshots. In YSuite, enable the YFloat service rather than the YNotify accessibility service.</string>
+</resources>
