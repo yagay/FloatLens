@@ -7,7 +7,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
-/** Installs YFloat' app-wide text menu. Result popup geometry belongs only to the dialog host. */
+/** Installs YFloat's app-wide text menu. Ordinary window/inset handling is owned by shared YUI. */
 public final class YFloatApp extends Application implements Application.ActivityLifecycleCallbacks {
     @Override public void onCreate() {
         super.onCreate();
@@ -16,13 +16,9 @@ public final class YFloatApp extends Application implements Application.Activity
 
     @Override public void onActivityResumed(Activity activity) {
         ThemeSettings.applySystemBars(activity);
-        AppSystemBarInsets.install(activity);
         install(activity);
         View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
-        if (decor != null) decor.post(() -> {
-            AppSystemBarInsets.install(activity);
-            install(activity);
-        });
+        if (decor != null) decor.post(() -> install(activity));
     }
 
     private void install(Activity activity) {
@@ -77,7 +73,6 @@ public final class YFloatApp extends Application implements Application.Activity
 
     @Override public void onActivityCreated(Activity activity, Bundle state) {
         ThemeSettings.applySystemBars(activity);
-        AppSystemBarInsets.install(activity);
     }
     @Override public void onActivityStarted(Activity activity) { }
     @Override public void onActivityStopped(Activity activity) { }
