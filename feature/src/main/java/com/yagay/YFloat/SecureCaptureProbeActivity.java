@@ -13,9 +13,10 @@ import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.google.android.material.button.MaterialButton;
+import com.yagay.yui.YUiWindowOptOut;
 
 /** End-to-end FLAG_SECURE probe for the controlled LSPosed screenshot provider. */
-public final class SecureCaptureProbeActivity extends AppCompatActivity {
+public final class SecureCaptureProbeActivity extends AppCompatActivity implements YUiWindowOptOut {
     private static final long STATUS_REFRESH_TIMEOUT_MS = 1_500L;
 
     private final Handler main = new Handler(Looper.getMainLooper());
