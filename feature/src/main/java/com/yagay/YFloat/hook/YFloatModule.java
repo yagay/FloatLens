@@ -56,6 +56,10 @@ public final class YFloatModule extends XposedModule {
             // must never fall through into Google's full search-result presentation.
             new GoogleMarkedSearchGuard(this, provider, param.getClassLoader()).install();
             new GoogleCtsRuntimeInspector(this, provider, param.getClassLoader()).install();
+            // Google 17.60 can expose the final dufy payload only after dsxb.y returns. The rescue
+            // layer publishes the later live word state and ends the session only when the real
+            // LensientActivity is destroyed, so transient Launcher windows remain harmless.
+            new Google1760SelectionRescueHook(this, provider, param.getClassLoader()).install();
             googleCtsInspectorInstalled = true;
             log(Log.INFO, TAG, "Google CTS marked-session inspector installed");
         } catch (Throwable t) {
