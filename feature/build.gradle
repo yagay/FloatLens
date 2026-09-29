@@ -43,8 +43,6 @@ android {
 
     defaultConfig {
         minSdk 31
-        // LSPosed reports the versionCode of the containing module APK. Use YSuite's host code
-        // only for embedded builds while preserving YFloat's standalone versioning.
         buildConfigField 'int', 'VERSION_CODE', runtimeVersionCode
         buildConfigField 'String', 'VERSION_NAME', '"3.1.39"'
         buildConfigField 'String', 'GOOGLE_HOOK_FINGERPRINT', '"' + yFloatHashFiles(googleHookFiles) + '"'
@@ -60,7 +58,12 @@ android {
     }
 }
 
+configurations.all {
+    resolutionStrategy.cacheChangingModulesFor 0, 'seconds'
+}
+
 dependencies {
+    implementation 'com.github.yagay.YSuite:ui:main-SNAPSHOT'
     compileOnly 'io.github.libxposed:api:102.0.0'
     implementation 'io.github.libxposed:service:102.0.0'
     implementation 'org.lsposed.hiddenapibypass:hiddenapibypass:6.1'
