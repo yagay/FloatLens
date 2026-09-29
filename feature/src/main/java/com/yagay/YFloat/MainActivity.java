@@ -76,9 +76,9 @@ public class MainActivity extends AppCompatActivity {
 
         boolean suiteHost = "com.yagay.YSuite".equals(getPackageName());
         accessibilityPermission = permissionRow(
-                suiteHost ? "YFloat 无障碍服务" : "无障碍服务",
+                suiteHost ? "YSuite 统一无障碍" : "无障碍服务",
                 suiteHost
-                        ? "请开启“YFloat 文字识别与系统操作”，不要误选 YNotify"
+                        ? "YFloat 与 YNotify 共用；只需开启一次即可提供识别、截图和界面事件能力"
                         : "View 识别、系统动作和无障碍截图",
                 this::openAccessibilitySettings);
         AppUi.addRow(permissions.body, accessibilityPermission.view);
@@ -154,7 +154,12 @@ public class MainActivity extends AppCompatActivity {
                 String message;
                 if (snapshot.sameHostOtherAccessibilityEnabled
                         && "com.yagay.YSuite".equals(getPackageName())) {
-                    message = "你开启的是 YSuite 的其他无障碍服务；请开启“YFloat 文字识别与系统操作”";
+                    message = "检测到旧版 YSuite 分模块无障碍授权；请改为开启“YSuite 统一无障碍”";
+                } else if (snapshot.otherYFloatEnabled
+                        && "com.yagay.YSuite".equals(getPackageName())) {
+                    message = "独立版 YFloat 已开启，但 YSuite 统一无障碍仍未开启";
+                } else if ("com.yagay.YSuite".equals(getPackageName())) {
+                    message = "YSuite 统一无障碍仍未开启";
                 } else if (snapshot.otherYFloatEnabled) {
                     message = "另一版本 YFloat 已开启，但当前版本仍未开启";
                 } else {
@@ -198,11 +203,14 @@ public class MainActivity extends AppCompatActivity {
             AccessibilityState.Snapshot a11y = AccessibilityState.snapshot(this);
             if (!overlayGranted && !a11y.hostEnabled) {
                 String message;
-                if (a11y.otherYFloatEnabled && "com.yagay.YSuite".equals(getPackageName())) {
-                    message = "系统开启的是独立版 YFloat；请开启 YSuite 的“YFloat 文字识别与系统操作”";
-                } else if (a11y.sameHostOtherAccessibilityEnabled
+                if (a11y.sameHostOtherAccessibilityEnabled
                         && "com.yagay.YSuite".equals(getPackageName())) {
-                    message = "YSuite 已开启的是其他无障碍服务；请开启“YFloat 文字识别与系统操作”";
+                    message = "检测到旧版 YSuite 无障碍授权；请迁移到“YSuite 统一无障碍”";
+                } else if (a11y.otherYFloatEnabled
+                        && "com.yagay.YSuite".equals(getPackageName())) {
+                    message = "独立版 YFloat 已开启；YSuite 请改为开启统一无障碍";
+                } else if ("com.yagay.YSuite".equals(getPackageName())) {
+                    message = "请先授予悬浮窗权限或开启 YSuite 统一无障碍";
                 } else {
                     message = "请先授予悬浮窗权限或开启当前 YFloat 无障碍服务";
                 }
@@ -309,9 +317,8 @@ public class MainActivity extends AppCompatActivity {
         row.status.setTextColor(snapshot.hostEnabled ? AppUi.success(this) : AppUi.warning(this));
         if (snapshot.hostEnabled) {
             row.button.setText("设置");
-        } else if (snapshot.sameHostOtherAccessibilityEnabled
-                && "com.yagay.YSuite".equals(getPackageName())) {
-            row.button.setText("开启 YFloat");
+        } else if ("com.yagay.YSuite".equals(getPackageName())) {
+            row.button.setText("开启 YSuite");
         } else {
             row.button.setText("授权");
         }
