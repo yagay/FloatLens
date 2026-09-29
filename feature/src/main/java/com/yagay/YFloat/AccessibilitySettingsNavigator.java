@@ -6,7 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.provider.Settings;
 
-/** Opens the exact YFloat accessibility service entry when the system Settings app supports it. */
+/** Opens the exact accessibility service entry that owns this host. */
 final class AccessibilitySettingsNavigator {
     private static final String ACTION_ACCESSIBILITY_DETAILS_SETTINGS =
             "android.settings.ACCESSIBILITY_DETAILS_SETTINGS";
@@ -14,7 +14,7 @@ final class AccessibilitySettingsNavigator {
     private AccessibilitySettingsNavigator() {}
 
     static ComponentName expectedComponent(Context context) {
-        return new ComponentName(context.getPackageName(), LensAccessibilityService.class.getName());
+        return AccessibilityState.expectedComponent(context);
     }
 
     static boolean open(Context context) {
