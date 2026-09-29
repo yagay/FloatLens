@@ -45,6 +45,9 @@ final class GoogleSelectionAdapter {
     }
 
     static Binding resolve(ClassLoader loader) {
+        Binding profile1760 = resolve1760(loader);
+        if (profile1760.available()) return profile1760;
+
         String profileError = GoogleLens1758Profile.selectionValidationError(loader);
         if (profileError.isBlank()) {
             try {
@@ -53,7 +56,7 @@ final class GoogleSelectionAdapter {
                 for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
                     if (executable instanceof Method method
                             && GoogleLens1758Profile.isSelectionMethod(method)) {
-                        return new ExactBinding(method, "exact", 100,
+                        return new ExactBinding(method, "exact-1758", 100,
                                 "profile=" + GoogleLens1758Profile.NAME);
                     }
                 }
@@ -63,21 +66,38 @@ final class GoogleSelectionAdapter {
             }
         }
 
-        // Google 17.58 point releases can rename the obfuscated controller method while retaining
-        // the SelectionMetadata + boolean -> void ABI. Prefer that narrow profile-local fallback
-        // before a 14k-class structural scan. It is much safer than guessing by method name and it
-        // preserves the existing exact metadata decoder.
         Binding renamedProfile = resolveRenamedProfileSelection(loader, profileError);
         if (renamedProfile.available()) return renamedProfile;
 
         GoogleLensDynamicResolver.SelectionBinding dynamic =
                 GoogleLensDynamicResolver.discoverSelection(loader);
         if (!dynamic.available()) {
-            return new MissingBinding("profile=" + profileError
+            return new MissingBinding("profile1760=" + profile1760.detail()
+                    + "; profile1758=" + profileError
                     + "; renamedProfile=" + renamedProfile.detail()
                     + "; dynamic=" + dynamic.detail());
         }
-        return new DynamicBinding(dynamic, profileError);
+        return new DynamicBinding(dynamic,
+                "1760=" + profile1760.detail() + "; 1758=" + profileError);
+    }
+
+    private static Binding resolve1760(ClassLoader loader) {
+        String error = GoogleLens1760Profile.validationError(loader);
+        if (!error.isBlank()) return new MissingBinding(error);
+        try {
+            Class<?> controller = Class.forName(GoogleLens1760Profile.CONTROLLER, false, loader);
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
+                if (executable instanceof Method method
+                        && GoogleLens1760Profile.isSelectionMethod(method)) {
+                    return new Profile1760Binding(method,
+                            "profile=" + GoogleLens1760Profile.NAME);
+                }
+            }
+            return new MissingBinding("validated 17.60 selection method missing");
+        } catch (Throwable t) {
+            return new MissingBinding("17.60 lookup=" + t.getClass().getSimpleName()
+                    + ":" + String.valueOf(t.getMessage()));
+        }
     }
 
     private static Binding resolveRenamedProfileSelection(ClassLoader loader, String profileError) {
@@ -88,14 +108,14 @@ final class GoogleSelectionAdapter {
             for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
                 if (!(executable instanceof Method method)) continue;
                 if (!isKnownProfileSelectionSignature(method)) continue;
-                return new ExactBinding(method, "profile-signature", 98,
+                return new ExactBinding(method, "profile-signature-1758", 98,
                         "profile=" + GoogleLens1758Profile.NAME
                                 + " renamedMethod=" + method.getName()
                                 + " previousValidation=" + safe(profileError));
             }
-            return new MissingBinding("known controller has no SelectionMetadata,boolean->void method");
+            return new MissingBinding("known 17.58 controller has no SelectionMetadata,boolean->void method");
         } catch (Throwable t) {
-            return new MissingBinding("known profile signature lookup failed="
+            return new MissingBinding("known 17.58 profile signature lookup failed="
                     + t.getClass().getSimpleName() + ":" + String.valueOf(t.getMessage()));
         }
     }
@@ -106,6 +126,31 @@ final class GoogleSelectionAdapter {
         return params.length == 2
                 && GoogleLens1758Profile.SELECTION_METADATA.equals(params[0].getName())
                 && params[1] == boolean.class;
+    }
+
+    private static final class Profile1760Binding implements Binding {
+        private final Method method;
+        private final String detail;
+
+        Profile1760Binding(Method method, String detail) {
+            this.method = method;
+            this.detail = detail == null ? "" : detail;
+            try { if (method != null) method.setAccessible(true); } catch (Throwable ignored) { }
+        }
+
+        @Override public boolean available() { return method != null; }
+        @Override public Method method() { return method; }
+        @Override public String detail() { return detail; }
+        @Override public String source() { return "exact-1760"; }
+        @Override public int confidence() { return 100; }
+
+        @Override public Snapshot snapshot(Object metadata, Context context) {
+            GoogleLens1760Profile.SelectionSnapshot selected =
+                    GoogleLens1760Profile.selection(metadata, context);
+            Rect bounds = selected.bounds();
+            return new Snapshot(selected.text(), bounds, selected.selectionClass(),
+                    selected.detail() + " adapter=exact-1760", false);
+        }
     }
 
     private static final class ExactBinding implements Binding {
@@ -161,8 +206,6 @@ final class GoogleSelectionAdapter {
             Rect bounds = dynamicBounds(selected.rawBounds(), context);
             String detail = selected.detail() + " resolver=" + binding.detail()
                     + " adapter=dynamic";
-            // Structural discovery may select text immediately, but region auto-commit remains
-            // exact-profile-only until the new Google version has been runtime validated.
             return new Snapshot(selected.text(), bounds, selected.selectionClass(),
                     detail, false);
         }
