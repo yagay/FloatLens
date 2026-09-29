@@ -6,6 +6,7 @@ import android.content.SharedPreferences;
 public final class LsposedRuntimeConfig {
     public static final String GROUP = "yfloat_runtime";
     public static final String K_SCHEMA_VERSION = "schema_version";
+    public static final String K_HOST_PACKAGE = "host_package";
     public static final String K_ENHANCED_MODE = "enhanced_mode";
     public static final String K_LSPOSED_ENABLED = "lsposed_enabled";
     public static final String K_SECURE_SCREENSHOT_ENABLED = "secure_screenshot_enabled";
