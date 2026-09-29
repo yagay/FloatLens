@@ -5,6 +5,7 @@ import android.content.Context;
 
 /** One app-side initializer shared by standalone YFloat and YSuite. */
 public final class YFloatSuiteRuntime {
+    private static final String SUITE_PACKAGE = "com.yagay.YSuite";
     private static boolean initialized;
     private static YFloatApp callbacks;
     private static Context appContext;
@@ -33,7 +34,14 @@ public final class YFloatSuiteRuntime {
         // processes start sending YFloat events. Standalone builds simply skip this extra listener.
         YFloatHostIdentity.initialize(app);
         LsposedStatusManager.initialize(app);
-        LsposedStatusManager.addListener(HOOK_LISTENER, true);
+        // Standalone YFloat still owns its own target-process hot reload. Embedded YFloat is a pure
+        // plugin: YSuite detects stale module generations after package replacement and performs the
+        // process reload centrally through SuiteProcessManager.
+        if (!SUITE_PACKAGE.equals(app.getPackageName())) {
+            LsposedStatusManager.addListener(HOOK_LISTENER, true);
+        } else {
+            DiagnosticLog.i(app, "HOOK_RELOAD", "YSuite host owns automatic Hook target reload");
+        }
 
         if (app instanceof Application) {
             callbacks = app instanceof YFloatApp ? (YFloatApp) app : new YFloatApp();
