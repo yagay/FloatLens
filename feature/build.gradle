@@ -35,7 +35,7 @@ def systemUiHookFiles = new ArrayList<File>(hookCommonFiles)
 def systemServerHookFiles = new ArrayList<File>(hookCommonFiles)
 systemServerHookFiles.add(file('src/main/java/com/yagay/YFloat/hook/SecureScreenshotHook.java'))
 def ppocrProjectPath = providers.gradleProperty('yfloatPpocrProjectPath').getOrElse(':ppocr-sdk')
-def runtimeVersionCode = providers.gradleProperty('ySuiteHostVersionCode').getOrElse('190')
+def runtimeVersionCode = providers.gradleProperty('ySuiteHostVersionCode').getOrElse('191')
 
 android {
     namespace 'com.yagay.YFloat'
@@ -46,7 +46,7 @@ android {
         // LSPosed reports the versionCode of the containing module APK. Use YSuite's host code
         // only for embedded builds while preserving YFloat's standalone versioning.
         buildConfigField 'int', 'VERSION_CODE', runtimeVersionCode
-        buildConfigField 'String', 'VERSION_NAME', '"3.1.38"'
+        buildConfigField 'String', 'VERSION_NAME', '"3.1.39"'
         buildConfigField 'String', 'GOOGLE_HOOK_FINGERPRINT', '"' + yFloatHashFiles(googleHookFiles) + '"'
         buildConfigField 'String', 'SYSTEMUI_HOOK_FINGERPRINT', '"' + yFloatHashFiles(systemUiHookFiles) + '"'
         buildConfigField 'String', 'SYSTEM_SERVER_HOOK_FINGERPRINT', '"' + yFloatHashFiles(systemServerHookFiles) + '"'
