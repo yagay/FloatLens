@@ -1,8 +1,5 @@
 <resources>
-    <style name="Theme.YFloat" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <item name="android:fontFamily">sans</item>
-        <item name="android:windowLightStatusBar">true</item>
-    </style>
+    <style name="Theme.YFloat" parent="Theme.YUI" />
 
     <!-- Transparent Activity host only; the visible result card belongs to ResultDialog. -->
     <style name="Theme.YFloat.ResultText" parent="Theme.MaterialComponents.DayNight.NoActionBar">
