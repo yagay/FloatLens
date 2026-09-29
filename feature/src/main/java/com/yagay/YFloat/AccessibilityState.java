@@ -26,23 +26,29 @@ public final class AccessibilityState {
         public final boolean hostEnabled;
         public final boolean connected;
         public final boolean otherYFloatEnabled;
+        public final boolean sameHostOtherAccessibilityEnabled;
         public final String expectedComponent;
         public final String enabledComponents;
+        public final String sameHostOtherComponents;
         public final String secureRaw;
 
         Snapshot(
                 boolean hostEnabled,
                 boolean connected,
                 boolean otherYFloatEnabled,
+                boolean sameHostOtherAccessibilityEnabled,
                 String expectedComponent,
                 String enabledComponents,
+                String sameHostOtherComponents,
                 String secureRaw
         ) {
             this.hostEnabled = hostEnabled;
             this.connected = connected;
             this.otherYFloatEnabled = otherYFloatEnabled;
+            this.sameHostOtherAccessibilityEnabled = sameHostOtherAccessibilityEnabled;
             this.expectedComponent = expectedComponent;
             this.enabledComponents = enabledComponents;
+            this.sameHostOtherComponents = sameHostOtherComponents;
             this.secureRaw = secureRaw;
         }
 
@@ -51,9 +57,14 @@ public final class AccessibilityState {
             if (hostEnabled) return "已授权 · 等待连接";
             if (otherYFloatEnabled && context != null
                     && "com.yagay.YSuite".equals(context.getPackageName())) {
-                return "独立版已授权 · YSuite 未授权";
+                return "独立版 YFloat 已开启 · YSuite 版未开启";
             }
-            if (otherYFloatEnabled) return "其他宿主已授权 · 当前未授权";
+            if (otherYFloatEnabled) return "其他宿主 YFloat 已开启 · 当前版未开启";
+            if (sameHostOtherAccessibilityEnabled && context != null
+                    && "com.yagay.YSuite".equals(context.getPackageName())) {
+                return "YSuite 其他无障碍已开启 · YFloat 未开启";
+            }
+            if (sameHostOtherAccessibilityEnabled) return "同一宿主其他无障碍已开启 · YFloat 未开启";
             return "未授权";
         }
     }
@@ -61,7 +72,8 @@ public final class AccessibilityState {
     /** Full status snapshot. The current APK package is always authoritative. */
     public static Snapshot snapshot(Context context) {
         if (context == null) {
-            return new Snapshot(false, LensAccessibilityService.ready(), false, "", "", "");
+            return new Snapshot(false, LensAccessibilityService.ready(), false, false,
+                    "", "", "", "");
         }
 
         Context app = context.getApplicationContext();
@@ -70,7 +82,9 @@ public final class AccessibilityState {
         boolean connected = LensAccessibilityService.ready();
         boolean hostEnabled = connected;
         boolean otherYFloatEnabled = false;
+        boolean sameHostOtherAccessibilityEnabled = false;
         Set<String> enabledComponents = new LinkedHashSet<>();
+        Set<String> sameHostOtherComponents = new LinkedHashSet<>();
 
         // Primary path. Do not gate this on manager.isEnabled(): some OEM builds lag that flag
         // while already returning the concrete enabled services.
@@ -87,8 +101,15 @@ public final class AccessibilityState {
                         ComponentName byId = componentFromFlat(info.getId());
                         if (byId != null) {
                             enabledComponents.add(byId.flattenToString());
-                            if (sameComponent(expected, byId)) hostEnabled = true;
-                            else if (isYFloatService(byId)) otherYFloatEnabled = true;
+                            if (sameComponent(expected, byId)) {
+                                hostEnabled = true;
+                            } else {
+                                if (isYFloatService(byId)) otherYFloatEnabled = true;
+                                if (isSameHostOther(expected, byId)) {
+                                    sameHostOtherAccessibilityEnabled = true;
+                                    sameHostOtherComponents.add(byId.flattenToString());
+                                }
+                            }
                         }
 
                         ResolveInfo resolve = info.getResolveInfo();
@@ -98,8 +119,15 @@ public final class AccessibilityState {
                             if (pkg != null && cls != null) {
                                 ComponentName actual = new ComponentName(pkg, cls);
                                 enabledComponents.add(actual.flattenToString());
-                                if (sameComponent(expected, actual)) hostEnabled = true;
-                                else if (isYFloatService(actual)) otherYFloatEnabled = true;
+                                if (sameComponent(expected, actual)) {
+                                    hostEnabled = true;
+                                } else {
+                                    if (isYFloatService(actual)) otherYFloatEnabled = true;
+                                    if (isSameHostOther(expected, actual)) {
+                                        sameHostOtherAccessibilityEnabled = true;
+                                        sameHostOtherComponents.add(actual.flattenToString());
+                                    }
+                                }
                             }
                         }
                     }
@@ -117,8 +145,15 @@ public final class AccessibilityState {
                     ComponentName actual = componentFromFlat(entry);
                     if (actual == null) continue;
                     enabledComponents.add(actual.flattenToString());
-                    if (sameComponent(expected, actual)) hostEnabled = true;
-                    else if (isYFloatService(actual)) otherYFloatEnabled = true;
+                    if (sameComponent(expected, actual)) {
+                        hostEnabled = true;
+                    } else {
+                        if (isYFloatService(actual)) otherYFloatEnabled = true;
+                        if (isSameHostOther(expected, actual)) {
+                            sameHostOtherAccessibilityEnabled = true;
+                            sameHostOtherComponents.add(actual.flattenToString());
+                        }
+                    }
                 }
             }
         } catch (Throwable ignored) { }
@@ -127,8 +162,10 @@ public final class AccessibilityState {
                 hostEnabled,
                 connected,
                 otherYFloatEnabled,
+                sameHostOtherAccessibilityEnabled,
                 expected.flattenToString(),
                 String.join(",", enabledComponents),
+                String.join(",", sameHostOtherComponents),
                 secureRaw
         );
         logSnapshotIfChanged(app, result);
@@ -189,6 +226,12 @@ public final class AccessibilityState {
                         b.getPackageName(), b.getClassName()));
     }
 
+    private static boolean isSameHostOther(ComponentName expected, ComponentName actual) {
+        return expected != null && actual != null
+                && expected.getPackageName().equals(actual.getPackageName())
+                && !sameComponent(expected, actual);
+    }
+
     private static boolean isYFloatService(ComponentName component) {
         return component != null
                 && LensAccessibilityService.class.getName().equals(
@@ -201,6 +244,8 @@ public final class AccessibilityState {
                 + " hostEnabled=" + snapshot.hostEnabled
                 + " connected=" + snapshot.connected
                 + " otherYFloat=" + snapshot.otherYFloatEnabled
+                + " sameHostOther=" + snapshot.sameHostOtherAccessibilityEnabled
+                + " peers=[" + snapshot.sameHostOtherComponents + "]"
                 + " enabled=[" + snapshot.enabledComponents + "]"
                 + " secure=[" + snapshot.secureRaw + "]";
         if (summary.equals(lastLoggedSummary)) return;
