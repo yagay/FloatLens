@@ -58,12 +58,10 @@ android {
     }
 }
 
-configurations.all {
-    resolutionStrategy.cacheChangingModulesFor 0, 'seconds'
-}
-
 dependencies {
-    implementation 'com.github.yagay.YSuite:ui:main-SNAPSHOT'
+    implementation('com.github.yagay.YSuite:ui') {
+        version { branch = 'main' }
+    }
     compileOnly 'io.github.libxposed:api:102.0.0'
     implementation 'io.github.libxposed:service:102.0.0'
     implementation 'org.lsposed.hiddenapibypass:hiddenapibypass:6.1'
