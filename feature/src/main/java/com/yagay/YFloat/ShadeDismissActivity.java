@@ -11,6 +11,8 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 
+import com.yagay.yui.YUiWindowOptOut;
+
 /**
  * FL transient Activity used to assist notification-shade dismissal on modern Android.
  *
@@ -19,7 +21,7 @@ import android.view.WindowManager;
  * This Activity is intentionally empty/translucent and exists only as a compatibility fallback after
  * GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE failed and the shade is still confirmed expanded.
  */
-public final class ShadeDismissActivity extends Activity {
+public final class ShadeDismissActivity extends Activity implements YUiWindowOptOut {
     private static final String EXTRA_REASON = "shade_reason";
     private static final long FL_FINISH_DELAY_MS = 300L;
     private final Handler main = new Handler(Looper.getMainLooper());
