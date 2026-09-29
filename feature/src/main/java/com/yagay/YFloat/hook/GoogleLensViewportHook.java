@@ -59,13 +59,30 @@ final class GoogleLensViewportHook {
 
     static Binding resolve(ClassLoader loader) {
         if (loader == null) return new Binding(null, null, null, 0, "none", "classLoader=null");
+        Binding v1760 = resolveProfile(loader,
+                GoogleLens1760Profile.VIEWPORT_CONTROLLER,
+                GoogleLens1760Profile.VIEWPORT_REQUEST,
+                GoogleLens1760Profile.VIEWPORT_STATE,
+                "profile-viewport-1760");
+        if (v1760.available()) return v1760;
+
+        Binding v1758 = resolveProfile(loader,
+                GoogleLens1758Profile.VIEWPORT_CONTROLLER,
+                GoogleLens1758Profile.VIEWPORT_REQUEST,
+                GoogleLens1758Profile.VIEWPORT_STATE,
+                "profile-viewport-1758");
+        if (v1758.available()) return v1758;
+
+        return new Binding(null, null, null, 0, "none",
+                "1760=" + v1760.detail + "; 1758=" + v1758.detail);
+    }
+
+    private static Binding resolveProfile(ClassLoader loader, String controllerName,
+                                          String requestName, String stateName, String source) {
         try {
-            Class<?> controller = Class.forName(
-                    GoogleLens1758Profile.VIEWPORT_CONTROLLER, false, loader);
-            Class<?> request = Class.forName(
-                    GoogleLens1758Profile.VIEWPORT_REQUEST, false, loader);
-            Class<?> state = Class.forName(
-                    GoogleLens1758Profile.VIEWPORT_STATE, false, loader);
+            Class<?> controller = Class.forName(controllerName, false, loader);
+            Class<?> request = Class.forName(requestName, false, loader);
+            Class<?> state = Class.forName(stateName, false, loader);
             boolean focus = false;
             boolean viewport = false;
             for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
@@ -79,12 +96,18 @@ final class GoogleLensViewportHook {
                         && method.getReturnType() == void.class;
             }
             int confidence = focus && viewport ? 100 : (focus || viewport ? 55 : 0);
-            return new Binding(controller, request, state, confidence,
-                    "profile-viewport",
+            if (confidence == 0) {
+                return new Binding(null, null, null, 0, source,
+                        "methods mismatch controller=" + controllerName
+                                + " focus=" + focus + " viewport=" + viewport);
+            }
+            return new Binding(controller, request, state, confidence, source,
                     "focus=" + focus + " viewport=" + viewport
-                            + " controller=" + controller.getName());
+                            + " controller=" + controller.getName()
+                            + " request=" + request.getName()
+                            + " state=" + state.getName());
         } catch (Throwable t) {
-            return new Binding(null, null, null, 0, "none",
+            return new Binding(null, null, null, 0, source,
                     "resolve=" + t.getClass().getSimpleName()
                             + ":" + String.valueOf(t.getMessage()));
         }
@@ -121,6 +144,7 @@ final class GoogleLensViewportHook {
             Class<?> controller = binding.controller;
             Class<?> requestClass = binding.requestClass;
             Class<?> stateClass = binding.stateClass;
+            String controllerName = controller.getName();
             int count = 0;
 
             for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
@@ -143,14 +167,15 @@ final class GoogleLensViewportHook {
                         int source = rawSource instanceof Integer value ? value : -1;
 
                         if (!active.getAsBoolean()
-                                || !GoogleLens1758Profile.shouldSuppressTextViewportFocus(
-                                        request == null ? "" : request.getClass().getName(),
-                                        source, hasBounds)) {
+                                || request == null
+                                || request.getClass() != requestClass
+                                || source != 1
+                                || !hasBounds) {
                             return chain.proceed();
                         }
 
                         reporter.accept("GOOGLE_FROZEN_IMAGE_TEXT_FOCUS_SUPPRESSED_EARLY",
-                                "controller=duec.r source=" + source
+                                "controller=" + controllerName + ".r source=" + source
                                         + " selectionSeen=" + selectionSeen.getAsBoolean()
                                         + " bounds=" + focusBounds
                                         + " request=" + compact(request, 360));
@@ -173,35 +198,26 @@ final class GoogleLensViewportHook {
                         boolean regionActive = regionSelectionActive.getAsBoolean();
                         boolean fullScreenReady = frozenImageReadyForViewportLock();
                         reporter.accept("GOOGLE_FROZEN_IMAGE_VIEWPORT_STATE_PATH",
-                                "controller=duec.n selectionSeen=" + selectionSeen.getAsBoolean()
+                                "controller=" + controllerName + ".n selectionSeen="
+                                        + selectionSeen.getAsBoolean()
                                         + " regionActive=" + regionActive
                                         + " fullScreenReady=" + fullScreenReady
                                         + " state=" + compact(state, 420));
-                        reportTransform("beforeDuecN");
+                        reportTransform("beforeViewportN");
 
-                        // v186 showed a race that the region-only guard cannot catch: duec.n can
-                        // update Lens' internal viewport after FrozenImageView is already full-screen
-                        // but before the first selection callback marks regionSelectionActive=true.
-                        // The outer View still reports scale=1/translation=0, so a pre-draw transform
-                        // guard alone cannot detect or undo that internal viewport shrink.
-                        //
-                        // Allow only the very early setup calls while FrozenImageView has no usable
-                        // full-screen geometry yet. Once the marked YFloat session owns a real
-                        // screen-sized frozen frame, lock duec.n for the remainder of the session.
-                        // This also covers later region/object calls without waiting for selection.
                         if (shouldSuppressViewportState(true, regionActive, fullScreenReady)) {
                             reporter.accept("GOOGLE_FROZEN_IMAGE_REGION_VIEWPORT_SUPPRESSED",
-                                    "controller=duec.n reason="
+                                    "controller=" + controllerName + ".n reason="
                                             + (regionActive ? "region_selection" : "session_fullscreen_ready")
                                             + " state=" + compact(state, 420));
                             normalizeFrozenImageTransform(regionActive
-                                    ? "regionDuecNSuppressed" : "sessionDuecNSuppressed");
+                                    ? "regionViewportSuppressed" : "sessionViewportSuppressed");
                             ensureRegionTransformGuard();
                             return null;
                         }
 
                         Object result = chain.proceed();
-                        main.postDelayed(() -> reportTransform("afterDuecN120ms"), 120L);
+                        main.postDelayed(() -> reportTransform("afterViewportN120ms"), 120L);
                         return result;
                     });
                     count++;
