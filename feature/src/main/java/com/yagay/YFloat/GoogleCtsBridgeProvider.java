@@ -27,8 +27,11 @@ import java.util.concurrent.Executors;
  *
  * <p>The random YFloat CTS session token is the capability. No bitmap is placed in an Intent,
  * so full-resolution screenshots do not hit Binder's transaction-size limit.</p>
+ *
+ * <p>The class is intentionally non-final so the combined YSuite APK can register a host-owned
+ * provider subclass while reusing this plugin implementation unchanged.</p>
  */
-public final class GoogleCtsBridgeProvider extends ContentProvider {
+public class GoogleCtsBridgeProvider extends ContentProvider {
     private static final long MAX_FRAME_BYTES = 64L * 1024L * 1024L;
     private static final Map<String, SharedFrame> SHARED_FRAMES = new ConcurrentHashMap<>();
     private static final ExecutorService IO = Executors.newCachedThreadPool(r -> {
@@ -229,7 +232,7 @@ public final class GoogleCtsBridgeProvider extends ContentProvider {
             bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
             bitmap.copyPixelsFromBuffer(pixels);
             GoogleCtsBridgeController.onFrame(context, token, bitmap);
-            bitmap = null; // ownership transferred
+            bitmap = null;
             DiagnosticLog.i(context, "GOOGLE_BRIDGE",
                     "frame received session=" + shortToken(token)
                             + " size=" + width + "x" + height);
