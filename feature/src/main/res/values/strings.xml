@@ -1,3 +1,4 @@
 <resources>
-    <string name="yfloat_accessibility_desc">YFloat uses Accessibility only for system gestures and screen capture actions explicitly triggered by the user.</string>
+    <string name="yfloat_accessibility_service_label">YFloat 文字识别与系统操作</string>
+    <string name="yfloat_accessibility_desc">用于 YFloat 的 View 识别、系统手势和由用户主动触发的无障碍截图。YSuite 中请确认开启的是 YFloat，而不是 YNotify 的无障碍服务。</string>
 </resources>
