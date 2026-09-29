@@ -141,9 +141,6 @@ public class MainActivity extends AppCompatActivity {
         maybeStartEnabledFloatService();
         refreshStatus();
 
-        // Keep short fallback polling for OEMs whose enabled-service list lags behind Settings,
-        // but the live service callback is now authoritative and refreshes immediately even when
-        // Android binds the service after this window.
         mainHandler.removeCallbacks(delayedAccessibilityRefresh);
         mainHandler.postDelayed(delayedAccessibilityRefresh, 400L);
         mainHandler.postDelayed(delayedAccessibilityRefresh, 1400L);
@@ -167,19 +164,19 @@ public class MainActivity extends AppCompatActivity {
         if (syncingOverlaySwitch) return;
         if (checked) {
             boolean overlayGranted = Settings.canDrawOverlays(this);
-            boolean accessibilityEnabled = AccessibilityState.enabled(this);
-            boolean accessibilityConnected = AccessibilityState.connected();
-            if (!overlayGranted && !accessibilityEnabled) {
-                Toast.makeText(this,
-                        "请先授予悬浮窗权限或开启 YFloat 无障碍服务",
-                        Toast.LENGTH_LONG).show();
+            AccessibilityState.Snapshot a11y = AccessibilityState.snapshot(this);
+            if (!overlayGranted && !a11y.hostEnabled) {
+                String message = a11y.otherYFloatEnabled && "com.yagay.YSuite".equals(getPackageName())
+                        ? "系统开启的是独立版 YFloat 无障碍，请同时开启 YSuite 的 YFloat 无障碍服务"
+                        : "请先授予悬浮窗权限或开启当前 YFloat 无障碍服务";
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show();
                 FloatServiceState.setEnabled(this, false);
                 syncOverlaySwitch(false);
                 refreshStatus();
                 return;
             }
 
-            if (!overlayGranted && accessibilityEnabled && !accessibilityConnected) {
+            if (!overlayGranted && a11y.hostEnabled && !a11y.connected) {
                 FloatServiceState.setEnabled(this, true);
                 syncOverlaySwitch(true);
                 Toast.makeText(this,
@@ -205,15 +202,13 @@ public class MainActivity extends AppCompatActivity {
 
     private void refreshStatus() {
         boolean overlayGranted = Settings.canDrawOverlays(this);
-        boolean accessibilityEnabled = AccessibilityState.enabled(this);
-        boolean accessibilityConnected = AccessibilityState.connected();
+        AccessibilityState.Snapshot a11y = AccessibilityState.snapshot(this);
         boolean notificationsGranted = Build.VERSION.SDK_INT < 33
                 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 == PackageManager.PERMISSION_GRANTED;
 
         updatePermission(overlayPermission, overlayGranted);
-        updateAccessibilityPermission(accessibilityPermission,
-                accessibilityEnabled, accessibilityConnected);
+        updateAccessibilityPermission(accessibilityPermission, a11y);
         if (notificationPermission != null) updatePermission(notificationPermission, notificationsGranted);
 
         boolean enabled = FloatServiceState.isEnabled(this);
@@ -222,7 +217,7 @@ public class MainActivity extends AppCompatActivity {
             setServiceStatus("已停止", false);
         } else if (running) {
             setServiceStatus("正在运行", true);
-        } else if (accessibilityEnabled && !accessibilityConnected && !overlayGranted) {
+        } else if (a11y.hostEnabled && !a11y.connected && !overlayGranted) {
             setServiceStatus("等待无障碍连接", false);
         } else {
             setServiceStatus("等待恢复", false);
@@ -266,15 +261,12 @@ public class MainActivity extends AppCompatActivity {
 
     private void updateAccessibilityPermission(
             PermissionRow row,
-            boolean enabled,
-            boolean connected
+            AccessibilityState.Snapshot snapshot
     ) {
-        if (row == null) return;
-        row.status.setText(connected
-                ? "已授权 · 已连接"
-                : enabled ? "已授权 · 等待连接" : "未授权");
-        row.status.setTextColor(enabled ? AppUi.success(this) : AppUi.warning(this));
-        row.button.setText(enabled ? "设置" : "授权");
+        if (row == null || snapshot == null) return;
+        row.status.setText(snapshot.statusLabel(this));
+        row.status.setTextColor(snapshot.hostEnabled ? AppUi.success(this) : AppUi.warning(this));
+        row.button.setText(snapshot.hostEnabled ? "设置" : "授权");
     }
 
     private void handleNotificationPermission() {
