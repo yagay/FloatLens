@@ -2,6 +2,7 @@ package com.yagay.YFloat.hook;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.net.Uri;
@@ -11,6 +12,7 @@ import android.os.SharedMemory;
 import android.util.Log;
 
 import com.yagay.YFloat.GoogleCtsContract;
+import com.yagay.YFloat.LsposedRuntimeConfig;
 
 import java.io.FileOutputStream;
 import java.nio.ByteBuffer;
@@ -25,6 +27,9 @@ import io.github.libxposed.api.XposedModule;
 /** Owns all Google-process -> YFloat bridge transport and frame backpressure. */
 final class GoogleBridgeSender {
     private static final String TAG = "YFloat-GoogleCTS";
+    private static final String STANDALONE_PACKAGE = "com.yagay.YFloat";
+    private static final String SUITE_PACKAGE = "com.yagay.YSuite";
+    private static final String SUITE_RECEIVER = "com.yagay.YSuite.ipc.SuiteBridgeReceiver";
 
     private final XposedModule module;
     private final Supplier<Context> contextSupplier;
@@ -68,8 +73,9 @@ final class GoogleBridgeSender {
         try {
             Context context = contextSupplier.get();
             if (context == null) return;
+            String host = hostPackage();
             Intent intent = new Intent(GoogleCtsContract.ACTION_TRACE)
-                    .setClassName("com.yagay.YFloat", GoogleCtsContract.TRACE_RECEIVER_CLASS)
+                    .setClassName(host, receiverClass(host, GoogleCtsContract.TRACE_RECEIVER_CLASS))
                     .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
                     .putExtra(GoogleCtsContract.EXTRA_TRACE_SESSION, token)
                     .putExtra(GoogleCtsContract.EXTRA_TRACE_LINE,
@@ -88,8 +94,9 @@ final class GoogleBridgeSender {
         try {
             Context context = contextSupplier.get();
             if (context == null) return false;
+            String host = hostPackage();
             Intent intent = new Intent(GoogleCtsContract.ACTION_BRIDGE)
-                    .setClassName("com.yagay.YFloat", GoogleCtsContract.BRIDGE_RECEIVER_CLASS)
+                    .setClassName(host, receiverClass(host, GoogleCtsContract.BRIDGE_RECEIVER_CLASS))
                     .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
                     .putExtra(GoogleCtsContract.EXTRA_BRIDGE_SESSION, token)
                     .putExtra(GoogleCtsContract.EXTRA_BRIDGE_EVENT, event);
@@ -177,7 +184,7 @@ final class GoogleBridgeSender {
             request.putInt(GoogleCtsContract.EXTRA_FRAME_HEIGHT, height);
             request.putInt(GoogleCtsContract.EXTRA_FRAME_BYTES, bytes);
             Bundle response = context.getContentResolver().call(
-                    GoogleCtsContract.bridgeBaseUri(),
+                    bridgeBaseUri(),
                     GoogleCtsContract.METHOD_ALLOCATE_SHARED_FRAME,
                     null,
                     request);
@@ -223,7 +230,7 @@ final class GoogleBridgeSender {
             Bundle request = new Bundle();
             request.putString(GoogleCtsContract.EXTRA_BRIDGE_SESSION, token);
             context.getContentResolver().call(
-                    GoogleCtsContract.bridgeBaseUri(),
+                    bridgeBaseUri(),
                     GoogleCtsContract.METHOD_RELEASE_SHARED_FRAME,
                     null,
                     request);
@@ -240,7 +247,7 @@ final class GoogleBridgeSender {
             ByteBuffer source = pixels.duplicate();
             source.position(pixels.position());
             source.limit(pixels.limit());
-            Uri uri = GoogleCtsContract.bridgeFrameUri(token, width, height, bytes);
+            Uri uri = bridgeFrameUri(token, width, height, bytes);
             ParcelFileDescriptor descriptor =
                     context.getContentResolver().openFileDescriptor(uri, "w");
             if (descriptor == null) throw new IllegalStateException("bridge pipe unavailable");
@@ -262,6 +269,35 @@ final class GoogleBridgeSender {
     private String token() {
         String value = tokenSupplier.get();
         return value == null ? "" : value;
+    }
+
+    private String hostPackage() {
+        try {
+            SharedPreferences prefs = module.getRemotePreferences(LsposedRuntimeConfig.GROUP);
+            String value = prefs == null ? null : prefs.getString(
+                    LsposedRuntimeConfig.K_HOST_PACKAGE, STANDALONE_PACKAGE);
+            return value == null || value.isBlank() ? STANDALONE_PACKAGE : value;
+        } catch (Throwable ignored) {
+            return STANDALONE_PACKAGE;
+        }
+    }
+
+    private static String receiverClass(String host, String standaloneReceiver) {
+        return SUITE_PACKAGE.equals(host) ? SUITE_RECEIVER : standaloneReceiver;
+    }
+
+    private Uri bridgeBaseUri() {
+        return Uri.parse("content://" + hostPackage() + ".googlebridge");
+    }
+
+    private Uri bridgeFrameUri(String token, int width, int height, int bytes) {
+        return bridgeBaseUri().buildUpon()
+                .appendPath("frame")
+                .appendQueryParameter("token", token == null ? "" : token)
+                .appendQueryParameter("width", Integer.toString(width))
+                .appendQueryParameter("height", Integer.toString(height))
+                .appendQueryParameter("bytes", Integer.toString(bytes))
+                .build();
     }
 
     private static String shortToken(String token) {
