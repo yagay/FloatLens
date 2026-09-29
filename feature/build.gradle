@@ -63,7 +63,7 @@ configurations.all {
 }
 
 dependencies {
-    implementation 'com.github.yagay.YSuite:ui:main-SNAPSHOT'
+    implementation 'com.github.yagay:YSuite:main-SNAPSHOT'
     compileOnly 'io.github.libxposed:api:102.0.0'
     implementation 'io.github.libxposed:service:102.0.0'
     implementation 'org.lsposed.hiddenapibypass:hiddenapibypass:6.1'
