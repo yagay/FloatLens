@@ -51,6 +51,10 @@ public final class YFloatModule extends XposedModule {
         LsposedRuntimeProvider provider = runtimeProvider;
         if (provider == null) return;
         try {
+            // Keep result/search isolation independent from the fragile obfuscated selection
+            // adapter. If Google renames the selection callback, a YFloat-marked session still
+            // must never fall through into Google's full search-result presentation.
+            new GoogleMarkedSearchGuard(this, provider, param.getClassLoader()).install();
             new GoogleCtsRuntimeInspector(this, provider, param.getClassLoader()).install();
             googleCtsInspectorInstalled = true;
             log(Log.INFO, TAG, "Google CTS marked-session inspector installed");
