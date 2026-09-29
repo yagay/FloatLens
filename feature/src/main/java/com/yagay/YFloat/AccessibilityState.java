@@ -18,6 +18,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public final class AccessibilityState {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final CopyOnWriteArrayList<Runnable> LISTENERS = new CopyOnWriteArrayList<>();
+    private static final String SUITE_PACKAGE = "com.yagay.YSuite";
+    private static final String SUITE_ACCESSIBILITY_CLASS =
+            "com.yagay.YSuite.accessibility.SuiteAccessibilityService";
     private static volatile String lastLoggedSummary = "";
 
     private AccessibilityState() {}
@@ -55,18 +58,26 @@ public final class AccessibilityState {
         public String statusLabel(Context context) {
             if (connected) return "已授权 · 已连接";
             if (hostEnabled) return "已授权 · 等待连接";
+            if (context != null && SUITE_PACKAGE.equals(context.getPackageName())
+                    && sameHostOtherAccessibilityEnabled) {
+                return "旧版 YSuite 无障碍仍开启 · 请迁移到统一无障碍";
+            }
             if (otherYFloatEnabled && context != null
-                    && "com.yagay.YSuite".equals(context.getPackageName())) {
-                return "独立版 YFloat 已开启 · YSuite 版未开启";
+                    && SUITE_PACKAGE.equals(context.getPackageName())) {
+                return "独立版 YFloat 已开启 · YSuite 统一无障碍未开启";
             }
             if (otherYFloatEnabled) return "其他宿主 YFloat 已开启 · 当前版未开启";
-            if (sameHostOtherAccessibilityEnabled && context != null
-                    && "com.yagay.YSuite".equals(context.getPackageName())) {
-                return "YSuite 其他无障碍已开启 · YFloat 未开启";
-            }
-            if (sameHostOtherAccessibilityEnabled) return "同一宿主其他无障碍已开启 · YFloat 未开启";
+            if (sameHostOtherAccessibilityEnabled) return "同一宿主其他无障碍已开启 · 当前未授权";
             return "未授权";
         }
+    }
+
+    /** Component that owns accessibility for this host. YSuite uses one shared service. */
+    public static ComponentName expectedComponent(Context context) {
+        if (context != null && SUITE_PACKAGE.equals(context.getPackageName())) {
+            return new ComponentName(SUITE_PACKAGE, SUITE_ACCESSIBILITY_CLASS);
+        }
+        return new ComponentName(context, LensAccessibilityService.class);
     }
 
     /** Full status snapshot. The current APK package is always authoritative. */
@@ -78,7 +89,7 @@ public final class AccessibilityState {
 
         Context app = context.getApplicationContext();
         if (app == null) app = context;
-        ComponentName expected = new ComponentName(app, LensAccessibilityService.class);
+        ComponentName expected = expectedComponent(app);
         boolean connected = LensAccessibilityService.ready();
         boolean hostEnabled = connected;
         boolean otherYFloatEnabled = false;
@@ -104,7 +115,7 @@ public final class AccessibilityState {
                             if (sameComponent(expected, byId)) {
                                 hostEnabled = true;
                             } else {
-                                if (isYFloatService(byId)) otherYFloatEnabled = true;
+                                if (isOtherHostYFloatService(expected, byId)) otherYFloatEnabled = true;
                                 if (isSameHostOther(expected, byId)) {
                                     sameHostOtherAccessibilityEnabled = true;
                                     sameHostOtherComponents.add(byId.flattenToString());
@@ -122,7 +133,7 @@ public final class AccessibilityState {
                                 if (sameComponent(expected, actual)) {
                                     hostEnabled = true;
                                 } else {
-                                    if (isYFloatService(actual)) otherYFloatEnabled = true;
+                                    if (isOtherHostYFloatService(expected, actual)) otherYFloatEnabled = true;
                                     if (isSameHostOther(expected, actual)) {
                                         sameHostOtherAccessibilityEnabled = true;
                                         sameHostOtherComponents.add(actual.flattenToString());
@@ -148,7 +159,7 @@ public final class AccessibilityState {
                     if (sameComponent(expected, actual)) {
                         hostEnabled = true;
                     } else {
-                        if (isYFloatService(actual)) otherYFloatEnabled = true;
+                        if (isOtherHostYFloatService(expected, actual)) otherYFloatEnabled = true;
                         if (isSameHostOther(expected, actual)) {
                             sameHostOtherAccessibilityEnabled = true;
                             sameHostOtherComponents.add(actual.flattenToString());
@@ -232,10 +243,11 @@ public final class AccessibilityState {
                 && !sameComponent(expected, actual);
     }
 
-    private static boolean isYFloatService(ComponentName component) {
-        return component != null
+    private static boolean isOtherHostYFloatService(ComponentName expected, ComponentName actual) {
+        return expected != null && actual != null
+                && !expected.getPackageName().equals(actual.getPackageName())
                 && LensAccessibilityService.class.getName().equals(
-                        normalizeClassName(component.getPackageName(), component.getClassName()));
+                        normalizeClassName(actual.getPackageName(), actual.getClassName()));
     }
 
     private static void logSnapshotIfChanged(Context context, Snapshot snapshot) {
