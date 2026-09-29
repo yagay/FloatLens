@@ -14,29 +14,34 @@ import java.lang.reflect.Method;
 
 import io.github.libxposed.api.XposedModule;
 
-/**
- * Last-resort search/result guard for a YFloat-owned Google Circle-to-Search session.
- *
- * <p>This guard intentionally does not depend on the selection adapter. Google may rename the
- * selection callback while keeping the query/result value objects stable. In that situation YFloat
- * must fail closed: never turn a YFloat-marked selection into Google's full search-result panel.
- * Native Home/gesture Circle-to-Search is untouched because the guard is armed only by YFloat's
- * explicit session marker and continuously re-validates the token against Remote Preferences.</p>
- */
+/** Last-resort search/result guard for a YFloat-owned Google Circle-to-Search session. */
 final class GoogleMarkedSearchGuard {
     private static final String TAG = "YFloat-GoogleCTS";
     private static final String SHOW_SESSION_ID = "android.service.voice.SHOW_SESSION_ID";
     private static final String OMNIENT_HANDLER =
             "com.google.android.apps.search.omnient.host.invocation.OmnientInvocationHandler";
-    private static final String LENS_CONTROLLER = GoogleLens1758Profile.CONTROLLER;
-    private static final String PENDING_QUERY = GoogleLens1758Profile.PENDING_QUERY;
-    private static final String QUERY_RESULT = GoogleLens1758Profile.QUERY_RESULT;
 
     private final XposedModule module;
     private final LsposedRuntimeProvider provider;
     private final ClassLoader classLoader;
     private volatile String markedToken = "";
     private volatile int showSessionId = -1;
+
+    private static final class Pipeline {
+        final String profile;
+        final String controller;
+        final String pending;
+        final String result;
+        final boolean v1760;
+
+        Pipeline(String profile, String controller, String pending, String result, boolean v1760) {
+            this.profile = profile;
+            this.controller = controller;
+            this.pending = pending;
+            this.result = result;
+            this.v1760 = v1760;
+        }
+    }
 
     GoogleMarkedSearchGuard(XposedModule module,
                             LsposedRuntimeProvider provider,
@@ -81,9 +86,16 @@ final class GoogleMarkedSearchGuard {
                     count++;
                 } else if ("doHide".equals(method.getName())
                         && method.getParameterCount() == 0) {
+                    // Google may hide the VIS immediately before dispatching the Lens result/search
+                    // transition. Do not drop YFloat ownership here; Remote Preferences/token
+                    // expiry, a new unmarked session, or the app-side bridge owns final cleanup.
                     module.hook(method).intercept(chain -> {
                         Object result = chain.proceed();
-                        if (!markedToken.isBlank()) clear("voice_session_hide");
+                        if (!markedToken.isBlank()) {
+                            module.log(Log.INFO, TAG,
+                                    "GOOGLE_SEARCH_GUARD_KEEP session="
+                                            + shortToken(markedToken) + " reason=voice_session_hide");
+                        }
                         return result;
                     });
                     count++;
@@ -96,11 +108,6 @@ final class GoogleMarkedSearchGuard {
         }
     }
 
-    /**
-     * The Google :googleapp process receives the same YFloat session through Omnient rather than
-     * VoiceInteractionSession.doShow. Query/result handling lives in this process, so the guard
-     * must correlate the marker here as well.
-     */
     private int hookOmnientOwnership() {
         try {
             Class<?> cls = Class.forName(OMNIENT_HANDLER, false, classLoader);
@@ -147,58 +154,82 @@ final class GoogleMarkedSearchGuard {
     }
 
     private int hookLensQueryPipeline() {
+        Pipeline pipeline = resolvePipeline();
+        if (pipeline == null) {
+            module.log(Log.WARN, TAG,
+                    "Google marked search guard found no supported Lens query pipeline");
+            return 0;
+        }
         try {
-            Class<?> controller = Class.forName(LENS_CONTROLLER, false, classLoader);
+            Class<?> controller = Class.forName(pipeline.controller, false, classLoader);
             int count = 0;
             for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
                 if (!(executable instanceof Method method)) continue;
                 Class<?>[] p = method.getParameterTypes();
                 if (p.length != 1) continue;
 
-                if (PENDING_QUERY.equals(p[0].getName())) {
+                if (pipeline.pending.equals(p[0].getName())) {
                     module.hook(method).intercept(chain -> {
                         if (active()) {
                             Object pending = chain.getArg(0);
-                            GoogleLens1758Profile.PresentationRequestSuppression suppression =
-                                    GoogleLens1758Profile.suppressSelectionPresentationRequest(pending);
-                            GoogleLens1758Profile.PendingSnapshot snapshot =
-                                    GoogleLens1758Profile.pending(pending);
-                            module.log(Log.INFO, TAG,
-                                    "GOOGLE_SEARCH_REQUEST_SUPPRESS session="
-                                            + shortToken(markedToken)
-                                            + " method=" + method.getName()
-                                            + " suppressed=" + suppression.suppressed()
-                                            + " detail=" + safe(suppression.detail())
-                                            + " pending=" + safe(snapshot.detail()));
+                            if (pipeline.v1760) {
+                                module.log(Log.INFO, TAG,
+                                        "GOOGLE_SEARCH_REQUEST_GUARD session="
+                                                + shortToken(markedToken)
+                                                + " profile=" + pipeline.profile
+                                                + " method=" + method.getName()
+                                                + " pending=" + className(pending));
+                            } else {
+                                GoogleLens1758Profile.PresentationRequestSuppression suppression =
+                                        GoogleLens1758Profile
+                                                .suppressSelectionPresentationRequest(pending);
+                                GoogleLens1758Profile.PendingSnapshot snapshot =
+                                        GoogleLens1758Profile.pending(pending);
+                                module.log(Log.INFO, TAG,
+                                        "GOOGLE_SEARCH_REQUEST_SUPPRESS session="
+                                                + shortToken(markedToken)
+                                                + " profile=" + pipeline.profile
+                                                + " method=" + method.getName()
+                                                + " suppressed=" + suppression.suppressed()
+                                                + " detail=" + safe(suppression.detail())
+                                                + " pending=" + safe(snapshot.detail()));
+                            }
                         }
-                        // Keep the query pipeline alive. We only remove the request for Google's
-                        // rendered result panel so native selection/geometry can continue working.
                         return chain.proceed();
                     });
                     count++;
                     continue;
                 }
 
-                if (QUERY_RESULT.equals(p[0].getName())
+                if (pipeline.result.equals(p[0].getName())
                         && method.getReturnType() == void.class) {
                     module.hook(method).intercept(chain -> {
                         if (!active()) return chain.proceed();
-
                         Object rawResult = chain.getArg(0);
+
+                        if (pipeline.v1760) {
+                            GoogleLens1760Profile.ResultSnapshot snapshot =
+                                    GoogleLens1760Profile.result(rawResult);
+                            if (!snapshot.presentationPresent()) return chain.proceed();
+                            module.log(Log.INFO, TAG,
+                                    "GOOGLE_SEARCH_SUPPRESS session=" + shortToken(markedToken)
+                                            + " profile=" + pipeline.profile
+                                            + " method=" + method.getName()
+                                            + " reason=presentation_result"
+                                            + " complete=" + snapshot.complete()
+                                            + " detail=" + safe(snapshot.detail()));
+                            return null;
+                        }
+
                         GoogleLens1758Profile.ResultSnapshot snapshot =
                                 GoogleLens1758Profile.result(rawResult);
                         GoogleLens1758Profile.NativePresentationSuppression nativeSuppression =
                                 GoogleLens1758Profile
                                         .suppressNativeRenderedPresentationFromQueryResult(rawResult);
-
-                        if (!snapshot.presentationPresent()) {
-                            // Image/OCR/intermediate result: let Google update the frozen selection
-                            // surface. Only the final presentation-result boundary is forbidden.
-                            return chain.proceed();
-                        }
-
+                        if (!snapshot.presentationPresent()) return chain.proceed();
                         module.log(Log.INFO, TAG,
                                 "GOOGLE_SEARCH_SUPPRESS session=" + shortToken(markedToken)
+                                        + " profile=" + pipeline.profile
                                         + " method=" + method.getName()
                                         + " reason=presentation_result"
                                         + " complete=" + snapshot.complete()
@@ -206,24 +237,46 @@ final class GoogleMarkedSearchGuard {
                                         + " nativeRemoved=" + nativeSuppression.removedCount()
                                         + " nativeSuppressed=" + nativeSuppression.suppressed()
                                         + " detail=" + safe(snapshot.detail()));
-
-                        // Fail closed for a YFloat-owned session. Even when the selection adapter
-                        // cannot decode this Google build, never allow the Google results panel to
-                        // replace the selection surface.
                         return null;
                     });
                     count++;
                 }
             }
-            if (count == 0) {
-                module.log(Log.WARN, TAG,
-                        "Google marked search guard found no Lens query/result methods");
-            }
+            module.log(Log.INFO, TAG,
+                    "Google marked search pipeline profile=" + pipeline.profile
+                            + " controller=" + pipeline.controller + " hooks=" + count);
             return count;
         } catch (Throwable t) {
             module.log(Log.WARN, TAG, "Google Lens query search guard unavailable", t);
             return 0;
         }
+    }
+
+    private Pipeline resolvePipeline() {
+        if (hasClass(GoogleLens1760Profile.CONTROLLER)
+                && hasClass(GoogleLens1760Profile.PENDING_QUERY)
+                && hasClass(GoogleLens1760Profile.QUERY_RESULT)) {
+            return new Pipeline(GoogleLens1760Profile.NAME,
+                    GoogleLens1760Profile.CONTROLLER,
+                    GoogleLens1760Profile.PENDING_QUERY,
+                    GoogleLens1760Profile.QUERY_RESULT, true);
+        }
+        if (hasClass(GoogleLens1758Profile.CONTROLLER)
+                && hasClass(GoogleLens1758Profile.PENDING_QUERY)
+                && hasClass(GoogleLens1758Profile.QUERY_RESULT)) {
+            return new Pipeline(GoogleLens1758Profile.NAME,
+                    GoogleLens1758Profile.CONTROLLER,
+                    GoogleLens1758Profile.PENDING_QUERY,
+                    GoogleLens1758Profile.QUERY_RESULT, false);
+        }
+        return null;
+    }
+
+    private boolean hasClass(String name) {
+        try {
+            Class.forName(name, false, classLoader);
+            return true;
+        } catch (Throwable ignored) { return false; }
     }
 
     private int hookSearchIntentFallback() {
@@ -262,8 +315,7 @@ final class GoogleMarkedSearchGuard {
         if (id >= 0) showSessionId = id;
         module.log(Log.INFO, TAG,
                 "GOOGLE_SEARCH_GUARD_ARM session=" + shortToken(token)
-                        + " showId=" + showSessionId
-                        + " path=" + path);
+                        + " showId=" + showSessionId + " path=" + path);
     }
 
     private boolean active() {
@@ -277,16 +329,12 @@ final class GoogleMarkedSearchGuard {
         String action = intent.getAction();
         if (GoogleCtsContract.isContextualSearchAction(action)
                 || Intent.ACTION_SEARCH.equals(action)
-                || Intent.ACTION_WEB_SEARCH.equals(action)) {
-            return true;
-        }
+                || Intent.ACTION_WEB_SEARCH.equals(action)) return true;
         if (intent.getComponent() == null) return false;
         String pkg = intent.getComponent().getPackageName();
         String cls = intent.getComponent().getClassName();
         if (!GoogleCtsContract.GOOGLE_PACKAGE.equals(pkg) || cls == null) return false;
         String lower = cls.toLowerCase(java.util.Locale.ROOT);
-        // Explicit result/search activities only. LensientActivity itself is the selection host and
-        // must never be blocked merely because its package/class contains "lens".
         return lower.contains("searchactivity")
                 || lower.contains("searchresult")
                 || lower.contains("resultactivity");
@@ -297,8 +345,7 @@ final class GoogleMarkedSearchGuard {
         markedToken = "";
         showSessionId = -1;
         module.log(Log.INFO, TAG,
-                "GOOGLE_SEARCH_GUARD_CLEAR session=" + shortToken(old)
-                        + " reason=" + reason);
+                "GOOGLE_SEARCH_GUARD_CLEAR session=" + shortToken(old) + " reason=" + reason);
     }
 
     private static int findParameter(Class<?>[] params, Class<?> type) {
@@ -307,6 +354,10 @@ final class GoogleMarkedSearchGuard {
             if (type.isAssignableFrom(params[i])) return i;
         }
         return -1;
+    }
+
+    private static String className(Object value) {
+        return value == null ? "null" : value.getClass().getName();
     }
 
     private static String shortToken(String token) {
