@@ -29,6 +29,9 @@ public final class YFloatSuiteRuntime {
         HookReloadManager.initialize(app);
         try { RemovedFeatureMigration.run(app); }
         catch (Throwable t) { DiagnosticLog.i(app, "APP_MIGRATION", "AI/dictionary cleanup failed=" + t); }
+        // In the combined APK, publish YSuite as the physical IPC/provider host before hooked
+        // processes start sending YFloat events. Standalone builds simply skip this extra listener.
+        YFloatHostIdentity.initialize(app);
         LsposedStatusManager.initialize(app);
         LsposedStatusManager.addListener(HOOK_LISTENER, true);
 
