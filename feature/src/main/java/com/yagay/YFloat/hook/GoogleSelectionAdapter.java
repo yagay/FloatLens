@@ -53,7 +53,8 @@ final class GoogleSelectionAdapter {
                 for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
                     if (executable instanceof Method method
                             && GoogleLens1758Profile.isSelectionMethod(method)) {
-                        return new ExactBinding(method);
+                        return new ExactBinding(method, "exact", 100,
+                                "profile=" + GoogleLens1758Profile.NAME);
                     }
                 }
                 profileError = "validated profile selection method missing";
@@ -62,34 +63,77 @@ final class GoogleSelectionAdapter {
             }
         }
 
+        // Google 17.58 point releases can rename the obfuscated controller method while retaining
+        // the SelectionMetadata + boolean -> void ABI. Prefer that narrow profile-local fallback
+        // before a 14k-class structural scan. It is much safer than guessing by method name and it
+        // preserves the existing exact metadata decoder.
+        Binding renamedProfile = resolveRenamedProfileSelection(loader, profileError);
+        if (renamedProfile.available()) return renamedProfile;
+
         GoogleLensDynamicResolver.SelectionBinding dynamic =
                 GoogleLensDynamicResolver.discoverSelection(loader);
         if (!dynamic.available()) {
             return new MissingBinding("profile=" + profileError
+                    + "; renamedProfile=" + renamedProfile.detail()
                     + "; dynamic=" + dynamic.detail());
         }
         return new DynamicBinding(dynamic, profileError);
     }
 
+    private static Binding resolveRenamedProfileSelection(ClassLoader loader, String profileError) {
+        if (loader == null) return new MissingBinding("classLoader=null");
+        try {
+            Class<?> controller = Class.forName(
+                    GoogleLens1758Profile.CONTROLLER, false, loader);
+            for (Executable executable : HiddenApiBypass.getDeclaredMethods(controller)) {
+                if (!(executable instanceof Method method)) continue;
+                if (!isKnownProfileSelectionSignature(method)) continue;
+                return new ExactBinding(method, "profile-signature", 98,
+                        "profile=" + GoogleLens1758Profile.NAME
+                                + " renamedMethod=" + method.getName()
+                                + " previousValidation=" + safe(profileError));
+            }
+            return new MissingBinding("known controller has no SelectionMetadata,boolean->void method");
+        } catch (Throwable t) {
+            return new MissingBinding("known profile signature lookup failed="
+                    + t.getClass().getSimpleName() + ":" + String.valueOf(t.getMessage()));
+        }
+    }
+
+    static boolean isKnownProfileSelectionSignature(Method method) {
+        if (method == null || method.getReturnType() != void.class) return false;
+        Class<?>[] params = method.getParameterTypes();
+        return params.length == 2
+                && GoogleLens1758Profile.SELECTION_METADATA.equals(params[0].getName())
+                && params[1] == boolean.class;
+    }
+
     private static final class ExactBinding implements Binding {
         private final Method method;
+        private final String source;
+        private final int confidence;
+        private final String detail;
 
-        ExactBinding(Method method) {
+        ExactBinding(Method method, String source, int confidence, String detail) {
             this.method = method;
+            this.source = source == null ? "exact" : source;
+            this.confidence = confidence;
+            this.detail = detail == null ? "" : detail;
+            try { if (this.method != null) this.method.setAccessible(true); } catch (Throwable ignored) {}
         }
 
         @Override public boolean available() { return method != null; }
         @Override public Method method() { return method; }
-        @Override public String detail() { return "profile=" + GoogleLens1758Profile.NAME; }
-        @Override public String source() { return "exact"; }
-        @Override public int confidence() { return 100; }
+        @Override public String detail() { return detail; }
+        @Override public String source() { return source; }
+        @Override public int confidence() { return confidence; }
 
         @Override public Snapshot snapshot(Object metadata, Context context) {
             GoogleLens1758Profile.SelectionSnapshot selected =
                     GoogleLens1758Profile.selection(metadata);
             Rect bounds = exactBounds(selected, context);
             return new Snapshot(selected.text(), bounds, selected.userSelectionClass(),
-                    selected.detail() + " adapter=exact",
+                    selected.detail() + " adapter=" + source,
                     selected.isDirectRegionSelection() && bounds != null && !bounds.isEmpty());
         }
     }
@@ -172,6 +216,12 @@ final class GoogleSelectionAdapter {
         Rect out = new Rect();
         working.roundOut(out);
         return out.isEmpty() ? null : out;
+    }
+
+    private static String safe(String value) {
+        if (value == null) return "";
+        String out = value.replace('\n', ' ').replace('\r', ' ');
+        return out.length() <= 300 ? out : out.substring(0, 300) + "…";
     }
 
     private GoogleSelectionAdapter() {}
