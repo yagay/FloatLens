@@ -9,6 +9,8 @@ import android.os.Bundle;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.fragment.app.Fragment;
 
+import com.yagay.yui.YUiWindowOptOut;
+
 import java.util.List;
 
 /**
@@ -17,7 +19,7 @@ import java.util.List;
  * This Activity no longer owns result UI, OCR state, popup geometry or result-ready timing. Every
  * screenshot / View / OCR result is rendered by one DialogFragment + one UnifiedResultPanel.
  */
-public final class ResultActivity extends AppCompatActivity {
+public final class ResultActivity extends AppCompatActivity implements YUiWindowOptOut {
     private static final String DIALOG_TAG = "yfloat_result_dialog";
 
     public interface InlineResultSink {
