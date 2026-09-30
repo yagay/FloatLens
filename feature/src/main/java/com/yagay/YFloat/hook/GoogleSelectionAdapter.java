@@ -148,17 +148,11 @@ final class GoogleSelectionAdapter {
             GoogleLens1760Profile.SelectionSnapshot selected =
                     GoogleLens1760Profile.selection(metadata, context);
             Rect bounds = selected.bounds();
-            String text = selected.text();
-            // Google 17.60 changed the concrete UserSelection classes.  Do not hard-code another
-            // obfuscated implementation name here: a committed screenshot region is the semantic
-            // non-text selection -- empty text with a real rectangle.  Live word selection is
-            // recovered separately from doms.g/dupt.run and always carries non-empty text.
-            boolean directRegion = (text == null || text.isBlank())
-                    && bounds != null && !bounds.isEmpty();
-            return new Snapshot(text, bounds, selected.selectionClass(),
-                    selected.detail() + " adapter=exact-1760"
-                            + (directRegion ? " region=semantic-empty-text-rect" : ""),
-                    directRegion);
+            boolean directRegion =
+                    GoogleLens1760Profile.isDirectRegionSelectionClass(selected.selectionClass())
+                            && bounds != null && !bounds.isEmpty();
+            return new Snapshot(selected.text(), bounds, selected.selectionClass(),
+                    selected.detail() + " adapter=exact-1760", directRegion);
         }
     }
 
