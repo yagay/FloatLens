@@ -132,20 +132,12 @@ public class LensAccessibilityService extends AccessibilityService {
 
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
         try {
-            boolean googleCtsInFlight = WorkflowSessionManager.googleCtsInFlight();
             if (isSystemNavigationEvent(event)) {
                 String pkg = eventPackage(event);
                 String cls = eventClass(event);
                 if (getPackageName().equals(pkg)) {
                     DiagnosticLog.i(this, "CIRCLE_SELECT",
                             "ignore own activity navigation pkg=" + pkg + " cls=" + cls);
-                } else if (googleCtsInFlight) {
-                    // Google CTS briefly exposes Launcher/Recents while moving between its
-                    // VoiceInteraction/Lens windows. Treat that as transient while YFloat owns a
-                    // marked session; clearing the token here disables both the text menu bridge
-                    // and the final search guard a few milliseconds before they are needed.
-                    DiagnosticLog.i(this, "GOOGLE_CTS_NAV_DEFER",
-                            "keep marked session across navigation pkg=" + pkg + " cls=" + cls);
                 } else {
                     DiagnosticLog.i(this, "CIRCLE_SELECT",
                             "system navigation event pkg=" + pkg + " cls=" + cls);
@@ -168,13 +160,17 @@ public class LensAccessibilityService extends AccessibilityService {
             boolean topChanged = !top.equals(oldTop);
 
             if (topChanged
-                    && googleCtsInFlight
+                    && WorkflowSessionManager.googleCtsInFlight()
                     && GoogleCtsContract.GOOGLE_PACKAGE.equals(oldTop)
                     && !GoogleCtsContract.GOOGLE_PACKAGE.equals(top)
                     && !getPackageName().equals(top)
                     && !"com.android.systemui".equals(top)) {
-                DiagnosticLog.i(this, "GOOGLE_CTS_TOP_DEFER",
-                        "keep marked session across top change from=" + oldTop + " to=" + top);
+                new FloatSettings(this).clearGoogleCtsSession();
+                boolean remoteCleared = LsposedStatusManager.clearGoogleCtsSessionRemoteNow();
+                GoogleCtsBridgeController.onNativeRelease(this, "top_package_changed");
+                DiagnosticLog.i(this, "GOOGLE_CTS_NATIVE_RELEASE",
+                        "reason=top_package_changed remoteCleared=" + remoteCleared
+                                + " from=" + oldTop + " to=" + top);
             }
 
             long now = SystemClock.uptimeMillis();
