@@ -18,18 +18,17 @@ import java.util.function.Consumer;
 import io.github.libxposed.api.XposedModule;
 
 /**
- * Captures the frozen Google Lens frame from Google App's own 17.58 data path.
+ * Captures the frozen Google Lens frame from Google App's own data path.
  *
- * <p>The framework VoiceInteraction callback is retained elsewhere as a final fallback. This class
- * prefers Google-owned boundaries that are present in the analyzed 17.58.16.ve APK:
- * eggn.onHandleScreenshot(Bitmap), dqyy InitialActivityData.a():Bitmap and
- * com.google.android.libraries.lens.view.InProcessBitmap.</p>
+ * <p>Behavior is unchanged from the stable 17.58 implementation. Only the obfuscated Google
+ * 17.60 classes are retargeted: egzd VoiceInteractionSession, drsz InitialActivityData and drtc
+ * InitialActivityData parser. InProcessBitmap remains a stable optional fallback.</p>
  */
 final class GoogleLensFrameCapture {
     private static final String TAG = "YFloat-GoogleCTS";
-    private static final String VOICE_SESSION_IMPL = "eggn";
-    private static final String INITIAL_ACTIVITY_DATA = "dqyy";
-    private static final String INITIAL_ACTIVITY_PARSER = "dqzb";
+    private static final String VOICE_SESSION_IMPL = "egzd";
+    private static final String INITIAL_ACTIVITY_DATA = "drsz";
+    private static final String INITIAL_ACTIVITY_PARSER = "drtc";
     private static final String IN_PROCESS_BITMAP =
             "com.google.android.libraries.lens.view.InProcessBitmap";
 
@@ -154,7 +153,7 @@ final class GoogleLensFrameCapture {
                 }
                 module.hook(method).intercept(chain -> {
                     if (active.getAsBoolean()) {
-                        captureCandidate(chain.getArg(0), "eggn.onHandleScreenshot");
+                        captureCandidate(chain.getArg(0), "egzd.onHandleScreenshot");
                     }
                     return chain.proceed();
                 });
