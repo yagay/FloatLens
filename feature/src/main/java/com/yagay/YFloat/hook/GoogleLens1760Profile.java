@@ -10,13 +10,14 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass;
 import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 
 /**
- * Exact structural profile for Google App 17.60.16.ve.
+ * Google App 17.60.16.ve symbol map for the pre-17.60 YFloat CTS behavior.
  *
- * <p>The mapping was derived by comparing the 17.58 contracts with the 17.60 APK and matching
- * method signatures, field types and stable Lens view classes rather than assuming obfuscated
- * names advance predictably.</p>
+ * <p>This profile changes only obfuscated Google symbols. Selection semantics stay identical to
+ * the stable 17.58 implementation: concrete WordSelection owns TextSelection/word boxes and
+ * concrete RegionSearchSelection is the only direct region commit.</p>
  */
 final class GoogleLens1760Profile {
     static final String NAME = "17.60.16.ve";
@@ -24,6 +25,14 @@ final class GoogleLens1760Profile {
     static final String CONTROLLER = "dsxb";
     static final String SELECTION_METADATA = "dsws";
     static final String USER_SELECTION = "dufw";
+    static final String REGION_SELECTION = "dufu";
+    static final String WORD_SELECTION = "dufy";
+    static final String TEXT_SELECTION = "duqg";
+    static final String TEXT_SELECTION_RANGE = "dolv";
+    static final String WORD_BOX = "dolw";
+    static final String ROTATED_BOX = "dokt";
+    static final String GEOMETRY_UTIL = "dokv";
+
     static final String PENDING_QUERY = "dukq";
     static final String QUERY_RESULT = "dukp";
     static final String LENS_IMAGE = "eszg";
@@ -38,11 +47,9 @@ final class GoogleLens1760Profile {
     static final String WORD = "domd";
     static final String TEXT_SELECTION_CONTROLLER = "dupy";
     static final String TEXT_SELECTION_UPDATE_TASK = "dupt";
-    static final String TEXT_SELECTION_RANGE = "dolv";
 
     static final String ACTION_MENU_CONTROLLER = "dpfz";
 
-    // 17.60 exposes the viewport contract through duyc and executes it in duyj.
     static final String VIEWPORT_CONTROLLER = "duyj";
     static final String VIEWPORT_REQUEST = "duxw";
     static final String VIEWPORT_STATE = "dtsi";
@@ -84,6 +91,12 @@ final class GoogleLens1760Profile {
                     || !hasNoArgMethod(user, "k", String.class.getName())) {
                 return "UserSelection semantic methods mismatch";
             }
+            Class.forName(REGION_SELECTION, false, loader);
+            Class.forName(WORD_SELECTION, false, loader);
+            Class.forName(TEXT_SELECTION, false, loader);
+            Class.forName(WORD_BOX, false, loader);
+            Class.forName(ROTATED_BOX, false, loader);
+            Class.forName(GEOMETRY_UTIL, false, loader);
             return "";
         } catch (Throwable t) {
             return t.getClass().getSimpleName() + ":" + String.valueOf(t.getMessage());
@@ -91,7 +104,8 @@ final class GoogleLens1760Profile {
     }
 
     static boolean isSelectionMethod(Method method) {
-        if (method == null || method.getReturnType() != void.class) return false;
+        if (method == null || !"y".equals(method.getName())
+                || method.getReturnType() != void.class) return false;
         Class<?>[] p = method.getParameterTypes();
         return p.length == 2
                 && SELECTION_METADATA.equals(p[0].getName())
@@ -99,41 +113,151 @@ final class GoogleLens1760Profile {
     }
 
     static boolean isPendingQueryMethod(Method method) {
-        if (method == null || method.getReturnType() != void.class) return false;
+        if (method == null || !"p".equals(method.getName())
+                || method.getReturnType() != void.class) return false;
         Class<?>[] p = method.getParameterTypes();
         return p.length == 1 && PENDING_QUERY.equals(p[0].getName());
     }
 
     static boolean isQueryResultMethod(Method method) {
-        if (method == null || method.getReturnType() != void.class) return false;
+        if (method == null || !"q".equals(method.getName())
+                || method.getReturnType() != void.class) return false;
         Class<?>[] p = method.getParameterTypes();
         return p.length == 1 && QUERY_RESULT.equals(p[0].getName());
     }
 
+    static boolean isDirectRegionSelectionClass(String className) {
+        return REGION_SELECTION.equals(className);
+    }
+
     static SelectionSnapshot selection(Object metadata, Context context) {
-        if (metadata == null) return new SelectionSnapshot("", null, "", "metadata=null");
+        if (metadata == null) {
+            return new SelectionSnapshot("", null, "", "metadata=null");
+        }
         Object user = GoogleReflection.readField(metadata, "a", USER_SELECTION);
         if (user == null) user = firstFieldByType(metadata, USER_SELECTION);
         if (user == null) {
             return new SelectionSnapshot("", null, "",
-                    "metadataClass=" + metadata.getClass().getName() + " userSelection=missing");
+                    "metadataClass=" + metadata.getClass().getName()
+                            + " userSelection=missing");
         }
 
+        String userClass = user.getClass().getName();
         String text = asString(GoogleReflection.invokeNoArg(user, "k")).trim();
-        RectF raw = asRectF(GoogleReflection.invokeNoArg(user, "b"));
+
+        // Stable 17.58 behavior: concrete WordSelection owns TextSelection in field a; generic
+        // UserSelection.k() may deliberately be empty. 17.60 is structurally identical.
+        if (text.isBlank() && WORD_SELECTION.equals(userClass)) {
+            Object textSelection = GoogleReflection.readField(user, "a", TEXT_SELECTION);
+            Object selectedText = GoogleReflection.readField(
+                    textSelection, "a", String.class.getName());
+            text = asString(selectedText).trim();
+        }
+
+        RectF raw = wordBoxUnionBounds(user);
+        String boundsSource = raw == null ? "" : "wordBoxes";
+        if (raw == null) {
+            raw = asRectF(GoogleReflection.invokeNoArg(user, "b"));
+            if (raw != null) boundsSource = "userSelection.b";
+        }
+        if (raw == null) {
+            raw = firstRectF(user, metadata);
+            if (raw != null) boundsSource = "reflectedRect";
+        }
+
         Rect bounds = toScreenBounds(raw, context);
         String detail = "profile=" + NAME
                 + " metadataClass=" + metadata.getClass().getName()
-                + " userSelectionClass=" + user.getClass().getName()
+                + " userSelectionClass=" + userClass
                 + " textLen=" + text.length()
+                + (boundsSource.isBlank() ? "" : " boundsSource=" + boundsSource)
                 + " rawBounds=" + String.valueOf(raw)
                 + " bounds=" + String.valueOf(bounds);
-        return new SelectionSnapshot(text, bounds, user.getClass().getName(), detail);
+        return new SelectionSnapshot(text, bounds, userClass, detail);
+    }
+
+    private static RectF wordBoxUnionBounds(Object user) {
+        if (user == null || !WORD_SELECTION.equals(user.getClass().getName())) return null;
+        try {
+            Object textSelection = GoogleReflection.readField(user, "a", TEXT_SELECTION);
+            Object rawBoxes = GoogleReflection.readField(
+                    textSelection, "b", IMMUTABLE_LIST);
+            if (!(rawBoxes instanceof Iterable<?> boxes)) return null;
+
+            RectF union = null;
+            for (Object wordBox : boxes) {
+                if (wordBox == null || !WORD_BOX.equals(wordBox.getClass().getName())) continue;
+                Object rotatedBox = GoogleReflection.readField(wordBox, "d", ROTATED_BOX);
+                RectF rect = rectFromGoogleRotatedBox(rotatedBox);
+                if (rect == null || rect.width() <= 0f || rect.height() <= 0f) continue;
+                if (union == null) union = new RectF(rect);
+                else union.union(rect);
+            }
+            return union;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** 17.60 keeps the same geometry contract as 17.58 with renamed classes only. */
+    private static RectF rectFromGoogleRotatedBox(Object rotatedBox) {
+        if (rotatedBox == null || !ROTATED_BOX.equals(rotatedBox.getClass().getName())) {
+            return null;
+        }
+        try {
+            ClassLoader loader = rotatedBox.getClass().getClassLoader();
+            Class<?> geometry = Class.forName(GEOMETRY_UTIL, false, loader);
+
+            Object oriented = invokeStaticOneArg(geometry, "v", rotatedBox);
+            Object rect = invokeStaticOneArg(geometry, "D", oriented);
+            RectF out = asRectF(rect);
+            if (out != null) return out;
+
+            Object quad = invokeStaticOneArg(geometry, "w", rotatedBox);
+            rect = invokeStaticOneArg(geometry, "E", quad);
+            return asRectF(rect);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static Object invokeStaticOneArg(Class<?> type, String name, Object arg) {
+        if (type == null || name == null || arg == null) return null;
+        for (Method method : GoogleReflection.declaredMethods(type)) {
+            if (!name.equals(method.getName()) || !Modifier.isStatic(method.getModifiers())
+                    || method.getParameterCount() != 1) continue;
+            Class<?> parameter = method.getParameterTypes()[0];
+            if (!parameter.isAssignableFrom(arg.getClass())) continue;
+            try {
+                method.setAccessible(true);
+                return method.invoke(null, arg);
+            } catch (Throwable ignored) { }
+        }
+        return null;
+    }
+
+    private static RectF firstRectF(Object... owners) {
+        if (owners == null) return null;
+        for (Object owner : owners) {
+            if (owner == null) continue;
+            for (Field field : GoogleReflection.instanceFields(owner.getClass())) {
+                if (field.getType() != RectF.class) continue;
+                try {
+                    field.setAccessible(true);
+                    Object value = field.get(owner);
+                    if (value instanceof RectF rect
+                            && rect.width() > 0f && rect.height() > 0f) {
+                        return new RectF(rect);
+                    }
+                } catch (Throwable ignored) { }
+            }
+        }
+        return null;
     }
 
     /**
-     * Detect the final Google rendered-presentation payload in a 17.60 LensQueryResult.
-     * Intermediate OCR/image results are deliberately allowed through.
+     * Kept for exact query-result symbol compatibility. Core result/confirm behavior remains owned
+     * by the pre-17.60 inspector and app-side bridge controller.
      */
     static ResultSnapshot result(Object queryResult) {
         if (queryResult == null) return new ResultSnapshot(false, false, "queryResult=null");
