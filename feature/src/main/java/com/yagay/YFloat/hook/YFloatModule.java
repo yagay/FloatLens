@@ -33,9 +33,9 @@ public final class YFloatModule extends XposedModule {
             // Never let an optional screenshot enhancement destabilize system_server startup.
             log(Log.ERROR, TAG, "Failed to install controlled secure screenshot hooks", t);
         }
-        // Google CTS isolation is now handled entirely inside YFloat-marked Google App
-        // sessions. Never hook ContextualSearch in system_server: a process-wide component block
-        // can interfere with the user's native Home/gesture Circle to Search session.
+        // Google CTS isolation is handled entirely inside YFloat-marked Google App sessions.
+        // Never hook ContextualSearch in system_server: a process-wide component block can
+        // interfere with the user's native Home/gesture Circle to Search session.
         log(Log.INFO, TAG,
                 "Google contextual-search system_server blocker disabled; native CTS left untouched");
     }
@@ -51,15 +51,7 @@ public final class YFloatModule extends XposedModule {
         LsposedRuntimeProvider provider = runtimeProvider;
         if (provider == null) return;
         try {
-            // Keep result/search isolation independent from the fragile obfuscated selection
-            // adapter. If Google renames the selection callback, a YFloat-marked session still
-            // must never fall through into Google's full search-result presentation.
-            new GoogleMarkedSearchGuard(this, provider, param.getClassLoader()).install();
             new GoogleCtsRuntimeInspector(this, provider, param.getClassLoader()).install();
-            // Google 17.60 can expose the final dufy payload only after dsxb.y returns. The rescue
-            // layer publishes the later live word state and ends the session only when the real
-            // LensientActivity is destroyed, so transient Launcher windows remain harmless.
-            new Google1760SelectionRescueHook(this, provider, param.getClassLoader()).install();
             googleCtsInspectorInstalled = true;
             log(Log.INFO, TAG, "Google CTS marked-session inspector installed");
         } catch (Throwable t) {
