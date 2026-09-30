@@ -7,6 +7,7 @@ import android.content.Context;
 import android.graphics.Rect;
 import android.util.Log;
 import android.view.View;
+import android.view.ViewGroup;
 
 import com.yagay.YFloat.GoogleCtsContract;
 
@@ -20,14 +21,15 @@ import io.github.libxposed.api.XposedModule;
  *
  * <p>Device diagnostics show dsxb.y(dsws, boolean) can fire before the concrete dufy selection
  * object exposes text/bounds, while doms.g/dupt.run already contain the selected word list and
- * correct geometry a few milliseconds later. This hook therefore publishes only non-empty text
- * from the post-callback/live-word state and emits a terminal END when LensientActivity is really
- * destroyed, without treating transient Launcher/Recents windows as session end.</p>
+ * correct geometry a few milliseconds later. This hook therefore republishes only non-empty text
+ * from the post-callback/live-word state and reconnects that geometry to YFloat's existing
+ * canonical selection frame instead of creating a second 17.60-specific visual implementation.</p>
  */
 final class Google1760SelectionRescueHook {
     private static final String TAG = "YFloat-GoogleCTS";
     private static final String LENS_ACTIVITY =
             "com.google.android.apps.search.lens.LensientActivity";
+    private static final String CANONICAL_SELECTION_TAG = "yfloat_google_selection";
 
     private final XposedModule module;
     private final LsposedRuntimeProvider provider;
@@ -274,6 +276,11 @@ final class Google1760SelectionRescueHook {
             return LiveSelection.empty(source + " outside_text_view");
         }
 
+        // Reconnect 17.60's recovered geometry to the existing YFloat canonical renderer.  The
+        // renderer itself still owns the old 1dp white rounded frame, 20dp coloured outer glow and
+        // outside scrim; this only repairs the data path that Google 17.60 broke.
+        restoreCanonicalTextFrame(textView, screen);
+
         String value = normalize(text.toString());
         return new LiveSelection(
                 value,
@@ -284,6 +291,40 @@ final class Google1760SelectionRescueHook {
                         + " textLen=" + value.length()
                         + " local=" + union
                         + " screen=" + screen);
+    }
+
+    private void restoreCanonicalTextFrame(View source, Rect bounds) {
+        if (source == null || bounds == null || bounds.isEmpty()) return;
+        try {
+            View selectionLayer = findTaggedView(source.getRootView(), CANONICAL_SELECTION_TAG);
+            if (selectionLayer == null) return;
+            for (Field field : GoogleReflection.instanceFields(selectionLayer.getClass())) {
+                if (!GoogleCanonicalFrameLayer.class.isAssignableFrom(field.getType())) continue;
+                try {
+                    field.setAccessible(true);
+                    Object owner = field.get(selectionLayer);
+                    if (owner instanceof GoogleCanonicalFrameLayer layer) {
+                        layer.updateLiveTextSelection(bounds);
+                        return;
+                    }
+                } catch (Throwable ignored) { }
+            }
+        } catch (Throwable error) {
+            module.log(Log.INFO, TAG,
+                    "Google 17.60 canonical text-frame reconnect unavailable", error);
+        }
+    }
+
+    private View findTaggedView(View view, String tag) {
+        if (view == null) return null;
+        Object value = view.getTag();
+        if (tag.equals(value)) return view;
+        if (!(view instanceof ViewGroup group)) return null;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View found = findTaggedView(group.getChildAt(i), tag);
+            if (found != null) return found;
+        }
+        return null;
     }
 
     private int addWords(Rect union, StringBuilder text, Object value) {
